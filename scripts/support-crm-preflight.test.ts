@@ -119,6 +119,10 @@ function createHappyFetch(calls: FetchCall[] = []): (input: string, init?: Reque
     if (url.pathname === '/api/chats/friend-forbidden') return jsonResponse(404, { success: false, error: 'not found' });
     if (url.pathname === '/api/friends/friend-visible/messages') return successArray([{ id: 'msg-visible' }]);
     if (url.pathname === '/api/friends/friend-forbidden/messages') return jsonResponse(404, { success: false, error: 'not found' });
+    if (url.pathname === '/api/friends/friend-visible/score') return successObject({ friendId: 'friend-visible', currentScore: 10, history: [] });
+    if (url.pathname === '/api/friends/friend-forbidden/score') return jsonResponse(404, { success: false, error: 'not found' });
+    if (url.pathname === '/api/friends/friend-visible/reminders') return successArray([]);
+    if (url.pathname === '/api/friends/friend-forbidden/reminders') return jsonResponse(404, { success: false, error: 'not found' });
 
     return jsonResponse(500, { success: false, error: `unexpected ${method} ${url.pathname}` });
   };
@@ -464,6 +468,26 @@ describe('runSupportCrmPreflight', () => {
         authorization: 'Bearer staff-key',
         url: expect.objectContaining({ pathname: '/api/friends/friend-forbidden/messages' }),
       }),
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-visible/score' }),
+      }),
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-forbidden/score' }),
+      }),
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-visible/reminders' }),
+      }),
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-forbidden/reminders' }),
+      }),
     ]));
   });
 
@@ -544,8 +568,12 @@ describe('runSupportCrmPreflight', () => {
       'staff: visible chat can be opened',
       'staff: unsupported chat message type is blocked',
       'staff: visible friend direct history can be opened',
+      'staff: visible friend score can be opened',
+      'staff: visible friend reminders can be opened',
       'staff: forbidden chat is hidden',
       'staff: forbidden friend direct history is hidden',
+      'staff: forbidden friend score is hidden',
+      'staff: forbidden friend reminders are hidden',
     ]);
   });
 
@@ -575,7 +603,7 @@ describe('runSupportCrmPreflight', () => {
       }),
       expect.objectContaining({
         name: 'preflight: full coverage required',
-        detail: '8 optional checks skipped',
+        detail: '12 optional checks skipped',
       }),
     ]);
   });

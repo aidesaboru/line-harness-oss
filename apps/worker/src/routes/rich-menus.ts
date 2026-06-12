@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import { getFriendById, getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { ensureSupportFriendAccess } from './support-friend-access.js';
 
 const richMenus = new Hono<Env>();
 
@@ -74,6 +75,8 @@ richMenus.post('/api/rich-menus/:id/default', async (c) => {
 richMenus.post('/api/friends/:friendId/rich-menu', async (c) => {
   try {
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const body = await c.req.json<{ richMenuId: string }>();
 
     if (!body.richMenuId) {
@@ -107,6 +110,8 @@ richMenus.post('/api/friends/:friendId/rich-menu', async (c) => {
 richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
   try {
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const db = c.env.DB;
 
     const friend = await getFriendById(db, friendId);
@@ -135,6 +140,8 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
 richMenus.get('/api/friends/:friendId/rich-menu', async (c) => {
   try {
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const db = c.env.DB;
 
     const friend = await getFriendById(db, friendId);

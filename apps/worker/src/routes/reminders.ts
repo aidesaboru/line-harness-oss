@@ -13,6 +13,7 @@ import {
   cancelFriendReminder,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { ensureSupportFriendAccess } from './support-friend-access.js';
 
 const reminders = new Hono<Env>();
 
@@ -158,6 +159,8 @@ reminders.post('/api/reminders/:id/enroll/:friendId', async (c) => {
   try {
     const reminderId = c.req.param('id');
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const body = await c.req.json<{ targetDate: string }>();
     if (!body.targetDate) return c.json({ success: false, error: 'targetDate is required' }, 400);
     const enrollment = await enrollFriendInReminder(c.env.DB, { friendId, reminderId, targetDate: body.targetDate });
@@ -174,6 +177,8 @@ reminders.post('/api/reminders/:id/enroll/:friendId', async (c) => {
 reminders.get('/api/friends/:friendId/reminders', async (c) => {
   try {
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const items = await getFriendReminders(c.env.DB, friendId);
     return c.json({
       success: true,
@@ -194,7 +199,15 @@ reminders.get('/api/friends/:friendId/reminders', async (c) => {
 
 reminders.delete('/api/friend-reminders/:id', async (c) => {
   try {
-    await cancelFriendReminder(c.env.DB, c.req.param('id'));
+    const reminderId = c.req.param('id');
+    const row = await c.env.DB
+      .prepare('SELECT friend_id FROM friend_reminders WHERE id = ?')
+      .bind(reminderId)
+      .first<{ friend_id: string }>();
+    if (!row) return c.json({ success: false, error: 'Friend reminder not found' }, 404);
+    const denied = await ensureSupportFriendAccess(c, row.friend_id, 'Friend reminder not found');
+    if (denied) return denied;
+    await cancelFriendReminder(c.env.DB, reminderId);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/friend-reminders/:id error:', err);

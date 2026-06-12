@@ -10,6 +10,7 @@ import {
   addScore,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { ensureSupportFriendAccess } from './support-friend-access.js';
 
 const scoring = new Hono<Env>();
 
@@ -93,6 +94,8 @@ scoring.delete('/api/scoring-rules/:id', async (c) => {
 scoring.get('/api/friends/:id/score', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const [score, history] = await Promise.all([
       getFriendScore(c.env.DB, friendId),
       getFriendScoreHistory(c.env.DB, friendId),
@@ -121,6 +124,8 @@ scoring.get('/api/friends/:id/score', async (c) => {
 scoring.post('/api/friends/:id/score', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
     const body = await c.req.json<{ scoreChange: number; reason?: string }>();
     if (body.scoreChange === undefined) return c.json({ success: false, error: 'scoreChange is required' }, 400);
     await addScore(c.env.DB, { friendId, scoreChange: body.scoreChange, reason: body.reason });

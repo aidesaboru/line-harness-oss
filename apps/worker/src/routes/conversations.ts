@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { supportFriendVisibilitySql } from '../services/support-access.js';
+import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
 
 const conversations = new Hono<Env>();
 
@@ -19,6 +21,8 @@ conversations.get('/api/conversations', async (c) => {
       maxHoursSince !== null
         ? `AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) <= ?`
         : '';
+    const staffVisibility = supportFriendVisibilitySql(currentSupportStaff(c), 'f.id');
+    const whereSupportFriend = staffVisibility.sql ? `AND ${staffVisibility.sql}` : '';
 
     const sql = `
       -- conversations queue (要対応の自発メッセージ) は postback (rich menu tap) を除外する。
@@ -69,13 +73,15 @@ conversations.get('/api/conversations', async (c) => {
         AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) >= ?
         ${whereMaxHours}
         ${whereAccount}
+        ${whereSupportFriend}
       ORDER BY li.at ASC
       LIMIT ? OFFSET ?
     `;
 
-    const bindings: (string | number)[] = [minHoursSince];
+    const bindings: unknown[] = [minHoursSince];
     if (maxHoursSince !== null) bindings.push(maxHoursSince);
     if (accountId) bindings.push(accountId);
+    bindings.push(...staffVisibility.binds);
     bindings.push(limit, offset);
 
     const { results } = await c.env.DB.prepare(sql)
@@ -102,10 +108,12 @@ conversations.get('/api/conversations', async (c) => {
         AND ((strftime('%s', 'now') - strftime('%s', li.at)) / 3600.0) >= ?
         ${whereMaxHours}
         ${whereAccount}
+        ${whereSupportFriend}
     `;
-    const countBindings: (string | number)[] = [minHoursSince];
+    const countBindings: unknown[] = [minHoursSince];
     if (maxHoursSince !== null) countBindings.push(maxHoursSince);
     if (accountId) countBindings.push(accountId);
+    countBindings.push(...staffVisibility.binds);
 
     const countRow = await c.env.DB.prepare(countSql)
       .bind(...countBindings)
@@ -163,6 +171,9 @@ conversations.get('/api/conversations', async (c) => {
 conversations.get('/api/conversations/:friendId', async (c) => {
   try {
     const friendId = c.req.param('friendId');
+    const denied = await ensureSupportFriendAccess(c, friendId, 'friend not found');
+    if (denied) return denied;
+
     const url = new URL(c.req.url);
     const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), 200);
     const before = url.searchParams.get('before');

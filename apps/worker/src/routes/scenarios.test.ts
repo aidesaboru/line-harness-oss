@@ -23,6 +23,13 @@ vi.mock('../services/scenario-stats.js', () => ({
 
 const { scenarios: scenariosModule } = await import('./scenarios.js');
 
+type StaffRole = 'owner' | 'admin' | 'staff';
+
+type TestEnv = {
+  Bindings: { DB: D1Database };
+  Variables: { staff: { id: string; name: string; role: StaffRole } };
+};
+
 interface ScenarioRow {
   id: string;
   name: string;
@@ -37,8 +44,9 @@ interface ScenarioRow {
   step_count: number;
 }
 
-function makeScenarioDb(rows: ScenarioRow[]) {
+function makeScenarioDb(rows: ScenarioRow[], options: { visibleFriendIds?: string[] } = {}) {
   const calls: { sql: string; binds: unknown[] }[] = [];
+  const visibleFriendIds = new Set(options.visibleFriendIds ?? []);
   const db = {
     prepare(sql: string) {
       let bound: unknown[] = [];
@@ -58,6 +66,14 @@ function makeScenarioDb(rows: ScenarioRow[]) {
           }
           return { results: [] };
         },
+        async first<T>() {
+          calls.push({ sql, binds: bound });
+          if (sql.startsWith('SELECT 1 AS ok WHERE')) {
+            const [friendId] = bound as [string];
+            return (visibleFriendIds.has(friendId) ? { ok: 1 } : null) as T | null;
+          }
+          return null as T | null;
+        },
       };
       return stmt;
     },
@@ -65,9 +81,10 @@ function makeScenarioDb(rows: ScenarioRow[]) {
   return { db, calls };
 }
 
-function setupApp(db: D1Database) {
-  const app = new Hono<{ Bindings: { DB: D1Database } }>();
+function setupApp(db: D1Database, role: StaffRole = 'staff') {
+  const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
+    c.set('staff', { id: 'staff-1', name: '田島', role });
     c.env = { DB: db };
     await next();
   });
@@ -141,5 +158,52 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
+  });
+});
+
+describe('POST /api/scenarios/:id/enroll/:friendId support visibility', () => {
+  const scenario = { id: 'scenario-1', name: 'manual', line_account_id: null, ...rowBase };
+  const enrollment = {
+    id: 'friend-scenario-1',
+    friend_id: 'friend-visible',
+    scenario_id: 'scenario-1',
+    current_step_order: 1,
+    status: 'active',
+    started_at: '2026-06-12T10:00:00.000',
+    next_delivery_at: null,
+    updated_at: '2026-06-12T10:00:00.000',
+  };
+
+  test('staff cannot manually enroll a hidden friend', async () => {
+    dbMocks.getScenarioById.mockResolvedValue(scenario);
+    const { db } = makeScenarioDb([], { visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/scenarios/scenario-1/enroll/friend-hidden', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(404);
+    expect(dbMocks.getFriendById).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('staff can manually enroll a visible friend', async () => {
+    dbMocks.getScenarioById.mockResolvedValue(scenario);
+    dbMocks.getFriendById.mockResolvedValue({ id: 'friend-visible', line_user_id: 'U-visible' });
+    dbMocks.enrollFriendInScenario.mockResolvedValue(enrollment);
+    const { db } = makeScenarioDb([], { visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/scenarios/scenario-1/enroll/friend-visible', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { data: { friendId: string; scenarioId: string; status: string } };
+    expect(body.data).toMatchObject({
+      friendId: 'friend-visible',
+      scenarioId: 'scenario-1',
+      status: 'active',
+    });
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith(db, 'friend-visible', 'scenario-1');
   });
 });

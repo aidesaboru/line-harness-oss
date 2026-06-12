@@ -14,6 +14,7 @@ import {
 } from '@line-crm/db';
 import { computeScenarioStats } from '../services/scenario-stats.js';
 import { resolveStepContent } from '@line-crm/db';
+import { ensureSupportFriendAccess } from './support-friend-access.js';
 import type {
   Scenario as DbScenario,
   ScenarioWithStepCount as DbScenarioWithStepCount,
@@ -712,15 +713,15 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
     const friendId = c.req.param('friendId');
     const db = c.env.DB;
 
-    // Verify both exist
-    const [scenario, friend] = await Promise.all([
-      getScenarioById(db, scenarioId),
-      getFriendById(db, friendId),
-    ]);
-
+    const scenario = await getScenarioById(db, scenarioId);
     if (!scenario) {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
     }
+
+    const denied = await ensureSupportFriendAccess(c, friendId);
+    if (denied) return denied;
+
+    const friend = await getFriendById(db, friendId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }

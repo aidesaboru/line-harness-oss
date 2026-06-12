@@ -17,7 +17,7 @@ updated: 2026-06-13
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
-- staffが `/api/friends`、direct message履歴、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
+- staffが `/api/friends`、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
@@ -141,6 +141,8 @@ strict Preflight:
 - `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、送信前検証、顧客返信イベント
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard
+- `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲
+- `apps/worker/src/routes/scenarios.ts`: staffのscenario手動登録で使うfriend可視範囲
 - `apps/worker/src/routes/scoring.ts` / `reminders.ts` / `rich-menus.ts`: staffのfriend score、reminder、rich-menu操作の可視範囲
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知

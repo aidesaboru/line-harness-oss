@@ -737,6 +737,97 @@ CREATE TABLE stripe_events (
   processed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE support_case_events (
+  id              TEXT PRIMARY KEY,
+  case_id         TEXT NOT NULL REFERENCES support_cases(id) ON DELETE CASCADE,
+  event_type      TEXT NOT NULL,
+  actor_id        TEXT,
+  actor_name      TEXT,
+  body            TEXT NOT NULL DEFAULT '',
+  metadata        TEXT NOT NULL DEFAULT '{}',
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE support_cases (
+  id                    TEXT PRIMARY KEY,
+  line_account_id       TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  friend_id             TEXT REFERENCES friends(id) ON DELETE SET NULL,
+  title                 TEXT NOT NULL,
+  category              TEXT NOT NULL DEFAULT 'other',
+  priority              TEXT NOT NULL DEFAULT 'medium'
+                         CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
+  status                TEXT NOT NULL DEFAULT 'open'
+                         CHECK (status IN (
+                           'open',
+                           'in_progress',
+                           'waiting_primary',
+                           'escalated',
+                           'waiting_secondary',
+                           'customer_reply',
+                           'on_hold',
+                           'resolved',
+                           'reopened'
+                         )),
+  primary_assignee      TEXT,
+  escalation_assignee   TEXT,
+  escalation_level      TEXT NOT NULL DEFAULT 'L1'
+                         CHECK (escalation_level IN ('L1', 'L2', 'L3')),
+  due_at                TEXT,
+  next_check_at         TEXT,
+  customer_number       TEXT,
+  company_name          TEXT,
+  contact_name          TEXT,
+  store_name            TEXT,
+  contract_type         TEXT,
+  customer_summary      TEXT NOT NULL DEFAULT '',
+  internal_note         TEXT NOT NULL DEFAULT '',
+  customer_reply_draft  TEXT NOT NULL DEFAULT '',
+  resolution_note       TEXT NOT NULL DEFAULT '',
+  manual_ids            TEXT NOT NULL DEFAULT '[]',
+  created_by            TEXT,
+  updated_by            TEXT,
+  closed_at             TEXT,
+  reopened_at           TEXT,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE support_escalations (
+  id                  TEXT PRIMARY KEY,
+  case_id             TEXT NOT NULL REFERENCES support_cases(id) ON DELETE CASCADE,
+  line_account_id     TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  assignee            TEXT NOT NULL,
+  level               TEXT NOT NULL DEFAULT 'L2' CHECK (level IN ('L2', 'L3')),
+  status              TEXT NOT NULL DEFAULT 'pending'
+                       CHECK (status IN ('pending', 'answered', 'needs_info', 'transferred', 'expert_check', 'closed')),
+  question            TEXT NOT NULL,
+  answer              TEXT NOT NULL DEFAULT '',
+  due_at              TEXT,
+  answered_at         TEXT,
+  created_by          TEXT,
+  updated_by          TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE support_manuals (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  title           TEXT NOT NULL,
+  category        TEXT NOT NULL DEFAULT 'basic',
+  body            TEXT NOT NULL DEFAULT '',
+  url             TEXT,
+  keywords        TEXT NOT NULL DEFAULT '',
+  owner           TEXT,
+  approved_by     TEXT,
+  revised_at      TEXT,
+  is_active       INTEGER NOT NULL DEFAULT 1,
+  created_by      TEXT,
+  updated_by      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE tags (
   id         TEXT PRIMARY KEY,
   name       TEXT UNIQUE NOT NULL,
@@ -951,6 +1042,36 @@ CREATE INDEX idx_staff_members_role ON staff_members(role);
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
+
+CREATE INDEX idx_support_case_events_case
+  ON support_case_events(case_id, created_at);
+
+CREATE INDEX idx_support_cases_account_due_status
+  ON support_cases(line_account_id, due_at, status);
+
+CREATE INDEX idx_support_cases_account_status
+  ON support_cases(line_account_id, status, updated_at);
+
+CREATE INDEX idx_support_cases_assignee
+  ON support_cases(primary_assignee, escalation_assignee, status);
+
+CREATE INDEX idx_support_cases_due
+  ON support_cases(due_at, status);
+
+CREATE INDEX idx_support_cases_friend
+  ON support_cases(friend_id, updated_at);
+
+CREATE INDEX idx_support_escalations_account_status_due
+  ON support_escalations(line_account_id, status, due_at);
+
+CREATE INDEX idx_support_escalations_assignee
+  ON support_escalations(assignee, status, due_at);
+
+CREATE INDEX idx_support_escalations_case
+  ON support_escalations(case_id, created_at);
+
+CREATE INDEX idx_support_manuals_account_category
+  ON support_manuals(line_account_id, category, is_active);
 
 CREATE INDEX idx_templates_category ON templates (category);
 

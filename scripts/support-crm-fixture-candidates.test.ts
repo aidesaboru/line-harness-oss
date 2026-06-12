@@ -113,7 +113,7 @@ describe('support CRM fixture candidate helpers', () => {
         status: 'open',
         title: '問い合わせ',
       },
-    ]);
+    ], { lineAccountId: 'line-1' });
 
     expect(output).toContain('Support CRM fixture candidates');
     expect(output).toContain('export SUPPORT_CRM_STAFF_VISIBLE_CASE_ID=case-visible');
@@ -121,6 +121,13 @@ describe('support CRM fixture candidate helpers', () => {
     expect(output).toContain('SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID');
     expect(output).toContain('All candidates:');
     expect(output).toContain('friend=friend-visible');
+    expect(output).toContain('Strict Preflight command template:');
+    expect(output).toContain('export SUPPORT_CRM_LINE_ACCOUNT_ID=line-1');
+    expect(output).toContain('export SUPPORT_CRM_OWNER_API_KEY=REPLACE_WITH_OWNER_OR_ADMIN_API_KEY');
+    expect(output).toContain('export SUPPORT_CRM_STAFF_API_KEY=REPLACE_WITH_STAFF_API_KEY');
+    expect(output).toContain('# TODO export SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID=<required-fixture-id>');
+    expect(output).toContain('corepack pnpm preflight:support-crm:dry-run');
+    expect(output).toContain('corepack pnpm preflight:support-crm');
     expect(output).not.toContain('title=問い合わせ');
   });
 });

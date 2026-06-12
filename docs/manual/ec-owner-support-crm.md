@@ -276,7 +276,7 @@ corepack pnpm preflight:support-crm
 
 本番切替前は、任意チェックのスキップも失敗扱いにします。staffの表示範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止まで確認するため、次を実行します。
 
-fixture IDの候補は、D1から読み取り専用で拾えます。`SUPPORT_CRM_STAFF_NAME` は、staff APIキーで `/api/staff/me` に出る名前と同じものを指定します。
+fixture IDの候補は、D1から読み取り専用で拾えます。`SUPPORT_CRM_STAFF_NAME` は、staff APIキーで `/api/staff/me` に出る名前と同じものを指定します。この出力には、APIキーをplaceholderにしたdry-run/strict Preflight用のコマンドテンプレも含まれます。
 
 ```bash
 SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \

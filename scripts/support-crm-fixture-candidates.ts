@@ -31,6 +31,10 @@ export type FixtureSelection = {
   missingEnvNames: string[];
 };
 
+export type FixtureCandidateReportOptions = {
+  lineAccountId?: string;
+};
+
 const STRICT_ENV_NAMES = [
   'SUPPORT_CRM_STAFF_VISIBLE_CASE_ID',
   'SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID',
@@ -382,7 +386,30 @@ function formatRow(row: FixtureCandidateRow): string {
   return `- ${row.env_name}=${row.value}${detail ? ` (${detail})` : ''}`;
 }
 
-export function formatFixtureCandidateReport(rows: FixtureCandidateRow[]): string {
+function formatStrictPreflightTemplate(selection: FixtureSelection, options: FixtureCandidateReportOptions): string[] {
+  const lines = [
+    'Strict Preflight command template:',
+    '# Fill URL/API key placeholders locally. Do not paste real secrets into PRs or docs.',
+    'export SUPPORT_CRM_API_URL=https://your-worker.example.com',
+    'export SUPPORT_CRM_ADMIN_ORIGIN=https://your-admin.example.com',
+    `export SUPPORT_CRM_LINE_ACCOUNT_ID=${options.lineAccountId ?? 'REPLACE_WITH_LINE_ACCOUNT_ID'}`,
+    'export SUPPORT_CRM_OWNER_API_KEY=REPLACE_WITH_OWNER_OR_ADMIN_API_KEY',
+    'export SUPPORT_CRM_STAFF_API_KEY=REPLACE_WITH_STAFF_API_KEY',
+    'export SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1',
+  ];
+
+  for (const envName of STRICT_ENV_NAMES) {
+    const value = selection.env[envName];
+    lines.push(value ? `export ${envName}=${value}` : `# TODO export ${envName}=<required-fixture-id>`);
+  }
+
+  lines.push('');
+  lines.push('corepack pnpm preflight:support-crm:dry-run');
+  lines.push('corepack pnpm preflight:support-crm');
+  return lines;
+}
+
+export function formatFixtureCandidateReport(rows: FixtureCandidateRow[], options: FixtureCandidateReportOptions = {}): string {
   const lines: string[] = [];
   const selection = selectFixtureEnvCandidates(rows);
   lines.push('Support CRM fixture candidates');
@@ -411,7 +438,9 @@ export function formatFixtureCandidateReport(rows: FixtureCandidateRow[]): strin
   }
 
   lines.push('');
-  lines.push('Next: paste the suggested env values into the strict Preflight command, then run `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1 corepack pnpm preflight:support-crm`.');
+  lines.push(...formatStrictPreflightTemplate(selection, options));
+  lines.push('');
+  lines.push('Next: run the dry-run first. Only run strict Preflight after every TODO fixture env is filled.');
   return `${lines.join('\n')}\n`;
 }
 
@@ -509,6 +538,6 @@ if (isCliEntry) {
     exit(1);
   }
 
-  stdout.write(formatFixtureCandidateReport(result.rows));
+  stdout.write(formatFixtureCandidateReport(result.rows, { lineAccountId: parsed.config.lineAccountId }));
   exit(result.rows.length > 0 ? 0 : 1);
 }

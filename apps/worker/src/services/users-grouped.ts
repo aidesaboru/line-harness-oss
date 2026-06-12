@@ -1,4 +1,9 @@
 import { URL_TOKEN_SQL } from '../lib/url-token.js';
+import {
+  isRestrictedSupportStaff,
+  supportFriendVisibilitySql,
+  type SupportAccessStaff,
+} from './support-access.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
@@ -20,7 +25,7 @@ const IDENTITY_KEY_SQL = `
   )
 `;
 
-const IDENT_SQL = `
+const IDENT_BASE_SQL = `
   SELECT
     friends.id           AS friend_id,
     friends.line_account_id,
@@ -43,14 +48,31 @@ const IDENT_SQL = `
 // 最新の x_username が優先される（順序指定なしだと SQLite の行順は未定義）。
 // active な following friend に紐付くものだけに絞る — 退会済み・非アクティブ
 // アカウント分の歴史的フォーム提出を毎回 JSON.parse する CPU コストを避ける。
-const FORMS_SQL = `
+const FORMS_BASE_SQL = `
   SELECT fs.friend_id, fs.data, fs.created_at
   FROM form_submissions fs
   JOIN friends f ON f.id = fs.friend_id
   JOIN line_accounts la ON la.id = f.line_account_id
   WHERE f.is_following = 1 AND la.is_active = 1
-  ORDER BY fs.created_at DESC
 `;
+
+function buildScopedQuery(baseSql: string, staff: SupportAccessStaff | undefined, friendIdExpression: string) {
+  const visibility = staff
+    ? supportFriendVisibilitySql(staff, friendIdExpression)
+    : { sql: '', binds: [] };
+  return {
+    sql: visibility.sql ? `${baseSql} AND ${visibility.sql}` : baseSql,
+    binds: visibility.binds,
+  };
+}
+
+function buildFormsQuery(staff?: SupportAccessStaff) {
+  const scoped = buildScopedQuery(FORMS_BASE_SQL, staff, 'f.id');
+  return {
+    sql: `${scoped.sql}\n  ORDER BY fs.created_at DESC`,
+    binds: scoped.binds,
+  };
+}
 
 export interface AccountMembership {
   accountId: string;
@@ -89,6 +111,7 @@ export interface UsersGroupedOptions {
   page?: number;
   pageSize?: number;
   forceRefresh?: boolean;
+  staff?: SupportAccessStaff;
 }
 
 interface IdentRow {
@@ -118,9 +141,21 @@ export function _resetCacheForTest(): void {
   cached = null;
 }
 
-async function computeAllRows(db: D1Database): Promise<UnifiedUserRow[]> {
-  const identResult = await db.prepare(IDENT_SQL).all<IdentRow>();
-  const formsResult = await db.prepare(FORMS_SQL).all<FormRow>();
+async function computeAllRows(
+  db: D1Database,
+  staff?: SupportAccessStaff,
+): Promise<UnifiedUserRow[]> {
+  const identQuery = buildScopedQuery(IDENT_BASE_SQL, staff, 'friends.id');
+  const formsQuery = buildFormsQuery(staff);
+  const identStmt = identQuery.binds.length > 0
+    ? db.prepare(identQuery.sql).bind(...identQuery.binds)
+    : db.prepare(identQuery.sql);
+  const formsStmt = formsQuery.binds.length > 0
+    ? db.prepare(formsQuery.sql).bind(...formsQuery.binds)
+    : db.prepare(formsQuery.sql);
+
+  const identResult = await identStmt.all<IdentRow>();
+  const formsResult = await formsStmt.all<FormRow>();
 
   const formByFriend = new Map<string, FormRow[]>();
   for (const row of formsResult.results ?? []) {
@@ -253,13 +288,14 @@ export async function computeUsersGrouped(
   opts: UsersGroupedOptions = {},
 ): Promise<UsersGroupedResult> {
   let allRows: UnifiedUserRow[];
-  if (!opts.forceRefresh && cached && Date.now() - cached.at < CACHE_TTL_MS) {
+  const canUseGlobalCache = !opts.staff || !isRestrictedSupportStaff(opts.staff);
+  if (canUseGlobalCache && !opts.forceRefresh && cached && Date.now() - cached.at < CACHE_TTL_MS) {
     allRows = cached.rows;
   } else {
-    allRows = await computeAllRows(db);
-    if (allRows.length > 0) {
+    allRows = await computeAllRows(db, opts.staff);
+    if (canUseGlobalCache && allRows.length > 0) {
       cached = { rows: allRows, at: Date.now() };
-    } else {
+    } else if (canUseGlobalCache) {
       cached = null;
     }
   }

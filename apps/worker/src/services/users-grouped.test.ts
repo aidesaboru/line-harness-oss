@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from 'vitest';
 import { _resetCacheForTest, computeUsersGrouped } from './users-grouped.js';
+import type { SupportAccessStaff } from './support-access.js';
 
 type StubResult<T> = { results: T[] };
 
@@ -23,22 +24,45 @@ interface FormRow {
   data: string; // JSON
 }
 
-function stubDB(canned: { ident: IdentRow[]; forms: FormRow[] }) {
-  return {
+interface DbCall {
+  sql: string;
+  binds: unknown[];
+}
+
+function stubDB(canned: { ident: IdentRow[]; forms: FormRow[]; visibleFriendIds?: string[] }) {
+  const calls: DbCall[] = [];
+  const visibleFriendIds = new Set(canned.visibleFriendIds ?? []);
+  const db = {
     prepare(sql: string) {
       const isForm = sql.includes('form_submissions');
+      let bound: unknown[] = [];
       return {
-        all: async (): Promise<StubResult<unknown>> => ({
-          results: isForm ? canned.forms : canned.ident,
-        }),
+        all: async (): Promise<StubResult<unknown>> => {
+          calls.push({ sql, binds: bound });
+          return {
+            results: isForm
+              ? sql.includes('sc_friend_scope.friend_id = f.id')
+                ? canned.forms.filter((row) => visibleFriendIds.has(row.friend_id))
+                : canned.forms
+              : sql.includes('sc_friend_scope.friend_id = friends.id')
+                ? canned.ident.filter((row) => visibleFriendIds.has(row.friend_id))
+                : canned.ident,
+          };
+        },
         first: async () => null,
-        bind() {
+        bind(...args: unknown[]) {
+          bound = args;
           return this;
         },
       };
     },
-  } as unknown as D1Database;
+  } as unknown as D1Database & { calls: DbCall[] };
+  db.calls = calls;
+  return db;
 }
+
+const staff: SupportAccessStaff = { id: 'staff-1', name: '田島', role: 'staff' };
+const owner: SupportAccessStaff = { id: 'owner-1', name: 'Owner', role: 'owner' };
 
 describe('computeUsersGrouped', () => {
   beforeEach(() => {
@@ -595,5 +619,164 @@ describe('computeUsersGrouped', () => {
     await computeUsersGrouped(db);
     // 1 呼び出しで ident クエリは 1 回。空結果はキャッシュしないので、2 呼び出し = 2 回。
     expect(identCalls).toBe(2);
+  });
+
+  test('staff はサポート可視範囲の friend だけ users-grouped に出せる', async () => {
+    const db = stubDB({
+      ident: [
+        {
+          friend_id: 'f-visible',
+          line_account_id: 'a1',
+          account_name: 'L ①',
+          line_user_id: 'U-visible',
+          display_name: '見える顧客',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-01T00:00:00+09:00',
+          updated_at: '2026-01-03T00:00:00+09:00',
+          ident_key: 'k-shared',
+          ident_kind: 'url_token',
+        },
+        {
+          friend_id: 'f-hidden',
+          line_account_id: 'a2',
+          account_name: 'L ②',
+          line_user_id: 'U-hidden',
+          display_name: '隠れた顧客',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-02T00:00:00+09:00',
+          updated_at: '2026-01-04T00:00:00+09:00',
+          ident_key: 'k-shared',
+          ident_kind: 'url_token',
+        },
+      ],
+      forms: [
+        { friend_id: 'f-visible', data: JSON.stringify({ email: 'visible@example.com' }) },
+        { friend_id: 'f-hidden', data: JSON.stringify({ email: 'hidden@example.com', phone: '090-hidden' }) },
+      ],
+      visibleFriendIds: ['f-visible'],
+    });
+
+    const result = await computeUsersGrouped(db, { staff });
+
+    expect(result.total).toBe(1);
+    expect(result.rows[0]).toMatchObject({
+      identityKey: 'k-shared',
+      displayName: '見える顧客',
+      isDuplicate: false,
+      emails: ['visible@example.com'],
+      phones: [],
+    });
+    expect(result.rows[0].accounts).toEqual([
+      {
+        accountId: 'a1',
+        accountName: 'L ①',
+        lineUserId: 'U-visible',
+        isFollowing: true,
+        joinedAt: '2026-01-01T00:00:00+09:00',
+        friendId: 'f-visible',
+      },
+    ]);
+
+    const identCall = db.calls.find((call) => call.sql.includes('FROM friends'));
+    expect(identCall?.sql).toContain('sc_friend_scope.friend_id = friends.id');
+    expect(identCall?.binds).toEqual(['staff-1', '%田島%', '%田島%', '%田島%']);
+
+    const formCall = db.calls.find((call) => call.sql.includes('form_submissions'));
+    expect(formCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
+    expect(formCall?.binds).toEqual(['staff-1', '%田島%', '%田島%', '%田島%']);
+  });
+
+  test('owner は users-grouped の全体スコープを維持する', async () => {
+    const db = stubDB({
+      ident: [
+        {
+          friend_id: 'f1',
+          line_account_id: 'a1',
+          account_name: 'L ①',
+          line_user_id: 'U1',
+          display_name: 'A',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-01T00:00:00+09:00',
+          updated_at: '2026-01-01T00:00:00+09:00',
+          ident_key: 'k-shared',
+          ident_kind: 'url_token',
+        },
+        {
+          friend_id: 'f2',
+          line_account_id: 'a2',
+          account_name: 'L ②',
+          line_user_id: 'U2',
+          display_name: 'B',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-02T00:00:00+09:00',
+          updated_at: '2026-01-02T00:00:00+09:00',
+          ident_key: 'k-shared',
+          ident_kind: 'url_token',
+        },
+      ],
+      forms: [],
+      visibleFriendIds: ['f1'],
+    });
+
+    const result = await computeUsersGrouped(db, { staff: owner });
+
+    expect(result.total).toBe(1);
+    expect(result.rows[0].isDuplicate).toBe(true);
+    expect(result.rows[0].accounts.map((account) => account.friendId).sort()).toEqual(['f1', 'f2']);
+    expect(db.calls.some((call) => call.sql.includes('sc_friend_scope'))).toBe(false);
+  });
+
+  test('staff は owner/admin 用の global cache を再利用しない', async () => {
+    const db = stubDB({
+      ident: [
+        {
+          friend_id: 'f-visible',
+          line_account_id: 'a1',
+          account_name: 'L ①',
+          line_user_id: 'U-visible',
+          display_name: 'Visible',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-01T00:00:00+09:00',
+          updated_at: '2026-01-03T00:00:00+09:00',
+          ident_key: 'k-visible',
+          ident_kind: 'url_token',
+        },
+        {
+          friend_id: 'f-hidden',
+          line_account_id: 'a2',
+          account_name: 'L ②',
+          line_user_id: 'U-hidden',
+          display_name: 'Hidden',
+          picture_url: null,
+          is_following: 1,
+          metadata: null,
+          created_at: '2026-01-02T00:00:00+09:00',
+          updated_at: '2026-01-04T00:00:00+09:00',
+          ident_key: 'k-hidden',
+          ident_kind: 'url_token',
+        },
+      ],
+      forms: [],
+      visibleFriendIds: ['f-visible'],
+    });
+
+    const ownerResult = await computeUsersGrouped(db, { staff: owner });
+    const staffResult = await computeUsersGrouped(db, { staff });
+
+    expect(ownerResult.total).toBe(2);
+    expect(staffResult.total).toBe(1);
+    expect(staffResult.rows[0].identityKey).toBe('k-visible');
+    const scopedCalls = db.calls.filter((call) => call.sql.includes('sc_friend_scope.friend_id = friends.id'));
+    expect(scopedCalls).toHaveLength(1);
   });
 });

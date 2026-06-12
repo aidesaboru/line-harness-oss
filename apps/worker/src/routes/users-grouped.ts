@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
 import { computeUsersGrouped, type UsersGroupedOptions } from '../services/users-grouped.js';
+import { currentSupportStaff } from './support-friend-access.js';
 
 export const usersGrouped = new Hono<Env>();
 
@@ -20,6 +21,7 @@ usersGrouped.get('/api/users-grouped', async (c) => {
       page: pageStr ? Number.parseInt(pageStr, 10) : undefined,
       pageSize: pageSizeStr ? Number.parseInt(pageSizeStr, 10) : undefined,
       forceRefresh,
+      staff: currentSupportStaff(c),
     };
 
     const result = await computeUsersGrouped(c.env.DB, opts);

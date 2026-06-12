@@ -14,6 +14,8 @@ import { processSegmentSend } from '../services/segment-send.js';
 import type { SegmentCondition } from '../services/segment-query.js';
 import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { supportFriendVisibilitySql } from '../services/support-access.js';
+import { currentSupportStaff } from './support-friend-access.js';
 
 const broadcasts = new Hono<Env>();
 
@@ -823,9 +825,15 @@ broadcasts.post('/api/broadcasts/:id/test-send', async (c) => {
     if (friendIds.length === 0) return c.json({ success: false, error: 'No test recipients configured' }, 400);
 
     const placeholders = friendIds.map(() => '?').join(',');
+    const visibility = supportFriendVisibilitySql(currentSupportStaff(c), 'f.id');
     const friends = await c.env.DB.prepare(
-      `SELECT id, line_user_id FROM friends WHERE id IN (${placeholders})`
-    ).bind(...friendIds).all<{ id: string; line_user_id: string }>();
+      `SELECT f.id, f.line_user_id
+       FROM friends f
+       WHERE f.id IN (${placeholders})${visibility.sql ? ` AND ${visibility.sql}` : ''}`
+    ).bind(...friendIds, ...visibility.binds).all<{ id: string; line_user_id: string }>();
+    if (friends.results.length === 0) {
+      return c.json({ success: false, error: 'No accessible test recipients configured' }, 400);
+    }
 
     const account = await getLineAccountById(c.env.DB, accountId);
     if (!account) return c.json({ success: false, error: 'LINE account not found' }, 400);

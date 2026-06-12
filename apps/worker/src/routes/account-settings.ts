@@ -1,5 +1,8 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
+import { supportFriendVisibilitySql } from '../services/support-access.js';
+import { currentSupportStaff } from './support-friend-access.js';
 
 const accountSettings = new Hono<Env>();
 
@@ -18,22 +21,28 @@ accountSettings.get('/api/account-settings/test-recipients', async (c) => {
     return c.json({ success: true, data: [] });
   }
   const placeholders = friendIds.map(() => '?').join(',');
+  const visibility = supportFriendVisibilitySql(currentSupportStaff(c), 'f.id');
   const friends = await c.env.DB.prepare(
-    `SELECT id, display_name, picture_url FROM friends WHERE id IN (${placeholders})`
-  ).bind(...friendIds).all<{ id: string; display_name: string; picture_url: string | null }>();
+    `SELECT f.id, f.display_name, f.picture_url
+     FROM friends f
+     WHERE f.id IN (${placeholders})${visibility.sql ? ` AND ${visibility.sql}` : ''}`
+  ).bind(...friendIds, ...visibility.binds).all<{ id: string; display_name: string; picture_url: string | null }>();
 
   return c.json({
     success: true,
-    data: friends.results.map(f => ({
-      id: f.id,
-      displayName: f.display_name,
-      pictureUrl: f.picture_url,
-    })),
+    data: friendIds
+      .map((id) => friends.results.find((f) => f.id === id))
+      .filter((f): f is { id: string; display_name: string; picture_url: string | null } => Boolean(f))
+      .map(f => ({
+        id: f.id,
+        displayName: f.display_name,
+        pictureUrl: f.picture_url,
+      })),
   });
 });
 
 // PUT /api/account-settings/test-recipients
-accountSettings.put('/api/account-settings/test-recipients', async (c) => {
+accountSettings.put('/api/account-settings/test-recipients', requireRole('owner', 'admin'), async (c) => {
   const body = await c.req.json<{ accountId: string; friendIds: string[] }>();
   if (!body.accountId) return c.json({ success: false, error: 'accountId required' }, 400);
 

@@ -354,42 +354,42 @@ const spec = {
     },
     // ── Users (UUID Cross-Account) ──────────────────────────────────────────
     '/api/users': {
-      get: { tags: ['Users'], summary: '内部ユーザー一覧取得', responses: { '200': { description: 'All users' } } },
+      get: { tags: ['Users'], summary: '内部ユーザー一覧取得（staffはサポート可視範囲のみ）', responses: { '200': { description: 'Visible users' } } },
       post: {
         tags: ['Users'],
-        summary: '内部ユーザー作成',
+        summary: '内部ユーザー作成（owner/admin）',
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { email: { type: 'string' }, phone: { type: 'string' }, externalId: { type: 'string' }, displayName: { type: 'string' } } } } } },
-        responses: { '201': { description: 'User created' } },
+        responses: { '201': { description: 'User created' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/users/match': {
       post: {
         tags: ['Users'],
-        summary: 'メール/電話でユーザー検索',
+        summary: 'メール/電話でユーザー検索（staffはサポート可視範囲のみ）',
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { email: { type: 'string' }, phone: { type: 'string' } } } } } },
         responses: { '200': { description: 'Matched user' }, '404': { description: 'Not found' } },
       },
     },
     '/api/users/{id}': {
-      get: { tags: ['Users'], summary: 'ユーザー詳細取得', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'User' } } },
-      put: { tags: ['Users'], summary: 'ユーザー更新', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
-      delete: { tags: ['Users'], summary: 'ユーザー削除', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
+      get: { tags: ['Users'], summary: 'ユーザー詳細取得（staffはサポート可視範囲のみ）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'User' }, '404': { description: 'Not found or not visible' } } },
+      put: { tags: ['Users'], summary: 'ユーザー更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      delete: { tags: ['Users'], summary: 'ユーザー削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/users/{id}/link': {
       post: {
         tags: ['Users'],
-        summary: '友だちをUUIDにリンク',
+        summary: '友だちをUUIDにリンク（staffはサポート可視範囲のみ）',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { friendId: { type: 'string' } }, required: ['friendId'] } } } },
-        responses: { '200': { description: 'Linked' } },
+        responses: { '200': { description: 'Linked' }, '404': { description: 'User/friend not found or not visible' } },
       },
     },
     '/api/users/{id}/accounts': {
       get: {
         tags: ['Users'],
-        summary: 'UUID紐付き友だち一覧',
+        summary: 'UUID紐付き友だち一覧（staffはサポート可視範囲のみ）',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'Linked friends/accounts' } },
+        responses: { '200': { description: 'Linked visible friends/accounts' }, '404': { description: 'Not found or not visible' } },
       },
     },
     // ── LINE Accounts ───────────────────────────────────────────────────────

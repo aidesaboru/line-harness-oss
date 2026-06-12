@@ -10,6 +10,7 @@ import {
   getAffiliateReport,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const affiliates = new Hono<Env>();
 
@@ -25,7 +26,7 @@ function serializeAffiliate(row: { id: string; name: string; code: string; commi
 }
 
 // GET /api/affiliates - list all
-affiliates.get('/api/affiliates', async (c) => {
+affiliates.get('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getAffiliates(c.env.DB);
     return c.json({ success: true, data: items.map(serializeAffiliate) });
@@ -36,9 +37,9 @@ affiliates.get('/api/affiliates', async (c) => {
 });
 
 // GET /api/affiliates/:id - get single
-affiliates.get('/api/affiliates/:id', async (c) => {
+affiliates.get('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const item = await getAffiliateById(c.env.DB, c.req.param('id'));
+    const item = await getAffiliateById(c.env.DB, c.req.param('id')!);
     if (!item) {
       return c.json({ success: false, error: 'Affiliate not found' }, 404);
     }
@@ -50,7 +51,7 @@ affiliates.get('/api/affiliates/:id', async (c) => {
 });
 
 // POST /api/affiliates - create
-affiliates.post('/api/affiliates', async (c) => {
+affiliates.post('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -71,9 +72,9 @@ affiliates.post('/api/affiliates', async (c) => {
 });
 
 // PUT /api/affiliates/:id - update
-affiliates.put('/api/affiliates/:id', async (c) => {
+affiliates.put('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{
       name?: string;
       commissionRate?: number;
@@ -97,9 +98,9 @@ affiliates.put('/api/affiliates/:id', async (c) => {
 });
 
 // DELETE /api/affiliates/:id - delete
-affiliates.delete('/api/affiliates/:id', async (c) => {
+affiliates.delete('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteAffiliate(c.env.DB, c.req.param('id'));
+    await deleteAffiliate(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/affiliates/:id error:', err);
@@ -108,9 +109,9 @@ affiliates.delete('/api/affiliates/:id', async (c) => {
 });
 
 // GET /api/affiliates/:id/report - affiliate performance report
-affiliates.get('/api/affiliates/:id/report', async (c) => {
+affiliates.get('/api/affiliates/:id/report', requireRole('owner', 'admin'), async (c) => {
   try {
-    const report = await getAffiliateReport(c.env.DB, c.req.param('id'), {
+    const report = await getAffiliateReport(c.env.DB, c.req.param('id')!, {
       startDate: c.req.query('startDate'),
       endDate: c.req.query('endDate'),
     });
@@ -152,7 +153,7 @@ affiliates.post('/api/affiliates/click', async (c) => {
 });
 
 // GET /api/affiliates/report - all affiliates report
-affiliates.get('/api/affiliates-report', async (c) => {
+affiliates.get('/api/affiliates-report', requireRole('owner', 'admin'), async (c) => {
   try {
     const report = await getAffiliateReport(c.env.DB, undefined, {
       startDate: c.req.query('startDate'),

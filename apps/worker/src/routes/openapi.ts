@@ -548,32 +548,70 @@ const spec = {
         responses: { '200': { description: 'Aggregated report' } },
       },
     },
+    // ── Operations / Measurement ───────────────────────────────────────────
+    '/api/integrations/stripe/events': {
+      get: {
+        tags: ['Operations'],
+        summary: 'Stripeイベント一覧（owner/admin）',
+        responses: { '200': { description: 'Stripe events' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/ad-platforms': {
+      get: { tags: ['Operations'], summary: '広告プラットフォーム一覧（owner/admin）', responses: { '200': { description: 'Ad platforms' }, '403': { description: 'Requires owner/admin' } } },
+      post: {
+        tags: ['Operations'],
+        summary: '広告プラットフォーム作成（owner/admin）',
+        responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/ad-platforms/{id}': {
+      put: { tags: ['Operations'], summary: '広告プラットフォーム更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      delete: { tags: ['Operations'], summary: '広告プラットフォーム削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/ad-platforms/{id}/logs': {
+      get: { tags: ['Operations'], summary: '広告CV送信ログ（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Logs' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/ad-platforms/test': {
+      post: { tags: ['Operations'], summary: '広告CV送信テスト（owner/admin）', responses: { '200': { description: 'Test result' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/tracked-links': {
+      get: { tags: ['Operations'], summary: 'トラッキングリンク一覧（owner/admin）', responses: { '200': { description: 'Tracked links' }, '403': { description: 'Requires owner/admin' } } },
+      post: { tags: ['Operations'], summary: 'トラッキングリンク作成（owner/admin）', responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/tracked-links/{id}': {
+      get: { tags: ['Operations'], summary: 'トラッキングリンク詳細（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Tracked link' }, '403': { description: 'Requires owner/admin' } } },
+      patch: { tags: ['Operations'], summary: 'トラッキングリンク更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      delete: { tags: ['Operations'], summary: 'トラッキングリンク削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
+    },
     // ── Affiliates ──────────────────────────────────────────────────────────
     '/api/affiliates': {
-      get: { tags: ['Affiliates'], summary: 'アフィリエイト一覧', responses: { '200': { description: 'All affiliates' } } },
+      get: { tags: ['Affiliates'], summary: 'アフィリエイト一覧（owner/admin）', responses: { '200': { description: 'All affiliates' }, '403': { description: 'Requires owner/admin' } } },
       post: {
         tags: ['Affiliates'],
-        summary: 'アフィリエイト作成',
+        summary: 'アフィリエイト作成（owner/admin）',
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' }, code: { type: 'string' }, commissionRate: { type: 'number' } }, required: ['name', 'code'] } } } },
-        responses: { '201': { description: 'Created' } },
+        responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/affiliates/{id}': {
-      get: { tags: ['Affiliates'], summary: 'アフィリエイト詳細', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Affiliate' } } },
-      put: { tags: ['Affiliates'], summary: 'アフィリエイト更新', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
-      delete: { tags: ['Affiliates'], summary: 'アフィリエイト削除', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
+      get: { tags: ['Affiliates'], summary: 'アフィリエイト詳細（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Affiliate' }, '403': { description: 'Requires owner/admin' } } },
+      put: { tags: ['Affiliates'], summary: 'アフィリエイト更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      delete: { tags: ['Affiliates'], summary: 'アフィリエイト削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/affiliates/{id}/report': {
       get: {
         tags: ['Affiliates'],
-        summary: 'アフィリエイトレポート',
+        summary: 'アフィリエイトレポート（owner/admin）',
         parameters: [
           { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
           { name: 'startDate', in: 'query', schema: { type: 'string' } },
           { name: 'endDate', in: 'query', schema: { type: 'string' } },
         ],
-        responses: { '200': { description: 'Report' } },
+        responses: { '200': { description: 'Report' }, '403': { description: 'Requires owner/admin' } },
       },
+    },
+    '/api/affiliates-report': {
+      get: { tags: ['Affiliates'], summary: '全アフィリエイトレポート（owner/admin）', responses: { '200': { description: 'Report' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/affiliates/click': {
       post: {
@@ -602,6 +640,7 @@ const spec = {
     { name: 'Users', description: 'UUID Cross-Account ユーザー管理' },
     { name: 'LINE Accounts', description: 'マルチLINEアカウント管理' },
     { name: 'Conversions', description: 'コンバージョン計測' },
+    { name: 'Operations', description: '売上・広告・計測運用管理' },
     { name: 'Affiliates', description: 'アフィリエイト管理' },
     { name: 'Webhook', description: 'LINE Webhook' },
   ],

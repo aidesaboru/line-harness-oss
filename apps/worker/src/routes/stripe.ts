@@ -6,6 +6,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const stripe = new Hono<Env>();
 
@@ -26,7 +27,7 @@ interface StripeWebhookBody {
 
 // ========== Stripeイベント一覧 ==========
 
-stripe.get('/api/integrations/stripe/events', async (c) => {
+stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), async (c) => {
   try {
     const friendId = c.req.query('friendId') ?? undefined;
     const eventType = c.req.query('eventType') ?? undefined;

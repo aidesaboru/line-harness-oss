@@ -12,6 +12,7 @@ import {
 import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { TrackedLink } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const trackedLinks = new Hono<Env>();
 
@@ -39,7 +40,7 @@ function getBaseUrl(c: { req: { url: string } }): string {
 }
 
 // GET /api/tracked-links — list all
-trackedLinks.get('/api/tracked-links', async (c) => {
+trackedLinks.get('/api/tracked-links', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getTrackedLinks(c.env.DB);
     const base = getBaseUrl(c);
@@ -51,9 +52,9 @@ trackedLinks.get('/api/tracked-links', async (c) => {
 });
 
 // GET /api/tracked-links/:id — get single with click details
-trackedLinks.get('/api/tracked-links/:id', async (c) => {
+trackedLinks.get('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const link = await getTrackedLinkById(c.env.DB, id);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);
@@ -79,7 +80,7 @@ trackedLinks.get('/api/tracked-links/:id', async (c) => {
 });
 
 // POST /api/tracked-links — create
-trackedLinks.post('/api/tracked-links', async (c) => {
+trackedLinks.post('/api/tracked-links', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -112,9 +113,9 @@ trackedLinks.post('/api/tracked-links', async (c) => {
 });
 
 // PATCH /api/tracked-links/:id — update mutable fields
-trackedLinks.patch('/api/tracked-links/:id', async (c) => {
+trackedLinks.patch('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{
       name?: string;
       tagId?: string | null;
@@ -137,9 +138,9 @@ trackedLinks.patch('/api/tracked-links/:id', async (c) => {
 });
 
 // DELETE /api/tracked-links/:id
-trackedLinks.delete('/api/tracked-links/:id', async (c) => {
+trackedLinks.delete('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const link = await getTrackedLinkById(c.env.DB, id);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);

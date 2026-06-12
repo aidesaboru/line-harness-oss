@@ -268,7 +268,7 @@ SUPPORT_CRM_STAFF_API_KEY=staffのAPIキー \
 corepack pnpm preflight:support-crm
 ```
 
-このチェックでは、管理画面ログイン用CORS、ログイン中の権限、サポートCRMの要約・案件一覧・マニュアル検索・チャット一覧、staffによる案件作成禁止・担当変更禁止・エスカレ担当指定禁止・マニュアルの作成/更新/無効化禁止をまとめて確認します。staffの禁止チェックは、ガードが壊れていても実データを作成・更新しにくい不正入力で実行します。`SUPPORT_CRM_ADMIN_ORIGIN` は任意ですが、設定するとブラウザログインに必要な `Access-Control-Allow-Credentials` も確認できます。
+このチェックでは、管理画面ログイン用CORS、ログイン中の権限、サポートCRMの要約・案件一覧・マニュアル検索・チャット一覧、staffによる案件作成禁止・担当変更禁止・エスカレ担当指定禁止・マニュアルの作成/更新/無効化禁止をまとめて確認します。staffの禁止チェックは、ガードが壊れていても実データを作成・更新しにくい不正入力で実行します。`SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID` がある場合は、未対応のチャット `messageType` が送信前検証で止まることも確認します。`SUPPORT_CRM_ADMIN_ORIGIN` は任意ですが、設定するとブラウザログインに必要な `Access-Control-Allow-Credentials` も確認できます。
 
 失敗した場合は、出力末尾の `Failures to fix` を見ます。そこに、失敗したチェック名と次に確認する場所が表示されます。`Skipped optional checks` は、追加のfixture IDを設定すると確認できる任意チェックです。
 
@@ -311,6 +311,8 @@ corepack pnpm preflight:support-crm
 `SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID` を設定すると、未完了案件を誤って再オープンにできないことも確認します。
 
 `SUPPORT_CRM_STAFF_RESOLVED_CASE_ID` と `SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID` を両方設定すると、完了済み案件から顧客返信を送ろうとしても、LINE送信前の検証で止まることを確認します。この確認は送信前検証だけを使うため、実際のLINEメッセージは送られません。
+
+`SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID` を設定すると、サポート担当が見えるチャットであっても、未対応の `messageType` は送信前検証で止まることを確認します。この確認も送信前検証だけを使うため、実際のLINEメッセージは送られず、チャット行も作りません。
 
 この確認が終わるまでは、既存の本番LINE公式アカウントの運用は切り替えません。
 

@@ -103,6 +103,9 @@ function createHappyFetch(calls: FetchCall[] = []): (input: string, init?: Reque
     if (url.pathname === '/api/chats/friend-resolved/send/validate' && method === 'POST' && role === 'staff') {
       return jsonResponse(400, { success: false, error: 'reopen resolved cases before sending support replies' });
     }
+    if (url.pathname === '/api/chats/friend-visible/send/validate' && method === 'POST' && role === 'staff') {
+      return jsonResponse(400, { success: false, error: 'messageType must be text, flex, or image' });
+    }
     if (url.pathname === '/api/support/cases/case-visible/escalations' && method === 'POST' && role === 'staff') {
       return jsonResponse(403, { success: false, error: 'staff cannot create routed escalations' });
     }
@@ -361,6 +364,17 @@ describe('runSupportCrmPreflight', () => {
       supportCaseId: 'case-resolved',
       content: 'preflight resolved support reply guard',
     });
+
+    const staffUnsupportedMessageType = calls.find((call) => call.url.pathname === '/api/chats/friend-visible/send/validate' && call.method === 'POST');
+    expect(staffUnsupportedMessageType).toMatchObject({
+      authorization: 'Bearer staff-key',
+      contentType: 'application/json',
+    });
+    expect(staffUnsupportedMessageType?.body).toBeTypeOf('string');
+    expect(JSON.parse(staffUnsupportedMessageType?.body as string)).toMatchObject({
+      messageType: 'sticker',
+      content: JSON.stringify({ packageId: '1', stickerId: '1' }),
+    });
   });
 
   it('checks credentialed browser-login CORS preflight when admin origin is set', async () => {
@@ -438,6 +452,7 @@ describe('runSupportCrmPreflight', () => {
       'staff: visible case can be opened',
       'staff: forbidden case is hidden',
       'staff: visible chat can be opened',
+      'staff: unsupported chat message type is blocked',
       'staff: forbidden chat is hidden',
     ]);
   });
@@ -460,7 +475,7 @@ describe('runSupportCrmPreflight', () => {
     expect(failed(results)).toEqual([
       expect.objectContaining({
         name: 'preflight: full coverage required',
-        detail: '5 optional checks skipped',
+        detail: '6 optional checks skipped',
       }),
     ]);
   });

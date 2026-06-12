@@ -117,6 +117,7 @@ corepack pnpm preflight:support-crm
 - [ ] staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が403で止まる
 - [ ] 未完了案件を再オープンにできない
 - [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
+- [ ] 未対応のチャット `messageType` がLINE送信前、DB記録前に止まる
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
 
 ## 3. 画面確認

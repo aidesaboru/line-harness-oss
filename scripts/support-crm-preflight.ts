@@ -472,8 +472,24 @@ async function runRoleChecks(
       `/api/chats/${encodeURIComponent(config.staffVisibleFriendId)}`,
       [200],
     ));
+    checks.push(await checkExpectedStatus(
+      fetchImpl,
+      config,
+      credential,
+      'staff: unsupported chat message type is blocked',
+      `/api/chats/${encodeURIComponent(config.staffVisibleFriendId)}/send/validate`,
+      [400],
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          messageType: 'sticker',
+          content: JSON.stringify({ packageId: '1', stickerId: '1' }),
+        }),
+      },
+    ));
   } else {
     checks.push(skipIfMissing('staff: visible chat can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
+    checks.push(skipIfMissing('staff: unsupported chat message type is blocked', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
   }
 
   if (config.staffForbiddenFriendId) {

@@ -8,7 +8,7 @@ updated: 2026-06-13
 
 このファイルは、今回のサポートCRM差分をレビュー、PR作成、本番投入前確認で使うための提出用サマリーです。
 
-大きく見ると、今回の変更は「staffが見てよい範囲だけを見る」「チャット返信と案件履歴がつながる」「本番切替前に機械的に検査できる」の3点です。
+大きく見ると、今回の変更は「staffが見てよい範囲だけを見る」「チャット返信と案件履歴がつながる」「本番切替前に機械的に検査できる」「PRで同じ範囲をCIに載せる」の4点です。
 
 ## 1. 実装
 
@@ -43,6 +43,14 @@ updated: 2026-06-13
 - staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
 - optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止を検査
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
+- `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出
+- 既存データに検証fixtureが足りない場合に、synthetic fixtureをseed/cleanupできる補助コマンドを追加
+
+### CI
+
+- Worker CIのPR対象を `apps/web/**`、`scripts/**`、`package.json` まで広げた
+- PR上で、script tests、Web tests、Worker typecheck/test/build、Web production buildをまとめて確認する
+- fork PRのGitHub Actionsは管理者承認が必要なので、承認待ちの間は同じコマンドをローカルで再現して確認する
 
 ## 2. テスト
 
@@ -58,16 +66,31 @@ updated: 2026-06-13
 - `apps/web/src/lib/staff-form.test.ts`
 - `apps/web/src/lib/support-chat-draft.test.ts`
 - `scripts/support-crm-preflight.test.ts`
+- `scripts/support-crm-fixture-candidates.test.ts`
+- `scripts/support-crm-seed-fixtures.test.ts`
 
 直近で通した検証:
 
 ```bash
+corepack pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 corepack pnpm --filter web test
 corepack pnpm test:scripts
+corepack pnpm --filter worker typecheck
+corepack pnpm --filter worker test
 corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
 corepack pnpm build
+corepack pnpm --filter worker build
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8787 corepack pnpm --filter web build
+NEXT_PUBLIC_API_URL=https://ec-owner-line-harness.wayway-dev.workers.dev corepack pnpm --filter web build
 git diff --check
 ```
+
+strict Preflight:
+
+- ローカルfixture flow: seed local D1、strict Preflight、cleanup local D1まで実行し、`19 passed, 0 skipped, 0 failed`
+- リモートfixture flow: remote test D1へsynthetic fixtureをseedし、デプロイ済みPR Workerに対してstrict Preflightを実行し、cleanup後のsynthetic行数が0であることを確認
+- リモートstrict Preflight結果: `19 passed, 0 skipped, 0 failed`
+- Remote browser cookie login/session check: Pages originとデプロイ済みWorkerでstaff sessionを確認済み
 
 ローカル画面応答:
 
@@ -90,7 +113,7 @@ git diff --check
 
 運用マニュアルでは、日次対応、案件化基準、チャット返信、エスカレーション、マニュアル検索、完了条件、staff権限の制限を説明しています。
 
-本番投入前チェックリストでは、Preflightの通常実行とstrict実行、画面確認、PR用変更要約、rollback条件、切替NG条件をまとめています。
+本番投入前チェックリストでは、fixture候補抽出、synthetic fixture seed/cleanup、Preflightの通常実行とstrict実行、画面確認、PR用変更要約、rollback条件、切替NG条件をまとめています。
 
 ## 4. レビューで特に見る場所
 
@@ -100,13 +123,16 @@ git diff --check
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
 - `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲
+- `scripts/support-crm-fixture-candidates.ts`: strict Preflight用fixture候補の抽出範囲
+- `scripts/support-crm-seed-fixtures.ts`: synthetic fixtureのseed/cleanup範囲
+- `.github/workflows/worker-ci.yml`: PRで自動検証する範囲
 
 ## 5. 含めていないこと
 
 - DB migrationは追加していない
 - 本番LINE公式アカウントへの切替は行っていない
 - 実顧客へのLINE送信は行っていない
-- 実データfixtureを使ったstrict Preflightは、環境変数が揃った本番切替前に実行する
+- 本番LINE公式アカウントの実顧客データを使ったstrict Preflightは、環境変数が揃った本番切替前に実行する
 - APIキー、顧客情報、実友だちID、private URLはドキュメントに書かない
 
 ## 6. 提出前チェック
@@ -115,4 +141,6 @@ git diff --check
 - [ ] PR本文に上記の検証コマンドを記載した
 - [ ] 本番投入前チェックリストの未検証項目をPR本文に明記した
 - [ ] rollback先のWorker/Pagesデプロイを確認した
-- [ ] staff権限の表示範囲を実データfixtureで確認した
+- [ ] staff権限の表示範囲をstrict Preflightで確認した
+- [ ] synthetic fixtureを使った場合はcleanup後のD1行数が0であることを確認した
+- [ ] fork PRのGitHub Actionsが承認待ちの場合は、管理者承認が必要なことをPR本文に書いた

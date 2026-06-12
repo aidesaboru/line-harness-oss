@@ -104,6 +104,7 @@ corepack pnpm preflight:support-crm
 本番切替前の最終確認では、任意チェックのスキップも失敗扱いにします。
 
 先にdry-runで、必要な環境変数が揃っているかを確認します。このdry-runはWorkerやD1へ接続せず、APIキーは伏せ字で表示します。
+strict確認では `SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0` を付けません。このguardを切ると、staffによる作成・更新禁止の確認が抜けます。
 
 ```bash
 SUPPORT_CRM_API_URL=https://your-worker.example.com \
@@ -143,6 +144,7 @@ corepack pnpm preflight:support-crm
 - [ ] `Skipped optional checks` が出ていない
 - [ ] `preflight: full coverage required` が出ていない
 - [ ] `preflight:support-crm:dry-run` が失敗していない
+- [ ] `SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0` を付けていない
 - [ ] staff APIキーのログイン情報にスタッフ名が入っている
 - [ ] staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が403で止まる
 - [ ] 未完了案件を再オープンにできない

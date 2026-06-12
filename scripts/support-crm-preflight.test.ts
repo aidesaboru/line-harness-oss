@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   buildPreflightDryRunResults,
@@ -9,6 +10,7 @@ import {
   normalizeOrigin,
   redactSecret,
   runSupportCrmPreflight,
+  STRICT_PREFLIGHT_DRY_RUN_ENVS,
   type CheckResult,
   type SupportCrmPreflightConfig,
 } from './support-crm-preflight';
@@ -125,6 +127,19 @@ function failed(results: CheckResult[]): CheckResult[] {
 }
 
 describe('support CRM preflight helpers', () => {
+  it('keeps the release checklist aligned with strict dry-run env requirements', () => {
+    const checklist = readFileSync(
+      new URL('../docs/manual/ec-owner-support-crm-release-checklist.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(checklist).toContain('corepack pnpm preflight:support-crm:dry-run');
+    for (const envName of STRICT_PREFLIGHT_DRY_RUN_ENVS) {
+      expect(checklist).toContain(envName);
+    }
+    expect(checklist).toContain('SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0');
+  });
+
   it('normalizes API URLs without removing the protocol separator', () => {
     expect(normalizeApiUrl(' https://worker.example/// ')).toBe('https://worker.example');
     expect(normalizeApiUrl('   ')).toBe('');

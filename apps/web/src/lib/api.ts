@@ -54,6 +54,140 @@ export type BroadcastInsight = {
   fetchedAt?: string | null
 }
 
+export type SupportCaseStatus =
+  | 'open'
+  | 'in_progress'
+  | 'waiting_primary'
+  | 'escalated'
+  | 'waiting_secondary'
+  | 'customer_reply'
+  | 'on_hold'
+  | 'resolved'
+  | 'reopened'
+
+export type SupportPriority = 'low' | 'medium' | 'high' | 'urgent'
+
+export type SupportEscalationStatus =
+  | 'pending'
+  | 'answered'
+  | 'needs_info'
+  | 'transferred'
+  | 'expert_check'
+  | 'closed'
+
+export type SupportCase = {
+  id: string
+  lineAccountId: string | null
+  friendId: string | null
+  friendName: string | null
+  friendPictureUrl: string | null
+  lineUserId: string | null
+  title: string
+  category: string
+  priority: SupportPriority
+  status: SupportCaseStatus
+  primaryAssignee: string | null
+  escalationAssignee: string | null
+  escalationLevel: 'L1' | 'L2' | 'L3'
+  dueAt: string | null
+  nextCheckAt: string | null
+  customerNumber: string | null
+  companyName: string | null
+  contactName: string | null
+  storeName: string | null
+  contractType: string | null
+  customerSummary: string
+  internalNote: string
+  customerReplyDraft: string
+  resolutionNote: string
+  manualIds: string[]
+  createdBy: string | null
+  updatedBy: string | null
+  closedAt: string | null
+  reopenedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type SupportEscalation = {
+  id: string
+  caseId: string
+  caseTitle: string | null
+  friendName: string | null
+  lineAccountId: string | null
+  assignee: string
+  level: 'L2' | 'L3'
+  status: SupportEscalationStatus
+  question: string
+  answer: string
+  dueAt: string | null
+  answeredAt: string | null
+  createdBy: string | null
+  updatedBy: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type SupportManual = {
+  id: string
+  lineAccountId: string | null
+  title: string
+  category: string
+  body: string
+  url: string | null
+  keywords: string
+  owner: string | null
+  approvedBy: string | null
+  revisedAt: string | null
+  isActive: boolean
+  createdBy: string | null
+  updatedBy: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type SupportCaseEvent = {
+  id: string
+  caseId: string
+  eventType: string
+  actorId: string | null
+  actorName: string | null
+  body: string
+  metadata: Record<string, unknown>
+  createdAt: string
+}
+
+export type SupportMessage = {
+  id: string
+  direction: string
+  messageType: string
+  content: string
+  createdAt: string
+}
+
+export type SupportCaseDetail = SupportCase & {
+  events: SupportCaseEvent[]
+  escalations: SupportEscalation[]
+  manuals: SupportManual[]
+  recentMessages: SupportMessage[]
+}
+
+export type SupportSummary = {
+  totals: {
+    total: number
+    open: number
+    escalated: number
+    myEscalations: number
+    overdue: number
+    unassigned: number
+    waitingCustomer: number
+    resolved: number
+  }
+  byStatus: Array<{ status: string; count: number }>
+  byCategory: Array<{ category: string; count: number }>
+  byAssignee: Array<{ assignee: string; count: number }>
+}
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 if (!API_URL) {
   throw new Error(
@@ -660,6 +794,171 @@ export const api = {
       fetchApi<ApiResponse<AutomationLog[]>>(
         `/api/automations/${id}/logs` + (limit ? `?limit=${limit}` : ''),
       ),
+  },
+  support: {
+    summary: (params: { accountId: string }) =>
+      fetchApi<ApiResponse<SupportSummary>>(
+        '/api/support/summary?' + new URLSearchParams({ lineAccountId: params.accountId }),
+      ),
+    cases: {
+      list: (params: {
+        accountId: string
+        status?: string
+        queue?: string
+        scope?: string
+        assignee?: string
+        escalationAssignee?: string
+        q?: string
+        limit?: number
+        offset?: number
+      }) => {
+        const query: Record<string, string> = { lineAccountId: params.accountId }
+        if (params.status) query.status = params.status
+        if (params.queue) query.queue = params.queue
+        if (params.scope) query.scope = params.scope
+        if (params.assignee) query.assignee = params.assignee
+        if (params.escalationAssignee) query.escalationAssignee = params.escalationAssignee
+        if (params.q) query.q = params.q
+        if (params.limit) query.limit = String(params.limit)
+        if (params.offset) query.offset = String(params.offset)
+        return fetchApi<ApiResponse<SupportCase[]>>('/api/support/cases?' + new URLSearchParams(query))
+      },
+      get: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<SupportCaseDetail>>(
+          `/api/support/cases/${id}?` + new URLSearchParams({ lineAccountId: accountId }),
+        ),
+      create: (data: {
+        lineAccountId: string
+        friendId?: string | null
+        title?: string
+        category?: string
+        priority?: SupportPriority
+        status?: SupportCaseStatus
+        primaryAssignee?: string | null
+        escalationAssignee?: string | null
+        dueAt?: string | null
+        nextCheckAt?: string | null
+        customerNumber?: string | null
+        companyName?: string | null
+        contactName?: string | null
+        storeName?: string | null
+        contractType?: string | null
+        customerSummary?: string
+        internalNote?: string
+        customerReplyDraft?: string
+        resolutionNote?: string
+        manualIds?: string[]
+      }) =>
+        fetchApi<ApiResponse<SupportCase>>('/api/support/cases', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      update: (id: string, accountId: string, data: Partial<{
+        title: string
+        category: string
+        priority: SupportPriority
+        status: SupportCaseStatus
+        primaryAssignee: string | null
+        escalationAssignee: string | null
+        escalationLevel: 'L1' | 'L2' | 'L3'
+        dueAt: string | null
+        nextCheckAt: string | null
+        customerNumber: string | null
+        companyName: string | null
+        contactName: string | null
+        storeName: string | null
+        contractType: string | null
+        customerSummary: string
+        internalNote: string
+        customerReplyDraft: string
+        resolutionNote: string
+        manualIds: string[]
+        eventBody: string
+      }>) =>
+        fetchApi<ApiResponse<SupportCase>>(`/api/support/cases/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      addEvent: (id: string, accountId: string, data: { eventType?: string; body: string; metadata?: Record<string, unknown> }) =>
+        fetchApi<ApiResponse<null>>(`/api/support/cases/${id}/events`, {
+          method: 'POST',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      escalate: (id: string, accountId: string, data: { assignee: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
+        fetchApi<ApiResponse<SupportEscalation>>(`/api/support/cases/${id}/escalations`, {
+          method: 'POST',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+    },
+    escalations: {
+      list: (params: { accountId: string; status?: string; assignee?: string; queue?: string; scope?: string }) => {
+        const query: Record<string, string> = { lineAccountId: params.accountId }
+        if (params.status) query.status = params.status
+        if (params.assignee) query.assignee = params.assignee
+        if (params.queue) query.queue = params.queue
+        if (params.scope) query.scope = params.scope
+        return fetchApi<ApiResponse<SupportEscalation[]>>('/api/support/escalations?' + new URLSearchParams(query))
+      },
+      update: (id: string, accountId: string, data: Partial<{
+        status: SupportEscalationStatus
+        level: 'L2' | 'L3'
+        assignee: string
+        question: string
+        answer: string
+        dueAt: string | null
+        eventBody: string
+      }>) =>
+        fetchApi<ApiResponse<SupportEscalation>>(`/api/support/escalations/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+    },
+    manuals: {
+      list: (params?: { accountId?: string; category?: string; q?: string; active?: '0' | '1' | 'all' }) => {
+        const query: Record<string, string> = {}
+        if (params?.accountId) query.lineAccountId = params.accountId
+        if (params?.category) query.category = params.category
+        if (params?.q) query.q = params.q
+        if (params?.active) query.active = params.active
+        return fetchApi<ApiResponse<SupportManual[]>>(
+          '/api/support/manuals' + (Object.keys(query).length ? '?' + new URLSearchParams(query) : ''),
+        )
+      },
+      create: (data: {
+        lineAccountId?: string | null
+        title: string
+        category?: string
+        body?: string
+        url?: string | null
+        keywords?: string
+        owner?: string | null
+        approvedBy?: string | null
+        revisedAt?: string | null
+        isActive?: boolean
+      }) =>
+        fetchApi<ApiResponse<SupportManual>>('/api/support/manuals', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      update: (id: string, data: Partial<{
+        lineAccountId: string | null
+        title: string
+        category: string
+        body: string
+        url: string | null
+        keywords: string
+        owner: string | null
+        approvedBy: string | null
+        revisedAt: string | null
+        isActive: boolean
+      }>) =>
+        fetchApi<ApiResponse<SupportManual>>(`/api/support/manuals/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(data),
+        }),
+      archive: (id: string) =>
+        fetchApi<ApiResponse<null>>(`/api/support/manuals/${id}`, { method: 'DELETE' }),
+    },
   },
   chats: {
     list: (params?: { status?: string; operatorId?: string; accountId?: string; unansweredOnly?: boolean }) => {

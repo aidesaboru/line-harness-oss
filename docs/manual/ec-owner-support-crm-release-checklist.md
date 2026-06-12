@@ -52,6 +52,34 @@ SUPPORT_CRM_STAFF_NAME=staffのスタッフ名 \
 corepack pnpm support-crm:fixtures:sql
 ```
 
+既存データにstaff権限、未完了案件、完了済み案件、見えてはいけない案件/友だちが足りない場合は、検証用D1にsynthetic fixtureを作れます。通常は先にSQLだけ確認します。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_FIXTURE_STAFF_NAME="Preflight Staff" \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures:seed-sql
+```
+
+実際にD1へ書く場合は、明示フラグを付けます。このコマンドはstaff APIキー、見える/見えない友だち、未完了/完了済みサポート案件を作ります。実顧客へのLINE送信はしません。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_FIXTURE_STAFF_NAME="Preflight Staff" \
+SUPPORT_CRM_FIXTURE_WRITE=1 \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures:seed
+```
+
+seed fixtureを使い終わったら、同じprefixのsyntheticデータを削除します。古いWorkerに対してPreflightを実行してstaffが作れてしまった検証案件も、同じcleanupで消せます。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_FIXTURE_WRITE=1 \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures:cleanup
+```
+
 軽い確認では次を実行します。
 
 ```bash

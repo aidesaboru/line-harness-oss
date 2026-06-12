@@ -16,6 +16,10 @@
     "deploy:update": "node packages/create-line-harness/dist/index.js update",
     "support-crm:fixtures": "tsx scripts/support-crm-fixture-candidates.ts --run",
     "support-crm:fixtures:sql": "tsx scripts/support-crm-fixture-candidates.ts --print-sql",
+    "support-crm:fixtures:seed": "tsx scripts/support-crm-seed-fixtures.ts --run",
+    "support-crm:fixtures:seed-sql": "tsx scripts/support-crm-seed-fixtures.ts --print-sql",
+    "support-crm:fixtures:cleanup": "tsx scripts/support-crm-seed-fixtures.ts --cleanup",
+    "support-crm:fixtures:cleanup-sql": "tsx scripts/support-crm-seed-fixtures.ts --cleanup-sql",
     "preflight:support-crm": "tsx scripts/support-crm-preflight.ts",
     "test:scripts": "vitest run --config vitest.config.ts",
     "build:bundle": "tsx scripts/release/build-bundle.ts"

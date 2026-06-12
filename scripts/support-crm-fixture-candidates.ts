@@ -116,7 +116,7 @@ export function buildFixtureCandidateSql(config: Pick<SupportCrmFixtureConfig, '
       )
     )`;
 
-  return `
+  const commonCtes = `
 WITH
 input AS (
   SELECT
@@ -208,6 +208,10 @@ forbidden_friends AS (
   ORDER BY f.updated_at DESC
   LIMIT ${limit}
 )
+`.trim();
+
+  const selects = [
+    `
 SELECT
   'SUPPORT_CRM_STAFF_VISIBLE_CASE_ID' AS env_name,
   id AS value,
@@ -219,80 +223,95 @@ SELECT
   NULL AS display_name,
   updated_at
 FROM visible_cases
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID',
-  id,
-  'forbidden case',
-  id,
+  'SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID' AS env_name,
+  id AS value,
+  'forbidden case' AS source,
+  id AS case_id,
   friend_id,
   status,
   title,
-  NULL,
+  NULL AS display_name,
   updated_at
 FROM forbidden_cases
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID',
-  id,
-  'visible non-resolved case',
-  id,
+  'SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID' AS env_name,
+  id AS value,
+  'visible non-resolved case' AS source,
+  id AS case_id,
   friend_id,
   status,
   title,
-  NULL,
+  NULL AS display_name,
   updated_at
 FROM visible_non_resolved_cases
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_RESOLVED_CASE_ID',
-  id,
-  'visible resolved case',
-  id,
+  'SUPPORT_CRM_STAFF_RESOLVED_CASE_ID' AS env_name,
+  id AS value,
+  'visible resolved case' AS source,
+  id AS case_id,
   friend_id,
   status,
   title,
-  NULL,
+  NULL AS display_name,
   updated_at
 FROM visible_resolved_cases
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID',
+  'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID' AS env_name,
+  friend_id AS value,
+  'visible friend' AS source,
+  NULL AS case_id,
   friend_id,
-  'visible friend',
-  NULL,
-  friend_id,
-  NULL,
-  NULL,
+  NULL AS status,
+  NULL AS title,
   display_name,
   updated_at
 FROM visible_friends
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID',
+  'SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID' AS env_name,
+  friend_id AS value,
+  'forbidden friend' AS source,
+  NULL AS case_id,
   friend_id,
-  'forbidden friend',
-  NULL,
-  friend_id,
-  NULL,
-  NULL,
+  NULL AS status,
+  NULL AS title,
   display_name,
   updated_at
 FROM forbidden_friends
-UNION ALL
+ORDER BY updated_at DESC
+`.trim(),
+    `
 SELECT
-  'SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID',
-  friend_id,
-  'friend for visible resolved case',
-  id,
+  'SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID' AS env_name,
+  friend_id AS value,
+  'friend for visible resolved case' AS source,
+  id AS case_id,
   friend_id,
   status,
   title,
-  NULL,
+  NULL AS display_name,
   updated_at
 FROM visible_resolved_cases
-ORDER BY env_name, updated_at DESC;
-`.trim();
+ORDER BY updated_at DESC
+`.trim(),
+  ];
+
+  return selects.map((select) => `${commonCtes}\n${select}`).join(';\n\n');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -359,8 +378,6 @@ function formatRow(row: FixtureCandidateRow): string {
     row.status ? `status=${row.status}` : null,
     row.case_id ? `case=${row.case_id}` : null,
     row.friend_id ? `friend=${row.friend_id}` : null,
-    row.title ? `title=${row.title}` : null,
-    row.display_name ? `friendName=${row.display_name}` : null,
   ].filter(Boolean).join(', ');
   return `- ${row.env_name}=${row.value}${detail ? ` (${detail})` : ''}`;
 }

@@ -121,5 +121,6 @@ describe('support CRM fixture candidate helpers', () => {
     expect(output).toContain('SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID');
     expect(output).toContain('All candidates:');
     expect(output).toContain('friend=friend-visible');
+    expect(output).not.toContain('title=問い合わせ');
   });
 });

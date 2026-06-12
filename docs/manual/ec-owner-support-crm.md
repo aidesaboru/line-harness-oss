@@ -306,6 +306,8 @@ SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID=完了済み案件に紐づく友だちID \
 corepack pnpm preflight:support-crm
 ```
 
+レビューやPRで結果を共有するときは、生ログをそのまま貼らず、`corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log` でPR用summaryにします。summaryは件数とチェック名だけを出すため、URL、APIキー、友だちID、案件IDをPR本文に混ぜにくくなります。
+
 `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` を付けると、`Skipped optional checks` が1つでも残っている場合に `preflight: full coverage required` が失敗として出ます。つまり「まだ確認していない範囲がある」ことに気づけます。
 
 実通信の前に `corepack pnpm preflight:support-crm:dry-run` を実行すると、WorkerやD1へ接続せずに必要な環境変数の不足を確認できます。APIキーは伏せ字で表示されます。strict modeでは、owner/adminキー、staffキー、`SUPPORT_CRM_ADMIN_ORIGIN`、staff fixture ID、staff mutation guardが揃っていないと失敗します。

@@ -44,6 +44,7 @@ updated: 2026-06-13
 - staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
 - optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
 - `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
+- `corepack pnpm preflight:support-crm:summary` でPreflight生ログを、URL、APIキー、友だちID、案件IDを含めないPR用summaryへ変換
 - dry-runのstrict必須envと本番投入前チェックリストがズレたらscript testで検知
 - `corepack pnpm support-crm:release-readiness` でdraft解除前の内部FAIL、外部WAIT、PASSを整理
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
@@ -137,6 +138,7 @@ strict Preflight:
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
 - `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲
+- `scripts/support-crm-preflight-summary.ts`: Preflight結果をPRへ安全に共有するための要約範囲
 - `scripts/support-crm-fixture-candidates.ts`: strict Preflight用fixture候補の抽出範囲
 - `scripts/support-crm-seed-fixtures.ts`: synthetic fixtureのseed/cleanup範囲
 - `.github/workflows/worker-ci.yml`: PRで自動検証する範囲

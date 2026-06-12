@@ -17,6 +17,7 @@ updated: 2026-06-13
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
+- staffが `/api/friends` やdirect message履歴APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
@@ -42,7 +43,7 @@ updated: 2026-06-13
 - `corepack pnpm preflight:support-crm` を追加
 - owner/admin/staff APIキーのログイン権限、CORS、サポート要約、案件一覧、マニュアル検索、チャット一覧を検査
 - staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
-- optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
+- optional fixtureでstaff可視範囲、friend direct履歴APIの可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
 - `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
 - `corepack pnpm preflight:support-crm:summary` でPreflight生ログを、URL、APIキー、友だちID、案件IDを含めないPR用summaryへ変換
 - dry-runのstrict必須envと本番投入前チェックリストがズレたらscript testで検知
@@ -135,6 +136,7 @@ strict Preflight:
 - `apps/worker/src/services/support-access.ts`: staff可視範囲のSQL条件
 - `apps/worker/src/routes/support.ts`: role別更新制限、完了/再オープン、エスカレーション制限
 - `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、送信前検証、顧客返信イベント
+- `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
 - `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲

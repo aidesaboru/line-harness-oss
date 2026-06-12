@@ -516,9 +516,18 @@ async function runRoleChecks(
         }),
       },
     ));
+    checks.push(await checkExpectedStatus(
+      fetchImpl,
+      config,
+      credential,
+      'staff: visible friend direct history can be opened',
+      `/api/friends/${encodeURIComponent(config.staffVisibleFriendId)}/messages`,
+      [200],
+    ));
   } else {
     checks.push(skipIfMissing('staff: visible chat can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
     checks.push(skipIfMissing('staff: unsupported chat message type is blocked', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
+    checks.push(skipIfMissing('staff: visible friend direct history can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
   }
 
   if (config.staffForbiddenFriendId) {
@@ -530,8 +539,17 @@ async function runRoleChecks(
       `/api/chats/${encodeURIComponent(config.staffForbiddenFriendId)}`,
       [403, 404],
     ));
+    checks.push(await checkExpectedStatus(
+      fetchImpl,
+      config,
+      credential,
+      'staff: forbidden friend direct history is hidden',
+      `/api/friends/${encodeURIComponent(config.staffForbiddenFriendId)}/messages`,
+      [403, 404],
+    ));
   } else {
     checks.push(skipIfMissing('staff: forbidden chat is hidden', 'SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID'));
+    checks.push(skipIfMissing('staff: forbidden friend direct history is hidden', 'SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID'));
   }
 
   return checks;

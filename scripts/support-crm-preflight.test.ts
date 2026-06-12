@@ -117,6 +117,8 @@ function createHappyFetch(calls: FetchCall[] = []): (input: string, init?: Reque
     if (url.pathname === '/api/support/cases/case-forbidden') return jsonResponse(404, { success: false, error: 'not found' });
     if (url.pathname === '/api/chats/friend-visible') return successObject({ id: 'friend-visible' });
     if (url.pathname === '/api/chats/friend-forbidden') return jsonResponse(404, { success: false, error: 'not found' });
+    if (url.pathname === '/api/friends/friend-visible/messages') return successArray([{ id: 'msg-visible' }]);
+    if (url.pathname === '/api/friends/friend-forbidden/messages') return jsonResponse(404, { success: false, error: 'not found' });
 
     return jsonResponse(500, { success: false, error: `unexpected ${method} ${url.pathname}` });
   };
@@ -450,6 +452,19 @@ describe('runSupportCrmPreflight', () => {
       messageType: 'sticker',
       content: JSON.stringify({ packageId: '1', stickerId: '1' }),
     });
+
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-visible/messages' }),
+      }),
+      expect.objectContaining({
+        method: 'GET',
+        authorization: 'Bearer staff-key',
+        url: expect.objectContaining({ pathname: '/api/friends/friend-forbidden/messages' }),
+      }),
+    ]));
   });
 
   it('checks credentialed browser-login CORS preflight when admin origin is set', async () => {
@@ -528,7 +543,9 @@ describe('runSupportCrmPreflight', () => {
       'staff: forbidden case is hidden',
       'staff: visible chat can be opened',
       'staff: unsupported chat message type is blocked',
+      'staff: visible friend direct history can be opened',
       'staff: forbidden chat is hidden',
+      'staff: forbidden friend direct history is hidden',
     ]);
   });
 
@@ -558,7 +575,7 @@ describe('runSupportCrmPreflight', () => {
       }),
       expect.objectContaining({
         name: 'preflight: full coverage required',
-        detail: '6 optional checks skipped',
+        detail: '8 optional checks skipped',
       }),
     ]);
   });

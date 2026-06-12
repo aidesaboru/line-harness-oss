@@ -183,6 +183,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] staffで「新規案件」が表示されない
 - [ ] staffで自分に関係する案件だけが表示される
 - [ ] staffで自分に関係する案件に紐づくチャットだけが表示される
+- [ ] staffで自分に関係しない友だちのdirect履歴APIが表示されない
 - [ ] staff名が空欄の古いアカウントでは、画面に理由が表示され操作が止まる
 - [ ] 案件一覧の未完了、期限超過、24h滞留、担当者なし、エスカレ、自分宛、顧客返信待ち、完了のキューが切り替わる
 - [ ] 検索、ステータス絞り込み、並び替えが使える
@@ -271,6 +272,7 @@ N/A
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.
 - `corepack pnpm preflight:support-crm:summary` converts the full Preflight log into a PR-safe summary that omits URLs, API keys, friend IDs, and case IDs.
 - Script test verifies the release checklist includes every strict dry-run env and the mutation-guard warning, so docs cannot silently drift from the command.
+- Script tests verify staff cannot use `/api/friends` or direct message history/send endpoints to bypass support-case friend visibility.
 - `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.
@@ -288,6 +290,7 @@ N/A
 - New/changed network calls? `Yes`: Support UI verifies current staff identity via `/api/staff/me`; fixture helpers can run D1 SELECT, read-only cleanup verification, or explicitly confirmed synthetic fixture INSERT/cleanup through Wrangler. Preflight dry-run adds no network calls. Release readiness reads PR/Actions metadata through `gh`.
 - Message sending behavior changed? `Yes`: support-case replies validate resolved status before LINE send and record support case events after send.
 - Customer/friend data access changed? `Yes`: staff chat visibility is limited to friends tied to visible support cases; fixture candidate output does not print friend names or case titles by default.
+- Direct friend API access changed? `Yes`: staff friend list, friend count, friend detail, direct message history, direct send, tag, and metadata endpoints now share the support-case friend visibility guard.
 - D1 migration or data deletion changed? `No`: no schema migration. Fixture cleanup deletes only synthetic fixture rows matching the configured prefix, synthetic friend chats, the optional synthetic line_account row, and the known old-preflight guard title.
 
 ## Safety Checklist

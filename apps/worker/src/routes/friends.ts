@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getFriends,
   getFriendById,
@@ -14,8 +14,34 @@ import type { Friend as DbFriend, Tag as DbTag } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
+import {
+  canAccessSupportFriend,
+  supportFriendVisibilitySql,
+  type SupportAccessStaff,
+} from '../services/support-access.js';
 
 const friends = new Hono<Env>();
+
+function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
+  return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
+}
+
+function appendStaffFriendScope(
+  c: { get: (key: 'staff') => SupportAccessStaff | undefined },
+  conditions: string[],
+  binds: unknown[],
+  friendIdExpression = 'f.id',
+): void {
+  const visibility = supportFriendVisibilitySql(currentStaff(c), friendIdExpression);
+  if (!visibility.sql) return;
+  conditions.push(visibility.sql);
+  binds.push(...visibility.binds);
+}
+
+async function ensureFriendAccess(c: Context<Env>, friendId: string): Promise<Response | null> {
+  if (await canAccessSupportFriend(c.env.DB, currentStaff(c), friendId)) return null;
+  return c.json({ success: false, error: 'Friend not found' }, 404);
+}
 
 /**
  * Convert a D1 snake_case Friend row to the shared camelCase shape.
@@ -122,6 +148,7 @@ friends.get('/api/friends', async (c) => {
       conditions.push('f.line_account_id = ?');
       binds.push(lineAccountId);
     }
+    appendStaffFriendScope(c, conditions, binds, 'f.id');
     if (search) {
       conditions.push('f.display_name LIKE ?');
       binds.push(`%${search}%`);
@@ -348,13 +375,21 @@ friends.get('/api/friends', async (c) => {
 friends.get('/api/friends/count', async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
-    let count: number;
+    const conditions = ['f.is_following = 1'];
+    const binds: unknown[] = [];
     if (lineAccountId) {
-      const row = await c.env.DB.prepare('SELECT COUNT(*) as count FROM friends WHERE is_following = 1 AND line_account_id = ?')
-        .bind(lineAccountId).first<{ count: number }>();
-      count = row?.count ?? 0;
-    } else {
+      conditions.push('f.line_account_id = ?');
+      binds.push(lineAccountId);
+    }
+    appendStaffFriendScope(c, conditions, binds, 'f.id');
+    const visibilityApplied = conditions.length > (lineAccountId ? 2 : 1);
+    let count: number;
+    if (!lineAccountId && !visibilityApplied) {
       count = await getFriendCount(c.env.DB);
+    } else {
+      const row = await c.env.DB.prepare(`SELECT COUNT(*) as count FROM friends f WHERE ${conditions.join(' AND ')}`)
+        .bind(...binds).first<{ count: number }>();
+      count = row?.count ?? 0;
     }
     return c.json({ success: true, data: { count } });
   } catch (err) {
@@ -394,6 +429,8 @@ friends.get('/api/friends/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const db = c.env.DB;
+    const denied = await ensureFriendAccess(c, id);
+    if (denied) return denied;
 
     const [friend, tags] = await Promise.all([
       getFriendById(db, id),
@@ -421,6 +458,8 @@ friends.get('/api/friends/:id', async (c) => {
 friends.post('/api/friends/:id/tags', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureFriendAccess(c, friendId);
+    if (denied) return denied;
     const body = await c.req.json<{ tagId: string }>();
 
     if (!body.tagId) {
@@ -458,6 +497,8 @@ friends.post('/api/friends/:id/tags', async (c) => {
 friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureFriendAccess(c, friendId);
+    if (denied) return denied;
     const tagId = c.req.param('tagId');
 
     await removeTagFromFriend(c.env.DB, friendId, tagId);
@@ -477,6 +518,8 @@ friends.put('/api/friends/:id/metadata', async (c) => {
   try {
     const friendId = c.req.param('id');
     const db = c.env.DB;
+    const denied = await ensureFriendAccess(c, friendId);
+    if (denied) return denied;
 
     const friend = await getFriendById(db, friendId);
     if (!friend) {
@@ -513,6 +556,8 @@ friends.put('/api/friends/:id/metadata', async (c) => {
 friends.get('/api/friends/:id/messages', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureFriendAccess(c, friendId);
+    if (denied) return denied;
     // Fetch the latest 200 messages (DESC) then reverse to ASC for display.
     // Using ORDER BY ASC LIMIT 200 returns the OLDEST 200 rows, which silently
     // hides recent activity for chatty friends. Exclude delivery_type='test'
@@ -538,6 +583,8 @@ friends.get('/api/friends/:id/messages', async (c) => {
 friends.post('/api/friends/:id/messages', async (c) => {
   try {
     const friendId = c.req.param('id');
+    const denied = await ensureFriendAccess(c, friendId);
+    if (denied) return denied;
     const body = await c.req.json<{
       messageType?: string;
       content: string;

@@ -20,7 +20,7 @@ import {
   getEntryRouteByRefCode,
   getMessageTemplateById,
 } from '@line-crm/db';
-import type { EntryRoute } from '@line-crm/db';
+import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
@@ -340,8 +340,7 @@ async function handleEvent(
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'postback');
 
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
 
@@ -420,8 +419,7 @@ async function handleEvent(
   if (event.type === 'message' && event.message.type !== 'text') {
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'non-text message');
 
     const msg = event.message as {
       id: string;
@@ -471,10 +469,10 @@ async function handleEvent(
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, jstNow())
+      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, jstNow())
       .run();
     return;
   }
@@ -485,8 +483,7 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    const friend = await getFriendByLineUserId(db, userId);
-    if (!friend) return;
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'text message');
 
     const incomingText = textMessage.text;
     const now = jstNow();
@@ -495,10 +492,10 @@ async function handleEvent(
     // 受信メッセージをログに記録
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, now)
+      .bind(logId, friend.id, incomingText, lineAccountId ?? null, now)
       .run();
 
     // Cross-account trigger: send message from another account via UUID
@@ -608,10 +605,10 @@ async function handleEvent(
           const wbAutoReplyPayload = logPayload2(replyMsg);
           await db
             .prepare(
-              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, created_at)
-               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?)`,
+              `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, delivery_type, source, line_account_id, created_at)
+               VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'reply', 'auto_reply', ?, ?)`,
             )
-            .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, jstNow())
+            .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, lineAccountId ?? null, jstNow())
             .run();
         } catch (err) {
           console.error('Failed to send auto-reply', err);
@@ -637,6 +634,41 @@ async function handleEvent(
 
     return;
   }
+}
+
+async function getOrCreateFriendForUser(
+  db: D1Database,
+  lineClient: LineClient,
+  userId: string,
+  lineAccountId: string | null,
+  eventContext: string,
+): Promise<Friend> {
+  const existing = await getFriendByLineUserId(db, userId);
+  if (existing) return existing;
+
+  let profile: Awaited<ReturnType<LineClient['getProfile']>> | null = null;
+  try {
+    profile = await lineClient.getProfile(userId);
+  } catch (err) {
+    console.error(`Failed to get profile for first ${eventContext} from ${userId}`, err);
+  }
+
+  const friend = await upsertFriend(db, {
+    lineUserId: userId,
+    displayName: profile?.displayName ?? null,
+    pictureUrl: profile?.pictureUrl ?? null,
+    statusMessage: profile?.statusMessage ?? null,
+  });
+
+  if (!lineAccountId) return friend;
+
+  const updatedAt = jstNow();
+  await db
+    .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
+    .bind(lineAccountId, updatedAt, friend.id)
+    .run();
+
+  return { ...friend, line_account_id: lineAccountId, updated_at: updatedAt };
 }
 
 /**

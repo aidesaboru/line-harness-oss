@@ -555,8 +555,11 @@ chats.post('/api/chats/:id/send', async (c) => {
     // メッセージログに記録
     const logId = crypto.randomUUID();
     await c.env.DB
-      .prepare(`INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, created_at) VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?)`)
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`,
+      )
+      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, jstNow())
       .run();
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）

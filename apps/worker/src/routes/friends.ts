@@ -579,10 +579,10 @@ friends.post('/api/friends/:id/messages', async (c) => {
     const logId = crypto.randomUUID();
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'manual', ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'manual', ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, jstNow())
+      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, jstNow())
       .run();
 
     return c.json({ success: true, data: { messageId: logId } });

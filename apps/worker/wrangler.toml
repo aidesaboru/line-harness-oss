@@ -1,4 +1,4 @@
-name = "line-harness"
+name = "ec-owner-line-harness"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
 # nodejs_compat is required by @line-harness/update-engine which pulls in
@@ -13,7 +13,7 @@ workers_dev = true
 # デフォルト = テスト環境 (noda@)
 # 使い方: npx wrangler deploy
 # ═══════════════════════════════════════════════════════════════
-account_id = "YOUR_DEV_ACCOUNT_ID"
+account_id = "fd23c99ff238478f219c521454f26f43"
 
 [assets]
 directory = "dist/client"
@@ -21,12 +21,8 @@ binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
-database_name = "line-harness"
-database_id = "YOUR_DEV_D1_DATABASE_ID"
-
-[[r2_buckets]]
-binding = "IMAGES"
-bucket_name = "line-harness-images"
+database_name = "ec-owner-line-harness-db"
+database_id = "6df8b286-0414-4e4e-b656-f3ce5257df61"
 
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
@@ -37,15 +33,15 @@ crons = ["*/5 * * * *", "0 */6 * * *"]
 # and are intentionally absent from this file.
 # ═══════════════════════════════════════════════════════════════
 [vars]
-WORKER_NAME = "line-harness"
-ADMIN_PAGES_PROJECT = "line-harness-admin"
-LIFF_PAGES_PROJECT = "line-harness-liff"
-D1_DATABASE_ID = "YOUR_DEV_D1_DATABASE_ID"
+WORKER_NAME = "ec-owner-line-harness"
+ADMIN_PAGES_PROJECT = "ec-owner-line-harness-admin"
+LIFF_PAGES_PROJECT = "ec-owner-line-harness-liff"
+D1_DATABASE_ID = "6df8b286-0414-4e4e-b656-f3ce5257df61"
 MANIFEST_URL = "https://github.com/Shudesu/line-harness-oss/releases/latest/download/release-manifest.json"
-WORKER_PUBLIC_URL = "https://line-harness.workers.dev"
-ADMIN_PUBLIC_URL = "https://line-harness-admin.pages.dev"
-LIFF_PUBLIC_URL = "https://line-harness-liff.pages.dev"
-CF_ACCOUNT_ID = "YOUR_DEV_ACCOUNT_ID"
+WORKER_PUBLIC_URL = "https://ec-owner-line-harness.wayway-dev.workers.dev"
+ADMIN_PUBLIC_URL = "https://ec-owner-line-harness-admin.pages.dev"
+LIFF_PUBLIC_URL = "https://ec-owner-line-harness-liff.pages.dev"
+CF_ACCOUNT_ID = "fd23c99ff238478f219c521454f26f43"
 
 # ═══════════════════════════════════════════════════════════════
 # 本番環境

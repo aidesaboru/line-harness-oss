@@ -20,6 +20,7 @@ function completeSnapshot(overrides: Partial<ReadinessSnapshot> = {}): Readiness
       mergeStateStatus: 'CLEAN',
       body: [
         'corepack pnpm preflight:support-crm:dry-run',
+        'corepack pnpm preflight:support-crm:summary',
         'Remote staff strict Preflight',
         'Remote cleanup verification',
         'GitHub Actions status',
@@ -53,6 +54,7 @@ describe('support CRM release readiness', () => {
         isDraft: true,
         body: [
           'corepack pnpm preflight:support-crm:dry-run',
+          'corepack pnpm preflight:support-crm:summary',
           'Remote staff strict Preflight',
           'Remote cleanup verification',
           'GitHub Actions status',
@@ -116,6 +118,10 @@ describe('support CRM release readiness', () => {
       expect.objectContaining({
         status: 'fail',
         name: 'pr body: corepack pnpm preflight:support-crm:dry-run',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'pr body: corepack pnpm preflight:support-crm:summary',
       }),
       expect.objectContaining({
         status: 'fail',

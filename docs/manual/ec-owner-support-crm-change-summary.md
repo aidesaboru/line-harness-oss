@@ -46,7 +46,7 @@ updated: 2026-06-13
 - `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
 - `corepack pnpm preflight:support-crm:summary` でPreflight生ログを、URL、APIキー、友だちID、案件IDを含めないPR用summaryへ変換
 - dry-runのstrict必須envと本番投入前チェックリストがズレたらscript testで検知
-- `corepack pnpm support-crm:release-readiness` でdraft解除前の内部FAIL、外部WAIT、PASSを整理
+- `corepack pnpm support-crm:release-readiness` でPR-safe summaryを含むPR証跡、draft解除前の内部FAIL、外部WAIT、PASSを整理
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
 - strict modeではowner/adminキー、staffキー、staff fixture ID、CORS origin、staff mutation guard有効化を必須にする
 - `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出
@@ -154,7 +154,7 @@ strict Preflight:
 ## 6. 提出前チェック
 
 - [ ] 生成物、`.tsbuildinfo`、local env、秘密値が差分に含まれていない
-- [ ] PR本文に上記の検証コマンドを記載した
+- [ ] PR本文に上記の検証コマンドとPR-safe Preflight summary証跡を記載した
 - [ ] 本番投入前チェックリストの未検証項目をPR本文に明記した
 - [ ] rollback先のWorker/Pagesデプロイを確認した
 - [ ] staff権限の表示範囲をstrict Preflightで確認した

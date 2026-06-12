@@ -47,6 +47,7 @@ type CommandResult = {
 
 const REQUIRED_PR_BODY_EVIDENCE = [
   'corepack pnpm preflight:support-crm:dry-run',
+  'corepack pnpm preflight:support-crm:summary',
   'Remote staff strict Preflight',
   'Remote cleanup verification',
   'GitHub Actions status',

@@ -127,7 +127,9 @@ describe('support CRM fixture candidate helpers', () => {
     expect(output).toContain('export SUPPORT_CRM_STAFF_API_KEY=REPLACE_WITH_STAFF_API_KEY');
     expect(output).toContain('# TODO export SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID=<required-fixture-id>');
     expect(output).toContain('corepack pnpm preflight:support-crm:dry-run');
-    expect(output).toContain('corepack pnpm preflight:support-crm');
+    expect(output).toContain('corepack pnpm preflight:support-crm > support-crm-preflight.log');
+    expect(output).toContain('corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log');
+    expect(output).toContain('paste only the PR-safe summary');
     expect(output).not.toContain('title=問い合わせ');
   });
 });

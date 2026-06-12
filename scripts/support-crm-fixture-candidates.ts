@@ -405,7 +405,8 @@ function formatStrictPreflightTemplate(selection: FixtureSelection, options: Fix
 
   lines.push('');
   lines.push('corepack pnpm preflight:support-crm:dry-run');
-  lines.push('corepack pnpm preflight:support-crm');
+  lines.push('corepack pnpm preflight:support-crm > support-crm-preflight.log');
+  lines.push('corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log');
   return lines;
 }
 
@@ -440,7 +441,7 @@ export function formatFixtureCandidateReport(rows: FixtureCandidateRow[], option
   lines.push('');
   lines.push(...formatStrictPreflightTemplate(selection, options));
   lines.push('');
-  lines.push('Next: run the dry-run first. Only run strict Preflight after every TODO fixture env is filled.');
+  lines.push('Next: run the dry-run first. Only run strict Preflight after every TODO fixture env is filled, then paste only the PR-safe summary.');
   return `${lines.join('\n')}\n`;
 }
 

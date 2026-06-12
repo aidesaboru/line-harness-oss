@@ -24,6 +24,7 @@
     "support-crm:fixtures:verify-cleanup-sql": "tsx scripts/support-crm-seed-fixtures.ts --verify-cleanup-sql",
     "preflight:support-crm": "tsx scripts/support-crm-preflight.ts",
     "preflight:support-crm:dry-run": "tsx scripts/support-crm-preflight.ts --dry-run",
+    "support-crm:release-readiness": "tsx scripts/support-crm-release-readiness.ts",
     "test:scripts": "vitest run --config vitest.config.ts",
     "build:bundle": "tsx scripts/release/build-bundle.ts"
   },

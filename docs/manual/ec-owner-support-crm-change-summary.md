@@ -45,6 +45,7 @@ updated: 2026-06-13
 - optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
 - `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
 - dry-runのstrict必須envと本番投入前チェックリストがズレたらscript testで検知
+- `corepack pnpm support-crm:release-readiness` でdraft解除前の内部FAIL、外部WAIT、PASSを整理
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
 - strict modeではowner/adminキー、staffキー、staff fixture ID、CORS origin、staff mutation guard有効化を必須にする
 - `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出

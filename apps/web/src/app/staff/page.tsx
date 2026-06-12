@@ -1,7 +1,10 @@
 'use client'
 import { useState, useEffect } from 'react'
 import Header from '@/components/layout/header'
+import { useConfirmDialog } from '@/components/support/support-ui'
 import { fetchApi } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
+import { buildStaffCreatePayload } from '@/lib/staff-form'
 import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
 
@@ -32,6 +35,7 @@ export default function StaffPage() {
   const [members, setMembers] = useState<StaffMember[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   // New API key banner
   const [newKey, setNewKey] = useState<NewApiKey | null>(null)
@@ -68,18 +72,21 @@ export default function StaffPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
-    setFormLoading(true)
     setFormError('')
+    const parsed = buildStaffCreatePayload({
+      name: formName,
+      email: formEmail,
+      role: formRole,
+    })
+    if (!parsed.ok) {
+      setFormError(parsed.error)
+      return
+    }
+    setFormLoading(true)
     try {
-      const body: { name: string; role: 'admin' | 'staff'; email?: string } = {
-        name: formName,
-        role: formRole,
-      }
-      if (formEmail) body.email = formEmail
-
       const res = await fetchApi<ApiResponse<StaffMember & { apiKey?: string }>>('/api/staff', {
         method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify(parsed.payload),
       })
       if (res.success) {
         if (res.data.apiKey) {
@@ -102,10 +109,15 @@ export default function StaffPage() {
 
   const handleToggleActive = async (member: StaffMember) => {
     try {
-      await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
+      const res = await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
         method: 'PATCH',
         body: JSON.stringify({ isActive: !member.isActive }),
       })
+      if (!res.success) {
+        setError(res.error ?? '更新に失敗しました')
+        return
+      }
+      setError('')
       await loadMembers()
     } catch {
       setError('更新に失敗しました')
@@ -113,12 +125,19 @@ export default function StaffPage() {
   }
 
   const handleRegenerateKey = async (member: StaffMember) => {
-    if (!confirm(`${member.name} のAPIキーを再生成しますか？\n現在のキーは無効になります。`)) return
+    const confirmed = await requestConfirm({
+      title: 'APIキーを再生成しますか？',
+      message: `${member.name} の現在のAPIキーは無効になります。外部連携で使っている場合は、新しいキーへの差し替えが必要です。`,
+      confirmLabel: '再生成',
+      tone: 'warning',
+    })
+    if (!confirmed) return
     try {
       const res = await fetchApi<ApiResponse<{ apiKey: string }>>(`/api/staff/${member.id}/regenerate-key`, {
         method: 'POST',
       })
       if (res.success) {
+        setError('')
         setNewKey({ apiKey: res.data.apiKey, staffId: member.id })
       } else {
         setError(res.error ?? 'キー再生成に失敗しました')
@@ -129,9 +148,20 @@ export default function StaffPage() {
   }
 
   const handleDelete = async (member: StaffMember) => {
-    if (!confirm(`${member.name} を削除しますか？\nこの操作は元に戻せません。`)) return
+    const confirmed = await requestConfirm({
+      title: 'スタッフを削除しますか？',
+      message: `${member.name} を削除します。この操作は元に戻せません。`,
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!confirmed) return
     try {
-      await fetchApi<ApiResponse<null>>(`/api/staff/${member.id}`, { method: 'DELETE' })
+      const res = await fetchApi<ApiResponse<null>>(`/api/staff/${member.id}`, { method: 'DELETE' })
+      if (!res.success) {
+        setError(res.error ?? '削除に失敗しました')
+        return
+      }
+      setError('')
       await loadMembers()
     } catch {
       setError('削除に失敗しました')
@@ -140,13 +170,19 @@ export default function StaffPage() {
 
   const handleCopy = async () => {
     if (!newKey) return
-    await navigator.clipboard.writeText(newKey.apiKey)
+    const result = await copyText(newKey.apiKey)
+    if (!result.ok) {
+      setError('APIキーのコピーに失敗しました。表示されているキーを選択してコピーしてください。')
+      return
+    }
+    setError('')
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
 
   return (
     <div>
+      {confirmDialog}
       <Header
         title="スタッフ管理"
         action={
@@ -197,7 +233,10 @@ export default function StaffPage() {
                 <input
                   type="text"
                   value={formName}
-                  onChange={(e) => setFormName(e.target.value)}
+                  onChange={(e) => {
+                    setFormName(e.target.value)
+                    if (formError === 'スタッフ名を入力してください') setFormError('')
+                  }}
                   required
                   placeholder="田中 太郎"
                   className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
@@ -231,7 +270,7 @@ export default function StaffPage() {
             <div className="flex items-center gap-3">
               <button
                 type="submit"
-                disabled={formLoading || !formName}
+                disabled={formLoading || !formName.trim()}
                 className="px-4 py-2 text-sm font-medium text-white rounded-lg disabled:opacity-50 transition-opacity hover:opacity-90"
                 style={{ backgroundColor: '#06C755' }}
               >

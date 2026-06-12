@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { extractFlexAltText } from '../utils/flex-alt-text.js';
 import {
   getOperators,
@@ -15,12 +16,33 @@ import {
   jstNow,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import {
+  canAccessSupportFriend,
+  supportCaseVisibilitySql,
+  supportFriendVisibilitySql,
+  type SupportAccessStaff,
+} from '../services/support-access.js';
 
 const chats = new Hono<Env>();
+
+function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
+  return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
+}
+
+async function ensureChatFriendAccess(c: Context<Env>, friendId: string): Promise<Response | null> {
+  if (await canAccessSupportFriend(c.env.DB, currentStaff(c), friendId)) return null;
+  return c.json({ success: false, error: 'Chat not found' }, 404);
+}
 
 function clampLoadingSeconds(value: number | undefined): number {
   const n = Number.isFinite(value) ? Math.floor(value as number) : 5;
   return Math.min(60, Math.max(5, n));
+}
+
+function clampMessageLimit(raw: string | undefined): number {
+  const n = Number(raw ?? 1000);
+  if (!Number.isFinite(n)) return 1000;
+  return Math.max(1, Math.min(1000, Math.floor(n)));
 }
 
 async function startLoadingAnimation(
@@ -57,6 +79,153 @@ type ChatLike = {
   created_at: string;
   updated_at: string;
 };
+
+type SupportCaseForChat = {
+  id: string;
+  title: string;
+  status: string;
+};
+
+type ChatSendBody = {
+  messageType?: string;
+  content: string;
+  supportCaseId?: string;
+  lineAccountId?: string | null;
+};
+
+type ChatSendFriend = {
+  id: string;
+  line_account_id?: string | null;
+};
+
+async function getSupportCaseForChat(
+  db: D1Database,
+  staff: SupportAccessStaff,
+  caseId: string,
+  lineAccountId: string,
+  friendId: string,
+): Promise<SupportCaseForChat | null> {
+  const conditions = ['sc.id = ?', 'sc.line_account_id = ?', 'sc.friend_id = ?'];
+  const binds: unknown[] = [caseId, lineAccountId, friendId];
+  const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_chat_send_scope');
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    binds.push(...visibility.binds);
+  }
+
+  return db
+    .prepare(`SELECT sc.id, sc.title, sc.status FROM support_cases sc WHERE ${conditions.join(' AND ')}`)
+    .bind(...binds)
+    .first<SupportCaseForChat>();
+}
+
+async function validateSupportCaseForSend(
+  c: Context<Env>,
+  staff: SupportAccessStaff,
+  friend: ChatSendFriend,
+  body: Pick<ChatSendBody, 'supportCaseId' | 'lineAccountId'>,
+): Promise<
+  | { ok: true; supportCase: SupportCaseForChat | null; supportLineAccountId: string }
+  | { ok: false; response: Response }
+> {
+  const supportCaseId = body.supportCaseId?.trim();
+  const supportLineAccountId = body.lineAccountId?.trim() || friend.line_account_id || '';
+  let supportCase: SupportCaseForChat | null = null;
+
+  if (supportCaseId) {
+    if (!supportLineAccountId) {
+      return {
+        ok: false,
+        response: c.json({ success: false, error: 'lineAccountId is required for support case event' }, 400),
+      };
+    }
+    supportCase = await getSupportCaseForChat(
+      c.env.DB,
+      staff,
+      supportCaseId,
+      supportLineAccountId,
+      friend.id,
+    );
+    if (!supportCase) {
+      return { ok: false, response: c.json({ success: false, error: 'support case not found' }, 404) };
+    }
+    if (supportCase.status === 'resolved') {
+      return {
+        ok: false,
+        response: c.json({ success: false, error: '完了済み案件は再オープンしてから顧客返信を送信してください' }, 400),
+      };
+    }
+  }
+
+  return { ok: true, supportCase, supportLineAccountId };
+}
+
+async function addSupportReplyEvent(
+  db: D1Database,
+  supportCase: SupportCaseForChat,
+  staff: SupportAccessStaff,
+  params: {
+    chatId: string;
+    friendId: string;
+    lineAccountId: string;
+    messageId: string;
+    messageType: string;
+    content: string;
+    previousStatus: string;
+    nextStatus: string | null;
+    statusUpdateApplied: boolean;
+    createdAt: string;
+  },
+): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO support_case_events
+       (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      supportCase.id,
+      'customer_reply_sent',
+      staff.id,
+      staff.name,
+      'チャットで顧客返信を送信しました',
+      JSON.stringify({
+        chatId: params.chatId,
+        friendId: params.friendId,
+        lineAccountId: params.lineAccountId,
+        messageId: params.messageId,
+        messageType: params.messageType,
+        contentPreview: params.content.slice(0, 200),
+        previousStatus: params.previousStatus,
+        nextStatus: params.nextStatus,
+        statusUpdateApplied: params.statusUpdateApplied,
+      }),
+      params.createdAt,
+    )
+    .run();
+}
+
+async function markSupportCaseCustomerReply(
+  db: D1Database,
+  supportCase: SupportCaseForChat,
+  staff: SupportAccessStaff,
+  lineAccountId: string,
+  now: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare(
+      `UPDATE support_cases
+       SET status = 'customer_reply',
+           updated_by = ?,
+           updated_at = ?
+       WHERE id = ? AND line_account_id = ? AND status != 'resolved'`,
+    )
+    .bind(staff.id, now, supportCase.id, lineAccountId)
+    .run();
+  const changes = Number((result as { meta?: { changes?: unknown } }).meta?.changes ?? 0);
+  return changes > 0;
+}
 
 // id は chats.id もしくは friend.id のどちらか。friend.id のときは chats 行を遅延作成する。
 // push / broadcast / scenario 配信だけを受けた友だちもチャット画面に現れるため、ここで lazy create が必要。
@@ -320,6 +489,11 @@ chats.get('/api/chats', async (c) => {
       conditions.push('f.line_account_id = ?');
       bindings.push(lineAccountId);
     }
+    const visibility = supportFriendVisibilitySql(currentStaff(c), 'f.id');
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      bindings.push(...visibility.binds);
+    }
 
     if (conditions.length > 0) {
       sql += ' WHERE ' + conditions.join(' AND ');
@@ -384,6 +558,9 @@ chats.get('/api/chats/:id', async (c) => {
     }
 
     const resolvedFriendId = chatRow?.friend_id ?? friendId!;
+    const denied = await ensureChatFriendAccess(c, resolvedFriendId);
+    if (denied) return denied;
+
     // 公開 ID は常に friend_id に統一する（lazy-create で ID が変わるのを防ぐため）。
     const responseId = resolvedFriendId;
     const operatorId = chatRow?.operator_id ?? null;
@@ -397,19 +574,37 @@ chats.get('/api/chats/:id', async (c) => {
       .bind(resolvedFriendId)
       .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
 
-    // 新しい1000件を取って昇順に戻す。LIMIT 200 ASC だと古い200件だけで broadcast/scenario 等の
-    // 新しい push が欠落していた（Shu で 481件中 281件欠落のバグあり）。一覧側と同様に test 配信は除外。
-    // 現状の最重量ユーザー(481件)の2倍バッファ。これ以上の履歴はページング未実装（Phase 2 TODO）。
+    // 新しい順で1件多く取り、昇順に戻す。初回は従来どおり最新1000件を返し、
+    // beforeCreatedAt/beforeId がある場合だけ古い履歴をページングする。
+    const messageLimit = clampMessageLimit(c.req.query('messageLimit'));
+    const beforeCreatedAt = c.req.query('beforeCreatedAt') ?? c.req.query('before');
+    const beforeId = c.req.query('beforeId');
+    const messageWhere = [
+      'friend_id = ?',
+      `(delivery_type IS NULL OR delivery_type != 'test')`,
+    ];
+    const messageBinds: unknown[] = [resolvedFriendId];
+    if (beforeCreatedAt && beforeId) {
+      messageWhere.push(`(created_at < ? OR (created_at = ? AND id < ?))`);
+      messageBinds.push(beforeCreatedAt, beforeCreatedAt, beforeId);
+    } else if (beforeCreatedAt) {
+      messageWhere.push(`created_at < ?`);
+      messageBinds.push(beforeCreatedAt);
+    }
+
     const messages = await c.env.DB
       .prepare(
         `SELECT id, friend_id, direction, message_type, content, created_at
          FROM messages_log
-         WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
-         ORDER BY created_at DESC LIMIT 1000`,
+         WHERE ${messageWhere.join(' AND ')}
+         ORDER BY created_at DESC, id DESC LIMIT ?`,
       )
-      .bind(resolvedFriendId)
-      .all();
-    messages.results = (messages.results as Record<string, unknown>[]).reverse();
+      .bind(...messageBinds, messageLimit + 1)
+      .all<Record<string, unknown>>();
+    const rawMessages = messages.results;
+    const hasMoreMessages = rawMessages.length > messageLimit;
+    const pageMessages = rawMessages.slice(0, messageLimit).reverse();
+    const oldestMessage = pageMessages[0];
 
     return c.json({
       success: true,
@@ -423,7 +618,11 @@ chats.get('/api/chats/:id', async (c) => {
         notes,
         lastMessageAt,
         createdAt,
-        messages: (messages.results as Record<string, unknown>[]).map((m) => ({
+        hasMoreMessages,
+        nextMessagesBefore: hasMoreMessages && oldestMessage
+          ? { createdAt: oldestMessage.created_at, id: oldestMessage.id }
+          : null,
+        messages: pageMessages.map((m) => ({
           id: m.id,
           direction: m.direction,
           messageType: m.message_type,
@@ -442,6 +641,9 @@ chats.post('/api/chats', async (c) => {
   try {
     const body = await c.req.json<{ friendId: string; operatorId?: string; lineAccountId?: string | null }>();
     if (!body.friendId) return c.json({ success: false, error: 'friendId is required' }, 400);
+    const denied = await ensureChatFriendAccess(c, body.friendId);
+    if (denied) return denied;
+
     const item = await createChat(c.env.DB, body);
     // Save line_account_id if provided
     if (body.lineAccountId) {
@@ -461,6 +663,9 @@ chats.put('/api/chats/:id', async (c) => {
     const id = c.req.param('id');
     const resolved = await resolveOrCreateChat(c.env.DB, id);
     if (!resolved) return c.json({ success: false, error: 'Not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, resolved.friend_id);
+    if (denied) return denied;
+
     const body = await c.req.json<{ operatorId?: string | null; status?: string; notes?: string }>();
     await updateChat(c.env.DB, resolved.id, body);
     const updated = await getChatById(c.env.DB, resolved.id);
@@ -482,6 +687,8 @@ chats.post('/api/chats/:id/loading', async (c) => {
     const chatId = c.req.param('id');
     const chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
 
     let loadingSecondsInput: number | undefined;
     try {
@@ -513,14 +720,52 @@ chats.post('/api/chats/:id/loading', async (c) => {
   }
 });
 
+// 送信前検証。LINE送信やDB更新は行わず、プリフライトやUI側の安全確認に使う。
+chats.post('/api/chats/:id/send/validate', async (c) => {
+  try {
+    const chatId = c.req.param('id');
+    const chat = await resolveOrCreateChat(c.env.DB, chatId);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const body = await c.req.json<ChatSendBody>();
+    if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
+
+    const { friend } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      chat.friend_id,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const validation = await validateSupportCaseForSend(c, currentStaff(c), friend, body);
+    if (!validation.ok) return validation.response;
+
+    return c.json({
+      success: true,
+      data: {
+        valid: true,
+        supportCaseId: validation.supportCase?.id ?? null,
+        supportCaseStatus: validation.supportCase?.status ?? null,
+      },
+    });
+  } catch (err) {
+    console.error('POST /api/chats/:id/send/validate error:', err);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // オペレーターからメッセージ送信
 chats.post('/api/chats/:id/send', async (c) => {
   try {
     const chatId = c.req.param('id');
     const chat = await resolveOrCreateChat(c.env.DB, chatId);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
 
-    const body = await c.req.json<{ messageType?: string; content: string }>();
+    const body = await c.req.json<ChatSendBody>();
     if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
 
     const { friend, accessToken } = await resolveFriendAndAccessToken(
@@ -529,6 +774,11 @@ chats.post('/api/chats/:id/send', async (c) => {
       c.env.LINE_CHANNEL_ACCESS_TOKEN,
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const staff = currentStaff(c);
+    const validation = await validateSupportCaseForSend(c, staff, friend, body);
+    if (!validation.ok) return validation.response;
+    const { supportCase, supportLineAccountId } = validation;
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
@@ -554,18 +804,48 @@ chats.post('/api/chats/:id/send', async (c) => {
 
     // メッセージログに記録
     const logId = crypto.randomUUID();
+    const now = jstNow();
     await c.env.DB
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
          VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, jstNow())
+      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, now)
       .run();
 
-    // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
-    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: jstNow() });
+    let supportCaseResult: {
+      id: string;
+      previousStatus: string;
+      nextStatus: 'customer_reply' | null;
+      statusUpdated: boolean;
+    } | null = null;
 
-    return c.json({ success: true, data: { sent: true, messageId: logId } });
+    if (supportCase) {
+      const statusUpdated = await markSupportCaseCustomerReply(c.env.DB, supportCase, staff, supportLineAccountId, now);
+      await addSupportReplyEvent(c.env.DB, supportCase, staff, {
+        chatId: chat.id,
+        friendId: friend.id,
+        lineAccountId: supportLineAccountId,
+        messageId: logId,
+        messageType,
+        content: body.content,
+        previousStatus: supportCase.status,
+        nextStatus: statusUpdated ? 'customer_reply' : null,
+        statusUpdateApplied: statusUpdated,
+        createdAt: now,
+      });
+      supportCaseResult = {
+        id: supportCase.id,
+        previousStatus: supportCase.status,
+        nextStatus: statusUpdated ? 'customer_reply' : null,
+        statusUpdated,
+      };
+    }
+
+    // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: now });
+
+    return c.json({ success: true, data: { sent: true, messageId: logId, supportCase: supportCaseResult } });
   } catch (err) {
     console.error('POST /api/chats/:id/send error:', err);
     return c.json({ success: false, error: 'Internal server error' }, 500);

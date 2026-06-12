@@ -2,6 +2,15 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
+import {
+  canAccessSupportFriend,
+  isRestrictedSupportStaff,
+  supportCaseVisibilitySql,
+  supportEscalationVisibilitySql,
+  supportStaffLikePattern,
+  type SupportAccessStaff,
+} from '../services/support-access.js';
 
 const support = new Hono<Env>();
 
@@ -20,6 +29,29 @@ const CASE_STATUSES = new Set([
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 const ESCALATION_STATUSES = new Set(['pending', 'answered', 'needs_info', 'transferred', 'expert_check', 'closed']);
 const ESCALATION_LEVELS = new Set(['L2', 'L3']);
+const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
+  'lineAccountId',
+  'status',
+  'nextCheckAt',
+  'customerSummary',
+  'internalNote',
+  'customerReplyDraft',
+  'resolutionNote',
+  'manualIds',
+  'eventBody',
+]);
+const STAFF_ALLOWED_ESCALATION_UPDATE_KEYS = new Set([
+  'lineAccountId',
+  'status',
+  'answer',
+  'eventBody',
+]);
+const STAFF_ALLOWED_ESCALATION_CREATE_KEYS = new Set([
+  'lineAccountId',
+  'question',
+  'eventBody',
+]);
+const STAFF_ALLOWED_ESCALATION_STATUSES = new Set(['answered', 'needs_info']);
 
 type SupportCaseRow = {
   id: string;
@@ -109,6 +141,15 @@ function text(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function nullableText(value: unknown): string | null {
   if (value === null) return null;
   if (value === undefined) return undefined as unknown as null;
@@ -134,6 +175,10 @@ function clampLimit(raw: string | undefined, fallback = 50): number {
 function currentStaff(c: Context<Env>) {
   const staff = c.get('staff');
   return staff ?? { id: 'system', name: 'system', role: 'staff' as const };
+}
+
+function canManageSupportCaseRouting(staff: SupportAccessStaff): boolean {
+  return staff.role === 'owner' || staff.role === 'admin';
 }
 
 function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): string | null {
@@ -236,7 +281,22 @@ function serializeEvent(row: SupportEventRow) {
   };
 }
 
-async function getCaseRow(db: D1Database, id: string, lineAccountId: string) {
+async function getCaseRow(
+  db: D1Database,
+  id: string,
+  lineAccountId: string,
+  staff?: SupportAccessStaff,
+) {
+  const conditions = ['sc.id = ?', 'sc.line_account_id = ?'];
+  const binds: unknown[] = [id, lineAccountId];
+  if (staff) {
+    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_case_row_scope');
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
+    }
+  }
+
   return db
     .prepare(
       `SELECT sc.*,
@@ -245,9 +305,9 @@ async function getCaseRow(db: D1Database, id: string, lineAccountId: string) {
               f.line_user_id
        FROM support_cases sc
        LEFT JOIN friends f ON f.id = sc.friend_id
-       WHERE sc.id = ? AND sc.line_account_id = ?`,
+       WHERE ${conditions.join(' AND ')}`,
     )
-    .bind(id, lineAccountId)
+    .bind(...binds)
     .first<SupportCaseRow>();
 }
 
@@ -327,7 +387,14 @@ support.get('/api/support/summary', async (c) => {
 
     const now = jstNow();
     const staff = currentStaff(c);
-    const myEscalationPattern = `%${staff.name}%`;
+    const myEscalationPattern = supportStaffLikePattern(staff);
+    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_summary_scope');
+    const caseWhere = ['sc.line_account_id = ?'];
+    const caseBinds: unknown[] = [lineAccountId];
+    if (visibility.sql) {
+      caseWhere.push(visibility.sql);
+      caseBinds.push(...visibility.binds);
+    }
     const totals = await c.env.DB
       .prepare(
         `SELECT
@@ -336,13 +403,13 @@ support.get('/api/support/summary', async (c) => {
           SUM(CASE WHEN sc.status IN ('escalated', 'waiting_secondary') THEN 1 ELSE 0 END) AS escalated,
           SUM(CASE WHEN sc.status != 'resolved'
             AND (
-              sc.escalation_assignee LIKE ?
+              sc.escalation_assignee LIKE ? ESCAPE '\\'
               OR EXISTS (
                 SELECT 1
                 FROM support_escalations se
                 WHERE se.case_id = sc.id
                   AND se.status != 'closed'
-                  AND se.assignee LIKE ?
+                  AND se.assignee LIKE ? ESCAPE '\\'
               )
             )
             THEN 1 ELSE 0 END) AS my_escalations,
@@ -351,30 +418,30 @@ support.get('/api/support/summary', async (c) => {
           SUM(CASE WHEN sc.status = 'customer_reply' THEN 1 ELSE 0 END) AS waiting_customer,
           SUM(CASE WHEN sc.status = 'resolved' THEN 1 ELSE 0 END) AS resolved
          FROM support_cases sc
-         WHERE sc.line_account_id = ?`,
+         WHERE ${caseWhere.join(' AND ')}`,
       )
-      .bind(myEscalationPattern, myEscalationPattern, now, lineAccountId)
+      .bind(myEscalationPattern, myEscalationPattern, now, ...caseBinds)
       .first<Record<string, number | null>>();
 
     const [byStatus, byCategory, byAssignee] = await Promise.all([
       c.env.DB.prepare(
         `SELECT status, COUNT(*) AS count
-         FROM support_cases
-         WHERE line_account_id = ?
+         FROM support_cases sc
+         WHERE ${caseWhere.join(' AND ')}
          GROUP BY status`,
-      ).bind(lineAccountId).all<{ status: string; count: number }>(),
+      ).bind(...caseBinds).all<{ status: string; count: number }>(),
       c.env.DB.prepare(
         `SELECT category, COUNT(*) AS count
-         FROM support_cases
-         WHERE line_account_id = ?
+         FROM support_cases sc
+         WHERE ${caseWhere.join(' AND ')}
          GROUP BY category`,
-      ).bind(lineAccountId).all<{ category: string; count: number }>(),
+      ).bind(...caseBinds).all<{ category: string; count: number }>(),
       c.env.DB.prepare(
         `SELECT COALESCE(NULLIF(primary_assignee, ''), '担当者なし') AS assignee, COUNT(*) AS count
-         FROM support_cases
-         WHERE line_account_id = ? AND status != 'resolved'
+         FROM support_cases sc
+         WHERE ${caseWhere.join(' AND ')} AND status != 'resolved'
          GROUP BY COALESCE(NULLIF(primary_assignee, ''), '担当者なし')`,
-      ).bind(lineAccountId).all<{ assignee: string; count: number }>(),
+      ).bind(...caseBinds).all<{ assignee: string; count: number }>(),
     ]);
 
     return c.json({
@@ -416,6 +483,12 @@ support.get('/api/support/cases', async (c) => {
     const offset = Math.max(0, Number(c.req.query('offset') ?? '0') || 0);
     const conditions = ['sc.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId];
+    const staff = currentStaff(c);
+    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_case_list_scope');
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
+    }
 
     if (status && status !== 'all') {
       if (!CASE_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
@@ -434,19 +507,20 @@ support.get('/api/support/cases', async (c) => {
       conditions.push(`(sc.primary_assignee IS NULL OR sc.primary_assignee = '') AND sc.status != 'resolved'`);
     } else if (queue === 'waiting_customer') {
       conditions.push(`sc.status = 'customer_reply'`);
+    } else if (queue === 'unresolved') {
+      conditions.push(`sc.status != 'resolved'`);
     }
 
     if (isMyEscalationScope) {
-      const staff = currentStaff(c);
-      const pattern = `%${staff.name}%`;
+      const pattern = supportStaffLikePattern(staff);
       conditions.push(`sc.status != 'resolved' AND (
-        sc.escalation_assignee LIKE ?
+        sc.escalation_assignee LIKE ? ESCAPE '\\'
         OR EXISTS (
           SELECT 1
           FROM support_escalations se
           WHERE se.case_id = sc.id
             AND se.status != 'closed'
-            AND se.assignee LIKE ?
+            AND se.assignee LIKE ? ESCAPE '\\'
         )
       )`);
       binds.push(pattern, pattern);
@@ -493,7 +567,7 @@ support.get('/api/support/cases', async (c) => {
   }
 });
 
-support.post('/api/support/cases', async (c) => {
+support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<Record<string, unknown>>();
     const friendId = text(body.friendId);
@@ -512,6 +586,10 @@ support.post('/api/support/cases', async (c) => {
     }
 
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const staff = currentStaff(c);
+    if (friendId && isRestrictedSupportStaff(staff) && !(await canAccessSupportFriend(c.env.DB, staff, friendId))) {
+      return c.json({ success: false, error: 'friend not found' }, 404);
+    }
 
     const category = text(body.category) ?? 'other';
     const priority = text(body.priority) ?? 'medium';
@@ -520,6 +598,9 @@ support.post('/api/support/cases', async (c) => {
     if (!CASE_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
 
     const customerSummary = text(body.customerSummary) ?? '';
+    if (!friendId && !customerSummary.trim()) {
+      return c.json({ success: false, error: 'LINE会話を選ぶか、問い合わせ要約を入力してください。' }, 400);
+    }
     const internalNote = text(body.internalNote) ?? '';
     const resolutionNote = text(body.resolutionNote) ?? '';
     const nextCheckAt = text(body.nextCheckAt);
@@ -531,7 +612,6 @@ support.post('/api/support/cases', async (c) => {
     });
     if (validationError) return c.json({ success: false, error: validationError }, 400);
 
-    const staff = currentStaff(c);
     const now = jstNow();
     const id = crypto.randomUUID();
     const manualIdsInput = Array.isArray(body.manualIds)
@@ -594,7 +674,7 @@ support.post('/api/support/cases', async (c) => {
       friendId,
     });
 
-    const created = await getCaseRow(c.env.DB, id, lineAccountId);
+    const created = await getCaseRow(c.env.DB, id, lineAccountId, staff);
     return c.json({ success: true, data: serializeCase(created!) }, 201);
   } catch (err) {
     console.error('POST /api/support/cases error:', err);
@@ -606,7 +686,7 @@ support.get('/api/support/cases/:id', async (c) => {
   try {
     const lineAccountId = lineAccountIdFrom(c);
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId);
+    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId, currentStaff(c));
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
 
     const [events, escalations] = await Promise.all([
@@ -676,8 +756,20 @@ support.patch('/api/support/cases/:id', async (c) => {
     const body = await c.req.json<Record<string, unknown>>();
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const existing = await getCaseRow(c.env.DB, id, lineAccountId);
+    const staff = currentStaff(c);
+    const existing = await getCaseRow(c.env.DB, id, lineAccountId, staff);
     if (!existing) return c.json({ success: false, error: 'case not found' }, 404);
+
+    if (!canManageSupportCaseRouting(staff)) {
+      const forbiddenKeys = Object.keys(body).filter((key) => !STAFF_ALLOWED_CASE_UPDATE_KEYS.has(key));
+      if (forbiddenKeys.length > 0) {
+        return c.json({
+          success: false,
+          error: `staff権限では変更できない項目です: ${forbiddenKeys.join(', ')}`,
+        }, 403);
+      }
+    }
+
     const fields: Array<[string, unknown]> = [];
     const next = { ...existing };
 
@@ -725,6 +817,8 @@ support.patch('/api/support/cases/:id', async (c) => {
       fields.push(['manual_ids', next.manual_ids]);
     }
 
+    const statusRequested = 'status' in body;
+
     if (!CASE_STATUSES.has(next.status)) return c.json({ success: false, error: 'invalid status' }, 400);
     if (!PRIORITIES.has(next.priority)) return c.json({ success: false, error: 'invalid priority' }, 400);
 
@@ -736,27 +830,30 @@ support.patch('/api/support/cases/:id', async (c) => {
     });
     if (validationError) return c.json({ success: false, error: validationError }, 400);
 
+    if (existing.status === 'resolved' && next.status !== 'resolved' && next.status !== 'reopened') {
+      return c.json({ success: false, error: '完了済み案件を戻す場合は再オープンを選択してください' }, 400);
+    }
+    if (statusRequested && next.status === 'reopened' && existing.status !== 'resolved' && existing.status !== 'reopened') {
+      return c.json({ success: false, error: '再オープンは完了済み案件だけで選択できます' }, 400);
+    }
+
     if (fields.length === 0) {
       return c.json({ success: true, data: serializeCase(existing) });
     }
 
-    const staff = currentStaff(c);
     const now = jstNow();
     if (next.status === 'resolved' && !existing.closed_at) {
       fields.push(['closed_at', now]);
     }
-    if (existing.status === 'resolved' && next.status !== 'resolved' && next.status !== 'reopened') {
-      return c.json({ success: false, error: '完了済み案件を戻す場合は再オープンを選択してください' }, 400);
-    }
-    if (next.status === 'reopened') {
+    if (statusRequested && next.status === 'reopened' && existing.status !== 'reopened') {
       fields.push(['reopened_at', now], ['closed_at', null]);
     }
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
     const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
     await c.env.DB
-      .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ?`)
-      .bind(...fields.map(([, value]) => value), id)
+      .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ? AND line_account_id = ?`)
+      .bind(...fields.map(([, value]) => value), id, lineAccountId)
       .run();
 
     await addCaseEvent(c.env.DB, id, 'updated', staff.id, staff.name, text(body.eventBody) ?? '案件を更新しました', {
@@ -765,7 +862,7 @@ support.patch('/api/support/cases/:id', async (c) => {
       toStatus: next.status,
     });
 
-    const updated = await getCaseRow(c.env.DB, id, lineAccountId);
+    const updated = await getCaseRow(c.env.DB, id, lineAccountId, staff);
     return c.json({ success: true, data: serializeCase(updated!) });
   } catch (err) {
     console.error('PATCH /api/support/cases/:id error:', err);
@@ -778,7 +875,7 @@ support.post('/api/support/cases/:id/events', async (c) => {
     const body = await c.req.json<Record<string, unknown>>();
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId);
+    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId, currentStaff(c));
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     const staff = currentStaff(c);
     await addCaseEvent(
@@ -803,22 +900,39 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     const body = await c.req.json<Record<string, unknown>>();
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const row = await getCaseRow(c.env.DB, caseId, lineAccountId);
+    const staff = currentStaff(c);
+    const row = await getCaseRow(c.env.DB, caseId, lineAccountId, staff);
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     if (row.status === 'resolved') {
       return c.json({ success: false, error: '完了済み案件は再オープンしてからエスカレーションしてください' }, 400);
     }
-    const assignee = text(body.assignee);
+    const canRouteEscalation = canManageSupportCaseRouting(staff);
+    if (!canRouteEscalation) {
+      const forbiddenKeys = Object.keys(body).filter((key) => !STAFF_ALLOWED_ESCALATION_CREATE_KEYS.has(key));
+      if (forbiddenKeys.length > 0) {
+        return c.json({
+          success: false,
+          error: `staff権限では指定できないエスカレーション項目です: ${forbiddenKeys.join(', ')}`,
+        }, 403);
+      }
+    }
+
+    const assignee = canRouteEscalation ? text(body.assignee) : text(row.escalation_assignee);
     const question = text(body.question);
-    const level = text(body.level) ?? 'L2';
-    if (!assignee) return c.json({ success: false, error: 'assignee is required' }, 400);
+    const levelFromCase = ESCALATION_LEVELS.has(row.escalation_level) ? row.escalation_level : 'L2';
+    const level = canRouteEscalation ? (text(body.level) ?? 'L2') : levelFromCase;
+    if (!assignee) {
+      return c.json({
+        success: false,
+        error: canRouteEscalation ? 'assignee is required' : 'staff権限では二次対応先が設定済みの案件だけエスカレーションできます',
+      }, 400);
+    }
     if (!question) return c.json({ success: false, error: 'question is required' }, 400);
     if (!ESCALATION_LEVELS.has(level)) return c.json({ success: false, error: 'invalid level' }, 400);
 
-    const staff = currentStaff(c);
     const now = jstNow();
     const id = crypto.randomUUID();
-    const dueAt = text(body.dueAt);
+    const dueAt = canRouteEscalation ? text(body.dueAt) : null;
     await c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
@@ -829,19 +943,32 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
       .bind(id, caseId, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now)
       .run();
 
-    await c.env.DB
-      .prepare(
-        `UPDATE support_cases
-         SET status = 'waiting_secondary',
-             escalation_assignee = ?,
-             escalation_level = ?,
-             due_at = COALESCE(?, due_at),
-             updated_by = ?,
-             updated_at = ?
-         WHERE id = ?`,
-      )
-      .bind(assignee, level, dueAt, staff.id, now, caseId)
-      .run();
+    if (canRouteEscalation) {
+      await c.env.DB
+        .prepare(
+          `UPDATE support_cases
+           SET status = 'waiting_secondary',
+               escalation_assignee = ?,
+               escalation_level = ?,
+               due_at = COALESCE(?, due_at),
+               updated_by = ?,
+               updated_at = ?
+           WHERE id = ? AND line_account_id = ?`,
+        )
+        .bind(assignee, level, dueAt, staff.id, now, caseId, lineAccountId)
+        .run();
+    } else {
+      await c.env.DB
+        .prepare(
+          `UPDATE support_cases
+           SET status = 'waiting_secondary',
+               updated_by = ?,
+               updated_at = ?
+           WHERE id = ? AND line_account_id = ?`,
+        )
+        .bind(staff.id, now, caseId, lineAccountId)
+        .run();
+    }
 
     await addCaseEvent(c.env.DB, caseId, 'escalated', staff.id, staff.name, question, {
       escalationId: id,
@@ -851,8 +978,8 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     });
 
     const escalation = await c.env.DB
-      .prepare(`SELECT * FROM support_escalations WHERE id = ?`)
-      .bind(id)
+      .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
+      .bind(id, lineAccountId)
       .first<SupportEscalationRow>();
     return c.json({ success: true, data: serializeEscalation(escalation!) }, 201);
   } catch (err) {
@@ -871,6 +998,12 @@ support.get('/api/support/escalations', async (c) => {
     const scope = c.req.query('scope');
     const conditions = ['se.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId];
+    const staff = currentStaff(c);
+    const visibility = supportEscalationVisibilitySql(staff, 'se', 'sc_escalation_list_scope');
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
+    }
 
     if (status && status !== 'all') {
       if (!ESCALATION_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
@@ -882,9 +1015,8 @@ support.get('/api/support/escalations', async (c) => {
       binds.push(`%${assignee}%`);
     }
     if (scope === 'my_escalations' || queue === 'my_escalations') {
-      const staff = currentStaff(c);
-      conditions.push('se.assignee LIKE ?');
-      binds.push(`%${staff.name}%`);
+      conditions.push(`se.assignee LIKE ? ESCAPE '\\'`);
+      binds.push(supportStaffLikePattern(staff));
     }
     if (queue === 'due') {
       conditions.push(`se.status = 'pending' AND se.due_at IS NOT NULL AND se.due_at <= ?`);
@@ -919,13 +1051,22 @@ support.patch('/api/support/escalations/:id', async (c) => {
     const body = await c.req.json<Record<string, unknown>>();
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const staffForScope = currentStaff(c);
+    const visibility = supportEscalationVisibilitySql(staffForScope, 'se', 'sc_escalation_update_scope');
+    const conditions = ['se.id = ?', 'se.line_account_id = ?'];
+    const binds: unknown[] = [id, lineAccountId];
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
+    }
     const existing = await c.env.DB
-      .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
-      .bind(id, lineAccountId)
+      .prepare(`SELECT se.* FROM support_escalations se WHERE ${conditions.join(' AND ')}`)
+      .bind(...binds)
       .first<SupportEscalationRow>();
     if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
 
     const fields: Array<[string, unknown]> = [];
+    const statusRequested = 'status' in body;
     const status = text(body.status) ?? existing.status;
     const level = text(body.level) ?? existing.level;
     if (!ESCALATION_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
@@ -933,6 +1074,21 @@ support.patch('/api/support/escalations/:id', async (c) => {
     const nextAnswer = 'answer' in body ? (text(body.answer) ?? '') : existing.answer;
     if (status === 'answered' && !nextAnswer.trim()) {
       return c.json({ success: false, error: '回答済みにする場合は回答要点が必要です' }, 400);
+    }
+    if (!canManageSupportCaseRouting(staffForScope)) {
+      const forbiddenKeys = Object.keys(body).filter((key) => !STAFF_ALLOWED_ESCALATION_UPDATE_KEYS.has(key));
+      if (forbiddenKeys.length > 0) {
+        return c.json({
+          success: false,
+          error: `staff権限では変更できないエスカレーション項目です: ${forbiddenKeys.join(', ')}`,
+        }, 403);
+      }
+      if ('status' in body && !STAFF_ALLOWED_ESCALATION_STATUSES.has(status)) {
+        return c.json({
+          success: false,
+          error: 'staff権限ではエスカレーションを回答済み、または差し戻しにのみ変更できます',
+        }, 403);
+      }
     }
 
     if ('status' in body) fields.push(['status', status]);
@@ -942,7 +1098,24 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if ('answer' in body) fields.push(['answer', nextAnswer]);
     if ('dueAt' in body) fields.push(['due_at', text(body.dueAt)]);
 
-    const staff = currentStaff(c);
+    let nextCaseStatus: string | null = null;
+    if (statusRequested) {
+      if (status === 'answered') nextCaseStatus = 'customer_reply';
+      if (status === 'needs_info') nextCaseStatus = 'waiting_primary';
+      if (status === 'transferred' || status === 'expert_check') nextCaseStatus = 'waiting_secondary';
+    }
+    if (nextCaseStatus) {
+      const linkedCase = await c.env.DB
+        .prepare(`SELECT status FROM support_cases WHERE id = ? AND line_account_id = ?`)
+        .bind(existing.case_id, lineAccountId)
+        .first<{ status: string }>();
+      if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
+      if (linkedCase.status === 'resolved') {
+        return c.json({ success: false, error: '完了済み案件は再オープンしてからエスカレーションを更新してください' }, 400);
+      }
+    }
+
+    const staff = staffForScope;
     const now = jstNow();
     if ((status === 'answered' || status === 'closed') && !existing.answered_at) {
       fields.push(['answered_at', now]);
@@ -951,15 +1124,11 @@ support.patch('/api/support/escalations/:id', async (c) => {
 
     if (fields.length > 0) {
       const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
-      await c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ?`)
-        .bind(...fields.map(([, value]) => value), id)
+      await c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ? AND line_account_id = ?`)
+        .bind(...fields.map(([, value]) => value), id, lineAccountId)
         .run();
     }
 
-    let nextCaseStatus: string | null = null;
-    if (status === 'answered') nextCaseStatus = 'customer_reply';
-    if (status === 'needs_info') nextCaseStatus = 'waiting_primary';
-    if (status === 'transferred' || status === 'expert_check') nextCaseStatus = 'waiting_secondary';
     if (nextCaseStatus) {
       await c.env.DB.prepare(`UPDATE support_cases SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
         .bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId)
@@ -1037,11 +1206,19 @@ support.get('/api/support/manuals', async (c) => {
   }
 });
 
-support.post('/api/support/manuals', async (c) => {
+support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<Record<string, unknown>>();
     const title = text(body.title);
     if (!title) return c.json({ success: false, error: 'title is required' }, 400);
+    const manualBody = text(body.body);
+    if (!manualBody) return c.json({ success: false, error: 'body is required' }, 400);
+    const manualUrl = text(body.url);
+    if (manualUrl && !isHttpUrl(manualUrl)) {
+      return c.json({ success: false, error: 'url must start with http:// or https://' }, 400);
+    }
+    const lineAccountId = text(body.lineAccountId);
+    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
 
     const staff = currentStaff(c);
     const now = jstNow();
@@ -1053,11 +1230,11 @@ support.post('/api/support/manuals', async (c) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
-      text(body.lineAccountId),
+      lineAccountId,
       title,
       text(body.category) ?? 'basic',
-      text(body.body) ?? '',
-      text(body.url),
+      manualBody,
+      manualUrl,
       text(body.keywords) ?? '',
       text(body.owner),
       text(body.approvedBy),
@@ -1077,16 +1254,27 @@ support.post('/api/support/manuals', async (c) => {
   }
 });
 
-support.patch('/api/support/manuals/:id', async (c) => {
+support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id');
-    const existing = await c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ?`).bind(id).first<SupportManualRow>();
-    if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
-
     const body = await c.req.json<Record<string, unknown>>();
+    const lineAccountId = text(c.req.query('lineAccountId')) ?? text(body.lineAccountId);
+    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+
+    const existing = await c.env.DB
+      .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
+      .bind(id, lineAccountId)
+      .first<SupportManualRow>();
+    if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
+    if ('title' in body && !text(body.title)) return c.json({ success: false, error: 'title is required' }, 400);
+    if ('body' in body && !text(body.body)) return c.json({ success: false, error: 'body is required' }, 400);
+    const manualUrl = 'url' in body ? text(body.url) : null;
+    if (manualUrl && !isHttpUrl(manualUrl)) {
+      return c.json({ success: false, error: 'url must start with http:// or https://' }, 400);
+    }
+
     const fields: Array<[string, unknown]> = [];
     const mapping: Array<[string, string]> = [
-      ['line_account_id', 'lineAccountId'],
       ['title', 'title'],
       ['category', 'category'],
       ['body', 'body'],
@@ -1103,11 +1291,14 @@ support.patch('/api/support/manuals/:id', async (c) => {
     const staff = currentStaff(c);
     fields.push(['updated_by', staff.id], ['updated_at', jstNow()]);
 
-    await c.env.DB.prepare(`UPDATE support_manuals SET ${fields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ?`)
-      .bind(...fields.map(([, value]) => value), id)
+    await c.env.DB.prepare(`UPDATE support_manuals SET ${fields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`)
+      .bind(...fields.map(([, value]) => value), id, lineAccountId)
       .run();
 
-    const updated = await c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ?`).bind(id).first<SupportManualRow>();
+    const updated = await c.env.DB
+      .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
+      .bind(id, lineAccountId)
+      .first<SupportManualRow>();
     return c.json({ success: true, data: serializeManual(updated!) });
   } catch (err) {
     console.error('PATCH /api/support/manuals/:id error:', err);
@@ -1115,12 +1306,21 @@ support.patch('/api/support/manuals/:id', async (c) => {
   }
 });
 
-support.delete('/api/support/manuals/:id', async (c) => {
+support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const staff = currentStaff(c);
+    const lineAccountId = text(c.req.query('lineAccountId'));
+    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+
+    const existing = await c.env.DB
+      .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
+      .bind(c.req.param('id'), lineAccountId)
+      .first<SupportManualRow>();
+    if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
+
     await c.env.DB
-      .prepare(`UPDATE support_manuals SET is_active = 0, updated_by = ?, updated_at = ? WHERE id = ?`)
-      .bind(staff.id, jstNow(), c.req.param('id'))
+      .prepare(`UPDATE support_manuals SET is_active = 0, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
+      .bind(staff.id, jstNow(), c.req.param('id'), lineAccountId)
       .run();
     return c.json({ success: true, data: null });
   } catch (err) {

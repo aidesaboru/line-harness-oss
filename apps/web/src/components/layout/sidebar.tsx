@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
+import { clearAuthSessionCache, readStaffIdentityCache } from '@/lib/auth-session'
 import { countryFlag } from '@/lib/country-flag'
 
 // ─── メニュー定義（ユーザー目線のカテゴリ） ───
@@ -197,8 +198,9 @@ export default function Sidebar() {
   const [staffRole, setStaffRole] = useState<string | null>(null)
 
   useEffect(() => {
-    setStaffName(localStorage.getItem('lh_staff_name'))
-    setStaffRole(localStorage.getItem('lh_staff_role'))
+    const cached = readStaffIdentityCache()
+    setStaffName(cached.name || null)
+    setStaffRole(cached.role || null)
   }, [])
 
   // 未対応件数 polling — メニュー項目にバッジを出す。5 分間隔。
@@ -324,10 +326,7 @@ export default function Sidebar() {
             } catch {
               // Local cleanup still logs the browser out if the network call fails.
             }
-            localStorage.removeItem('lh_api_key')
-            localStorage.removeItem('lh_csrf')
-            localStorage.removeItem('lh_staff_name')
-            localStorage.removeItem('lh_staff_role')
+            clearAuthSessionCache()
             window.location.href = '/login'
           }}
           className="flex items-center gap-2 text-xs text-gray-400 hover:text-red-500 transition-colors"

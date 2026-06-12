@@ -1,6 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { cacheStaffSession, clearAuthSessionCache } from '@/lib/auth-session'
 
 export default function LoginPage() {
   const [apiKey, setApiKey] = useState('')
@@ -12,6 +13,7 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     setError('')
+    clearAuthSessionCache()
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL
@@ -30,17 +32,13 @@ export default function LoginPage() {
       })
 
       if (res.ok) {
-        localStorage.removeItem('lh_api_key')
         try {
           const loginData = await res.json()
-          if (loginData.success && loginData.data) {
-            localStorage.setItem('lh_staff_name', loginData.data.name)
-            localStorage.setItem('lh_staff_role', loginData.data.role)
-          }
-          // Cache the CSRF token for mutating requests (double-submit).
-          if (loginData.csrfToken) {
-            localStorage.setItem('lh_csrf', loginData.csrfToken)
-          }
+          cacheStaffSession({
+            name: loginData.success && loginData.data ? loginData.data.name : null,
+            role: loginData.success && loginData.data ? loginData.data.role : null,
+            csrfToken: loginData.csrfToken,
+          })
         } catch {
           // Profile / CSRF caching is best-effort.
         }

@@ -40,6 +40,7 @@ interface QueueStripProps {
   staleCount: number
   activeKey: QueueKey | null
   staffName: string
+  disabled?: boolean
   onSelect: (key: QueueKey) => void
 }
 
@@ -61,7 +62,7 @@ function chipCount(key: QueueKey, summary: SupportSummary | null, staleCount: nu
  * 優先キューの数字チップ。クリックで絞り込み、もう一度クリックで解除。
  * 日次確認の起点: 期限超過 → 24h滞留 → 担当者なし → エスカレ → 自分宛。
  */
-export default function QueueStrip({ summary, staleCount, activeKey, staffName, onSelect }: QueueStripProps) {
+export default function QueueStrip({ summary, staleCount, activeKey, staffName, disabled = false, onSelect }: QueueStripProps) {
   return (
     <div className="flex flex-wrap gap-2" role="group" aria-label="優先キュー">
       {chips.map((chip) => {
@@ -73,13 +74,14 @@ export default function QueueStrip({ summary, staleCount, activeKey, staffName, 
             key={chip.key}
             type="button"
             onClick={() => onSelect(chip.key)}
+            disabled={disabled}
             aria-pressed={isActive}
             title={chip.key === 'my_escalations' && staffName ? `${staffName} 宛の未完了エスカレ` : undefined}
             className={`group flex min-w-[96px] flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 sm:flex-none ${
               isActive
                 ? `${chip.activeCls} shadow-sm`
                 : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'
-            }`}
+            } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:shadow-none`}
           >
             <span className="flex flex-col">
               <span className={`flex items-center gap-1 text-[11px] font-semibold ${isActive ? 'text-white/90' : 'text-gray-500'}`}>

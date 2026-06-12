@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { authMiddleware } from './auth.js';
+import { credentialedCors } from './cors.js';
 import { resolveCorsOrigin } from './admin-auth-config.js';
 import { adminAuth } from '../routes/admin-auth.js';
 import type { Env } from '../index.js';
@@ -40,10 +40,7 @@ function crossSiteEnv(): Env['Bindings'] {
 
 function app() {
   const a = new Hono<Env>();
-  a.use('*', cors({
-    origin: (origin, c) => resolveCorsOrigin(c.env, origin, c.req.url),
-    credentials: true,
-  }));
+  a.use('*', credentialedCors((origin, c) => resolveCorsOrigin(c.env, origin, c.req.url)));
   a.use('*', authMiddleware);
   a.route('/', adminAuth);
   a.get('/api/protected', (c) => c.json({ success: true, data: c.get('staff') }));
@@ -234,6 +231,40 @@ describe('session endpoint', () => {
 });
 
 describe('CORS allowed / blocked origins', () => {
+  test('credentialed preflight includes Access-Control-Allow-Credentials', async () => {
+    const res = await app().request('/api/auth/login', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: PAGES,
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type, x-not-allowed',
+      },
+    }, crossSiteEnv());
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe(PAGES);
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBe('true');
+    const allowHeaders = res.headers.get('Access-Control-Allow-Headers')?.toLowerCase() ?? '';
+    expect(allowHeaders).toContain('content-type');
+    expect(allowHeaders).not.toContain('x-not-allowed');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+  });
+
+  test('unknown origin preflight gets no credentialed CORS headers', async () => {
+    const res = await app().request('/api/auth/login', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://evil.example.com',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'content-type',
+      },
+    }, crossSiteEnv());
+
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBeNull();
+    expect(res.headers.get('Access-Control-Allow-Credentials')).toBeNull();
+  });
+
   test('allowlisted admin origin is echoed back', async () => {
     const res = await app().request('/api/protected', {
       headers: { Origin: PAGES, Cookie: 'lh_admin_session=staff-key' },

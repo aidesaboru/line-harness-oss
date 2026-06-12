@@ -31,6 +31,19 @@ function serializeStaff(row: StaffMember, masked = true) {
   };
 }
 
+function requiredText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function optionalText(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== 'string') return null;
+  return value.trim() || null;
+}
+
 // GET /api/staff/me — any authenticated user (MUST be before /:id)
 staff.get('/api/staff/me', async (c) => {
   try {
@@ -99,8 +112,10 @@ staff.get('/api/staff/:id', requireRole('owner'), async (c) => {
 staff.post('/api/staff', requireRole('owner'), async (c) => {
   try {
     const body = await c.req.json<{ name: string; email?: string; role: string }>();
+    const name = requiredText(body.name);
+    const email = optionalText(body.email);
 
-    if (!body.name) {
+    if (!name) {
       return c.json({ success: false, error: 'name is required' }, 400);
     }
 
@@ -110,8 +125,8 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
     }
 
     const member = await createStaffMember(c.env.DB, {
-      name: body.name,
-      email: body.email ?? null,
+      name,
+      email: email ?? null,
       role: body.role as 'owner' | 'admin' | 'staff',
     });
 
@@ -133,10 +148,15 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       role?: string;
       isActive?: boolean;
     }>();
+    const name = body.name === undefined ? undefined : requiredText(body.name);
+    const email = optionalText(body.email);
 
     const validRoles = ['owner', 'admin', 'staff'] as const;
     if (body.role !== undefined && !validRoles.includes(body.role as (typeof validRoles)[number])) {
       return c.json({ success: false, error: 'role must be owner, admin, or staff' }, 400);
+    }
+    if (body.name !== undefined && !name) {
+      return c.json({ success: false, error: 'name is required' }, 400);
     }
 
     // Prevent removing the last active owner
@@ -157,8 +177,8 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
     }
 
     const updated = await updateStaffMember(c.env.DB, id, {
-      name: body.name,
-      email: body.email,
+      name,
+      email,
       role: body.role as 'owner' | 'admin' | 'staff' | undefined,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
     });

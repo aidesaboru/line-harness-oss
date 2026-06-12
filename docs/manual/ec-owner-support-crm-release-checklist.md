@@ -1,0 +1,199 @@
+---
+title: ECオーナー通達LINE サポートCRM 本番投入前チェックリスト
+status: draft
+updated: 2026-06-13
+---
+
+# ECオーナー通達LINE サポートCRM 本番投入前チェックリスト
+
+このチェックリストは、サポートCRMを検証用LINE公式アカウントから本番LINE公式アカウントへ切り替える前に使います。
+
+「画面で見た」「APIで止まった」「テストが通った」を分けて確認します。大学の実験レポートでいうと、目視結果、機械的な検査結果、考察を分けるイメージです。
+
+変更内容をレビューする場合は、先に[変更サマリー](./ec-owner-support-crm-change-summary.md)で、実装、テスト、運用ドキュメント、レビュー観点を確認します。
+
+## 1. 事前準備
+
+- [ ] Worker URL、管理画面URL、本番LINE公式アカウントIDを確認した
+- [ ] ownerまたはadminのAPIキーを用意した
+- [ ] staff権限のAPIキーを用意した
+- [ ] staff権限のスタッフ名が空欄ではないことを確認した
+- [ ] staffが見えてよい案件、見えてはいけない案件を1件ずつ用意した
+- [ ] staffが見えてよいチャット、見えてはいけないチャットを1件ずつ用意した
+- [ ] 未完了案件と完了済み案件のfixture IDを用意した
+- [ ] 検証用LINE公式アカウントで送受信確認が終わっている
+
+## 2. 自動検査
+
+軽い確認では次を実行します。
+
+```bash
+SUPPORT_CRM_API_URL=https://your-worker.example.com \
+SUPPORT_CRM_ADMIN_ORIGIN=https://your-admin.example.com \
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_OWNER_API_KEY=ownerのAPIキー \
+SUPPORT_CRM_STAFF_API_KEY=staffのAPIキー \
+corepack pnpm preflight:support-crm
+```
+
+本番切替前の最終確認では、任意チェックのスキップも失敗扱いにします。
+
+```bash
+SUPPORT_CRM_API_URL=https://your-worker.example.com \
+SUPPORT_CRM_ADMIN_ORIGIN=https://your-admin.example.com \
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_OWNER_API_KEY=ownerのAPIキー \
+SUPPORT_CRM_STAFF_API_KEY=staffのAPIキー \
+SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1 \
+SUPPORT_CRM_STAFF_VISIBLE_CASE_ID=staffが見えてよい案件ID \
+SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID=staffが見えてはいけない案件ID \
+SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID=staffが見えてよい未完了案件ID \
+SUPPORT_CRM_STAFF_RESOLVED_CASE_ID=staffが見えてよい完了済み案件ID \
+SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID=staffが見えてよい友だちID \
+SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID=staffが見えてはいけない友だちID \
+SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID=完了済み案件に紐づく友だちID \
+corepack pnpm preflight:support-crm
+```
+
+- [ ] `Failures to fix` が出ていない
+- [ ] `Skipped optional checks` が出ていない
+- [ ] `preflight: full coverage required` が出ていない
+- [ ] staff APIキーのログイン情報にスタッフ名が入っている
+- [ ] staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が403で止まる
+- [ ] 未完了案件を再オープンにできない
+- [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
+
+## 3. 画面確認
+
+- [ ] `/login` でAPIキーによるログインができる
+- [ ] セッション切れ時に `/support` から `/login` へ戻る
+- [ ] owner/adminで「新規案件」が表示される
+- [ ] staffで「新規案件」が表示されない
+- [ ] staffで自分に関係する案件だけが表示される
+- [ ] staffで自分に関係する案件に紐づくチャットだけが表示される
+- [ ] staff名が空欄の古いアカウントでは、画面に理由が表示され操作が止まる
+- [ ] 案件一覧の未完了、期限超過、24h滞留、担当者なし、エスカレ、自分宛、顧客返信待ち、完了のキューが切り替わる
+- [ ] 検索、ステータス絞り込み、並び替えが使える
+- [ ] 選択中の案件が絞り込み外にある場合、画面に理由と戻り操作が出る
+- [ ] 長いチャットで過去メッセージを読み込める
+- [ ] サポート案件から「チャットで返信」を押すと、チャット入力欄に返信案が入る
+- [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
+- [ ] テキスト返信で案件履歴に顧客返信イベントが残る
+- [ ] 画像だけの返信でも案件履歴に顧客返信イベントが残る
+- [ ] 画像とテキストを同時に送っても、不要な「案件更新だけ確認が必要」警告が出ない
+- [ ] 完了済み案件では、再オープンしてから返信する運用になっている
+- [ ] マニュアル作成/編集でタイトル、本文、URL形式の保存前チェックが効く
+- [ ] マニュアル無効化、スタッフ削除、APIキー再生成は画面内確認ダイアログで止まる
+- [ ] クリップボードAPIが使えない環境でも、コピー失敗時の案内が表示される
+
+## 4. ローカル検証コマンド
+
+PRに載せる検証コマンドは次を基準にします。
+
+```bash
+corepack pnpm --filter web test
+corepack pnpm test:scripts
+corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
+corepack pnpm build
+git diff --check
+```
+
+画面応答確認:
+
+```bash
+PORT=3001 NEXT_PUBLIC_API_URL=http://127.0.0.1:8787 corepack pnpm --filter web dev
+curl -sS -o /dev/null -w 'staff %{http_code}\n' http://localhost:3001/staff
+curl -sS -o /dev/null -w 'support %{http_code}\n' http://localhost:3001/support
+curl -sS -o /dev/null -w 'chats %{http_code}\n' 'http://localhost:3001/chats?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke'
+```
+
+## 5. PR用変更要約
+
+PR本文には、次の内容を貼ります。秘密値、本番の友だちID、実際の顧客情報は書きません。
+
+```md
+## Summary
+
+- Problem: サポートCRMのstaff表示範囲、チャット返信連携、完了済み案件の誤返信防止、本番切替前検査が運用上まだ弱かった。
+- Solution: Worker APIでstaff可視範囲と更新権限を絞り、Web UIでrole別操作・空状態・チャット返信導線・確認ダイアログを整え、Preflightと運用マニュアルを追加した。
+- What changed: サポート案件/チャット/スタッフAPI、CORS、サポートCRM UI、チャット返信の案件履歴連携、staffフォーム/クリップボード/認証キャッシュ helper、Preflight、テスト、運用ドキュメント。
+- What did NOT change: LINE公式アカウントの本番切替そのもの、DB migration、既存の本番データ、APIキーや秘密値。
+
+## Related Issue
+
+N/A
+
+## Change Type
+
+- [x] Bug fix
+- [x] Feature
+- [x] Security hardening
+- [x] Documentation
+- [ ] Tests only
+- [x] Chore / infra
+
+## Scope
+
+- [x] Admin web UI
+- [x] Worker API
+- [x] Auth / API keys / cookies / CORS / staff permissions
+- [x] D1 schema / migrations / account scoping
+- [ ] Docs only
+
+## Verification
+
+- `corepack pnpm --filter web test`
+- `corepack pnpm test:scripts`
+- `corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts`
+- `corepack pnpm build`
+- `git diff --check`
+- Browser: `/support` redirects to `/login` when unauthenticated, login screen renders, console error count is 0.
+- HTTP: `/staff`, `/support`, `/chats?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke` return 200 locally.
+- Not tested: 本番LINE公式アカウントへの実切替、実顧客へのLINE送信、実データfixtureを使ったstrict Preflight。
+
+## Security Impact
+
+- New permissions/capabilities? `Yes`: staff visibility is now enforced for support cases and linked chats.
+- Secrets/tokens handling changed? `Yes`: browser auth cache handling is centralized and stale local values are cleared on session failure/logout.
+- New/changed network calls? `Yes`: Support UI verifies current staff identity via `/api/staff/me`.
+- Message sending behavior changed? `Yes`: support-case replies validate resolved status before LINE send and record support case events after send.
+- Customer/friend data access changed? `Yes`: staff chat visibility is limited to friends tied to visible support cases.
+- D1 migration or data deletion changed? `No`.
+
+## Safety Checklist
+
+- [x] This PR is focused on one problem and contains no unrelated commits.
+- [ ] I searched for existing issues/PRs to avoid duplicates.
+- [x] No secrets, tokens, customer data, friend IDs, private URLs, or private configuration are included.
+- [x] No generated build output, `.tsbuildinfo`, local env files, or formatting-only churn is included.
+- [x] Docs or tests were updated when useful.
+- [x] Deployment impact is understood.
+- [x] For high-risk areas, I included a clear rollback or recovery note.
+- [x] I personally verified the behavior described above.
+
+## Rollback / Recovery
+
+- Keep the previous deployed Worker and Pages deployment available for rollback.
+- If staff cannot see expected work, first verify staff name, role, and fixture visibility with `corepack pnpm preflight:support-crm`.
+- If chat replies fail for completed cases, reopen the support case before sending.
+- If Preflight strict mode fails because optional checks are skipped, fill the missing `SUPPORT_CRM_STAFF_*` fixture envs before switching production traffic.
+```
+
+## 6. 切替判断
+
+本番切替に進んでよい条件:
+
+- [ ] 最終Preflightがstrict modeで成功している
+- [ ] owner/adminとstaffの両方で画面確認が完了している
+- [ ] 顧客返信のテキスト、画像、画像＋テキストの確認が完了している
+- [ ] staffの見えてよい/見えてはいけない案件とチャットを確認済み
+- [ ] rollback先のWorker/Pagesデプロイを確認済み
+- [ ] 担当者に、完了済み案件は再オープンしてから返信する運用を説明済み
+
+次のどれかに当てはまる場合は、切替を止めます。
+
+- `Skipped optional checks` が残っている
+- staff名が空欄のスタッフがいる
+- staffで見えてはいけない案件またはチャットが見えている
+- 完了済み案件から返信できてしまう
+- チャット送信後にLINE送信履歴と案件履歴のどちらかが残らない

@@ -15,6 +15,7 @@ import {
   statusLabel,
   statusOptions,
   type CaseSortMode,
+  type SupportEmptyState,
 } from './support-meta'
 import { FlameIcon, Pill, SearchIcon, XIcon, inputCls, selectCls } from './support-ui'
 
@@ -25,7 +26,8 @@ interface CaseListProps {
   statusFilter: string
   sortMode: CaseSortMode
   search: string
-  hasActiveFilters: boolean
+  emptyState: SupportEmptyState
+  disabled?: boolean
   onSelect: (id: string) => void
   onStatusFilterChange: (value: string) => void
   onSortChange: (value: CaseSortMode) => void
@@ -56,10 +58,12 @@ function CaseListSkeleton() {
 function CaseRow({
   item,
   selected,
+  disabled,
   onSelect,
 }: {
   item: SupportCase
   selected: boolean
+  disabled: boolean
   onSelect: (id: string) => void
 }) {
   const overdue = isOverdueCase(item)
@@ -77,6 +81,7 @@ function CaseRow({
   return (
     <button
       onClick={() => onSelect(item.id)}
+      disabled={disabled}
       aria-current={selected ? 'true' : undefined}
       className={`block w-full border-b border-l-4 border-gray-100 px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500 ${
         overdue
@@ -84,7 +89,7 @@ function CaseRow({
           : stale
             ? 'border-l-orange-500 bg-orange-50/70 hover:bg-orange-50'
             : 'border-l-transparent hover:bg-gray-50'
-      } ${selected ? 'bg-green-50 ring-1 ring-inset ring-green-300' : ''}`}
+      } ${selected ? 'bg-green-50 ring-1 ring-inset ring-green-300' : ''} disabled:cursor-not-allowed disabled:opacity-60`}
     >
       <div className="flex items-start justify-between gap-2">
         <p className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900">{item.title}</p>
@@ -129,7 +134,8 @@ export default function CaseList({
   statusFilter,
   sortMode,
   search,
-  hasActiveFilters,
+  emptyState,
+  disabled = false,
   onSelect,
   onStatusFilterChange,
   onSortChange,
@@ -144,6 +150,7 @@ export default function CaseList({
           <input
             value={search}
             onChange={(e) => onSearchChange(e.target.value)}
+            disabled={disabled}
             className={`${inputCls} pl-9 ${search ? 'pr-8' : ''}`}
             placeholder="件名・要約・メモ・顧客名で検索"
             aria-label="案件を検索"
@@ -152,6 +159,7 @@ export default function CaseList({
             <button
               type="button"
               onClick={() => onSearchChange('')}
+              disabled={disabled}
               className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
               aria-label="検索をクリア"
             >
@@ -163,15 +171,17 @@ export default function CaseList({
           <select
             value={statusFilter}
             onChange={(e) => onStatusFilterChange(e.target.value)}
+            disabled={disabled}
             className={selectCls}
             aria-label="ステータスで絞り込み"
           >
-            <option value="all">全ステータス</option>
+            <option value="all">未完了すべて</option>
             {statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
           <select
             value={sortMode}
             onChange={(e) => onSortChange(e.target.value as CaseSortMode)}
+            disabled={disabled}
             className={selectCls}
             aria-label="並び替え"
           >
@@ -189,23 +199,22 @@ export default function CaseList({
           <CaseListSkeleton />
         ) : cases.length === 0 ? (
           <div className="px-6 py-12 text-center">
-            <p className="text-sm font-medium text-gray-600">該当する案件はありません</p>
-            <p className="mt-1 text-xs text-gray-400">
-              {hasActiveFilters ? '絞り込み条件を見直してください' : 'チャットから「案件化」で登録できます'}
-            </p>
-            {hasActiveFilters && (
+            <p className="text-sm font-medium text-gray-600">{emptyState.title}</p>
+            <p className="mt-1 text-xs leading-relaxed text-gray-400">{emptyState.description}</p>
+            {emptyState.actionLabel && (
               <button
                 type="button"
                 onClick={onResetFilters}
-                className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50"
+                disabled={disabled}
+                className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                絞り込みをリセット
+                {emptyState.actionLabel}
               </button>
             )}
           </div>
         ) : (
           cases.map((item) => (
-            <CaseRow key={item.id} item={item} selected={selectedCaseId === item.id} onSelect={onSelect} />
+            <CaseRow key={item.id} item={item} selected={selectedCaseId === item.id} disabled={disabled} onSelect={onSelect} />
           ))
         )}
       </div>

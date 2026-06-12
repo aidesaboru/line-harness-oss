@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { SupportCaseDetail, SupportEscalation, SupportEscalationStatus } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import {
   buildEscalationShareText,
   escalationStatusMeta,
@@ -9,6 +10,7 @@ import {
   fromInputDateTime,
   dueUrgency,
   formatRelativeDue,
+  getEscalationDraftValidationIssues,
   type CaseFormState,
 } from './support-meta'
 import {
@@ -34,6 +36,7 @@ interface EscalationPanelProps {
   caseForm: CaseFormState
   staffName: string
   saving: boolean
+  canEditRouting: boolean
   onEscalate: (input: EscalateInput) => Promise<boolean>
   onUpdateEscalation: (id: string, status: SupportEscalationStatus, answer: string) => Promise<void>
   notify: (kind: ToastKind, message: string) => void
@@ -145,6 +148,7 @@ export default function EscalationPanel({
   caseForm,
   staffName,
   saving,
+  canEditRouting,
   onEscalate,
   onUpdateEscalation,
   notify,
@@ -196,12 +200,12 @@ export default function EscalationPanel({
 
   const handleCopyShare = async () => {
     if (!shareText) return
-    try {
-      await navigator.clipboard.writeText(shareText)
+    const result = await copyText(shareText)
+    if (result.ok) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1800)
-    } catch {
-      notify('error', '共有文のコピーに失敗しました')
+    } else {
+      notify('error', '共有文のコピーに失敗しました。内容プレビューを開いて選択コピーしてください。')
     }
   }
 
@@ -210,7 +214,15 @@ export default function EscalationPanel({
     if (ok) setForm(emptyEscalateForm(form.assignee))
   }
 
-  const canSubmit = Boolean(detail) && form.assignee.trim().length > 0 && form.question.trim().length > 0
+  const validationIssues = useMemo(() => getEscalationDraftValidationIssues({
+    question: form.question,
+    assignee: form.assignee,
+    canEditRouting,
+    hasPresetAssignee: Boolean(detail?.escalationAssignee?.trim()),
+    detailStatus: detail?.status ?? null,
+  }), [canEditRouting, detail?.escalationAssignee, detail?.status, form.assignee, form.question])
+  const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
+  const canSubmit = Boolean(detail) && blockingValidationIssues.length === 0
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4" aria-label="エスカレーション">
@@ -228,11 +240,35 @@ export default function EscalationPanel({
       )}
 
       <fieldset disabled={!detail} className="mt-3 space-y-3 disabled:opacity-60">
+        {!canEditRouting && detail && (
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
+            staff権限では確認してほしい要点だけ入力できます。二次対応先、レベル、期限はowner/adminが設定します。
+          </div>
+        )}
+        {detail && validationIssues.length > 0 && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+            <p className="font-semibold">作成前に必要な入力があります</p>
+            <ul className="mt-1 space-y-1">
+              {validationIssues.map((issue) => (
+                <li key={issue.key} className="flex items-start gap-2">
+                  <span className="mt-0.5 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                    必須
+                  </span>
+                  <span>
+                    <span className="font-medium">{issue.fieldLabel}: </span>
+                    {issue.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className="grid grid-cols-[1fr_auto] gap-2">
           <input
             value={form.assignee}
             onChange={(e) => setForm((prev) => ({ ...prev, assignee: e.target.value }))}
-            className={inputCls}
+            disabled={!canEditRouting}
+            className={`${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`}
             placeholder="二次対応先（必須）"
             list="support-staff-names"
             aria-label="二次対応先"
@@ -244,9 +280,10 @@ export default function EscalationPanel({
                 type="button"
                 role="radio"
                 aria-checked={form.level === level}
+                disabled={!canEditRouting}
                 onClick={() => setForm((prev) => ({ ...prev, level }))}
                 className={`rounded px-2.5 py-1 text-sm font-semibold transition-colors ${
-                  form.level === level ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-700'
+                  form.level === level ? 'bg-indigo-600 text-white disabled:bg-indigo-300' : 'text-gray-500 hover:text-gray-700 disabled:hover:text-gray-500'
                 }`}
               >
                 {level}
@@ -259,11 +296,13 @@ export default function EscalationPanel({
             type="datetime-local"
             value={form.dueAt}
             onChange={(e) => setForm((prev) => ({ ...prev, dueAt: e.target.value }))}
-            className={inputCls}
+            disabled={!canEditRouting}
+            className={`${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`}
           />
           <DueTimePresetRow
             hasValue={Boolean(form.dueAt)}
             onApply={(value) => setForm((prev) => ({ ...prev, dueAt: value }))}
+            disabled={!canEditRouting}
           />
         </Field>
         <textarea
@@ -278,7 +317,7 @@ export default function EscalationPanel({
           onClick={handleSubmit}
           disabled={!canSubmit || saving}
           className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-          title={canSubmit ? undefined : '二次対応先と確認要点を入力してください'}
+          title={!detail ? '案件を選択してください' : blockingValidationIssues[0]?.message}
         >
           {saving ? '作成中…' : 'エスカレ作成'}
         </button>

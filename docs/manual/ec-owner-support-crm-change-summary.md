@@ -1,0 +1,118 @@
+---
+title: ECオーナー通達LINE サポートCRM 変更サマリー
+status: draft
+updated: 2026-06-13
+---
+
+# ECオーナー通達LINE サポートCRM 変更サマリー
+
+このファイルは、今回のサポートCRM差分をレビュー、PR作成、本番投入前確認で使うための提出用サマリーです。
+
+大きく見ると、今回の変更は「staffが見てよい範囲だけを見る」「チャット返信と案件履歴がつながる」「本番切替前に機械的に検査できる」の3点です。
+
+## 1. 実装
+
+### Worker API
+
+- support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
+- staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
+- staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
+- 完了済み案件からの顧客返信をLINE送信前に拒否
+- チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
+- 画像だけの返信でも、サポート案件への履歴連携を行う
+- staff名の空欄保存を防ぎ、staff名がないAPIキーをPreflightと画面で検知できるようにした
+- credentialed CORSをまとめ、ブラウザログインで必要な `Access-Control-Allow-Credentials` を確認できるようにした
+
+### Web UI
+
+- サポートCRMで現在のログイン権限を `/api/staff/me` から確認し、ローカルキャッシュだけでowner/admin操作を出さない
+- staffでは新規案件、担当/期限/優先度変更、マニュアル作成/更新/無効化などの管理操作を非表示または読み取り専用化
+- staff名が空欄の古いアカウントでは、理由を表示して操作を止める
+- 案件一覧に未完了、期限超過、24h滞留、担当者なし、エスカレ、自分宛、顧客返信待ち、完了のキューを整理
+- 選択中の案件が現在の絞り込み外にある場合、理由と復帰ボタンを表示
+- 長いチャットで過去メッセージを追加読み込みできる
+- サポート案件の「チャットで返信」からチャット入力欄へ返信案を引き継ぐ
+- sessionStorageが使えない場合でも、URLの `supportCase` で案件紐付けを維持
+- 画像とテキストを同時に送っても、案件がすでに「顧客返信待ち」なら不要な復旧警告を出さない
+- コピー、スタッフフォーム、認証キャッシュ、確認ダイアログをhelper化し、失敗時の案内を画面に出す
+
+### Scripts
+
+- `corepack pnpm preflight:support-crm` を追加
+- owner/admin/staff APIキーのログイン権限、CORS、サポート要約、案件一覧、マニュアル検索、チャット一覧を検査
+- staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
+- optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止を検査
+- `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
+
+## 2. テスト
+
+追加/更新した主なテスト:
+
+- `apps/worker/src/services/support-access.test.ts`
+- `apps/worker/src/routes/support.test.ts`
+- `apps/worker/src/routes/chats.test.ts`
+- `apps/worker/src/routes/staff.test.ts`
+- `apps/web/src/components/support/support-meta.test.ts`
+- `apps/web/src/lib/auth-session.test.ts`
+- `apps/web/src/lib/clipboard.test.ts`
+- `apps/web/src/lib/staff-form.test.ts`
+- `apps/web/src/lib/support-chat-draft.test.ts`
+- `scripts/support-crm-preflight.test.ts`
+
+直近で通した検証:
+
+```bash
+corepack pnpm --filter web test
+corepack pnpm test:scripts
+corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
+corepack pnpm build
+git diff --check
+```
+
+ローカル画面応答:
+
+```bash
+/staff   200
+/support 200
+/chats?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke 200
+```
+
+ブラウザ確認:
+
+- 未ログインで `/support` を開くと `/login` に戻る
+- ログイン画面とAPIキー入力欄が表示される
+- コンソールエラーは0件
+
+## 3. 運用ドキュメント
+
+- [サポートCRM運用マニュアル](./ec-owner-support-crm.md)
+- [本番投入前チェックリスト](./ec-owner-support-crm-release-checklist.md)
+
+運用マニュアルでは、日次対応、案件化基準、チャット返信、エスカレーション、マニュアル検索、完了条件、staff権限の制限を説明しています。
+
+本番投入前チェックリストでは、Preflightの通常実行とstrict実行、画面確認、PR用変更要約、rollback条件、切替NG条件をまとめています。
+
+## 4. レビューで特に見る場所
+
+- `apps/worker/src/services/support-access.ts`: staff可視範囲のSQL条件
+- `apps/worker/src/routes/support.ts`: role別更新制限、完了/再オープン、エスカレーション制限
+- `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、送信前検証、顧客返信イベント
+- `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
+- `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
+- `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲
+
+## 5. 含めていないこと
+
+- DB migrationは追加していない
+- 本番LINE公式アカウントへの切替は行っていない
+- 実顧客へのLINE送信は行っていない
+- 実データfixtureを使ったstrict Preflightは、環境変数が揃った本番切替前に実行する
+- APIキー、顧客情報、実友だちID、private URLはドキュメントに書かない
+
+## 6. 提出前チェック
+
+- [ ] 生成物、`.tsbuildinfo`、local env、秘密値が差分に含まれていない
+- [ ] PR本文に上記の検証コマンドを記載した
+- [ ] 本番投入前チェックリストの未検証項目をPR本文に明記した
+- [ ] rollback先のWorker/Pagesデプロイを確認した
+- [ ] staff権限の表示範囲を実データfixtureで確認した

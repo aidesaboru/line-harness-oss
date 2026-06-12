@@ -27,6 +27,8 @@ LINE Harness は、L社（Lstep）/ U社（Utage）の代替を狙う OSS の LI
 | 6 | [MCP × Claude Code](./06-mcp-claude-code.md) | 🔒 有料 | MCP 経由で運用を半自動化する設計パターン |
 | 7 | [トラブルシュート](./07-troubleshooting.md) | 無料 | 事故ナレッジ集（実例ベース） |
 | 特別編 | [ECオーナー通達LINE サポートCRM運用マニュアル](./ec-owner-support-crm.md) | 内部運用 | チャット対応、24時間超過、案件化、エスカレーション、完了条件 |
+| 特別編 | [ECオーナー通達LINE サポートCRM本番投入前チェックリスト](./ec-owner-support-crm-release-checklist.md) | 内部運用 | 本番切替前の自動検査、画面確認、PR要約、rollback確認 |
+| 特別編 | [ECオーナー通達LINE サポートCRM変更サマリー](./ec-owner-support-crm-change-summary.md) | 内部運用 | 実装、テスト、運用ドキュメント、レビュー観点の提出用サマリー |
 
 ## 読み方
 

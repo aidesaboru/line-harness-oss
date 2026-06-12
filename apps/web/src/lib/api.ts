@@ -33,6 +33,11 @@ import type {
   TrafficPool,
   PoolAccount,
 } from '@line-crm/shared'
+import {
+  getCsrfToken as readCsrfToken,
+  setCsrfToken as writeCsrfToken,
+} from './auth-session'
+export { CSRF_STORAGE_KEY } from './auth-session'
 
 /** Broadcast type from API (now camelCase after worker serialization) */
 export type ApiBroadcast = Omit<Broadcast, 'targetType'> & {
@@ -52,6 +57,36 @@ export type BroadcastInsight = {
   clickRate: number | null
   status?: string
   fetchedAt?: string | null
+}
+
+export type ChatMessage = {
+  id: string
+  direction: 'incoming' | 'outgoing'
+  messageType: string
+  content: string
+  createdAt: string
+}
+
+export type ChatMessageCursor = {
+  createdAt: string
+  id: string
+}
+
+export type ChatDetailResponse = Chat & {
+  messages?: ChatMessage[]
+  hasMoreMessages?: boolean
+  nextMessagesBefore?: ChatMessageCursor | null
+}
+
+export type ChatSendResponse = {
+  sent: boolean
+  messageId: string
+  supportCase: {
+    id: string
+    previousStatus: SupportCaseStatus
+    nextStatus: 'customer_reply' | null
+    statusUpdated: boolean
+  } | null
 }
 
 export type SupportCaseStatus =
@@ -204,16 +239,12 @@ if (!API_URL) {
  * directly, so the token is delivered in the login/session response body and
  * cached here.
  */
-export const CSRF_STORAGE_KEY = 'lh_csrf'
-
 export function getCsrfToken(): string {
-  if (typeof window === 'undefined') return ''
-  return localStorage.getItem(CSRF_STORAGE_KEY) || ''
+  return readCsrfToken()
 }
 
 export function setCsrfToken(token: string | undefined | null): void {
-  if (typeof window === 'undefined' || !token) return
-  localStorage.setItem(CSRF_STORAGE_KEY, token)
+  writeCsrfToken(token)
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
@@ -884,7 +915,7 @@ export const api = {
           method: 'POST',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
         }),
-      escalate: (id: string, accountId: string, data: { assignee: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
+      escalate: (id: string, accountId: string, data: { assignee?: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/cases/${id}/escalations`, {
           method: 'POST',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
@@ -956,8 +987,8 @@ export const api = {
           method: 'PATCH',
           body: JSON.stringify(data),
         }),
-      archive: (id: string) =>
-        fetchApi<ApiResponse<null>>(`/api/support/manuals/${id}`, { method: 'DELETE' }),
+      archive: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<null>>(`/api/support/manuals/${id}?` + new URLSearchParams({ lineAccountId: accountId }), { method: 'DELETE' }),
     },
   },
   chats: {
@@ -971,10 +1002,16 @@ export const api = {
         '/api/chats?' + new URLSearchParams(query),
       )
     },
-    get: (id: string) =>
-      fetchApi<ApiResponse<Chat & { messages?: { id: string; content: string; senderType: string; createdAt: string }[] }>>(
-        `/api/chats/${id}`,
-      ),
+    get: (id: string, params?: { messageLimit?: number; beforeCreatedAt?: string; beforeId?: string }) => {
+      const query: Record<string, string> = {}
+      if (params?.messageLimit) query.messageLimit = String(params.messageLimit)
+      if (params?.beforeCreatedAt) query.beforeCreatedAt = params.beforeCreatedAt
+      if (params?.beforeId) query.beforeId = params.beforeId
+      const qs = new URLSearchParams(query).toString()
+      return fetchApi<ApiResponse<ChatDetailResponse>>(
+        `/api/chats/${id}${qs ? `?${qs}` : ''}`,
+      )
+    },
     create: (data: { friendId: string; operatorId?: string | null }) =>
       fetchApi<ApiResponse<Chat>>('/api/chats', {
         method: 'POST',
@@ -985,8 +1022,8 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    send: (id: string, data: { content: string; messageType?: string }) =>
-      fetchApi<ApiResponse<unknown>>(`/api/chats/${id}/send`, {
+    send: (id: string, data: { content: string; messageType?: string; supportCaseId?: string; lineAccountId?: string | null }) =>
+      fetchApi<ApiResponse<ChatSendResponse>>(`/api/chats/${id}/send`, {
         method: 'POST',
         body: JSON.stringify(data),
       }),

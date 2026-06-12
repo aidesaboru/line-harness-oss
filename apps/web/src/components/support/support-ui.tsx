@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { dueTimePresets, dueUrgency, formatDateTime, formatRelativeDue } from './support-meta'
 
@@ -76,9 +76,11 @@ export function DueBadge({ value, prefix = '期限' }: { value: string | null | 
 export function DueTimePresetRow({
   onApply,
   hasValue,
+  disabled = false,
 }: {
   onApply: (value: string) => void
   hasValue: boolean
+  disabled?: boolean
 }) {
   return (
     <div className="mt-1 flex flex-wrap gap-1">
@@ -87,7 +89,8 @@ export function DueTimePresetRow({
           key={preset.label}
           type="button"
           onClick={() => onApply(preset.compute())}
-          className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:border-green-300 hover:bg-green-50 hover:text-green-700"
+          disabled={disabled}
+          className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-600 transition-colors hover:border-green-300 hover:bg-green-50 hover:text-green-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {preset.label}
         </button>
@@ -96,7 +99,8 @@ export function DueTimePresetRow({
         <button
           type="button"
           onClick={() => onApply('')}
-          className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
+          disabled={disabled}
+          className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[11px] font-medium text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
         >
           クリア
         </button>
@@ -176,6 +180,104 @@ export function ChatIcon({ className = 'h-4 w-4' }: IconProps) {
       <path d="M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 0 1-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
     </svg>
   )
+}
+
+// ─── 確認ダイアログ ───
+
+export type ConfirmTone = 'default' | 'warning' | 'danger'
+
+export interface ConfirmDialogOptions {
+  title: string
+  message: string
+  confirmLabel?: string
+  cancelLabel?: string
+  tone?: ConfirmTone
+}
+
+function ConfirmDialog({
+  options,
+  onResolve,
+}: {
+  options: ConfirmDialogOptions
+  onResolve: (confirmed: boolean) => void
+}) {
+  const titleId = useId()
+  const messageId = useId()
+  const tone = options.tone ?? 'default'
+  const confirmToneCls =
+    tone === 'danger'
+      ? 'bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500'
+      : tone === 'warning'
+        ? 'bg-amber-500 text-white hover:bg-amber-600 focus-visible:ring-amber-500'
+        : 'bg-gray-900 text-white hover:bg-gray-700 focus-visible:ring-gray-500'
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onResolve(false)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onResolve])
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={messageId}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onResolve(false)
+      }}
+    >
+      <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-4 shadow-xl">
+        <h2 id={titleId} className="text-base font-semibold text-gray-900">{options.title}</h2>
+        <p id={messageId} className="mt-2 whitespace-pre-wrap text-sm leading-6 text-gray-600">{options.message}</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onResolve(false)}
+            autoFocus
+            className={btnSecondaryCls}
+          >
+            {options.cancelLabel ?? 'キャンセル'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onResolve(true)}
+            className={`inline-flex items-center justify-center gap-1.5 rounded-md px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 ${confirmToneCls}`}
+          >
+            {options.confirmLabel ?? '実行'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export function useConfirmDialog() {
+  const [options, setOptions] = useState<ConfirmDialogOptions | null>(null)
+  const resolverRef = useRef<((confirmed: boolean) => void) | null>(null)
+
+  const close = useCallback((confirmed: boolean) => {
+    resolverRef.current?.(confirmed)
+    resolverRef.current = null
+    setOptions(null)
+  }, [])
+
+  const requestConfirm = useCallback((nextOptions: ConfirmDialogOptions) => {
+    resolverRef.current?.(false)
+    return new Promise<boolean>((resolve) => {
+      resolverRef.current = resolve
+      setOptions(nextOptions)
+    })
+  }, [])
+
+  useEffect(() => () => resolverRef.current?.(false), [])
+
+  const confirmDialog = options ? <ConfirmDialog options={options} onResolve={close} /> : null
+
+  return { requestConfirm, confirmDialog }
 }
 
 // ─── トースト通知 ───

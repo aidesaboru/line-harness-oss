@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { cors } from 'hono/cors';
 import { LineClient } from '@line-crm/line-sdk';
 import {
   getLineAccounts,
@@ -23,6 +22,7 @@ import { sendEventBookingNotification } from './services/event-booking-notifier.
 import { sendBookingNotification } from './services/booking-notifier.js';
 import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
+import { credentialedCors } from './middleware/cors.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
 import { webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
@@ -126,13 +126,7 @@ const app = new Hono<Env>();
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
 // else gets no Access-Control-Allow-Origin header (browser blocks it). Bearer
 // SDK/MCP callers send no Origin header and are unaffected.
-app.use('*', cors({
-  origin: (origin, c) => resolveCorsOrigin(c.env, origin, c.req.url),
-  credentials: true,
-  allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token'],
-  maxAge: 600,
-}));
+app.use('*', credentialedCors((origin, c) => resolveCorsOrigin(c.env, origin, c.req.url)));
 
 // Rate limiting — runs before auth to block abuse early
 app.use('*', rateLimitMiddleware);

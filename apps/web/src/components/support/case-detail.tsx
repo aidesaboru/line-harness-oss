@@ -6,9 +6,12 @@ import type { SupportCaseDetail, SupportCaseStatus } from '@/lib/api'
 import {
   categoryLabel,
   categoryOptions,
+  canOpenChatWithDraft,
   eventTypeLabel,
   formatDateTime,
   formatElapsed,
+  getCaseFormValidationIssues,
+  getVisibleStatusOptions,
   isOverdueCase,
   isStaleCase,
   priorityClass,
@@ -17,8 +20,8 @@ import {
   resolveChecklist,
   statusClass,
   statusLabel,
-  statusOptions,
   type CaseFormState,
+  type SupportEmptyState,
 } from './support-meta'
 import {
   btnPrimaryCls,
@@ -44,13 +47,19 @@ interface CaseDetailProps {
   caseForm: CaseFormState
   dirty: boolean
   saving: boolean
+  canEditRouting: boolean
   detailTab: DetailTab
   onFormChange: (patch: Partial<CaseFormState>) => void
   onSave: () => void
   onDiscard: () => void
   onQuickStatus: (status: SupportCaseStatus, eventBody: string) => Promise<boolean>
+  onOpenChatWithDraft: () => void
   onTabChange: (tab: DetailTab) => void
   onCopyReplyDraft: () => void
+  emptyState?: Pick<SupportEmptyState, 'title' | 'description'>
+  outsideCurrentList?: boolean
+  outsideCurrentListActionLabel?: string
+  onResetFilters?: () => void
 }
 
 function DetailSkeleton() {
@@ -70,14 +79,16 @@ function DetailSkeleton() {
   )
 }
 
-function EmptyDetail() {
+function EmptyDetail({ emptyState }: { emptyState?: Pick<SupportEmptyState, 'title' | 'description'> }) {
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-24 text-center">
       <span className="rounded-full bg-gray-100 p-3 text-gray-400">
         <ChatIcon className="h-6 w-6" />
       </span>
-      <p className="text-sm font-medium text-gray-600">案件を選択してください</p>
-      <p className="text-xs text-gray-400">左の一覧、または上部のキューから絞り込めます</p>
+      <p className="text-sm font-medium text-gray-600">{emptyState?.title ?? '案件を選択してください'}</p>
+      <p className="max-w-sm text-xs leading-relaxed text-gray-400">
+        {emptyState?.description ?? '左の一覧、または上部のキューから絞り込めます'}
+      </p>
     </div>
   )
 }
@@ -143,13 +154,19 @@ export default function CaseDetail({
   caseForm,
   dirty,
   saving,
+  canEditRouting,
   detailTab,
   onFormChange,
   onSave,
   onDiscard,
   onQuickStatus,
+  onOpenChatWithDraft,
   onTabChange,
   onCopyReplyDraft,
+  emptyState,
+  outsideCurrentList = false,
+  outsideCurrentListActionLabel = '絞り込みをリセット',
+  onResetFilters,
 }: CaseDetailProps) {
   const [completing, setCompleting] = useState(false)
 
@@ -164,7 +181,7 @@ export default function CaseDetail({
   if (!detail) {
     return (
       <section className="rounded-lg border border-gray-200 bg-white">
-        <EmptyDetail />
+        <EmptyDetail emptyState={emptyState} />
       </section>
     )
   }
@@ -173,10 +190,17 @@ export default function CaseDetail({
   const stale = isStaleCase(detail)
   const unassigned = !caseForm.primaryAssignee.trim()
   const chatHref = detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
-
-  const onHoldIncomplete =
-    caseForm.status === 'on_hold' && (!caseForm.nextCheckAt || !caseForm.internalNote.trim())
-  const resolvedIncomplete = caseForm.status === 'resolved' && !caseForm.resolutionNote.trim()
+  const lockedInputCls = `${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
+  const lockedSelectCls = `${selectCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
+  const visibleStatusOptions = getVisibleStatusOptions(detail.status, caseForm.status)
+  const validationIssues = getCaseFormValidationIssues(caseForm, { hasChat: Boolean(chatHref) })
+  const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
+  const canSave = dirty && blockingValidationIssues.length === 0
+  const showChatReplyAction = canOpenChatWithDraft({
+    status: caseForm.status,
+    hasDraft: Boolean(caseForm.customerReplyDraft.trim()),
+    hasChat: Boolean(chatHref),
+  })
 
   const handleConfirmComplete = async () => {
     const ok = await onQuickStatus('resolved', '対応を完了しました')
@@ -217,13 +241,37 @@ export default function CaseDetail({
           </div>
           <button
             onClick={onSave}
-            disabled={saving || !dirty}
-            title="⌘S / Ctrl+S でも保存できます"
+            disabled={saving || !canSave}
+            title={blockingValidationIssues[0]?.message ?? '⌘S / Ctrl+S でも保存できます'}
             className={btnPrimaryCls}
           >
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
+
+        {outsideCurrentList && (
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+            role="status"
+          >
+            <div>
+              <p className="font-semibold">この案件は現在の一覧条件外です</p>
+              <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
+                保存中の作業を守るため詳細は残しています。左の一覧とそろえる場合は絞り込みを戻してください。
+              </p>
+            </div>
+            {onResetFilters && (
+              <button
+                type="button"
+                onClick={onResetFilters}
+                disabled={saving}
+                className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-xs font-semibold text-amber-800 transition-colors hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {outsideCurrentListActionLabel}
+              </button>
+            )}
+          </div>
+        )}
 
         {/* 注意ストリップ */}
         {(overdue || stale || unassigned) && caseForm.status !== 'resolved' && (
@@ -237,8 +285,48 @@ export default function CaseDetail({
                 </Pill>
               )}
               {unassigned && <Pill className="border-amber-200 bg-white text-amber-700">担当者なし</Pill>}
-              <span className="font-medium">先に担当・期限・返信方針を確定してください</span>
+              <span className="font-medium">
+                {canEditRouting ? '先に担当・期限・返信方針を確定してください' : '担当・期限の調整はowner/adminに依頼してください'}
+              </span>
             </div>
+          </div>
+        )}
+
+        {!canEditRouting && (
+          <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
+            staff権限では対応内容だけ編集できます。担当割り、期限、優先度、顧客属性はowner/adminが管理します。
+          </div>
+        )}
+
+        {validationIssues.length > 0 && (
+          <div
+            className={`rounded-lg border px-3 py-2 text-sm ${
+              blockingValidationIssues.length > 0
+                ? 'border-red-200 bg-red-50 text-red-800'
+                : 'border-blue-200 bg-blue-50 text-blue-800'
+            }`}
+            role={blockingValidationIssues.length > 0 ? 'alert' : 'status'}
+          >
+            <p className="font-semibold">
+              {blockingValidationIssues.length > 0 ? '保存前に必要な入力があります' : '返信前の確認'}
+            </p>
+            <ul className="mt-1 space-y-1">
+              {validationIssues.map((issue) => (
+                <li key={issue.key} className="flex items-start gap-2">
+                  <span
+                    className={`mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                      issue.severity === 'error' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+                    }`}
+                  >
+                    {issue.blocking ? '必須' : '確認'}
+                  </span>
+                  <span>
+                    <span className="font-medium">{issue.fieldLabel}: </span>
+                    {issue.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
@@ -254,14 +342,15 @@ export default function CaseDetail({
                 onChange={(e) => onFormChange({ status: e.target.value as SupportCaseStatus })}
                 className={selectCls}
               >
-                {statusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                {visibleStatusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </Field>
             <Field label="優先度">
               <select
                 value={caseForm.priority}
                 onChange={(e) => onFormChange({ priority: e.target.value as CaseFormState['priority'] })}
-                className={selectCls}
+                disabled={!canEditRouting}
+                className={lockedSelectCls}
               >
                 {priorityOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
@@ -271,7 +360,8 @@ export default function CaseDetail({
                 value={caseForm.primaryAssignee}
                 onChange={(e) => onFormChange({ primaryAssignee: e.target.value })}
                 placeholder="担当者名"
-                className={inputCls}
+                disabled={!canEditRouting}
+                className={lockedInputCls}
                 list="support-staff-names"
               />
             </Field>
@@ -280,24 +370,16 @@ export default function CaseDetail({
                 type="datetime-local"
                 value={caseForm.dueAt}
                 onChange={(e) => onFormChange({ dueAt: e.target.value })}
-                className={inputCls}
+                disabled={!canEditRouting}
+                className={lockedInputCls}
               />
               <DueTimePresetRow
                 hasValue={Boolean(caseForm.dueAt)}
                 onApply={(value) => onFormChange({ dueAt: value })}
+                disabled={!canEditRouting}
               />
             </Field>
           </div>
-          {onHoldIncomplete && (
-            <p className="mt-2 text-xs font-medium text-amber-700">
-              保留にするには「内部メモ」と「次回確認」の入力が必要です
-            </p>
-          )}
-          {resolvedIncomplete && (
-            <p className="mt-2 text-xs font-medium text-red-700">
-              完了にするには「対応結果メモ」の入力が必要です
-            </p>
-          )}
         </div>
 
         {/* クイックアクション */}
@@ -343,14 +425,27 @@ export default function CaseDetail({
               </button>
             )}
             {caseForm.customerReplyDraft.trim() && (
-              <button
-                type="button"
-                onClick={onCopyReplyDraft}
-                className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
-              >
-                <CopyIcon className="h-3.5 w-3.5" />
-                返信案をコピー
-              </button>
+              <>
+                {showChatReplyAction && (
+                  <button
+                    type="button"
+                    onClick={onOpenChatWithDraft}
+                    disabled={saving}
+                    className="inline-flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+                  >
+                    <ChatIcon className="h-3.5 w-3.5" />
+                    チャットで返信
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onCopyReplyDraft}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                >
+                  <CopyIcon className="h-3.5 w-3.5" />
+                  返信案をコピー
+                </button>
+              </>
             )}
           </div>
         )}
@@ -383,14 +478,16 @@ export default function CaseDetail({
                 <input
                   value={caseForm.title}
                   onChange={(e) => onFormChange({ title: e.target.value })}
-                  className={inputCls}
+                  disabled={!canEditRouting}
+                  className={lockedInputCls}
                 />
               </Field>
               <Field label="種別">
                 <select
                   value={caseForm.category}
                   onChange={(e) => onFormChange({ category: e.target.value })}
-                  className={selectCls}
+                  disabled={!canEditRouting}
+                  className={lockedSelectCls}
                 >
                   {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select>
@@ -403,7 +500,8 @@ export default function CaseDetail({
                   value={caseForm.escalationAssignee}
                   onChange={(e) => onFormChange({ escalationAssignee: e.target.value })}
                   placeholder="二次対応者名"
-                  className={inputCls}
+                  disabled={!canEditRouting}
+                  className={lockedInputCls}
                   list="support-staff-names"
                 />
               </Field>
@@ -427,19 +525,19 @@ export default function CaseDetail({
               </summary>
               <div className="grid gap-3 p-3 md:grid-cols-3 xl:grid-cols-5">
                 <Field label="顧客番号">
-                  <input value={caseForm.customerNumber} onChange={(e) => onFormChange({ customerNumber: e.target.value })} className={inputCls} />
+                  <input value={caseForm.customerNumber} onChange={(e) => onFormChange({ customerNumber: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
                 </Field>
                 <Field label="法人名">
-                  <input value={caseForm.companyName} onChange={(e) => onFormChange({ companyName: e.target.value })} className={inputCls} />
+                  <input value={caseForm.companyName} onChange={(e) => onFormChange({ companyName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
                 </Field>
                 <Field label="担当者名">
-                  <input value={caseForm.contactName} onChange={(e) => onFormChange({ contactName: e.target.value })} className={inputCls} />
+                  <input value={caseForm.contactName} onChange={(e) => onFormChange({ contactName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
                 </Field>
                 <Field label="店舗名">
-                  <input value={caseForm.storeName} onChange={(e) => onFormChange({ storeName: e.target.value })} className={inputCls} />
+                  <input value={caseForm.storeName} onChange={(e) => onFormChange({ storeName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
                 </Field>
                 <Field label="契約種別">
-                  <input value={caseForm.contractType} onChange={(e) => onFormChange({ contractType: e.target.value })} className={inputCls} />
+                  <input value={caseForm.contractType} onChange={(e) => onFormChange({ contractType: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
                 </Field>
               </div>
             </details>
@@ -464,7 +562,7 @@ export default function CaseDetail({
                   className={textareaCls}
                 />
               </Field>
-              <Field label="顧客向け返信案" hint="コピーしてチャットで送信">
+              <Field label="顧客向け返信案" hint="チャットで返信へ引き継ぎ">
                 <textarea
                   value={caseForm.customerReplyDraft}
                   onChange={(e) => onFormChange({ customerReplyDraft: e.target.value })}
@@ -493,7 +591,7 @@ export default function CaseDetail({
                 {chatHref && (
                   <Link href={chatHref} className="inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:underline">
                     <ChatIcon className="h-3.5 w-3.5" />
-                    チャットで返信
+                    チャットを開く
                   </Link>
                 )}
               </div>
@@ -554,7 +652,8 @@ export default function CaseDetail({
             <button
               type="button"
               onClick={onSave}
-              disabled={saving}
+              disabled={saving || !canSave}
+              title={blockingValidationIssues[0]?.message}
               className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50"
             >
               {saving ? '保存中…' : '保存 (⌘S)'}

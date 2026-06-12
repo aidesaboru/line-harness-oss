@@ -2,7 +2,15 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
-import { api, fetchApi } from '@/lib/api'
+import { api, fetchApi, type ChatMessageCursor } from '@/lib/api'
+import {
+  buildSupportChatRecoveryNotice,
+  buildSupportChatSendCasePayload,
+  buildSupportChatFallbackContext,
+  consumeSupportChatDraft,
+  type SupportChatRecoveryNotice,
+  type SupportChatDraftContext,
+} from '@/lib/support-chat-draft'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
@@ -38,6 +46,8 @@ interface ChatDetail extends Chat {
   friendName: string
   friendPictureUrl: string | null
   messages?: ChatMessage[]
+  hasMoreMessages?: boolean
+  nextMessagesBefore?: ChatMessageCursor | null
 }
 
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
@@ -185,18 +195,27 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   const [sending, setSending] = useState(false)
   const [messages, setMessages] = useState<MessageLog[]>([])
   const [loadingMessages, setLoadingMessages] = useState(true)
+  const [historyError, setHistoryError] = useState('')
+  const [sendError, setSendError] = useState('')
   const isComposingRef = useRef(false)
   const sendLockRef = useRef(false)
 
   useEffect(() => {
     const loadMessages = async () => {
       setLoadingMessages(true)
+      setHistoryError('')
       try {
         const res = await fetchApi<{ success: boolean; data: MessageLog[] }>(
           `/api/friends/${friendId}/messages`
         )
-        if (res.success) setMessages(res.data)
-      } catch { /* silent */ }
+        if (res.success) {
+          setMessages(res.data)
+        } else {
+          setHistoryError('メッセージ履歴の読み込みに失敗しました。')
+        }
+      } catch {
+        setHistoryError('メッセージ履歴の読み込みに失敗しました。')
+      }
       setLoadingMessages(false)
     }
     loadMessages()
@@ -204,24 +223,33 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
 
   const handleSend = async () => {
     if (!message.trim() || sending || sendLockRef.current) return
+    const content = message.trim()
     sendLockRef.current = true
     setSending(true)
+    setSendError('')
     try {
-      await fetchApi(`/api/friends/${friendId}/messages`, {
+      const res = await fetchApi<{ success: boolean; data?: { messageId: string }; error?: string }>(`/api/friends/${friendId}/messages`, {
         method: 'POST',
-        body: JSON.stringify({ content: message, messageType: 'text' }),
+        body: JSON.stringify({ content, messageType: 'text' }),
       })
+      if (!res.success) {
+        setSendError(res.error ?? 'メッセージの送信に失敗しました。')
+        return
+      }
       setMessages((prev) => [...prev, {
-        id: crypto.randomUUID(),
+        id: res.data?.messageId ?? crypto.randomUUID(),
         direction: 'outgoing',
         messageType: 'text',
-        content: message,
+        content,
         createdAt: new Date().toISOString(),
       }])
       setMessage('')
-    } catch { /* silent */ }
-    setSending(false)
-    sendLockRef.current = false
+    } catch {
+      setSendError('メッセージの送信に失敗しました。')
+    } finally {
+      setSending(false)
+      sendLockRef.current = false
+    }
   }
 
   function renderContent(msg: MessageLog) {
@@ -277,6 +305,8 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
         {loadingMessages ? (
           <p className="text-center text-gray-400 text-sm">読み込み中...</p>
+        ) : historyError ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{historyError}</p>
         ) : messages.length === 0 ? (
           <p className="text-center text-gray-400 text-sm">メッセージ履歴がありません</p>
         ) : (
@@ -297,11 +327,17 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         )}
       </div>
       <div className="px-4 py-3 border-t border-gray-200">
+        {sendError && (
+          <p className="mb-2 text-xs text-red-600">{sendError}</p>
+        )}
         <div className="flex gap-2">
           <input
             type="text"
             value={message}
-            onChange={(e) => setMessage(e.target.value)}
+            onChange={(e) => {
+              setMessage(e.target.value)
+              if (sendError) setSendError('')
+            }}
             onCompositionStart={() => { isComposingRef.current = true }}
             onCompositionEnd={() => { isComposingRef.current = false }}
             onKeyDown={(e) => {
@@ -367,8 +403,11 @@ export default function ChatsPage() {
   const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [supportDraftContext, setSupportDraftContext] = useState<SupportChatDraftContext | null>(null)
+  const [supportRecoveryNotice, setSupportRecoveryNotice] = useState<SupportChatRecoveryNotice | null>(null)
   const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
   const [sending, setSending] = useState(false)
   const sendLockRef = useRef(false)
@@ -380,6 +419,7 @@ export default function ChatsPage() {
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
+  const preserveScrollOnNextMessagesChangeRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -420,6 +460,8 @@ export default function ChatsPage() {
       const chatRes = await api.chats.list(params)
       if (chatRes.success) {
         setChats(chatRes.data as unknown as Chat[])
+      } else {
+        setError(chatRes.error ?? 'チャットの読み込みに失敗しました。もう一度お試しください。')
       }
     } catch {
       setError('チャットの読み込みに失敗しました。もう一度お試しください。')
@@ -458,6 +500,7 @@ export default function ChatsPage() {
 
   const loadChatDetail = useCallback(async (chatId: string) => {
     setDetailLoading(true)
+    setLoadingOlderMessages(false)
     setError('')
     try {
       const res = await api.chats.get(chatId)
@@ -478,6 +521,51 @@ export default function ChatsPage() {
     }
   }, [])
 
+  const handleLoadOlderMessages = useCallback(async () => {
+    if (!chatDetail?.id || !chatDetail.nextMessagesBefore || loadingOlderMessages) return
+    const cursor = chatDetail.nextMessagesBefore
+    const scrollEl = messagesScrollRef.current
+    const previousScrollHeight = scrollEl?.scrollHeight ?? 0
+    setLoadingOlderMessages(true)
+    setError('')
+    try {
+      const res = await api.chats.get(chatDetail.id, {
+        messageLimit: 1000,
+        beforeCreatedAt: cursor.createdAt,
+        beforeId: cursor.id,
+      })
+      if (!res.success) {
+        const errMsg = (res as { error?: string }).error ?? '不明なエラー'
+        setError(`過去メッセージの読み込みに失敗しました: ${errMsg}`)
+        return
+      }
+
+      const olderDetail = res.data as ChatDetail
+      preserveScrollOnNextMessagesChangeRef.current = true
+      setChatDetail((prev) => {
+        if (!prev || prev.id !== chatDetail.id) return prev
+        return {
+          ...prev,
+          messages: [...(olderDetail.messages ?? []), ...(prev.messages ?? [])],
+          hasMoreMessages: olderDetail.hasMoreMessages,
+          nextMessagesBefore: olderDetail.nextMessagesBefore ?? null,
+        }
+      })
+
+      window.setTimeout(() => {
+        preserveScrollOnNextMessagesChangeRef.current = false
+        const current = messagesScrollRef.current
+        if (!current) return
+        current.scrollTop = current.scrollHeight - previousScrollHeight + current.scrollTop
+      }, 0)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(`過去メッセージの読み込みに失敗しました: ${msg}`)
+    } finally {
+      setLoadingOlderMessages(false)
+    }
+  }, [chatDetail?.id, chatDetail?.nextMessagesBefore, loadingOlderMessages])
+
   useEffect(() => {
     loadChats()
   }, [loadChats])
@@ -490,7 +578,21 @@ export default function ChatsPage() {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
     const friendId = params.get('friend')
+    const supportCaseId = params.get('supportCase')
     if (friendId) setSelectedChatId(friendId)
+    if (!friendId || !supportCaseId) return
+    let context: SupportChatDraftContext | null = null
+    try {
+      context = consumeSupportChatDraft(window.sessionStorage, window.location.search)
+    } catch {
+      context = null
+    }
+    context ??= buildSupportChatFallbackContext(window.location.search)
+    if (context) {
+      if (context.draft) setMessageContent(context.draft)
+      setSupportDraftContext(context)
+      setSupportRecoveryNotice(null)
+    }
   }, [])
 
   useEffect(() => {
@@ -540,6 +642,10 @@ export default function ChatsPage() {
   // ユーザーが手動でスクロールしたら delayed auto-scroll は発動させない。
   useEffect(() => {
     if (!chatDetail?.messages || chatDetail.messages.length === 0) return
+    if (preserveScrollOnNextMessagesChangeRef.current) {
+      preserveScrollOnNextMessagesChangeRef.current = false
+      return
+    }
     const el = messagesScrollRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
@@ -575,6 +681,8 @@ export default function ChatsPage() {
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
     setMessageContent('')
+    setSupportDraftContext(null)
+    setSupportRecoveryNotice(null)
     setPendingImage(null)
   }
 
@@ -587,10 +695,13 @@ export default function ChatsPage() {
     lastLoadingTriggerAtRef.current[chatId] = now
 
     try {
-      await fetchApi<{ success: boolean }>(`/api/chats/${chatId}/loading`, {
+      const res = await fetchApi<{ success: boolean; error?: string }>(`/api/chats/${chatId}/loading`, {
         method: 'POST',
         body: JSON.stringify({ loadingSeconds }),
       })
+      if (!res.success) {
+        setError(res.error ?? 'ローディング表示の開始に失敗しました。')
+      }
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'unknown'
       setError(`ローディング表示の開始に失敗しました: ${detail}`)
@@ -601,8 +712,14 @@ export default function ChatsPage() {
     if (!selectedChatId || sending || sendLockRef.current) return
     if (!messageContent.trim() && !pendingImage) return
     const sendingChatId = selectedChatId  // capture the chat id for this send
+    const supportContext = supportDraftContext
+    const textContent = messageContent.trim()
+    const hasLineImage = pendingImage?.mode === 'line-image'
+    const attachSupportToImage = Boolean(supportContext && hasLineImage)
+    const attachSupportToText = Boolean(supportContext && !attachSupportToImage && textContent)
     sendLockRef.current = true
     setSending(true)
+    if (supportContext) setSupportRecoveryNotice(null)
     try {
       const now = new Date().toISOString()
       // --- Image send path (runs first when image is present) ---
@@ -611,7 +728,23 @@ export default function ChatsPage() {
           originalContentUrl: pendingImage.originalContentUrl,
           previewImageUrl: pendingImage.previewImageUrl,
         })
-        await api.chats.send(sendingChatId, { messageType: 'image', content: imgPayload })
+        const imageResult = await api.chats.send(sendingChatId, {
+          messageType: 'image',
+          content: imgPayload,
+          ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
+        })
+        if (!imageResult.success) {
+          setError(imageResult.error ?? '画像メッセージの送信に失敗しました。')
+          return
+        }
+        if (attachSupportToImage) {
+          const recoveryNotice = buildSupportChatRecoveryNotice(imageResult.data.supportCase, supportContext)
+          if (recoveryNotice) {
+            setSupportRecoveryNotice(recoveryNotice)
+            setError('')
+          }
+          setSupportDraftContext(null)
+        }
         setPendingImage(null)
         // Optimistic update for image
         setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
@@ -655,10 +788,23 @@ export default function ChatsPage() {
         })
       }
       // --- Text send path (runs independently — both paths execute when both image and text are present) ---
-      if (messageContent.trim()) {
-        const content = messageContent.trim()
-        await api.chats.send(sendingChatId, { content })
+      if (textContent) {
+        const content = textContent
+        const sendResult = await api.chats.send(sendingChatId, {
+          content,
+          ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
+        })
+        if (!sendResult.success) {
+          setError(sendResult.error ?? 'メッセージの送信に失敗しました。')
+          return
+        }
+        const recoveryNotice = buildSupportChatRecoveryNotice(sendResult.data.supportCase, supportContext)
+        if (recoveryNotice) {
+          setSupportRecoveryNotice(recoveryNotice)
+          setError('')
+        }
         setMessageContent('')
+        if (supportContext) setSupportDraftContext(null)
         // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
         // Only mutate chatDetail if it still corresponds to the chat we just sent to
         setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
@@ -717,7 +863,12 @@ export default function ChatsPage() {
   const handleStatusUpdate = async (newStatus: Chat['status']) => {
     if (!selectedChatId) return
     try {
-      await api.chats.update(selectedChatId, { status: newStatus })
+      const res = await api.chats.update(selectedChatId, { status: newStatus })
+      if (!res.success) {
+        setError(res.error ?? 'ステータスの更新に失敗しました。')
+        return
+      }
+      setError('')
       loadChatDetail(selectedChatId)
       loadChats()
     } catch {
@@ -729,7 +880,12 @@ export default function ChatsPage() {
     if (!selectedChatId) return
     setSavingNotes(true)
     try {
-      await api.chats.update(selectedChatId, { notes })
+      const res = await api.chats.update(selectedChatId, { notes })
+      if (!res.success) {
+        setError(res.error ?? 'メモの保存に失敗しました。')
+        return
+      }
+      setError('')
       loadChatDetail(selectedChatId)
     } catch {
       setError('メモの保存に失敗しました。')
@@ -1041,6 +1197,18 @@ export default function ChatsPage() {
 
               {/* Messages — LINE-style chat bubbles */}
               <div ref={messagesScrollRef} className="flex-1 overflow-y-auto p-4 space-y-2" style={{ backgroundColor: '#7494C0' }}>
+                {chatDetail.hasMoreMessages && (
+                  <div className="flex justify-center pb-2">
+                    <button
+                      type="button"
+                      onClick={handleLoadOlderMessages}
+                      disabled={loadingOlderMessages}
+                      className="rounded-full bg-white/90 px-3 py-1 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {loadingOlderMessages ? '読み込み中...' : '過去のメッセージを読み込む'}
+                    </button>
+                  </div>
+                )}
                 {(!chatDetail.messages || chatDetail.messages.length === 0) ? (
                   <div className="text-center py-8">
                     <p className="text-white/60 text-sm">メッセージはまだありません。</p>
@@ -1141,6 +1309,61 @@ export default function ChatsPage() {
 
               {/* Send Message Form */}
               <div className="px-4 py-3 border-t border-gray-200">
+                {supportDraftContext && (
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
+                    <span className="font-medium">
+                      サポート案件「{supportDraftContext.caseTitle || supportDraftContext.caseId}」
+                      {supportDraftContext.draft ? 'の返信案を入力中' : 'に紐づけ中'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSupportDraftContext(null)}
+                      className="rounded border border-green-300 bg-white px-2 py-1 font-medium text-green-700 hover:bg-green-100"
+                    >
+                      紐付け解除
+                    </button>
+                  </div>
+                )}
+                {supportRecoveryNotice && (
+                  <div className="mb-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" role="alert">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold">{supportRecoveryNotice.title}</p>
+                        <p className="mt-1 break-words">{supportRecoveryNotice.message}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSupportRecoveryNotice(null)}
+                        className="rounded border border-amber-300 bg-white px-2 py-1 font-medium text-amber-800 hover:bg-amber-100"
+                      >
+                        閉じる
+                      </button>
+                    </div>
+                    <ol className="mt-2 list-decimal space-y-1 pl-4">
+                      {supportRecoveryNotice.steps.map((step) => (
+                        <li key={step}>{step}</li>
+                      ))}
+                    </ol>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <a
+                        href={supportRecoveryNotice.supportHref}
+                        className="rounded-md bg-amber-700 px-3 py-1.5 font-semibold text-white hover:bg-amber-800"
+                      >
+                        案件を開く
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (selectedChatId) void loadChatDetail(selectedChatId)
+                          void loadChats()
+                        }}
+                        className="rounded-md border border-amber-300 bg-white px-3 py-1.5 font-semibold text-amber-800 hover:bg-amber-100"
+                      >
+                        チャットを再読み込み
+                      </button>
+                    </div>
+                  </div>
+                )}
                 <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
                   <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                     <input

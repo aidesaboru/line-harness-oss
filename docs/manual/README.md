@@ -26,6 +26,7 @@ LINE Harness は、L社（Lstep）/ U社（Utage）の代替を狙う OSS の LI
 | 5 | [運用フロー](./05-operations.md) | 🔒 有料 | 週次 A/B テスト、BAN 対策、配信ガバナンス |
 | 6 | [MCP × Claude Code](./06-mcp-claude-code.md) | 🔒 有料 | MCP 経由で運用を半自動化する設計パターン |
 | 7 | [トラブルシュート](./07-troubleshooting.md) | 無料 | 事故ナレッジ集（実例ベース） |
+| 特別編 | [ECオーナー通達LINE サポートCRM運用マニュアル](./ec-owner-support-crm.md) | 内部運用 | チャット対応、24時間超過、案件化、エスカレーション、完了条件 |
 
 ## 読み方
 

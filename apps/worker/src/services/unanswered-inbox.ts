@@ -1,3 +1,8 @@
+import {
+  supportFriendVisibilitySql,
+  type SupportAccessStaff,
+} from './support-access.js';
+
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
 
@@ -74,7 +79,7 @@ function consumeAutoReplyEvidence(
 // 候補 friend のメタデータ + 集約タイムスタンプ。
 // プレビュー/タイプは別クエリで last_manual 以降の incoming 群から JS で決める
 // (auto_reply マッチを除いた「最新の非マッチ incoming」が triage 対象)。
-const CANDIDATES_SQL = `
+const CANDIDATES_BASE_SQL = `
   WITH agg AS (
     SELECT
       friend_id,
@@ -102,8 +107,18 @@ const CANDIDATES_SQL = `
     AND (la.id IS NULL OR la.is_active = 1)
     AND agg.last_incoming IS NOT NULL
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
-  ORDER BY agg.last_incoming ASC
 `;
+
+function buildCandidatesQuery(staff?: SupportAccessStaff): { sql: string; binds: unknown[] } {
+  const visibility = staff
+    ? supportFriendVisibilitySql(staff, 'f.id')
+    : { sql: '', binds: [] };
+  const supportScope = visibility.sql ? `\n    AND ${visibility.sql}` : '';
+  return {
+    sql: `${CANDIDATES_BASE_SQL}${supportScope}\n  ORDER BY agg.last_incoming ASC`,
+    binds: visibility.binds,
+  };
+}
 
 // 候補 friend の "last_manual 以降の全 incoming" (postback 除く)。
 // 当初は friend_id IN (?, ...) で candidate scope する設計だったが、
@@ -181,6 +196,7 @@ export interface UnansweredInboxOptions {
   minWaitMinutes?: number;
   page?: number;
   pageSize?: number;
+  staff?: SupportAccessStaff;
 }
 
 interface RawCandidateRow {
@@ -230,8 +246,15 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  * 4. JS で各 incoming を判定: 応答あり証拠 OR silent ルール match で「マッチ済」、
  *    マッチしない最新の incoming を preview として採用。全部マッチした thread のみ除外。
  */
-async function getAllUnansweredRows(db: D1Database): Promise<UnansweredRow[]> {
-  const candidatesResult = await db.prepare(CANDIDATES_SQL).all<RawCandidateRow>();
+async function getAllUnansweredRows(
+  db: D1Database,
+  staff?: SupportAccessStaff,
+): Promise<UnansweredRow[]> {
+  const candidatesQuery = buildCandidatesQuery(staff);
+  const candidatesStmt = candidatesQuery.binds.length > 0
+    ? db.prepare(candidatesQuery.sql).bind(...candidatesQuery.binds)
+    : db.prepare(candidatesQuery.sql);
+  const candidatesResult = await candidatesStmt.all<RawCandidateRow>();
   const candidates = candidatesResult.results ?? [];
   if (candidates.length === 0) return [];
 
@@ -309,7 +332,7 @@ export async function computeUnansweredInbox(
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, opts.pageSize ?? DEFAULT_PAGE_SIZE));
   const offset = (page - 1) * pageSize;
 
-  const allRows = await getAllUnansweredRows(db);
+  const allRows = await getAllUnansweredRows(db, opts.staff);
   const filtered = applyFilters(allRows, opts);
   const slice = filtered.slice(offset, offset + pageSize);
 
@@ -326,13 +349,19 @@ export async function computeUnansweredInbox(
  * /api/chats?unansweredOnly=true で chat list を絞るのに使う。
  * 判定ロジックは getAllUnansweredRows と同じ source of truth。
  */
-export async function getUnansweredFriendIds(db: D1Database): Promise<Set<string>> {
-  const rows = await getAllUnansweredRows(db);
+export async function getUnansweredFriendIds(
+  db: D1Database,
+  staff?: SupportAccessStaff,
+): Promise<Set<string>> {
+  const rows = await getAllUnansweredRows(db, staff);
   return new Set(rows.map((r) => r.friendId));
 }
 
-export async function countUnanswered(db: D1Database): Promise<UnansweredCount> {
-  const allRows = await getAllUnansweredRows(db);
+export async function countUnanswered(
+  db: D1Database,
+  staff?: SupportAccessStaff,
+): Promise<UnansweredCount> {
+  const allRows = await getAllUnansweredRows(db, staff);
 
   const byAccountMap = new Map<string, { accountName: string; count: number }>();
   let oldest: string | null = null;

@@ -5,6 +5,7 @@ import {
   countUnanswered,
   type UnansweredInboxOptions,
 } from '../services/unanswered-inbox.js';
+import { currentSupportStaff } from './support-friend-access.js';
 
 export const inbox = new Hono<Env>();
 
@@ -22,6 +23,7 @@ inbox.get('/api/inbox/unanswered', async (c) => {
       minWaitMinutes: minWaitMinutesStr ? Number.parseInt(minWaitMinutesStr, 10) : undefined,
       page: pageStr ? Number.parseInt(pageStr, 10) : undefined,
       pageSize: pageSizeStr ? Number.parseInt(pageSizeStr, 10) : undefined,
+      staff: currentSupportStaff(c),
     };
 
     const result = await computeUnansweredInbox(c.env.DB, opts);
@@ -34,7 +36,7 @@ inbox.get('/api/inbox/unanswered', async (c) => {
 
 inbox.get('/api/inbox/unanswered/count', async (c) => {
   try {
-    const result = await countUnanswered(c.env.DB);
+    const result = await countUnanswered(c.env.DB, currentSupportStaff(c));
     return c.json({ success: true, data: result });
   } catch (err) {
     console.error('GET /api/inbox/unanswered/count error:', err);

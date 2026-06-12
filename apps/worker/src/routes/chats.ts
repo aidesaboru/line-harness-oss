@@ -458,7 +458,7 @@ chats.get('/api/chats', async (c) => {
     let unansweredIds: Set<string> | null = null;
     if (unansweredOnly) {
       const { getUnansweredFriendIds } = await import('../services/unanswered-inbox.js');
-      unansweredIds = await getUnansweredFriendIds(c.env.DB);
+      unansweredIds = await getUnansweredFriendIds(c.env.DB, currentStaff(c));
       // 空 Set のとき = 未対応ゼロ。早期 return で空配列を返す。
       if (unansweredIds.size === 0) {
         return c.json({ success: true, data: [] });

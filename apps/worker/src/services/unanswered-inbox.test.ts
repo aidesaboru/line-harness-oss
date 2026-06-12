@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { computeUnansweredInbox, countUnanswered } from './unanswered-inbox.js';
+import type { SupportAccessStaff } from './support-access.js';
 
 // 候補 friend のメタ + タイムスタンプ
 interface InboxRow {
@@ -35,6 +36,11 @@ interface AutoReplyOutgoing {
   created_at: string;
 }
 
+interface DbCall {
+  sql: string;
+  binds: unknown[];
+}
+
 function stubDB(canned: {
   rows: InboxRow[];
   recentIncomings?: RecentIncoming[];
@@ -43,7 +49,9 @@ function stubDB(canned: {
   // 応答ありルールの evidence-based 判定をテストするには autoReplyOutgoings を渡す。
   autoReplies?: AutoReplyRow[];
   autoReplyOutgoings?: AutoReplyOutgoing[];
+  visibleFriendIds?: string[];
 }) {
+  const calls: DbCall[] = [];
   const incomings: RecentIncoming[] =
     canned.recentIncomings ??
     canned.rows.map((r) => ({
@@ -63,9 +71,11 @@ function stubDB(canned: {
   }));
 
   const autoReplyOutgoings = canned.autoReplyOutgoings ?? [];
+  const visibleFriendIds = new Set(canned.visibleFriendIds ?? []);
 
-  return {
+  const db = {
     prepare(sql: string) {
+      let bound: unknown[] = [];
       const isAutoReplies = sql.includes('FROM auto_replies');
       // 候補 friend クエリ (CANDIDATES_SQL): "FROM friends f" を含み、JOIN agg
       const isCandidates = sql.includes('FROM friends f') && sql.includes('JOIN agg');
@@ -77,19 +87,29 @@ function stubDB(canned: {
         sql.includes('messages_log') && !isAutoReplyOutgoings && !isCandidates;
       return {
         all: async () => {
+          calls.push({ sql, binds: bound });
           if (isAutoReplies) return { results: silentRules };
           if (isAutoReplyOutgoings) return { results: autoReplyOutgoings };
           if (isRecentIncomings) return { results: incomings };
+          if (isCandidates && sql.includes('sc_friend_scope.friend_id = f.id')) {
+            return { results: canned.rows.filter((row) => visibleFriendIds.has(row.friend_id)) };
+          }
           return { results: canned.rows };
         },
         first: async () => null,
-        bind() {
+        bind(...args: unknown[]) {
+          bound = args;
           return this;
         },
       };
     },
-  } as unknown as D1Database;
+  } as unknown as D1Database & { calls: DbCall[] };
+  db.calls = calls;
+  return db;
 }
+
+const staff: SupportAccessStaff = { id: 'staff-1', name: '田島', role: 'staff' };
+const owner: SupportAccessStaff = { id: 'owner-1', name: 'Owner', role: 'owner' };
 
 describe('computeUnansweredInbox', () => {
   test('incoming のみ / manual 無しの friend は 1 行として返る', async () => {
@@ -619,5 +639,77 @@ describe('auto_reply マッチ除外', () => {
     expect(ids.has('f_keep')).toBe(true);
     expect(ids.has('f_drop')).toBe(false);
     expect(ids.size).toBe(1);
+  });
+});
+
+describe('support staff visibility scope', () => {
+  const baseScopedRow = (overrides: Partial<InboxRow>): InboxRow => ({
+    friend_id: 'f-visible',
+    display_name: 'Visible',
+    picture_url: null,
+    line_account_id: 'a1',
+    account_name: 'L ①',
+    last_incoming: '2026-05-08T10:00:00+09:00',
+    last_manual: null,
+    last_machine: null,
+    last_incoming_type: 'text',
+    last_incoming_content: '対応お願いします',
+    ...overrides,
+  });
+
+  test('staff unanswered list only includes support-visible friends', async () => {
+    const db = stubDB({
+      rows: [
+        baseScopedRow({ friend_id: 'f-visible', display_name: '見える友だち' }),
+        baseScopedRow({ friend_id: 'f-hidden', display_name: '隠れた友だち' }),
+      ],
+      visibleFriendIds: ['f-visible'],
+    });
+
+    const result = await computeUnansweredInbox(db, { staff });
+
+    expect(result.total).toBe(1);
+    expect(result.rows.map((row) => row.friendId)).toEqual(['f-visible']);
+    const candidateCall = db.calls.find((call) => call.sql.includes('FROM friends f') && call.sql.includes('JOIN agg'));
+    expect(candidateCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
+    expect(candidateCall?.binds).toEqual(['staff-1', '%田島%', '%田島%', '%田島%']);
+  });
+
+  test('owner unanswered list keeps the global inbox scope', async () => {
+    const db = stubDB({
+      rows: [
+        baseScopedRow({ friend_id: 'f-visible' }),
+        baseScopedRow({ friend_id: 'f-hidden' }),
+      ],
+      visibleFriendIds: ['f-visible'],
+    });
+
+    const result = await computeUnansweredInbox(db, { staff: owner });
+
+    expect(result.total).toBe(2);
+    expect(result.rows.map((row) => row.friendId).sort()).toEqual(['f-hidden', 'f-visible']);
+    const candidateCall = db.calls.find((call) => call.sql.includes('FROM friends f') && call.sql.includes('JOIN agg'));
+    expect(candidateCall?.sql).not.toContain('sc_friend_scope');
+    expect(candidateCall?.binds).toEqual([]);
+  });
+
+  test('staff unanswered count and friend id set use the same visible scope', async () => {
+    const db = stubDB({
+      rows: [
+        baseScopedRow({ friend_id: 'f-visible', line_account_id: 'a1', account_name: 'L ①' }),
+        baseScopedRow({ friend_id: 'f-hidden', line_account_id: 'a2', account_name: 'L ②' }),
+      ],
+      visibleFriendIds: ['f-visible'],
+    });
+
+    const count = await countUnanswered(db, staff);
+    const { getUnansweredFriendIds } = await import('./unanswered-inbox.js');
+    const ids = await getUnansweredFriendIds(db, staff);
+
+    expect(count).toMatchObject({
+      total: 1,
+      byAccount: [{ accountId: 'a1', accountName: 'L ①', count: 1 }],
+    });
+    expect([...ids]).toEqual(['f-visible']);
   });
 });

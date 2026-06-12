@@ -128,7 +128,20 @@ export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): Readiness
   if (snapshot.latestRun) {
     const run = snapshot.latestRun;
     const detail = `${run.workflowName ?? 'workflow'} #${run.databaseId ?? 'unknown'} ${run.status ?? 'unknown'}/${run.conclusion ?? 'none'}`;
-    if (run.conclusion === 'success') {
+    const expectedHead = snapshot.pr?.headRefOid ?? snapshot.localHead;
+    let runHeadMatchesCurrent: boolean | undefined;
+    if (expectedHead && run.headSha) {
+      runHeadMatchesCurrent = run.headSha === expectedHead;
+      items.push(runHeadMatchesCurrent
+        ? item('pass', 'ci: run head matches current head', run.headSha.slice(0, 12))
+        : item('wait', 'ci: run head matches current head', `run ${run.headSha.slice(0, 12)} != current ${expectedHead.slice(0, 12)}`, 'Wait for GitHub Actions to create a run for the current PR head, or push an empty commit to retrigger it.'));
+    } else {
+      items.push(item('wait', 'ci: run head matches current head', 'missing run head or current head', 'Fetch PR and Actions metadata again.'));
+    }
+
+    if (runHeadMatchesCurrent === false) {
+      items.push(item('wait', 'ci: latest GitHub Actions run', detail, 'Do not use stale CI results; wait for a run whose head matches the current PR head.'));
+    } else if (run.conclusion === 'success') {
       items.push(item('pass', 'ci: latest GitHub Actions run', detail));
     } else if (run.conclusion === 'action_required') {
       items.push(item('wait', 'ci: latest GitHub Actions run', detail, 'Repository maintainer/admin must approve the fork PR workflow run.'));

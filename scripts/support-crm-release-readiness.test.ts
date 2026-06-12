@@ -88,6 +88,38 @@ describe('support CRM release readiness', () => {
     expect(readinessExitCode(items)).toBe(1);
   });
 
+  it('waits when the latest CI run belongs to an older head', () => {
+    const items = evaluateReleaseReadiness(completeSnapshot({
+      latestRun: {
+        status: 'completed',
+        conclusion: 'success',
+        workflowName: 'Worker CI',
+        databaseId: 3,
+        headSha: 'older1234567890abcdef',
+      },
+    }));
+
+    expect(items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'wait',
+        name: 'ci: run head matches current head',
+        detail: expect.stringContaining('older1234567'),
+      }),
+      expect.objectContaining({
+        status: 'wait',
+        name: 'ci: latest GitHub Actions run',
+        next: 'Do not use stale CI results; wait for a run whose head matches the current PR head.',
+      }),
+    ]));
+    expect(items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'pass',
+        name: 'ci: latest GitHub Actions run',
+      }),
+    ]));
+    expect(readinessExitCode(items)).toBe(1);
+  });
+
   it('fails dirty local state, stale PR head, and missing PR evidence', () => {
     const items = evaluateReleaseReadiness(completeSnapshot({
       worktreeClean: false,

@@ -271,7 +271,7 @@ N/A
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.
 - `corepack pnpm preflight:support-crm:summary` converts the full Preflight log into a PR-safe summary that omits URLs, API keys, friend IDs, and case IDs.
 - Script test verifies the release checklist includes every strict dry-run env and the mutation-guard warning, so docs cannot silently drift from the command.
-- `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, including missing PR-safe Preflight summary evidence, from external waits such as draft status, production strict Preflight, and fork PR CI approval.
+- `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.
 - Local strict Preflight result: `19 passed, 0 skipped, 0 failed`.
@@ -323,7 +323,7 @@ corepack pnpm support-crm:release-readiness
 
 - `FAIL`: こちらで直してから再確認する項目です。例: ローカル差分あり、PR head未push、PR本文の検証証跡不足、CI失敗。
 - PR本文の検証証跡には、`preflight:support-crm:dry-run`、`preflight:support-crm:summary`、remote strict Preflight、remote cleanup verification、GitHub Actions statusを含めます。
-- `WAIT`: 外部状態や本番切替前の未実施確認です。例: fork PRのGitHub Actions承認待ち、PRがdraftのまま、本番LINE公式アカウントの実データstrict Preflight未実施。
+- `WAIT`: 外部状態や本番切替前の未実施確認です。例: fork PRのGitHub Actions承認待ち、最新commitのCI run待ち、PRがdraftのまま、本番LINE公式アカウントの実データstrict Preflight未実施。
 - `PASS`: その項目は現時点の証跡で満たしています。
 
 ## 7. 切替判断

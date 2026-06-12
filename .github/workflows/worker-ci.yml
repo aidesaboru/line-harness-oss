@@ -4,20 +4,26 @@ on:
   pull_request:
     paths:
       - 'apps/worker/**'
+      - 'apps/web/**'
       - 'packages/db/**'
       - 'packages/shared/**'
       - 'packages/line-sdk/**'
       - 'packages/update-engine/**'
+      - 'scripts/**'
+      - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/worker-ci.yml'
   push:
     branches: [main]
     paths:
       - 'apps/worker/**'
+      - 'apps/web/**'
       - 'packages/db/**'
       - 'packages/shared/**'
       - 'packages/line-sdk/**'
       - 'packages/update-engine/**'
+      - 'scripts/**'
+      - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/worker-ci.yml'
   workflow_dispatch:
@@ -40,6 +46,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
+      - run: pnpm test:scripts
+      - run: pnpm --filter web test
       - run: pnpm --filter worker typecheck
       - run: pnpm --filter worker test
       - run: pnpm --filter worker build
@@ -47,3 +55,6 @@ jobs:
           VITE_LIFF_ID: ${{ vars.VITE_LIFF_ID }}
           VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
+      - run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8787

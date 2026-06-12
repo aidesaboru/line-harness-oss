@@ -177,7 +177,7 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
     }
 
     const updated = await updateStaffMember(c.env.DB, id, {
-      name,
+      name: name ?? undefined,
       email,
       role: body.role as 'owner' | 'admin' | 'staff' | undefined,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,

@@ -64,7 +64,7 @@ export function supportEscalationVisibilitySql(
   const caseScope = supportCaseVisibilitySql(staff, caseAlias, 'se_case_scope');
   const pattern = supportStaffLikePattern(staff);
   const parts = pattern ? [`${escalationAlias}.assignee LIKE ? ESCAPE '\\'`] : [];
-  const binds = pattern ? [pattern] : [];
+  const binds: unknown[] = pattern ? [pattern] : [];
   parts.push(`EXISTS (
         SELECT 1
         FROM support_cases ${caseAlias}

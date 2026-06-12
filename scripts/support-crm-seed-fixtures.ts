@@ -18,6 +18,7 @@ export type SupportCrmSeedConfig = {
   wranglerEnv?: string;
   remote: boolean;
   confirmWrite: boolean;
+  createLineAccount: boolean;
 };
 
 export type SeedFixtureIds = {
@@ -35,6 +36,7 @@ export type CleanupVerificationRow = {
 };
 
 const CLEANUP_VERIFICATION_TABLES = [
+  'line_accounts',
   'support_case_events',
   'support_cases',
   'messages_log',
@@ -85,6 +87,7 @@ export function configFromEnv(source: NodeJS.ProcessEnv): { ok: true; config: Su
         ? true
         : truthy(source.SUPPORT_CRM_D1_REMOTE),
       confirmWrite: truthy(source.SUPPORT_CRM_FIXTURE_WRITE),
+      createLineAccount: truthy(source.SUPPORT_CRM_FIXTURE_CREATE_LINE_ACCOUNT),
     },
   };
 }
@@ -100,11 +103,26 @@ export function fixtureIds(prefix: string): SeedFixtureIds {
   };
 }
 
-export function buildSeedFixtureSql(config: Pick<SupportCrmSeedConfig, 'lineAccountId' | 'staffName' | 'staffApiKey' | 'prefix'>): string {
+export function buildSeedFixtureSql(
+  config: Pick<SupportCrmSeedConfig, 'lineAccountId' | 'staffName' | 'staffApiKey' | 'prefix'> & Partial<Pick<SupportCrmSeedConfig, 'createLineAccount'>>,
+): string {
   const ids = fixtureIds(config.prefix);
   const now = "strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')";
+  const lineAccountSql = config.createLineAccount
+    ? `
+INSERT OR IGNORE INTO line_accounts
+  (id, channel_id, name, channel_access_token, channel_secret, is_active, country, role, display_order, created_at, updated_at)
+VALUES
+  (
+    ${sqlString(config.lineAccountId)}, ${sqlString(`${config.prefix}-channel`)}, 'Support CRM Preflight Fixture',
+    ${sqlString(`${config.prefix}-access-token`)}, ${sqlString(`${config.prefix}-channel-secret`)},
+    1, NULL, NULL, 0, ${now}, ${now}
+  );
 
-  return `
+`
+    : '';
+
+  return `${lineAccountSql}
 INSERT OR REPLACE INTO staff_members
   (id, name, email, role, api_key, is_active, created_at, updated_at)
 VALUES
@@ -186,12 +204,22 @@ DELETE FROM messages_log
 WHERE id LIKE ${sqlString(prefixLike)}
    OR source = 'support_crm_preflight_fixture';
 
+DELETE FROM chats
+WHERE friend_id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
+   OR friend_id LIKE ${sqlString(prefixLike)}
+   OR id LIKE ${sqlString(prefixLike)};
+
 DELETE FROM friends
 WHERE id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
    OR id LIKE ${sqlString(prefixLike)};
 
 DELETE FROM staff_members
 WHERE id = ${sqlString(ids.staffId)};
+
+DELETE FROM line_accounts
+WHERE id = ${sqlString(config.lineAccountId)}
+  AND channel_id = ${sqlString(`${config.prefix}-channel`)}
+  AND name = 'Support CRM Preflight Fixture';
 `.trim();
 }
 
@@ -200,6 +228,13 @@ export function buildCleanupVerificationSql(config: Pick<SupportCrmSeedConfig, '
   const prefixLike = `${config.prefix}-%`;
   return `
 SELECT
+  (
+    SELECT COUNT(*)
+    FROM line_accounts
+    WHERE id = ${sqlString(config.lineAccountId)}
+      AND channel_id = ${sqlString(`${config.prefix}-channel`)}
+      AND name = 'Support CRM Preflight Fixture'
+  ) AS line_accounts,
   (
     SELECT COUNT(*)
     FROM support_case_events
@@ -450,6 +485,7 @@ function usage(): string {
     '  SUPPORT_CRM_FIXTURE_STAFF_NAME=Preflight Staff',
     '  SUPPORT_CRM_FIXTURE_STAFF_API_KEY=<generated when omitted>',
     '  SUPPORT_CRM_FIXTURE_PREFIX=support-crm-preflight',
+    '  SUPPORT_CRM_FIXTURE_CREATE_LINE_ACCOUNT=1  create a synthetic line_accounts row when the target D1 lacks one',
     '  SUPPORT_CRM_D1_DATABASE=DB',
     '  SUPPORT_CRM_D1_CONFIG=apps/worker/wrangler.toml',
     '  SUPPORT_CRM_D1_ENV=production',

@@ -61,6 +61,8 @@ SUPPORT_CRM_D1_ENV=production \
 corepack pnpm support-crm:fixtures:seed-sql
 ```
 
+検証用D1に対象の `line_accounts` 行がまだ無い場合だけ、`SUPPORT_CRM_FIXTURE_CREATE_LINE_ACCOUNT=1` を付けるとsynthetic LINEアカウントも同時に作れます。本番LINE公式アカウントの行が既にあるD1では付けません。
+
 実際にD1へ書く場合は、明示フラグを付けます。このコマンドはstaff APIキー、見える/見えない友だち、未完了/完了済みサポート案件を作ります。実顧客へのLINE送信はしません。
 
 ```bash
@@ -71,7 +73,7 @@ SUPPORT_CRM_D1_ENV=production \
 corepack pnpm support-crm:fixtures:seed
 ```
 
-seed fixtureを使い終わったら、同じprefixのsyntheticデータを削除します。古いWorkerに対してPreflightを実行してstaffが作れてしまった検証案件も、同じcleanupで消せます。
+seed fixtureを使い終わったら、同じprefixのsyntheticデータを削除します。古いWorkerに対してPreflightを実行してstaffが作れてしまった検証案件、synthetic friendに紐づくチャット行、明示フラグで作ったsynthetic LINEアカウントも、同じcleanupで消せます。
 
 ```bash
 SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
@@ -80,7 +82,7 @@ SUPPORT_CRM_D1_ENV=production \
 corepack pnpm support-crm:fixtures:cleanup
 ```
 
-cleanup後は、残り件数がすべて0か確認します。この確認は読み取り専用で、古いWorkerが誤って作ったチャット行も検知します。
+cleanup後は、残り件数がすべて0か確認します。この確認は読み取り専用で、synthetic fixtureの消し残しに気づくための最後の確認です。
 
 ```bash
 SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
@@ -224,7 +226,7 @@ N/A
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.
 - Local strict Preflight result: `19 passed, 0 skipped, 0 failed`.
 - Remote strict Preflight result: `19 passed, 0 skipped, 0 failed`.
-- Remote cleanup verification: synthetic fixture staff/cases/events/friends/messages/chats are all `0` after cleanup.
+- Remote cleanup verification: synthetic fixture line_accounts/staff/cases/events/friends/messages/chats are all `0` after cleanup.
 - Browser: `/support` redirects to `/login` when unauthenticated, login screen renders, console error count is 0.
 - HTTP: `/staff`, `/support`, `/chats?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke` return 200 locally.
 - Not tested: 本番LINE公式アカウントへの実切替、実顧客へのLINE送信、本番LINE公式アカウントの実顧客データを使ったstrict Preflight。
@@ -236,7 +238,7 @@ N/A
 - New/changed network calls? `Yes`: Support UI verifies current staff identity via `/api/staff/me`; fixture helpers can run D1 SELECT, read-only cleanup verification, or explicitly confirmed synthetic fixture INSERT/cleanup through Wrangler.
 - Message sending behavior changed? `Yes`: support-case replies validate resolved status before LINE send and record support case events after send.
 - Customer/friend data access changed? `Yes`: staff chat visibility is limited to friends tied to visible support cases; fixture candidate output does not print friend names or case titles by default.
-- D1 migration or data deletion changed? `No`: no schema migration. Fixture cleanup deletes only synthetic fixture rows matching the configured prefix and the known old-preflight guard title.
+- D1 migration or data deletion changed? `No`: no schema migration. Fixture cleanup deletes only synthetic fixture rows matching the configured prefix, synthetic friend chats, the optional synthetic line_account row, and the known old-preflight guard title.
 
 ## Safety Checklist
 

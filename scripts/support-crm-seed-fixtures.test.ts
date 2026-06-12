@@ -26,6 +26,7 @@ describe('support CRM seed fixture helpers', () => {
     expect(parsed.config.prefix).toBe('support-crm-fixtures');
     expect(parsed.config.staffApiKey).toMatch(/^lh_pf_[a-f0-9]{32}$/);
     expect(parsed.config.confirmWrite).toBe(false);
+    expect(parsed.config.createLineAccount).toBe(false);
   });
 
   it('requires a line account id', () => {
@@ -63,7 +64,24 @@ describe('support CRM seed fixture helpers', () => {
     expect(sql).toContain('pf-visible-open-case');
     expect(sql).toContain('pf-visible-resolved-case');
     expect(sql).toContain('pf-forbidden-case');
+    expect(sql).not.toContain('INSERT OR IGNORE INTO line_accounts');
     expect(sql).not.toMatch(/\bDELETE\b|\bDROP\b/i);
+  });
+
+  it('can seed a synthetic line account when explicitly requested', () => {
+    const sql = buildSeedFixtureSql({
+      lineAccountId: "acc-'1",
+      staffName: 'Preflight Staff',
+      staffApiKey: 'staff-key',
+      prefix: 'pf',
+      createLineAccount: true,
+    });
+
+    expect(sql).toContain('INSERT OR IGNORE INTO line_accounts');
+    expect(sql).toContain('pf-channel');
+    expect(sql).toContain('Support CRM Preflight Fixture');
+    expect(sql).toContain('pf-access-token');
+    expect(sql).toContain('pf-channel-secret');
   });
 
   it('prints strict preflight env suggestions', () => {
@@ -91,10 +109,14 @@ describe('support CRM seed fixture helpers', () => {
     expect(sql).toContain('DELETE FROM support_case_events');
     expect(sql).toContain('DELETE FROM support_cases');
     expect(sql).toContain('DELETE FROM messages_log');
+    expect(sql).toContain('DELETE FROM chats');
     expect(sql).toContain('DELETE FROM friends');
     expect(sql).toContain('DELETE FROM staff_members');
+    expect(sql).toContain('DELETE FROM line_accounts');
     expect(sql).toContain('preflight case creation guard');
     expect(sql).toContain('support_crm_preflight_fixture');
+    expect(sql.indexOf('DELETE FROM chats')).toBeLessThan(sql.indexOf('DELETE FROM friends'));
+    expect(sql.indexOf('DELETE FROM staff_members')).toBeLessThan(sql.indexOf('DELETE FROM line_accounts'));
     expect(sql).not.toMatch(/\bDROP\b/i);
   });
 
@@ -110,6 +132,7 @@ describe('support CRM seed fixture helpers', () => {
 
     expect(sql).toContain("acc-''1");
     expect(sql).toContain('SELECT');
+    expect(sql).toContain('line_accounts');
     expect(sql).toContain('support_case_events');
     expect(sql).toContain('support_cases');
     expect(sql).toContain('messages_log');
@@ -146,6 +169,7 @@ describe('support CRM seed fixture helpers', () => {
       {
         results: [
           {
+            line_accounts: 0,
             support_case_events: 0,
             support_cases: '0',
             messages_log: 0,
@@ -158,6 +182,7 @@ describe('support CRM seed fixture helpers', () => {
     ]);
 
     expect(rows).toEqual([
+      { table_name: 'line_accounts', residual_count: 0 },
       { table_name: 'support_case_events', residual_count: 0 },
       { table_name: 'support_cases', residual_count: 0 },
       { table_name: 'messages_log', residual_count: 0 },

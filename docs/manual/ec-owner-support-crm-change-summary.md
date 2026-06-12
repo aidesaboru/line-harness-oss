@@ -46,7 +46,9 @@ updated: 2026-06-13
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
 - `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出
 - 既存データに検証fixtureが足りない場合に、synthetic fixtureをseed/cleanupできる補助コマンドを追加
-- `corepack pnpm support-crm:fixtures:verify-cleanup` でcleanup後のstaff、案件、イベント、メッセージ、友だち、チャット残骸を読み取り専用で確認
+- 検証用D1にLINEアカウント行が無い場合は `SUPPORT_CRM_FIXTURE_CREATE_LINE_ACCOUNT=1` でsynthetic LINEアカウントもseedできる
+- cleanupではsynthetic friendに紐づくチャット行も削除し、古いWorkerで作られた検証チャット残骸を残さない
+- `corepack pnpm support-crm:fixtures:verify-cleanup` でcleanup後のLINEアカウント、staff、案件、イベント、メッセージ、友だち、チャット残骸を読み取り専用で確認
 
 ### CI
 

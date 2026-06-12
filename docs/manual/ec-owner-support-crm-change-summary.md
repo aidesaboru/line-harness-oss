@@ -46,6 +46,7 @@ updated: 2026-06-13
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
 - `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出
 - 既存データに検証fixtureが足りない場合に、synthetic fixtureをseed/cleanupできる補助コマンドを追加
+- `corepack pnpm support-crm:fixtures:verify-cleanup` でcleanup後のstaff、案件、イベント、メッセージ、友だち、チャット残骸を読み取り専用で確認
 
 ### CI
 
@@ -143,5 +144,5 @@ strict Preflight:
 - [ ] 本番投入前チェックリストの未検証項目をPR本文に明記した
 - [ ] rollback先のWorker/Pagesデプロイを確認した
 - [ ] staff権限の表示範囲をstrict Preflightで確認した
-- [ ] synthetic fixtureを使った場合はcleanup後のD1行数が0であることを確認した
+- [ ] synthetic fixtureを使った場合は `corepack pnpm support-crm:fixtures:verify-cleanup` でcleanup後のD1行数が0であることを確認した
 - [ ] fork PRのGitHub Actionsが承認待ちの場合は、管理者承認が必要なことをPR本文に書いた

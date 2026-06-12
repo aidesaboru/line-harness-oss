@@ -287,7 +287,7 @@ corepack pnpm support-crm:fixtures
 
 Cloudflareへ接続せず、実行されるSQLだけ確認したい場合は `corepack pnpm support-crm:fixtures:sql` を使います。
 
-既存データだけではstrict Preflight用のfixtureが足りない場合は、検証用D1にsynthetic fixtureを作ります。先に `corepack pnpm support-crm:fixtures:seed-sql` でSQLを確認し、問題なければ `SUPPORT_CRM_FIXTURE_WRITE=1 corepack pnpm support-crm:fixtures:seed` を実行します。このseedはstaff、友だち、サポート案件、チャット一覧用メッセージだけを作り、LINE送信はしません。検証後は `SUPPORT_CRM_FIXTURE_WRITE=1 corepack pnpm support-crm:fixtures:cleanup` で同じprefixのfixtureを削除します。
+既存データだけではstrict Preflight用のfixtureが足りない場合は、検証用D1にsynthetic fixtureを作ります。先に `corepack pnpm support-crm:fixtures:seed-sql` でSQLを確認し、問題なければ `SUPPORT_CRM_FIXTURE_WRITE=1 corepack pnpm support-crm:fixtures:seed` を実行します。このseedはstaff、友だち、サポート案件、チャット一覧用メッセージだけを作り、LINE送信はしません。検証後は `SUPPORT_CRM_FIXTURE_WRITE=1 corepack pnpm support-crm:fixtures:cleanup` で同じprefixのfixtureを削除し、`corepack pnpm support-crm:fixtures:verify-cleanup` でstaff、案件、イベント、メッセージ、友だち、チャットの残り件数がすべて0であることを確認します。SQLだけ見たい場合は `corepack pnpm support-crm:fixtures:verify-cleanup-sql` を使います。
 
 ```bash
 SUPPORT_CRM_API_URL=https://your-worker.example.com \

@@ -1,11 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildCleanupFixtureSql,
+  buildCleanupVerificationSql,
   buildSeedFixtureSql,
   configFromEnv,
+  extractCleanupVerificationRows,
   fixtureIds,
   formatCleanupReport,
+  formatCleanupVerificationReport,
   formatSeedReport,
+  hasCleanupResidualRows,
 } from './support-crm-seed-fixtures';
 
 describe('support CRM seed fixture helpers', () => {
@@ -96,5 +100,82 @@ describe('support CRM seed fixture helpers', () => {
 
   it('prints cleanup confirmation without exposing API keys', () => {
     expect(formatCleanupReport({ prefix: 'pf' })).toBe('Support CRM strict Preflight fixtures cleaned for prefix pf.\n');
+  });
+
+  it('builds read-only cleanup verification SQL including leaked chat rows', () => {
+    const sql = buildCleanupVerificationSql({
+      lineAccountId: "acc-'1",
+      prefix: 'pf',
+    });
+
+    expect(sql).toContain("acc-''1");
+    expect(sql).toContain('SELECT');
+    expect(sql).toContain('support_case_events');
+    expect(sql).toContain('support_cases');
+    expect(sql).toContain('messages_log');
+    expect(sql).toContain('friends');
+    expect(sql).toContain('staff_members');
+    expect(sql).toContain('chats');
+    expect(sql).toContain('preflight case creation guard');
+    expect(sql).toContain('support_crm_preflight_fixture');
+    expect(sql).toContain('pf-visible-friend');
+    expect(sql).not.toContain('UNION ALL');
+    expect(sql).not.toMatch(/\bDELETE\b|\bDROP\b/i);
+  });
+
+  it('extracts cleanup verification rows from wrangler JSON output', () => {
+    const rows = extractCleanupVerificationRows([
+      {
+        results: [
+          { table_name: 'staff_members', residual_count: 0 },
+          { table_name: 'chats', residual_count: '2' },
+          { table_name: null, residual_count: 99 },
+        ],
+      },
+    ]);
+
+    expect(rows).toEqual([
+      { table_name: 'staff_members', residual_count: 0 },
+      { table_name: 'chats', residual_count: 2 },
+    ]);
+    expect(hasCleanupResidualRows(rows)).toBe(true);
+  });
+
+  it('extracts cleanup verification rows from wide wrangler JSON output', () => {
+    const rows = extractCleanupVerificationRows([
+      {
+        results: [
+          {
+            support_case_events: 0,
+            support_cases: '0',
+            messages_log: 0,
+            friends: 0,
+            staff_members: 0,
+            chats: 1,
+          },
+        ],
+      },
+    ]);
+
+    expect(rows).toEqual([
+      { table_name: 'support_case_events', residual_count: 0 },
+      { table_name: 'support_cases', residual_count: 0 },
+      { table_name: 'messages_log', residual_count: 0 },
+      { table_name: 'friends', residual_count: 0 },
+      { table_name: 'staff_members', residual_count: 0 },
+      { table_name: 'chats', residual_count: 1 },
+    ]);
+    expect(hasCleanupResidualRows(rows)).toBe(true);
+  });
+
+  it('formats cleanup verification results for pass and fail cases', () => {
+    expect(formatCleanupVerificationReport({ prefix: 'pf' }, [
+      { table_name: 'staff_members', residual_count: 0 },
+      { table_name: 'chats', residual_count: 0 },
+    ])).toContain('All checked fixture row counts are 0.');
+
+    expect(formatCleanupVerificationReport({ prefix: 'pf' }, [
+      { table_name: 'staff_members', residual_count: 1 },
+    ])).toContain('Residual fixture rows remain.');
   });
 });

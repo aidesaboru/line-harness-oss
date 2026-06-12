@@ -29,6 +29,20 @@ export type SeedFixtureIds = {
   forbiddenCaseId: string;
 };
 
+export type CleanupVerificationRow = {
+  table_name: string;
+  residual_count: number;
+};
+
+const CLEANUP_VERIFICATION_TABLES = [
+  'support_case_events',
+  'support_cases',
+  'messages_log',
+  'friends',
+  'staff_members',
+  'chats',
+] as const;
+
 const DEFAULT_PREFIX = 'support-crm-preflight';
 const DEFAULT_STAFF_NAME = 'Preflight Staff';
 
@@ -181,6 +195,59 @@ WHERE id = ${sqlString(ids.staffId)};
 `.trim();
 }
 
+export function buildCleanupVerificationSql(config: Pick<SupportCrmSeedConfig, 'lineAccountId' | 'prefix'>): string {
+  const ids = fixtureIds(config.prefix);
+  const prefixLike = `${config.prefix}-%`;
+  return `
+SELECT
+  (
+    SELECT COUNT(*)
+    FROM support_case_events
+    WHERE id LIKE ${sqlString(prefixLike)}
+       OR case_id LIKE ${sqlString(prefixLike)}
+       OR case_id IN (
+         SELECT id
+         FROM support_cases
+         WHERE line_account_id = ${sqlString(config.lineAccountId)}
+           AND title = 'preflight case creation guard'
+       )
+  ) AS support_case_events,
+  (
+    SELECT COUNT(*)
+    FROM support_cases
+    WHERE id LIKE ${sqlString(prefixLike)}
+       OR (
+         line_account_id = ${sqlString(config.lineAccountId)}
+         AND title = 'preflight case creation guard'
+       )
+  ) AS support_cases,
+  (
+    SELECT COUNT(*)
+    FROM messages_log
+    WHERE id LIKE ${sqlString(prefixLike)}
+       OR source = 'support_crm_preflight_fixture'
+  ) AS messages_log,
+  (
+    SELECT COUNT(*)
+    FROM friends
+    WHERE id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
+       OR id LIKE ${sqlString(prefixLike)}
+  ) AS friends,
+  (
+    SELECT COUNT(*)
+    FROM staff_members
+    WHERE id = ${sqlString(ids.staffId)}
+  ) AS staff_members,
+  (
+    SELECT COUNT(*)
+    FROM chats
+    WHERE friend_id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
+       OR friend_id LIKE ${sqlString(prefixLike)}
+       OR id LIKE ${sqlString(prefixLike)}
+  ) AS chats;
+`.trim();
+}
+
 export function formatSeedReport(config: Pick<SupportCrmSeedConfig, 'lineAccountId' | 'staffName' | 'staffApiKey' | 'prefix'>): string {
   const ids = fixtureIds(config.prefix);
   return [
@@ -206,6 +273,92 @@ export function formatSeedReport(config: Pick<SupportCrmSeedConfig, 'lineAccount
 
 export function formatCleanupReport(config: Pick<SupportCrmSeedConfig, 'prefix'>): string {
   return `Support CRM strict Preflight fixtures cleaned for prefix ${config.prefix}.\n`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function stringifyCell(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return null;
+}
+
+function countCell(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+export function extractCleanupVerificationRows(value: unknown): CleanupVerificationRow[] {
+  const rows: CleanupVerificationRow[] = [];
+
+  function visit(node: unknown): void {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
+    if (!isRecord(node)) return;
+    if (Array.isArray(node.results)) {
+      visit(node.results);
+      return;
+    }
+
+    const tableName = stringifyCell(node.table_name);
+    const residualCount = countCell(node.residual_count);
+    if (tableName && residualCount !== null) {
+      rows.push({
+        table_name: tableName,
+        residual_count: residualCount,
+      });
+      return;
+    }
+
+    for (const cleanupTable of CLEANUP_VERIFICATION_TABLES) {
+      const cleanupCount = countCell(node[cleanupTable]);
+      if (cleanupCount !== null) {
+        rows.push({
+          table_name: cleanupTable,
+          residual_count: cleanupCount,
+        });
+      }
+    }
+  }
+
+  visit(value);
+  return rows;
+}
+
+export function hasCleanupResidualRows(rows: CleanupVerificationRow[]): boolean {
+  return rows.some((row) => row.residual_count > 0);
+}
+
+export function formatCleanupVerificationReport(config: Pick<SupportCrmSeedConfig, 'prefix'>, rows: CleanupVerificationRow[]): string {
+  const lines = [
+    `Support CRM strict Preflight cleanup verification for prefix ${config.prefix}.`,
+    '',
+  ];
+
+  if (rows.length === 0) {
+    lines.push('No verification rows returned.');
+    lines.push('');
+    lines.push('Residual fixture rows may remain; inspect D1 before production cutover.');
+    return `${lines.join('\n')}\n`;
+  }
+
+  rows.forEach((row) => {
+    lines.push(`- ${row.table_name}: ${row.residual_count}`);
+  });
+
+  lines.push('');
+  lines.push(hasCleanupResidualRows(rows)
+    ? 'Residual fixture rows remain. Run cleanup again or inspect D1 before production cutover.'
+    : 'All checked fixture row counts are 0.');
+  return `${lines.join('\n')}\n`;
 }
 
 function runWrangler(config: SupportCrmSeedConfig, sql: string): { ok: true } | { ok: false; error: string; raw?: string } {
@@ -243,6 +396,47 @@ function runWrangler(config: SupportCrmSeedConfig, sql: string): { ok: true } | 
   }
 }
 
+function runWranglerJson(
+  config: SupportCrmSeedConfig,
+  sql: string,
+): { ok: true; rows: CleanupVerificationRow[] } | { ok: false; error: string; raw?: string } {
+  const args = [
+    'pnpm',
+    'exec',
+    'wrangler',
+    'd1',
+    'execute',
+    config.database,
+    '--config',
+    config.wranglerConfig,
+    '--command',
+    sql,
+    '--json',
+    config.remote ? '--remote' : '--local',
+  ];
+  if (config.wranglerEnv) args.push('--env', config.wranglerEnv);
+
+  const result = spawnSync('corepack', args, { encoding: 'utf8' });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: result.stderr.trim() || result.stdout.trim() || `wrangler exited with ${result.status ?? 'unknown status'}`,
+      raw: result.stdout,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return { ok: true, rows: extractCleanupVerificationRows(parsed) };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'failed to parse wrangler JSON output',
+      raw: result.stdout,
+    };
+  }
+}
+
 function usage(): string {
   return [
     'Support CRM strict Preflight fixture seed helper.',
@@ -266,6 +460,8 @@ function usage(): string {
     '  --run        run wrangler d1 execute; requires SUPPORT_CRM_FIXTURE_WRITE=1',
     '  --cleanup-sql  print the cleanup SQL only',
     '  --cleanup      run cleanup; requires SUPPORT_CRM_FIXTURE_WRITE=1',
+    '  --verify-cleanup-sql  print the read-only cleanup verification SQL only',
+    '  --verify-cleanup      run read-only cleanup verification and fail when rows remain',
   ].join('\n');
 }
 
@@ -291,14 +487,29 @@ if (isCliEntry) {
   }
 
   const cleanupMode = argv.includes('--cleanup') || argv.includes('--cleanup-sql');
-  const runMode = argv.includes('--run') || argv.includes('--cleanup');
-  const printMode = argv.includes('--print-sql') || argv.includes('--cleanup-sql') || !runMode;
-  const sql = cleanupMode
+  const verifyCleanupMode = argv.includes('--verify-cleanup') || argv.includes('--verify-cleanup-sql');
+  const runMode = argv.includes('--run') || argv.includes('--cleanup') || argv.includes('--verify-cleanup');
+  const printMode = argv.includes('--print-sql') || argv.includes('--cleanup-sql') || argv.includes('--verify-cleanup-sql') || !runMode;
+  const sql = verifyCleanupMode
+    ? buildCleanupVerificationSql(parsed.config)
+    : cleanupMode
     ? buildCleanupFixtureSql(parsed.config)
     : buildSeedFixtureSql(parsed.config);
   if (printMode) {
     stdout.write(`${sql}\n`);
     exit(0);
+  }
+
+  if (verifyCleanupMode) {
+    const result = runWranglerJson(parsed.config, sql);
+    if (!result.ok) {
+      stderr.write(`support-crm-seed-fixtures: ${result.error}\n`);
+      if (result.raw) stderr.write(`\nRaw output:\n${result.raw}\n`);
+      exit(1);
+    }
+
+    stdout.write(formatCleanupVerificationReport(parsed.config, result.rows));
+    exit(hasCleanupResidualRows(result.rows) || result.rows.length === 0 ? 1 : 0);
   }
 
   if (!parsed.config.confirmWrite) {

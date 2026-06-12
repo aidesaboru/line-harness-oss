@@ -122,6 +122,7 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMocks.getBroadcasts.mockResolvedValue([]);
   dbMocks.getBroadcastById.mockResolvedValue({
     id: 'broadcast-1',
     title: 'Draft',
@@ -145,30 +146,57 @@ beforeEach(() => {
   lineClientMethods.pushMessage.mockResolvedValue({ success: true });
 });
 
-describe('broadcast test-send support visibility guards', () => {
-  test('staff test-send only pushes to support-visible recipients', async () => {
+describe('broadcast support role guards', () => {
+  test('staff cannot access global broadcast management APIs', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'staff');
 
-    const res = await setupApp(db, 'staff').request('/api/broadcasts/broadcast-1/test-send', { method: 'POST' });
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/broadcasts'],
+      ['GET', '/api/broadcasts/broadcast-1'],
+      ['GET', '/api/broadcasts/broadcast-1/preview-count'],
+      ['GET', '/api/broadcasts/broadcast-1/per-account-stats'],
+      ['GET', '/api/broadcasts/broadcast-1/insight'],
+      ['GET', '/api/broadcasts/broadcast-1/progress'],
+      ['POST', '/api/broadcasts', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Draft',
+          messageType: 'text',
+          messageContent: 'hello',
+          targetType: 'all',
+        }),
+      }],
+      ['PUT', '/api/broadcasts/broadcast-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Updated' }),
+      }],
+      ['DELETE', '/api/broadcasts/broadcast-1'],
+      ['POST', '/api/broadcasts/broadcast-1/send'],
+      ['POST', '/api/broadcasts/broadcast-1/send-segment', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'AND', rules: [] } }),
+      }],
+      ['POST', '/api/broadcasts/broadcast-1/fetch-insight'],
+      ['POST', '/api/broadcasts/broadcast-1/test-send'],
+      ['POST', '/api/segments/count', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'AND', rules: [] } }),
+      }],
+    ];
 
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { sent: number; failed: number };
-    expect(body).toMatchObject({ sent: 1, failed: 0 });
-    expect(lineClientMethods.pushMessage).toHaveBeenCalledTimes(1);
-    expect(lineClientMethods.pushMessage).toHaveBeenCalledWith('U-visible', [{ type: 'text', text: '【テスト配信】\nhello' }]);
-    expect(db.calls.filter((call) => call.method === 'run').map((call) => call.binds[1])).toEqual(['friend-visible']);
-    const recipientsCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
-    expect(recipientsCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
-  });
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
 
-  test('staff test-send fails before LINE push when no configured recipients are visible', async () => {
-    const db = makeDb({ visibleFriendIds: [] });
-
-    const res = await setupApp(db, 'staff').request('/api/broadcasts/broadcast-1/test-send', { method: 'POST' });
-
-    expect(res.status).toBe(400);
+    expect(dbMocks.getBroadcasts).not.toHaveBeenCalled();
+    expect(dbMocks.getBroadcastById).not.toHaveBeenCalled();
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.deleteBroadcast).not.toHaveBeenCalled();
     expect(lineClientMethods.pushMessage).not.toHaveBeenCalled();
-    expect(db.calls.some((call) => call.method === 'run')).toBe(false);
+    expect(db.calls).toEqual([]);
   });
 
   test('owner test-send keeps global configured recipient scope', async () => {

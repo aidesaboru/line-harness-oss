@@ -17,7 +17,8 @@ updated: 2026-06-13
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
-- staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、broadcast test-send、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
+- staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
+- broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
@@ -147,7 +148,7 @@ strict Preflight:
 - `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
-- `apps/worker/src/routes/broadcasts.ts`: broadcast test-sendでstaffがhidden test recipientへ送信できないこと
+- `apps/worker/src/routes/broadcasts.ts`: broadcast管理APIと配信/集計APIのowner/admin制限
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲

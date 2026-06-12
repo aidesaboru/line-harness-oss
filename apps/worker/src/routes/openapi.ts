@@ -305,30 +305,69 @@ const spec = {
     },
     // ── Broadcasts ───────────────────────────────────────────────────────────
     '/api/broadcasts': {
-      get: { tags: ['Broadcasts'], summary: '配信一覧取得', responses: { '200': { description: 'All broadcasts' } } },
+      get: { tags: ['Broadcasts'], summary: '配信一覧取得（owner/admin）', responses: { '200': { description: 'All broadcasts' }, '403': { description: 'Requires owner/admin' } } },
       post: {
         tags: ['Broadcasts'],
-        summary: '配信作成',
+        summary: '配信作成（owner/admin）',
         requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { title: { type: 'string' }, messageType: { type: 'string' }, messageContent: { type: 'string' }, targetType: { type: 'string' }, targetTagId: { type: 'string' }, accountIds: { type: 'array', items: { type: 'string' } }, dedupPriority: { type: 'array', items: { type: 'string' } }, scheduledAt: { type: 'string' } }, required: ['title', 'messageType', 'messageContent', 'targetType'] } } } },
-        responses: { '201': { description: 'Broadcast created' } },
+        responses: { '201': { description: 'Broadcast created' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/broadcasts/{id}': {
       get: {
         tags: ['Broadcasts'],
-        summary: '配信詳細取得',
+        summary: '配信詳細取得（owner/admin）',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'Broadcast' } },
+        responses: { '200': { description: 'Broadcast' }, '403': { description: 'Requires owner/admin' } },
       },
-      put: { tags: ['Broadcasts'], summary: '配信更新', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
-      delete: { tags: ['Broadcasts'], summary: '配信削除', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
+      put: { tags: ['Broadcasts'], summary: '配信更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      delete: { tags: ['Broadcasts'], summary: '配信削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/broadcasts/{id}/preview-count': {
+      get: {
+        tags: ['Broadcasts'],
+        summary: '配信対象数プレビュー（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Preview count' }, '403': { description: 'Requires owner/admin' } },
+      },
     },
     '/api/broadcasts/{id}/send': {
       post: {
         tags: ['Broadcasts'],
-        summary: '即時配信',
+        summary: '即時配信（owner/admin）',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: { '200': { description: 'Sent' } },
+        responses: { '200': { description: 'Sent' }, '202': { description: 'Queued' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/broadcasts/{id}/send-segment': {
+      post: {
+        tags: ['Broadcasts'],
+        summary: 'セグメント配信キュー投入（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '202': { description: 'Queued' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/broadcasts/{id}/test-send': {
+      post: {
+        tags: ['Broadcasts'],
+        summary: 'テスト配信（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Test sent' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/broadcasts/{id}/fetch-insight': {
+      post: {
+        tags: ['Broadcasts'],
+        summary: 'LINE配信インサイト取得（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Insight fetched' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/segments/count': {
+      post: {
+        tags: ['Broadcasts'],
+        summary: 'セグメント対象数計算（owner/admin）',
+        responses: { '200': { description: 'Segment count' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/broadcasts/dedup-preview': {

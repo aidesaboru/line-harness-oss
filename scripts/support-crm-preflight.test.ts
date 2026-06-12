@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildPreflightDryRunResults,
   configFromEnv,
+  formatDryRunResults,
   formatResults,
   nextActionForResult,
   normalizeApiUrl,
@@ -253,6 +255,64 @@ describe('support CRM preflight helpers', () => {
       detail: '2 optional checks skipped',
     })).toBe('Set the fixture/env values listed under Skipped optional checks, or unset SUPPORT_CRM_REQUIRE_FULL_COVERAGE when partial coverage is intentional.');
   });
+
+  it('dry-runs strict release env without exposing full secrets', () => {
+    const results = buildPreflightDryRunResults({
+      SUPPORT_CRM_API_URL: 'https://worker.example',
+      SUPPORT_CRM_ADMIN_ORIGIN: 'https://admin.example/support',
+      SUPPORT_CRM_LINE_ACCOUNT_ID: 'line-1',
+      SUPPORT_CRM_OWNER_API_KEY: 'owner-secret-123456',
+      SUPPORT_CRM_STAFF_API_KEY: 'staff-secret-123456',
+      SUPPORT_CRM_REQUIRE_FULL_COVERAGE: '1',
+      SUPPORT_CRM_STAFF_VISIBLE_CASE_ID: 'case-visible',
+      SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID: 'case-forbidden',
+      SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID: 'case-nonresolved',
+      SUPPORT_CRM_STAFF_RESOLVED_CASE_ID: 'case-resolved',
+      SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID: 'friend-visible',
+      SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID: 'friend-forbidden',
+      SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID: 'friend-resolved',
+    });
+    const output = formatDryRunResults(results);
+
+    expect(results.filter((item) => item.status === 'fail')).toEqual([]);
+    expect(output).toContain('Support CRM preflight dry-run (no network requests).');
+    expect(output).toContain('owner=owne...3456');
+    expect(output).toContain('staff=staf...3456');
+    expect(output).not.toContain('owner-secret-123456');
+    expect(output).not.toContain('staff-secret-123456');
+  });
+
+  it('dry-runs strict release env and fails missing full-coverage inputs', () => {
+    const results = buildPreflightDryRunResults({
+      SUPPORT_CRM_API_URL: 'https://worker.example',
+      SUPPORT_CRM_LINE_ACCOUNT_ID: 'line-1',
+      SUPPORT_CRM_OWNER_API_KEY: 'owner-key',
+      SUPPORT_CRM_REQUIRE_FULL_COVERAGE: '1',
+      SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD: '0',
+    });
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        status: 'fail',
+        name: 'env: admin origin',
+        detail: 'SUPPORT_CRM_ADMIN_ORIGIN is not set',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'env: staff API key',
+        detail: 'SUPPORT_CRM_STAFF_API_KEY is not set',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'env: staff mutation guard',
+        detail: 'SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'env: SUPPORT_CRM_STAFF_VISIBLE_CASE_ID',
+      }),
+    ]));
+  });
 });
 
 describe('runSupportCrmPreflight', () => {
@@ -474,8 +534,50 @@ describe('runSupportCrmPreflight', () => {
 
     expect(failed(results)).toEqual([
       expect.objectContaining({
+        name: 'preflight: owner/admin credential required',
+        detail: 'SUPPORT_CRM_OWNER_API_KEY or SUPPORT_CRM_ADMIN_API_KEY is required when SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1',
+      }),
+      expect.objectContaining({
+        name: 'preflight: staff mutation guard required',
+        detail: 'SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD must stay enabled when SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1',
+      }),
+      expect.objectContaining({
         name: 'preflight: full coverage required',
         detail: '6 optional checks skipped',
+      }),
+    ]);
+  });
+
+  it('fails full-coverage mode when staff credential is missing or mutation guard is disabled', async () => {
+    const results = await runSupportCrmPreflight(
+      buildConfig({
+        credentials: [{ role: 'owner', apiKey: 'owner-key' }],
+        adminOrigin: 'https://admin.example',
+        checkStaffMutationGuard: false,
+        requireFullCoverage: true,
+      }),
+      async (input: string, init?: RequestInit) => {
+        const url = new URL(input);
+        if (url.pathname === '/api/auth/login' && init?.method === 'OPTIONS') {
+          return new Response(null, {
+            status: 204,
+            headers: {
+              'Access-Control-Allow-Origin': 'https://admin.example',
+              'Access-Control-Allow-Credentials': 'true',
+              'Access-Control-Allow-Headers': 'content-type',
+            },
+          });
+        }
+        return createHappyFetch()(input, init);
+      },
+    );
+
+    expect(failed(results)).toEqual([
+      expect.objectContaining({
+        name: 'preflight: staff credential required',
+      }),
+      expect.objectContaining({
+        name: 'preflight: staff mutation guard required',
       }),
     ]);
   });

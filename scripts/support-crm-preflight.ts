@@ -40,6 +40,16 @@ type JsonResponse = {
   json: unknown;
 };
 
+const STAFF_SCOPE_FIXTURE_ENVS = [
+  'SUPPORT_CRM_STAFF_VISIBLE_CASE_ID',
+  'SUPPORT_CRM_STAFF_FORBIDDEN_CASE_ID',
+  'SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID',
+  'SUPPORT_CRM_STAFF_RESOLVED_CASE_ID',
+  'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID',
+  'SUPPORT_CRM_STAFF_FORBIDDEN_FRIEND_ID',
+  'SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID',
+] as const;
+
 export function normalizeApiUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return '';
@@ -238,6 +248,15 @@ async function checkExpectedStatus(
 
 function skipIfMissing(name: string, envName: string): CheckResult {
   return result('skip', name, `${envName} is not set`);
+}
+
+function requiredEnvResult(name: string, envName: string, value: string | undefined, required: boolean): CheckResult {
+  if (value) return result('pass', name, 'set');
+  return result(required ? 'fail' : 'skip', name, `${envName} is not set`);
+}
+
+function credentialSummary(credentials: RoleCredential[]): string {
+  return credentials.map((credential) => `${credential.role}=${redactSecret(credential.apiKey)}`).join(', ');
 }
 
 async function checkCredentialedPreflight(
@@ -513,6 +532,18 @@ export async function runSupportCrmPreflight(
   fetchImpl: FetchLike = fetch,
 ): Promise<CheckResult[]> {
   const results: CheckResult[] = [];
+  if (config.requireFullCoverage) {
+    const roles = new Set(config.credentials.map((credential) => credential.role));
+    if (!roles.has('owner') && !roles.has('admin')) {
+      results.push(result('fail', 'preflight: owner/admin credential required', 'SUPPORT_CRM_OWNER_API_KEY or SUPPORT_CRM_ADMIN_API_KEY is required when SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1'));
+    }
+    if (!roles.has('staff')) {
+      results.push(result('fail', 'preflight: staff credential required', 'SUPPORT_CRM_STAFF_API_KEY is required when SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1'));
+    }
+    if (!config.checkStaffMutationGuard) {
+      results.push(result('fail', 'preflight: staff mutation guard required', 'SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD must stay enabled when SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1'));
+    }
+  }
   results.push(await checkCredentialedPreflight(fetchImpl, config));
   for (const credential of config.credentials) {
     results.push(...await runRoleChecks(fetchImpl, config, credential));
@@ -527,6 +558,54 @@ export async function runSupportCrmPreflight(
       ));
     }
   }
+  return results;
+}
+
+export function buildPreflightDryRunResults(source: NodeJS.ProcessEnv): CheckResult[] {
+  const apiUrl = normalizeApiUrl(optional(source.SUPPORT_CRM_API_URL) ?? optional(source.NEXT_PUBLIC_API_URL) ?? '');
+  const adminOrigin = optional(source.SUPPORT_CRM_ADMIN_ORIGIN);
+  const lineAccountId = optional(source.SUPPORT_CRM_LINE_ACCOUNT_ID);
+  const requireFullCoverage = truthy(source.SUPPORT_CRM_REQUIRE_FULL_COVERAGE) || truthy(source.SUPPORT_CRM_STRICT);
+  const fullCoverageDetail = truthy(source.SUPPORT_CRM_REQUIRE_FULL_COVERAGE)
+    ? 'SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1'
+    : truthy(source.SUPPORT_CRM_STRICT)
+      ? 'SUPPORT_CRM_STRICT=1'
+      : 'SUPPORT_CRM_REQUIRE_FULL_COVERAGE is not set';
+  const checkStaffMutationGuard = source.SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD === undefined
+    ? true
+    : truthy(source.SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD);
+
+  const credentials: RoleCredential[] = [];
+  const ownerKey = optional(source.SUPPORT_CRM_OWNER_API_KEY) ?? optional(source.SUPPORT_CRM_OWNER_KEY) ?? optional(source.SUPPORT_CRM_API_KEY);
+  const adminKey = optional(source.SUPPORT_CRM_ADMIN_API_KEY) ?? optional(source.SUPPORT_CRM_ADMIN_KEY);
+  const staffKey = optional(source.SUPPORT_CRM_STAFF_API_KEY) ?? optional(source.SUPPORT_CRM_STAFF_KEY);
+  if (ownerKey) credentials.push({ role: 'owner', apiKey: ownerKey });
+  if (adminKey) credentials.push({ role: 'admin', apiKey: adminKey });
+  if (staffKey) credentials.push({ role: 'staff', apiKey: staffKey });
+
+  const results: CheckResult[] = [
+    requiredEnvResult('env: API URL', 'SUPPORT_CRM_API_URL or NEXT_PUBLIC_API_URL', apiUrl, true),
+    requiredEnvResult('env: LINE account ID', 'SUPPORT_CRM_LINE_ACCOUNT_ID', lineAccountId, true),
+    requiredEnvResult('env: admin origin', 'SUPPORT_CRM_ADMIN_ORIGIN', adminOrigin ? normalizeOrigin(adminOrigin) : undefined, requireFullCoverage),
+  ];
+
+  if (credentials.length > 0) {
+    results.push(result('pass', 'env: API credentials', credentialSummary(credentials)));
+  } else {
+    results.push(result('fail', 'env: API credentials', 'at least one SUPPORT_CRM_*_API_KEY is required'));
+  }
+
+  const hasOwnerAdmin = Boolean(ownerKey || adminKey);
+  const hasStaff = Boolean(staffKey);
+  results.push(result(hasOwnerAdmin ? 'pass' : requireFullCoverage ? 'fail' : 'skip', 'env: owner/admin API key', hasOwnerAdmin ? 'set' : 'SUPPORT_CRM_OWNER_API_KEY or SUPPORT_CRM_ADMIN_API_KEY is not set'));
+  results.push(result(hasStaff ? 'pass' : requireFullCoverage ? 'fail' : 'skip', 'env: staff API key', hasStaff ? redactSecret(staffKey ?? '') : 'SUPPORT_CRM_STAFF_API_KEY is not set'));
+  results.push(result(requireFullCoverage ? 'pass' : 'skip', 'env: full coverage mode', fullCoverageDetail));
+  results.push(result(checkStaffMutationGuard ? 'pass' : requireFullCoverage ? 'fail' : 'skip', 'env: staff mutation guard', checkStaffMutationGuard ? 'enabled' : 'SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0'));
+
+  for (const envName of STAFF_SCOPE_FIXTURE_ENVS) {
+    results.push(requiredEnvResult(`env: ${envName}`, envName, optional(source[envName]), requireFullCoverage));
+  }
+
   return results;
 }
 
@@ -562,6 +641,15 @@ export function nextActionForResult(item: CheckResult): string | null {
   }
   if (name.includes('full coverage required')) {
     return 'Set the fixture/env values listed under Skipped optional checks, or unset SUPPORT_CRM_REQUIRE_FULL_COVERAGE when partial coverage is intentional.';
+  }
+  if (name.includes('credential required') || name.startsWith('env: owner/admin api key') || name.startsWith('env: staff api key')) {
+    return 'Set both an owner/admin API key and a staff API key before strict production cutover.';
+  }
+  if (name.includes('staff mutation guard required') || name.startsWith('env: staff mutation guard')) {
+    return 'Keep SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD enabled during strict production cutover.';
+  }
+  if (name.startsWith('env:')) {
+    return 'Set the missing environment variable shown in the detail, then rerun the dry-run.';
   }
   if (name.includes('admin login cors')) {
     return 'Check SUPPORT_CRM_ADMIN_ORIGIN and the Worker CORS settings for credentialed browser login.';
@@ -623,6 +711,16 @@ export function formatResults(results: CheckResult[]): string {
   return `${lines.join('\n')}\n`;
 }
 
+export function formatDryRunResults(results: CheckResult[]): string {
+  return [
+    'Support CRM preflight dry-run (no network requests).',
+    'Secrets are redacted; this only checks whether the release env is shaped correctly.',
+    '',
+    formatResults(results).trimEnd(),
+    '',
+  ].join('\n');
+}
+
 function printResults(results: CheckResult[]): void {
   stdout.write(formatResults(results));
 }
@@ -649,6 +747,9 @@ function usage(): string {
     '  SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID',
     '  SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0 to skip the staff 403 mutation guard',
     '  SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1 to fail when optional checks are skipped',
+    '',
+    'Modes:',
+    '  --dry-run  validate required env shape without network requests',
   ].join('\n');
 }
 
@@ -665,6 +766,12 @@ if (isCliEntry) {
   if (argv.includes('--help') || argv.includes('-h')) {
     stdout.write(`${usage()}\n`);
     exit(0);
+  }
+
+  if (argv.includes('--dry-run')) {
+    const results = buildPreflightDryRunResults(env);
+    stdout.write(formatDryRunResults(results));
+    exit(results.some((item) => item.status === 'fail') ? 1 : 0);
   }
 
   const parsed = configFromEnv(env);

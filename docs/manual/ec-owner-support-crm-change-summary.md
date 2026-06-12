@@ -43,7 +43,9 @@ updated: 2026-06-13
 - owner/admin/staff APIキーのログイン権限、CORS、サポート要約、案件一覧、マニュアル検索、チャット一覧を検査
 - staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
 - optional fixtureでstaff可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
+- `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
 - `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` で任意チェックのスキップも失敗扱いにする
+- strict modeではowner/adminキー、staffキー、staff fixture ID、CORS origin、staff mutation guard有効化を必須にする
 - `corepack pnpm support-crm:fixtures` でstrict Preflight用の候補IDをD1から読み取り専用で抽出
 - 既存データに検証fixtureが足りない場合に、synthetic fixtureをseed/cleanupできる補助コマンドを追加
 - 検証用D1にLINEアカウント行が無い場合は `SUPPORT_CRM_FIXTURE_CREATE_LINE_ACCOUNT=1` でsynthetic LINEアカウントもseedできる
@@ -89,11 +91,16 @@ NEXT_PUBLIC_API_URL=https://ec-owner-line-harness.wayway-dev.workers.dev corepac
 git diff --check
 ```
 
+Preflight dry-run:
+
+- strict release envの成功パターンで `15 passed, 0 skipped, 0 failed`
+- strict release envの不足パターンで、admin origin、staff APIキー、staff fixture ID、staff mutation guard無効化が実通信前に失敗として出ることを確認
+
 strict Preflight:
 
 - ローカルfixture flow: seed local D1、strict Preflight、cleanup local D1まで実行し、`19 passed, 0 skipped, 0 failed`
 - リモートfixture flow: remote test D1へsynthetic fixtureをseedし、デプロイ済みPR Workerに対してstrict Preflightを実行し、cleanup後のsynthetic行数が0であることを確認
-- リモートstrict Preflight結果: `19 passed, 0 skipped, 0 failed`
+- リモートstrict Preflight結果: 未対応チャットmessageType guard追加後に `20 passed, 0 skipped, 0 failed`
 - Remote browser cookie login/session check: Pages originとデプロイ済みWorkerでstaff sessionを確認済み
 
 ローカル画面応答:

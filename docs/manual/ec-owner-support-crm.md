@@ -308,6 +308,8 @@ corepack pnpm preflight:support-crm
 
 `SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1` を付けると、`Skipped optional checks` が1つでも残っている場合に `preflight: full coverage required` が失敗として出ます。つまり「まだ確認していない範囲がある」ことに気づけます。
 
+実通信の前に `corepack pnpm preflight:support-crm:dry-run` を実行すると、WorkerやD1へ接続せずに必要な環境変数の不足を確認できます。APIキーは伏せ字で表示されます。strict modeでは、owner/adminキー、staffキー、`SUPPORT_CRM_ADMIN_ORIGIN`、staff fixture ID、staff mutation guardが揃っていないと失敗します。
+
 `SUPPORT_CRM_STAFF_NON_RESOLVED_CASE_ID` を設定すると、未完了案件を誤って再オープンにできないことも確認します。
 
 `SUPPORT_CRM_STAFF_RESOLVED_CASE_ID` と `SUPPORT_CRM_STAFF_RESOLVED_FRIEND_ID` を両方設定すると、完了済み案件から顧客返信を送ろうとしても、LINE送信前の検証で止まることを確認します。この確認は送信前検証だけを使うため、実際のLINEメッセージは送られません。

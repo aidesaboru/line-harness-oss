@@ -849,6 +849,31 @@ describe('chat support visibility', () => {
     expect(state.supportCases.at(-1)).toMatchObject({ id: 'case-visible', status: 'waiting_secondary' });
   });
 
+  test('support reply validation does not lazy-create chats when only the friend exists', async () => {
+    const { db, calls, state } = makeChatDb({
+      rows: [],
+      friends: [friends[0]],
+      visibleFriendIds: ['friend-visible'],
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '送信前確認だけ行う' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO chats'))).toBe(false);
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(dbMocks.updateChat).not.toHaveBeenCalled();
+    expect(state.messages).toHaveLength(0);
+    expect(state.supportEvents).toHaveLength(0);
+  });
+
   test('support reply send is rejected before LINE push when the case is not tied to the chat friend', async () => {
     const { db, state } = makeChatDb({
       rows,

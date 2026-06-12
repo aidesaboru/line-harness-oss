@@ -347,6 +347,23 @@ async function resolveOrCreateChat(db: D1Database, id: string): Promise<ChatLike
     .first<ChatLike>())!;
 }
 
+async function resolveExistingChatOrFriend(
+  db: D1Database,
+  id: string,
+): Promise<{ chat: ChatLike | null; friendId: string } | null> {
+  const existing = await getChatById(db, id);
+  if (existing) return { chat: existing as ChatLike, friendId: existing.friend_id };
+
+  const friend = await getFriendById(db, id);
+  if (!friend) return null;
+
+  const byFriend = await db
+    .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`)
+    .bind(friend.id)
+    .first<ChatLike>();
+  return { chat: byFriend, friendId: friend.id };
+}
+
 async function resolveFriendAndAccessToken(
   db: D1Database,
   friendId: string,
@@ -805,9 +822,9 @@ chats.post('/api/chats/:id/loading', async (c) => {
 chats.post('/api/chats/:id/send/validate', async (c) => {
   try {
     const chatId = c.req.param('id');
-    const chat = await resolveOrCreateChat(c.env.DB, chatId);
-    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
-    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId);
+    if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, resolved.friendId);
     if (denied) return denied;
 
     const body = await c.req.json<ChatSendBody>();
@@ -816,7 +833,7 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
 
     const { friend } = await resolveFriendAndAccessToken(
       c.env.DB,
-      chat.friend_id,
+      resolved.friendId,
       c.env.LINE_CHANNEL_ACCESS_TOKEN,
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);

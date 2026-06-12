@@ -7,7 +7,7 @@ const dedupPreview = new Hono<Env>();
 
 dedupPreview.post(
   '/api/broadcasts/dedup-preview',
-  requireRole('owner', 'admin', 'staff'),
+  requireRole('owner', 'admin'),
   async (c) => {
     const body = await c.req.json<{ accountIds: unknown; dedupPriority: unknown; targetTagId?: unknown }>();
     if (!Array.isArray(body.accountIds) || !body.accountIds.every((x) => typeof x === 'string')) {

@@ -1,8 +1,11 @@
 import { Hono } from 'hono';
 import { LineClient } from '@line-crm/line-sdk';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const profileRefresh = new Hono<Env>();
+
+profileRefresh.use('/api/admin/*', requireRole('owner', 'admin'));
 
 /**
  * 友だち全員のプロフィール (display_name / picture_url / status_message) を

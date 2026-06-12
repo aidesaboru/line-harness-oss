@@ -38,7 +38,9 @@ vi.mock('../services/segment-send.js', () => ({
   processSegmentSend: vi.fn(),
 }));
 
+const { computeDedupBroadcastPreview } = await import('../services/dedup-broadcast.js');
 const { broadcasts } = await import('./broadcasts.js');
+const { default: dedupPreview } = await import('./dedup-preview.js');
 
 type StaffRole = 'owner' | 'admin' | 'staff';
 
@@ -117,6 +119,7 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
     await next();
   });
   app.route('/', broadcasts);
+  app.route('/', dedupPreview);
   return app;
 }
 
@@ -183,6 +186,10 @@ describe('broadcast support role guards', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conditions: { operator: 'AND', rules: [] } }),
       }],
+      ['POST', '/api/broadcasts/dedup-preview', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountIds: ['acc-1'], dedupPriority: ['acc-1'] }),
+      }],
     ];
 
     for (const [method, path, init] of requests) {
@@ -196,6 +203,7 @@ describe('broadcast support role guards', () => {
     expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
     expect(dbMocks.deleteBroadcast).not.toHaveBeenCalled();
     expect(lineClientMethods.pushMessage).not.toHaveBeenCalled();
+    expect(computeDedupBroadcastPreview).not.toHaveBeenCalled();
     expect(db.calls).toEqual([]);
   });
 

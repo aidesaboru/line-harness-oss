@@ -1,10 +1,9 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getCalendarConnections,
   getCalendarConnectionById,
   createCalendarConnection,
   deleteCalendarConnection,
-  getCalendarBookings,
   getCalendarBookingById,
   createCalendarBooking,
   updateCalendarBookingStatus,
@@ -14,8 +13,53 @@ import {
 } from '@line-crm/db';
 import { GoogleCalendarClient } from '../services/google-calendar.js';
 import type { Env } from '../index.js';
+import { supportFriendVisibilitySql } from '../services/support-access.js';
+import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
 
 const calendar = new Hono<Env>();
+
+interface CalendarBookingRow {
+  id: string;
+  connection_id: string;
+  friend_id: string | null;
+  event_id: string | null;
+  title: string;
+  start_at: string;
+  end_at: string;
+  status: string;
+  metadata: string | null;
+  created_at: string;
+}
+
+async function getScopedCalendarBookings(
+  c: Context<Env>,
+  opts: { connectionId?: string; friendId?: string } = {},
+): Promise<CalendarBookingRow[]> {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (opts.friendId) {
+    conditions.push('cb.friend_id = ?');
+    values.push(opts.friendId);
+  }
+  if (opts.connectionId) {
+    conditions.push('cb.connection_id = ?');
+    values.push(opts.connectionId);
+  }
+
+  const visibility = supportFriendVisibilitySql(currentSupportStaff(c), 'cb.friend_id');
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    values.push(...visibility.binds);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await c.env.DB
+    .prepare(`SELECT cb.* FROM calendar_bookings cb ${where} ORDER BY cb.start_at ASC`)
+    .bind(...values)
+    .all<CalendarBookingRow>();
+  return result.results;
+}
 
 // ========== 接続管理 ==========
 
@@ -150,7 +194,15 @@ calendar.get('/api/integrations/google-calendar/bookings', async (c) => {
   try {
     const connectionId = c.req.query('connectionId');
     const friendId = c.req.query('friendId');
-    const items = await getCalendarBookings(c.env.DB, { connectionId: connectionId ?? undefined, friendId: friendId ?? undefined });
+    if (friendId) {
+      const denied = await ensureSupportFriendAccess(c, friendId);
+      if (denied) return denied;
+    }
+
+    const items = await getScopedCalendarBookings(c, {
+      connectionId: connectionId ?? undefined,
+      friendId: friendId ?? undefined,
+    });
     return c.json({
       success: true,
       data: items.map((b) => ({
@@ -177,6 +229,11 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
     const body = await c.req.json<{ connectionId: string; friendId?: string; title: string; startAt: string; endAt: string; description?: string; metadata?: Record<string, unknown> }>();
     if (!body.connectionId || !body.title || !body.startAt || !body.endAt) {
       return c.json({ success: false, error: 'connectionId, title, startAt, endAt are required' }, 400);
+    }
+
+    if (body.friendId) {
+      const denied = await ensureSupportFriendAccess(c, body.friendId);
+      if (denied) return denied;
     }
 
     // D1 に予約レコードを作成
@@ -232,10 +289,17 @@ calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) 
   try {
     const id = c.req.param('id');
     const { status } = await c.req.json<{ status: string }>();
+    const booking = await getCalendarBookingById(c.env.DB, id);
+    if (!booking) {
+      return c.json({ success: false, error: 'Calendar booking not found' }, 404);
+    }
+    if (booking.friend_id) {
+      const denied = await ensureSupportFriendAccess(c, booking.friend_id, 'Calendar booking not found');
+      if (denied) return denied;
+    }
 
     // キャンセル時は Google Calendar のイベントも削除する（ベストエフォート）
     if (status === 'cancelled') {
-      const booking = await getCalendarBookingById(c.env.DB, id);
       if (booking?.event_id && booking.connection_id) {
         const conn = await getCalendarConnectionById(c.env.DB, booking.connection_id);
         if (conn?.access_token) {

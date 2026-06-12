@@ -1,16 +1,136 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getConversionPoints,
   getConversionPointById,
   createConversionPoint,
   deleteConversionPoint,
   trackConversion,
-  getConversionEvents,
-  getConversionReport,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { supportFriendVisibilitySql } from '../services/support-access.js';
+import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
 
 const conversions = new Hono<Env>();
+
+interface ConversionEventRow {
+  id: string;
+  conversion_point_id: string;
+  friend_id: string;
+  user_id: string | null;
+  affiliate_code: string | null;
+  metadata: string | null;
+  created_at: string;
+}
+
+interface ConversionEventFilters {
+  conversionPointId?: string;
+  friendId?: string;
+  affiliateCode?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  offset?: number;
+}
+
+function conversionFriendScope(c: Context<Env>, friendIdExpression: string) {
+  return supportFriendVisibilitySql(currentSupportStaff(c), friendIdExpression);
+}
+
+async function getScopedConversionEvents(
+  c: Context<Env>,
+  opts: ConversionEventFilters,
+): Promise<ConversionEventRow[]> {
+  const conditions: string[] = [];
+  const values: unknown[] = [];
+
+  if (opts.conversionPointId) {
+    conditions.push('ce.conversion_point_id = ?');
+    values.push(opts.conversionPointId);
+  }
+  if (opts.friendId) {
+    conditions.push('ce.friend_id = ?');
+    values.push(opts.friendId);
+  }
+  if (opts.affiliateCode) {
+    conditions.push('ce.affiliate_code = ?');
+    values.push(opts.affiliateCode);
+  }
+  if (opts.startDate) {
+    conditions.push('ce.created_at >= ?');
+    values.push(opts.startDate);
+  }
+  if (opts.endDate) {
+    conditions.push('ce.created_at <= ?');
+    values.push(opts.endDate);
+  }
+
+  const visibility = conversionFriendScope(c, 'ce.friend_id');
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    values.push(...visibility.binds);
+  }
+
+  values.push(opts.limit ?? 100, opts.offset ?? 0);
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await c.env.DB
+    .prepare(`SELECT ce.* FROM conversion_events ce ${where} ORDER BY ce.created_at DESC LIMIT ? OFFSET ?`)
+    .bind(...values)
+    .all<ConversionEventRow>();
+  return result.results;
+}
+
+async function getScopedConversionReport(
+  c: Context<Env>,
+  opts: { startDate?: string; endDate?: string },
+) {
+  const joinConditions = ['ce.conversion_point_id = cp.id'];
+  const values: unknown[] = [];
+
+  if (opts.startDate) {
+    joinConditions.push('ce.created_at >= ?');
+    values.push(opts.startDate);
+  }
+  if (opts.endDate) {
+    joinConditions.push('ce.created_at <= ?');
+    values.push(opts.endDate);
+  }
+
+  const visibility = conversionFriendScope(c, 'ce.friend_id');
+  if (visibility.sql) {
+    joinConditions.push(visibility.sql);
+    values.push(...visibility.binds);
+  }
+
+  const result = await c.env.DB
+    .prepare(
+      `SELECT
+         cp.id as conversion_point_id,
+         cp.name as conversion_point_name,
+         cp.event_type,
+         COUNT(ce.id) as total_count,
+         COALESCE(SUM(cp.value), 0) as total_value
+       FROM conversion_points cp
+       LEFT JOIN conversion_events ce ON ${joinConditions.join(' AND ')}
+       GROUP BY cp.id
+       ORDER BY total_count DESC`,
+    )
+    .bind(...values)
+    .all<{
+      conversion_point_id: string;
+      conversion_point_name: string;
+      event_type: string;
+      total_count: number;
+      total_value: number;
+    }>();
+
+  return result.results.map((r) => ({
+    conversionPointId: r.conversion_point_id,
+    conversionPointName: r.conversion_point_name,
+    eventType: r.event_type,
+    totalCount: r.total_count,
+    totalValue: r.total_value,
+  }));
+}
 
 // ── Conversion Points ───────────────────────────────────────────────────────
 
@@ -95,6 +215,9 @@ conversions.post('/api/conversions/track', async (c) => {
       );
     }
 
+    const denied = await ensureSupportFriendAccess(c, body.friendId);
+    if (denied) return denied;
+
     const event = await trackConversion(c.env.DB, {
       conversionPointId: body.conversionPointId,
       friendId: body.friendId,
@@ -124,9 +247,15 @@ conversions.post('/api/conversions/track', async (c) => {
 // GET /api/conversions/events - list events with filters
 conversions.get('/api/conversions/events', async (c) => {
   try {
-    const events = await getConversionEvents(c.env.DB, {
+    const friendId = c.req.query('friendId');
+    if (friendId) {
+      const denied = await ensureSupportFriendAccess(c, friendId);
+      if (denied) return denied;
+    }
+
+    const events = await getScopedConversionEvents(c, {
       conversionPointId: c.req.query('conversionPointId'),
-      friendId: c.req.query('friendId'),
+      friendId,
       affiliateCode: c.req.query('affiliateCode'),
       startDate: c.req.query('startDate'),
       endDate: c.req.query('endDate'),
@@ -155,7 +284,7 @@ conversions.get('/api/conversions/events', async (c) => {
 // GET /api/conversions/report - aggregated report
 conversions.get('/api/conversions/report', async (c) => {
   try {
-    const report = await getConversionReport(c.env.DB, {
+    const report = await getScopedConversionReport(c, {
       startDate: c.req.query('startDate'),
       endDate: c.req.query('endDate'),
     });

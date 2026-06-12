@@ -25,6 +25,33 @@ updated: 2026-06-13
 
 ## 2. 自動検査
 
+strict Preflightに使うfixture IDは、D1から候補を拾えます。このコマンドは読み取り専用の `SELECT` だけを実行し、DBの更新やLINE送信はしません。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_STAFF_NAME=staffのスタッフ名 \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures
+```
+
+同姓同名のstaffがいる場合は、`/staff` 画面やDBで確認したstaff member IDを足します。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_STAFF_NAME=staffのスタッフ名 \
+SUPPORT_CRM_STAFF_MEMBER_ID=staff_membersのID \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures
+```
+
+Cloudflareに接続せずSQLだけ確認したい場合:
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_STAFF_NAME=staffのスタッフ名 \
+corepack pnpm support-crm:fixtures:sql
+```
+
 軽い確認では次を実行します。
 
 ```bash
@@ -62,6 +89,7 @@ corepack pnpm preflight:support-crm
 - [ ] staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が403で止まる
 - [ ] 未完了案件を再オープンにできない
 - [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
+- [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
 
 ## 3. 画面確認
 

@@ -276,6 +276,17 @@ corepack pnpm preflight:support-crm
 
 本番切替前は、任意チェックのスキップも失敗扱いにします。staffの表示範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止まで確認するため、次を実行します。
 
+fixture IDの候補は、D1から読み取り専用で拾えます。`SUPPORT_CRM_STAFF_NAME` は、staff APIキーで `/api/staff/me` に出る名前と同じものを指定します。
+
+```bash
+SUPPORT_CRM_LINE_ACCOUNT_ID=本番LINE公式アカウントID \
+SUPPORT_CRM_STAFF_NAME=staffのスタッフ名 \
+SUPPORT_CRM_D1_ENV=production \
+corepack pnpm support-crm:fixtures
+```
+
+Cloudflareへ接続せず、実行されるSQLだけ確認したい場合は `corepack pnpm support-crm:fixtures:sql` を使います。
+
 ```bash
 SUPPORT_CRM_API_URL=https://your-worker.example.com \
 SUPPORT_CRM_ADMIN_ORIGIN=https://your-admin.example.com \

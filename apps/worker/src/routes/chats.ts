@@ -93,10 +93,91 @@ type ChatSendBody = {
   lineAccountId?: string | null;
 };
 
+type ChatMessageType = 'text' | 'flex' | 'image';
+
+type NormalizedChatSendPayload =
+  | { messageType: 'text'; content: string }
+  | { messageType: 'flex'; content: string; flexContents: Record<string, unknown> }
+  | {
+    messageType: 'image';
+    content: string;
+    image: {
+      originalContentUrl: string;
+      previewImageUrl: string;
+    };
+  };
+
 type ChatSendFriend = {
   id: string;
   line_account_id?: string | null;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeChatSendPayload(
+  body: ChatSendBody,
+): { ok: true; payload: NormalizedChatSendPayload } | { ok: false; error: string } {
+  const messageType = body.messageType?.trim() || 'text';
+  if (messageType !== 'text' && messageType !== 'flex' && messageType !== 'image') {
+    return { ok: false, error: 'messageType must be text, flex, or image' };
+  }
+
+  if (typeof body.content !== 'string' || !body.content.trim()) {
+    return { ok: false, error: 'content is required' };
+  }
+
+  const content = body.content.trim();
+  if (messageType === 'text') {
+    return { ok: true, payload: { messageType, content } };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { ok: false, error: `${messageType} content must be valid JSON` };
+  }
+
+  if (messageType === 'flex') {
+    if (!isRecord(parsed) || (parsed.type !== 'bubble' && parsed.type !== 'carousel')) {
+      return { ok: false, error: 'flex content must be a bubble or carousel JSON object' };
+    }
+    return { ok: true, payload: { messageType, content, flexContents: parsed } };
+  }
+
+  if (!isRecord(parsed)) {
+    return { ok: false, error: 'image content must be a JSON object' };
+  }
+  const originalContentUrl = parsed.originalContentUrl;
+  const previewImageUrl = parsed.previewImageUrl;
+  if (
+    typeof originalContentUrl !== 'string' ||
+    typeof previewImageUrl !== 'string' ||
+    !isHttpsUrl(originalContentUrl) ||
+    !isHttpsUrl(previewImageUrl)
+  ) {
+    return { ok: false, error: 'image content must include HTTPS originalContentUrl and previewImageUrl' };
+  }
+
+  return {
+    ok: true,
+    payload: {
+      messageType,
+      content,
+      image: { originalContentUrl, previewImageUrl },
+    },
+  };
+}
 
 async function getSupportCaseForChat(
   db: D1Database,
@@ -730,7 +811,8 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
     if (denied) return denied;
 
     const body = await c.req.json<ChatSendBody>();
-    if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
+    const normalized = normalizeChatSendPayload(body);
+    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
 
     const { friend } = await resolveFriendAndAccessToken(
       c.env.DB,
@@ -746,6 +828,7 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
       success: true,
       data: {
         valid: true,
+        messageType: normalized.payload.messageType,
         supportCaseId: validation.supportCase?.id ?? null,
         supportCaseStatus: validation.supportCase?.status ?? null,
       },
@@ -766,7 +849,8 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (denied) return denied;
 
     const body = await c.req.json<ChatSendBody>();
-    if (!body.content) return c.json({ success: false, error: 'content is required' }, 400);
+    const normalized = normalizeChatSendPayload(body);
+    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
 
     const { friend, accessToken } = await resolveFriendAndAccessToken(
       c.env.DB,
@@ -783,18 +867,15 @@ chats.post('/api/chats/:id/send', async (c) => {
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
     const lineClient = new LineClient(accessToken);
-    const messageType = body.messageType ?? 'text';
+    const { messageType, content } = normalized.payload;
 
     if (messageType === 'text') {
-      await lineClient.pushTextMessage(friend.line_user_id, body.content);
+      await lineClient.pushTextMessage(friend.line_user_id, content);
     } else if (messageType === 'flex') {
-      const contents = JSON.parse(body.content);
+      const contents = normalized.payload.flexContents;
       await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
     } else if (messageType === 'image') {
-      const parsed = JSON.parse(body.content) as {
-        originalContentUrl: string;
-        previewImageUrl: string;
-      };
+      const parsed = normalized.payload.image;
       await lineClient.pushImageMessage(
         friend.line_user_id,
         parsed.originalContentUrl,
@@ -810,7 +891,7 @@ chats.post('/api/chats/:id/send', async (c) => {
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
          VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, now)
+      .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, now)
       .run();
 
     let supportCaseResult: {
@@ -828,7 +909,7 @@ chats.post('/api/chats/:id/send', async (c) => {
         lineAccountId: supportLineAccountId,
         messageId: logId,
         messageType,
-        content: body.content,
+        content,
         previousStatus: supportCase.status,
         nextStatus: statusUpdated ? 'customer_reply' : null,
         statusUpdateApplied: statusUpdated,

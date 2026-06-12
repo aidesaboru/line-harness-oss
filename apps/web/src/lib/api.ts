@@ -1022,7 +1022,7 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    send: (id: string, data: { content: string; messageType?: string; supportCaseId?: string; lineAccountId?: string | null }) =>
+    send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null }) =>
       fetchApi<ApiResponse<ChatSendResponse>>(`/api/chats/${id}/send`, {
         method: 'POST',
         body: JSON.stringify(data),

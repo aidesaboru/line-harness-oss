@@ -616,6 +616,99 @@ describe('chat support visibility', () => {
     });
   });
 
+  test('unsupported chat message types are rejected before LINE push or DB writes', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messageType: 'sticker',
+        content: JSON.stringify({ packageId: '1', stickerId: '1' }),
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: string };
+    expect(body).toMatchObject({
+      success: false,
+      error: 'messageType must be text, flex, or image',
+    });
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(lineSdkMocks.pushFlexMessage).not.toHaveBeenCalled();
+    expect(lineSdkMocks.pushImageMessage).not.toHaveBeenCalled();
+    expect(dbMocks.updateChat).not.toHaveBeenCalled();
+    expect(state.messages).toHaveLength(0);
+    expect(state.supportEvents).toHaveLength(0);
+  });
+
+  test('image support reply validation rejects malformed payloads before writes', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      supportCases: [
+        {
+          id: 'case-visible',
+          line_account_id: 'acc-1',
+          friend_id: 'friend-visible',
+          title: '画像確認',
+          status: 'in_progress',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send/validate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messageType: 'image',
+        content: JSON.stringify({
+          originalContentUrl: 'http://example.com/original.jpg',
+          previewImageUrl: 'https://example.com/preview.jpg',
+        }),
+        supportCaseId: 'case-visible',
+        lineAccountId: 'acc-1',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { success: boolean; error: string };
+    expect(body).toMatchObject({
+      success: false,
+      error: 'image content must include HTTPS originalContentUrl and previewImageUrl',
+    });
+    expect(lineSdkMocks.pushImageMessage).not.toHaveBeenCalled();
+    expect(dbMocks.updateChat).not.toHaveBeenCalled();
+    expect(state.messages).toHaveLength(0);
+    expect(state.supportEvents).toHaveLength(0);
+    expect(state.supportCases.at(-1)).toMatchObject({ id: 'case-visible', status: 'in_progress' });
+  });
+
   test('support reply send reports when the support case status update no longer applies', async () => {
     const { db, state } = makeChatDb({
       rows,

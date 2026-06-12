@@ -18,6 +18,7 @@ import type {
   FormUsedByAccount,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const forms = new Hono<Env>();
 
@@ -59,7 +60,7 @@ function serializeSubmission(row: DbFormSubmission & { friend_name?: string | nu
 }
 
 // GET /api/forms — list all forms (with submission stats + delivering accounts)
-forms.get('/api/forms', async (c) => {
+forms.get('/api/forms', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getFormsWithStats(c.env.DB);
     return c.json({
@@ -80,7 +81,7 @@ forms.get('/api/forms', async (c) => {
 // GET /api/forms/:id — get form
 forms.get('/api/forms/:id', async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const form = await getFormById(c.env.DB, id);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
@@ -93,7 +94,7 @@ forms.get('/api/forms/:id', async (c) => {
 });
 
 // POST /api/forms — create form
-forms.post('/api/forms', async (c) => {
+forms.post('/api/forms', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -135,9 +136,9 @@ forms.post('/api/forms', async (c) => {
 });
 
 // PUT /api/forms/:id — update form
-forms.put('/api/forms/:id', async (c) => {
+forms.put('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{
       name?: string;
       description?: string | null;
@@ -182,9 +183,9 @@ forms.put('/api/forms/:id', async (c) => {
 });
 
 // DELETE /api/forms/:id
-forms.delete('/api/forms/:id', async (c) => {
+forms.delete('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const form = await getFormById(c.env.DB, id);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
@@ -198,9 +199,9 @@ forms.delete('/api/forms/:id', async (c) => {
 });
 
 // GET /api/forms/:id/submissions — list submissions
-forms.get('/api/forms/:id/submissions', async (c) => {
+forms.get('/api/forms/:id/submissions', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const form = await getFormById(c.env.DB, id);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);

@@ -136,6 +136,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
   // くる。Worker は API 以外のパスを ASSETS バインディングから配信するので、
   // /api/ で始まらないパスは認証 skip して static asset として返す。
   // (admin は別ホスト、Worker の non-API path はすべて LIFF/SPA 経由)
+  const method = c.req.method.toUpperCase();
   if (!path.startsWith('/api/')) {
     // ただし内部用エンドポイント (/webhook, /auth, /setup) は元の skip 判定に任せる
     if (
@@ -176,7 +177,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.match(/^\/api\/forms\/[^/]+\/submit$/) ||
     path.match(/^\/api\/forms\/[^/]+\/opened$/) ||
     path.match(/^\/api\/forms\/[^/]+\/partial$/) ||
-    path.match(/^\/api\/forms\/[^/]+$/) || // GET form definition (public for LIFF)
+    (path.match(/^\/api\/forms\/[^/]+$/) && (method === 'GET' || method === 'HEAD')) || // form definition (public for LIFF)
     path === '/api/meet-callback' || // Meet Harness completion callback
     path === '/api/qr' // Public QR proxy — used by desktop landing pages
   ) {
@@ -196,7 +197,7 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
   // requests. Bearer callers (SDK/MCP) cannot be driven cross-site by a
   // browser (an attacker cannot set the Authorization header), so they are
   // exempt. Safe methods (GET/HEAD/OPTIONS) never mutate, so they are exempt.
-  if (!bearer && cookie && !SAFE_METHODS.has(c.req.method.toUpperCase())) {
+  if (!bearer && cookie && !SAFE_METHODS.has(method)) {
     const header = c.req.header(CSRF_HEADER);
     const expected = csrfTokenFromCookie(c);
     if (!header || !expected || header !== expected) {

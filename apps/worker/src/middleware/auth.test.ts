@@ -45,6 +45,10 @@ function app() {
   a.route('/', adminAuth);
   a.get('/api/protected', (c) => c.json({ success: true, data: c.get('staff') }));
   a.post('/api/protected', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.get('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
+  a.put('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
+  a.delete('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
+  a.post('/api/forms/:id/submit', (c) => c.json({ success: true, data: { id: c.req.param('id') } }, 201));
   return a;
 }
 
@@ -153,6 +157,36 @@ describe('protected API access', () => {
       headers: { Cookie: 'lh_admin_session=%; other=%E0%A4%A' },
     }, crossSiteEnv());
     expect(res.status).toBe(401);
+  });
+});
+
+describe('public form auth exceptions', () => {
+  test('allows unauthenticated GET for LIFF form definitions', async () => {
+    const res = await app().request('/api/forms/form-1', {}, crossSiteEnv());
+
+    expect(res.status).toBe(200);
+  });
+
+  test('does not allow unauthenticated form management on the public definition path', async () => {
+    const put = await app().request('/api/forms/form-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Updated' }),
+    }, crossSiteEnv());
+    const del = await app().request('/api/forms/form-1', { method: 'DELETE' }, crossSiteEnv());
+
+    expect(put.status).toBe(401);
+    expect(del.status).toBe(401);
+  });
+
+  test('keeps unauthenticated LIFF form submission public', async () => {
+    const res = await app().request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: {} }),
+    }, crossSiteEnv());
+
+    expect(res.status).toBe(201);
   });
 });
 

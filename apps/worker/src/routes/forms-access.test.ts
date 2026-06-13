@@ -35,12 +35,12 @@ type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(role: StaffRole = 'staff') {
+function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: 'Tajima', role });
     c.env = {
-      DB: {} as D1Database,
+      DB: db,
       LINE_CHANNEL_ACCESS_TOKEN: 'test-token',
     };
     await next();
@@ -115,10 +115,55 @@ describe('form management role guards', () => {
   });
 
   test('public form definition route remains unguarded', async () => {
-    const res = await setupApp('staff').request('/api/forms/form-1');
+    const res = await setupApp('staff').request('/api/forms/%20form-1%20');
 
     expect(res.status).toBe(200);
     expect(dbMocks.getFormById).toHaveBeenCalledWith({} as D1Database, 'form-1');
+  });
+
+  test('form path ID validation rejects malformed IDs before DB, LINE, or webhook side effects', async () => {
+    const prepare = vi.fn();
+    const app = setupApp('owner', { prepare } as unknown as D1Database);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/forms/bad%20form'],
+      ['PUT', '/api/forms/bad%20form', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/forms/bad%20form'],
+      ['GET', '/api/forms/bad%20form/submissions'],
+      ['POST', '/api/forms/bad%20form/opened', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'id-token' }),
+      }],
+      ['POST', '/api/forms/bad%20form/partial', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'id-token', data: { answer: 'draft' } }),
+      }],
+      ['POST', '/api/forms/bad%20form/submit', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'id-token', data: { answer: 'hello' } }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(dbMocks.getFormById).not.toHaveBeenCalled();
+    expect(dbMocks.updateForm).not.toHaveBeenCalled();
+    expect(dbMocks.deleteForm).not.toHaveBeenCalled();
+    expect(dbMocks.getFormSubmissions).not.toHaveBeenCalled();
+    expect(dbMocks.createFormSubmission).not.toHaveBeenCalled();
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
   });
 
   test('public form partial submit requires verified LINE idToken before metadata write', async () => {

@@ -63,6 +63,7 @@ updated: 2026-06-13
 - 公開QR proxy `/api/qr` はQR化する `data` をHTTP(S) URLかつ2048文字以内、`size` を120-512pxの正方形だけに制限し、外部QR rendererの非画像レスポンスを中継しない
 - フォーム管理API（一覧、作成、更新、削除、回答一覧）はowner/adminだけに制限し、LIFF用のフォーム定義GET、opened、partial、submit公開エンドポイントは維持
 - `/api/forms/:id` の公開認証skipはGET/HEADだけに限定し、同じパスのPUT/DELETEが未認証で通らないようにした
+- フォーム定義GET、opened、partial、submit、管理更新/削除/回答一覧のpath `formId` は、DB lookup/write、D1 prepare、LINE ID token検証、Webhook、submission保存、reward side effect前に検証し、正常値はtrimする
 - 公開フォームsubmitのWebhook gateは、LIFFクライアントの事前確認や `_skipWebhook` 自己申告を信じず、Worker側で毎回再判定する
 - 公開フォームのopened、partial、submitで友だちへ紐付ける処理は、caller supplied `lineUserId` / `friendId` ではなくLINE ID token検証済みのLINE user IDだけを使う
 - 公開フォームpartial/submitは壊れたJSON、オブジェクト以外の `data`、100項目超または16KB超の `data` をID token検証、Webhook、DB保存前に400で止める
@@ -232,7 +233,7 @@ strict Preflight:
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
 - Form access route tests confirm public submit ignores `_skipWebhook`, rechecks the webhook gate server-side, does not run reward tag/scenario side effects when the gate rejects, stores redacted webhook fetch errors, and never trusts caller-supplied `lineUserId` / `friendId` for partial metadata writes or submit side effects.
-- Form access route tests confirm public partial/submit reject malformed JSON, non-object `data`, and oversized `data` before LINE ID token verification, webhook calls, submission writes, or reward side effects.
+- Form access route tests confirm malformed form path IDs stop before DB lookup/write, D1 prepare, LINE ID token verification, webhook calls, submission writes, or reward side effects. They also confirm public partial/submit reject malformed JSON, non-object `data`, and oversized `data` before LINE ID token verification, webhook calls, submission writes, or reward side effects.
 - LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token and resolves the friend only from the verified token subject.
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
@@ -306,7 +307,7 @@ strict Preflight:
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限、path/payload検証、incoming receive署名検証の維持
 - `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証
-- `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限
+- `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限、フォームpath/payload境界
 - `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、ad-platform/affiliate/tracked-link管理path/payload検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload/query検証
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲

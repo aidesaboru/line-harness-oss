@@ -22,8 +22,10 @@ import { requireRole } from '../middleware/role-guard.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
 
 const forms = new Hono<Env>();
+const FORM_ID_MAX_LENGTH = 128;
 const MAX_PUBLIC_FORM_DATA_JSON_LENGTH = 16_384;
 const MAX_PUBLIC_FORM_DATA_FIELDS = 100;
+const FORM_ID_PATTERN = /^[!-~]+$/;
 
 function errorKind(err: unknown): string {
   return err instanceof Error && err.name ? err.name : typeof err;
@@ -87,6 +89,16 @@ function parsePublicFormData(value: unknown): Record<string, unknown> | null {
   return { ...value };
 }
 
+function parseFormPathId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: 'formId must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'formId is required' };
+  if (value.length > FORM_ID_MAX_LENGTH || !FORM_ID_PATTERN.test(value)) {
+    return { ok: false, error: 'formId is invalid' };
+  }
+  return { ok: true, value };
+}
+
 // GET /api/forms — list all forms (with submission stats + delivering accounts)
 forms.get('/api/forms', requireRole('owner', 'admin'), async (c) => {
   try {
@@ -109,8 +121,9 @@ forms.get('/api/forms', requireRole('owner', 'admin'), async (c) => {
 // GET /api/forms/:id — get form
 forms.get('/api/forms/:id', async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const form = await getFormById(c.env.DB, id);
+    const id = parseFormPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const form = await getFormById(c.env.DB, id.value);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
     }
@@ -166,7 +179,8 @@ forms.post('/api/forms', requireRole('owner', 'admin'), async (c) => {
 // PUT /api/forms/:id — update form
 forms.put('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseFormPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const body = await c.req.json<{
       name?: string;
       description?: string | null;
@@ -197,7 +211,7 @@ forms.put('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
     if (body.saveToMetadata !== undefined) updates.saveToMetadata = body.saveToMetadata;
     if (body.isActive !== undefined) updates.isActive = body.isActive;
 
-    const updated = await updateForm(c.env.DB, id, updates as any);
+    const updated = await updateForm(c.env.DB, id.value, updates as any);
 
     if (!updated) {
       return c.json({ success: false, error: 'Form not found' }, 404);
@@ -213,12 +227,13 @@ forms.put('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
 // DELETE /api/forms/:id
 forms.delete('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const form = await getFormById(c.env.DB, id);
+    const id = parseFormPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const form = await getFormById(c.env.DB, id.value);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
     }
-    await deleteForm(c.env.DB, id);
+    await deleteForm(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/forms/:id error:', err);
@@ -229,12 +244,13 @@ forms.delete('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
 // GET /api/forms/:id/submissions — list submissions
 forms.get('/api/forms/:id/submissions', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const form = await getFormById(c.env.DB, id);
+    const id = parseFormPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const form = await getFormById(c.env.DB, id.value);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
     }
-    const submissions = await getFormSubmissions(c.env.DB, id);
+    const submissions = await getFormSubmissions(c.env.DB, id.value);
     return c.json({ success: true, data: submissions.map(serializeSubmission) });
   } catch (err) {
     console.error('GET /api/forms/:id/submissions error:', err);
@@ -245,7 +261,8 @@ forms.get('/api/forms/:id/submissions', requireRole('owner', 'admin'), async (c)
 // POST /api/forms/:id/opened — record form open event (public, used by LIFF)
 forms.post('/api/forms/:id/opened', async (c) => {
   try {
-    const formId = c.req.param('id');
+    const formId = parseFormPathId(c.req.param('id'));
+    if (!formId.ok) return c.json({ success: false, error: formId.error }, 400);
     const body = (await c.req.json<{ idToken?: string }>().catch(() => ({}))) as { idToken?: string };
     const friend = await resolveVerifiedFormFriend(c, body.idToken);
 
@@ -254,7 +271,7 @@ forms.post('/api/forms/:id/opened', async (c) => {
       'INSERT INTO form_opens (id, form_id, friend_id, friend_name, opened_at) VALUES (?, ?, ?, ?, ?)',
     ).bind(
       crypto.randomUUID(),
-      formId,
+      formId.value,
       friend?.id ?? null,
       friend?.display_name ?? null,
       now,
@@ -270,7 +287,8 @@ forms.post('/api/forms/:id/opened', async (c) => {
 // POST /api/forms/:id/partial — save survey answers without x_username (public, used by LIFF page 1)
 forms.post('/api/forms/:id/partial', async (c) => {
   try {
-    const formId = c.req.param('id');
+    const formId = parseFormPathId(c.req.param('id'));
+    if (!formId.ok) return c.json({ success: false, error: formId.error }, 400);
     const body = await c.req.json<{ idToken?: string; data?: Record<string, unknown> }>().catch(() => null);
     if (!body) {
       return c.json({ success: false, error: 'Invalid form payload' }, 400);
@@ -303,8 +321,9 @@ forms.post('/api/forms/:id/partial', async (c) => {
 // POST /api/forms/:id/submit — submit form (public, used by LIFF)
 forms.post('/api/forms/:id/submit', async (c) => {
   try {
-    const formId = c.req.param('id');
-    const form = await getFormById(c.env.DB, formId);
+    const formId = parseFormPathId(c.req.param('id'));
+    if (!formId.ok) return c.json({ success: false, error: formId.error }, 400);
+    const form = await getFormById(c.env.DB, formId.value);
     if (!form) {
       return c.json({ success: false, error: 'Form not found' }, 404);
     }
@@ -391,7 +410,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
         }
         // Still save the submission for records
         const submission = await createFormSubmission(c.env.DB, {
-          formId,
+          formId: formId.value,
           friendId: friendId || null,
           data: JSON.stringify({ ...submissionData, _webhookResult: webhookResult.data }),
         });
@@ -401,7 +420,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
 
     // Save submission (friendId null if not resolved — avoids FK constraint)
     const submission = await createFormSubmission(c.env.DB, {
-      formId,
+      formId: formId.value,
       friendId: friendId || null,
       data: JSON.stringify(submissionData),
     });

@@ -18,6 +18,7 @@ const dbMocks = {
   getRandomPoolAccount: vi.fn(),
   getPoolAccounts: vi.fn(),
   getTrackedLinkById: vi.fn(),
+  recordLinkClick: vi.fn(),
   getMessageTemplateById: vi.fn(),
   enrollFriendInScenario: vi.fn(),
   jstNow: vi.fn(() => '2026-06-13T10:00:00.000+09:00'),
@@ -43,11 +44,11 @@ type TestEnv = {
   };
 };
 
-function setupApp() {
+function setupApp(db: D1Database = {} as D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.env = {
-      DB: {} as D1Database,
+      DB: db,
       LINE_LOGIN_CHANNEL_ID: 'login-channel',
       LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
     };
@@ -57,10 +58,29 @@ function setupApp() {
   return app;
 }
 
+function createPreparedDb() {
+  const statement = {
+    bind: vi.fn(() => ({
+      run: vi.fn().mockResolvedValue({}),
+      first: vi.fn().mockResolvedValue(null),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+    })),
+  };
+  return {
+    prepare: vi.fn(() => statement),
+  } as unknown as D1Database;
+}
+
 beforeEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
   liffAuthMocks.verifyCallerLineUserId.mockResolvedValue(null);
   dbMocks.getFriendByLineUserId.mockResolvedValue(null);
+  dbMocks.getLineAccounts.mockResolvedValue([]);
+  dbMocks.getEntryRouteByRefCode.mockResolvedValue(null);
+  dbMocks.getTrackedLinkById.mockResolvedValue(null);
+  dbMocks.recordRefTracking.mockResolvedValue(undefined);
+  dbMocks.recordLinkClick.mockResolvedValue(undefined);
 });
 
 describe('public LIFF profile endpoint', () => {
@@ -130,5 +150,49 @@ describe('public LIFF profile endpoint', () => {
     expect(res.status).toBe(200);
     expect(liffAuthMocks.verifyCallerLineUserId).toHaveBeenCalledWith('Bearer body-id-token', expect.anything());
     expect(dbMocks.getFriendByLineUserId).toHaveBeenCalledWith({} as D1Database, 'U-body-token');
+  });
+});
+
+describe('public LIFF link endpoint', () => {
+  test('records tracked-link clicks only after LINE idToken verification resolves the friend', async () => {
+    const db = createPreparedDb();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ sub: 'U-verified', name: 'Verified User' }),
+    }));
+    dbMocks.getFriendByLineUserId.mockResolvedValue({
+      id: 'friend-verified',
+      line_account_id: null,
+      user_id: 'user-existing',
+    });
+    dbMocks.getTrackedLinkById.mockResolvedValue({
+      id: 'link-1',
+      name: 'LP',
+      original_url: 'https://example.com/lp',
+      tag_id: null,
+      scenario_id: null,
+      intro_template_id: null,
+      reward_template_id: null,
+      is_active: 1,
+      click_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+
+    const res = await setupApp(db).request('/api/liff/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: 'verified-token', ref: 'link-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getFriendByLineUserId).toHaveBeenCalledWith(db, 'U-verified');
+    expect(dbMocks.recordRefTracking).toHaveBeenCalledWith(db, {
+      refCode: 'link-1',
+      friendId: 'friend-verified',
+      entryRouteId: null,
+      sourceUrl: null,
+    });
+    expect(dbMocks.recordLinkClick).toHaveBeenCalledWith(db, 'link-1', 'friend-verified');
   });
 });

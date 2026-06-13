@@ -7,14 +7,13 @@ import {
   deleteTrackedLink,
   recordLinkClick,
   getLinkClicks,
-  getFriendByLineUserId,
 } from '@line-crm/db';
-import { addTagToFriend, enrollFriendInScenario } from '@line-crm/db';
 import type { TrackedLink } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 
 const trackedLinks = new Hono<Env>();
+const LIFF_TRACKED_LINK_RETURN_PARAM = 'lh_liff';
 
 function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
   const trackingUrl = `${baseUrl}/t/${row.id}`;
@@ -229,8 +228,7 @@ function buildAppRedirectHtml(destinationUrl: string): string {
 // GET /t/:linkId — click tracking redirect (no auth, fast redirect)
 trackedLinks.get('/t/:linkId', async (c) => {
   const linkId = c.req.param('linkId');
-  const lineUserId = c.req.query('lu') ?? null;
-  let friendId = c.req.query('f') ?? null;
+  const returnedFromVerifiedLiff = c.req.query(LIFF_TRACKED_LINK_RETURN_PARAM) === '1';
 
   // Look up the link first
   const link = await getTrackedLinkById(c.env.DB, linkId);
@@ -245,43 +243,27 @@ trackedLinks.get('/t/:linkId', async (c) => {
   // Skip LIFF redirect for app-link domains (they'll come from Safari via externalBrowser)
   const ua = c.req.header('user-agent') || '';
   const isLineApp = /\bLine\b/i.test(ua);
-  if (!useAppRedirect && !lineUserId && !friendId && isLineApp && c.env.LIFF_URL) {
-    const directUrl = `${c.env.WORKER_URL || new URL(c.req.url).origin}/t/${linkId}`;
-    const liffRedirect = `${c.env.LIFF_URL}?redirect=${encodeURIComponent(directUrl)}`;
+  if (!useAppRedirect && !returnedFromVerifiedLiff && isLineApp && c.env.LIFF_URL) {
+    const directUrl = new URL(
+      `/t/${encodeURIComponent(linkId)}`,
+      c.env.WORKER_URL || new URL(c.req.url).origin,
+    );
+    directUrl.searchParams.set(LIFF_TRACKED_LINK_RETURN_PARAM, '1');
+    const liffRedirect = new URL(c.env.LIFF_URL);
+    liffRedirect.searchParams.set('redirect', directUrl.toString());
+    liffRedirect.searchParams.set('ref', linkId);
     return c.redirect(liffRedirect, 302);
   }
 
-  // Resolve friendId from LINE user ID if provided
-  if (!friendId && lineUserId) {
-    const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
-    if (friend) {
-      friendId = friend.id;
-    }
-  }
-
-  // Run side-effects async (click recording, tag/scenario actions)
+  // Run side-effects async. Friend-specific attribution is handled by
+  // /api/liff/link after LINE ID token verification; public query params on
+  // this redirect endpoint must never self-attest a friend.
   const ctx = c.executionCtx as ExecutionContext;
   ctx.waitUntil(
     (async () => {
       try {
-        // Record the click
-        await recordLinkClick(c.env.DB, linkId, friendId);
-
-        // Run automatic actions if a friend is identified
-        if (friendId) {
-          const actions: Promise<unknown>[] = [];
-
-          if (link.tag_id) {
-            actions.push(addTagToFriend(c.env.DB, friendId, link.tag_id));
-          }
-
-          if (link.scenario_id) {
-            actions.push(enrollFriendInScenario(c.env.DB, friendId, link.scenario_id));
-          }
-
-          if (actions.length > 0) {
-            await Promise.allSettled(actions);
-          }
+        if (!returnedFromVerifiedLiff) {
+          await recordLinkClick(c.env.DB, linkId, null);
         }
       } catch (err) {
         console.error(`/t/${linkId} async tracking error:`, err);

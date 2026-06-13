@@ -187,6 +187,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker form access route testsでは、自己申告 `friendId` / `lineUserId` だけではpartial metadata writeやsubmit side effectが走らず、Bearer ID tokenで検証できた場合だけ友だちに紐付くことを確認済み。
 - [ ] `/api/liff/profile` が、caller supplied `lineUserId` ではなくLINE ID token検証済みのLINE user IDだけで友だちプロフィールを返す
   - Worker LIFF access route testsでは、自己申告 `lineUserId` だけでは401になり、Bearer ID tokenまたはbody `idToken` の検証済みsubjectだけで友だち情報を返すことを確認済み。
+- [ ] tracked-link公開リダイレクト `/t/:linkId` が、caller supplied `f` / `lu` を友だち本人として信じない
+  - Worker operations/LIFF access route testsでは、`?f=` / `?lu=` 自己申告では匿名クリック扱いになり、LINEアプリ内クリックは `ref` 付きLIFFへ回り、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionが起きることを確認済み。LIFFから戻った `/t/:linkId?lh_liff=1` では二重の匿名クリック記録も起きない。
 - [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
   - Webhook/events/broadcast/admin-diagnostics route tests、Worker typecheck、Worker buildで、Webhook/profile refresh/broadcast test-sendの失敗ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない

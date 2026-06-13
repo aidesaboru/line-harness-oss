@@ -239,13 +239,13 @@ describe('operations API role guards', () => {
     );
   });
 
-  test('public tracked-link redirect endpoint remains unguarded', async () => {
+  test('public tracked-link redirect endpoint remains unguarded but ignores self-claimed friend identifiers', async () => {
     dbMocks.getTrackedLinkById.mockResolvedValue({
       id: 'link-1',
       name: 'LP',
       original_url: 'https://example.com/lp',
-      tag_id: null,
-      scenario_id: null,
+      tag_id: 'tag-1',
+      scenario_id: 'scenario-1',
       intro_template_id: null,
       reward_template_id: null,
       is_active: 1,
@@ -262,7 +262,7 @@ describe('operations API role guards', () => {
     } as unknown as ExecutionContext;
 
     const res = await setupApp('staff').request(
-      '/t/link-1?f=friend-1',
+      '/t/link-1?f=friend-1&lu=U-victim',
       { method: 'GET' },
       {} as TestEnv['Bindings'],
       executionCtx,
@@ -273,6 +273,83 @@ describe('operations API role guards', () => {
     expect(res.headers.get('location')).toBe('https://example.com/lp');
     expect(dbMocks.getTrackedLinkById).toHaveBeenCalledWith({} as D1Database, 'link-1');
     expect(waitUntil).toHaveBeenCalledTimes(1);
-    expect(dbMocks.recordLinkClick).toHaveBeenCalledWith({} as D1Database, 'link-1', 'friend-1');
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+    expect(dbMocks.recordLinkClick).toHaveBeenCalledWith({} as D1Database, 'link-1', null);
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('LINE in-app tracked-link redirects to LIFF with ref for verified attribution', async () => {
+    dbMocks.getTrackedLinkById.mockResolvedValue({
+      id: 'link-1',
+      name: 'LP',
+      original_url: 'https://example.com/lp',
+      tag_id: 'tag-1',
+      scenario_id: 'scenario-1',
+      intro_template_id: null,
+      reward_template_id: null,
+      is_active: 1,
+      click_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+    const executionCtx = {
+      waitUntil,
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const res = await setupApp('staff').request(
+      '/t/link-1',
+      { method: 'GET', headers: { 'user-agent': 'Line/13.0' } },
+      {} as TestEnv['Bindings'],
+      executionCtx,
+    );
+
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get('location')!);
+    expect(`${location.origin}${location.pathname}`).toBe('https://liff.example.com/');
+    expect(location.searchParams.get('ref')).toBe('link-1');
+    expect(location.searchParams.get('redirect')).toBe('https://worker.example.com/t/link-1?lh_liff=1');
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(dbMocks.recordLinkClick).not.toHaveBeenCalled();
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('tracked-link return from verified LIFF skips duplicate anonymous click recording', async () => {
+    dbMocks.getTrackedLinkById.mockResolvedValue({
+      id: 'link-1',
+      name: 'LP',
+      original_url: 'https://example.com/lp',
+      tag_id: null,
+      scenario_id: null,
+      intro_template_id: null,
+      reward_template_id: null,
+      is_active: 1,
+      click_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+    const executionCtx = {
+      waitUntil,
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+
+    const res = await setupApp('staff').request(
+      '/t/link-1?lh_liff=1',
+      { method: 'GET' },
+      {} as TestEnv['Bindings'],
+      executionCtx,
+    );
+    await waitUntil.mock.calls[0]?.[0];
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://example.com/lp');
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    expect(dbMocks.recordLinkClick).not.toHaveBeenCalled();
   });
 });

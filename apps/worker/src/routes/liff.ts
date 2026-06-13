@@ -16,6 +16,7 @@ import {
   getRandomPoolAccount,
   getPoolAccounts,
   getTrackedLinkById,
+  recordLinkClick,
   getMessageTemplateById,
   jstNow,
 } from '@line-crm/db';
@@ -127,6 +128,14 @@ async function applyRefAttribution(
   }
   const effectiveTagId = route?.tag_id ?? trackedLink?.tag_id ?? null;
   const effectiveScenarioId = route?.scenario_id ?? trackedLink?.scenario_id ?? null;
+
+  if (trackedLink) {
+    try {
+      await recordLinkClick(db, trackedLink.id, friend.id);
+    } catch (err) {
+      console.error('Tracked link click recording failed:', errorKind(err));
+    }
+  }
 
   if (effectiveTagId) {
     await addTagToFriend(db, friend.id, effectiveTagId);

@@ -39,8 +39,11 @@ import {
   nextStatus,
   type EventBookingAction,
 } from '../services/event-booking-state.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const events = new Hono<Env>();
+
+events.use('/api/events/admin/*', requireRole('owner', 'admin'));
 
 // ----------------------------------------------------------------
 // Helpers

@@ -25,8 +25,11 @@ import {
   IDEMPOTENCY_TTL_MINUTES,
   type BookingStatus,
 } from '../services/booking-types.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const booking = new Hono<Env>();
+
+booking.use('/api/booking/admin/*', requireRole('owner', 'admin'));
 
 // ----------------------------------------------------------------
 // Helpers

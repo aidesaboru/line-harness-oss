@@ -41,6 +41,7 @@ const dbMocks = {
   getFriendById: vi.fn(),
   getLineAccountById: vi.fn(),
   updateChat: vi.fn(),
+  getLineAccounts: vi.fn(),
   jstNow: vi.fn(() => '2026-06-13T00:00:00.000+09:00'),
 };
 
@@ -51,6 +52,8 @@ const { autoReplies } = await import('./auto-replies.js');
 const { trafficPools } = await import('./traffic-pools.js');
 const { notifications } = await import('./notifications.js');
 const { chats } = await import('./chats.js');
+const { default: booking } = await import('./booking.js');
+const { default: events } = await import('./events.js');
 
 type StaffRole = 'owner' | 'admin' | 'staff';
 
@@ -59,11 +62,11 @@ type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(role: StaffRole = 'staff') {
+function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: 'Tajima', role });
-    c.env = { DB: {} as D1Database };
+    c.env = { DB: db };
     await next();
   });
   app.route('/', automations);
@@ -71,6 +74,8 @@ function setupApp(role: StaffRole = 'staff') {
   app.route('/', trafficPools);
   app.route('/', notifications);
   app.route('/', chats);
+  app.route('/', booking);
+  app.route('/', events);
   return app;
 }
 
@@ -187,5 +192,37 @@ describe('management role guards', () => {
     expect(dbMocks.updateOperator).not.toHaveBeenCalled();
     expect(dbMocks.getOperatorById).not.toHaveBeenCalled();
     expect(dbMocks.deleteOperator).not.toHaveBeenCalled();
+  });
+
+  test('staff cannot access booking or event admin routes', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp('staff', db);
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/booking/admin/menus?account_id=acc-1'],
+      ['POST', '/api/booking/admin/menus?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Cut', duration_minutes: 30, base_price: 3000 }),
+      }],
+      ['PATCH', '/api/booking/admin/requests/booking-1?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm' }),
+      }],
+      ['GET', '/api/events/admin/events?account_id=acc-1'],
+      ['POST', '/api/events/admin/events?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Seminar' }),
+      }],
+      ['POST', '/api/events/admin/events/event-1/bookings/booking-1/decide?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm' }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(db.prepare).not.toHaveBeenCalled();
   });
 });

@@ -14,6 +14,8 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const trackedLinks = new Hono<Env>();
 const LIFF_TRACKED_LINK_RETURN_PARAM = 'lh_liff';
+const TRACKED_LINK_ID_MAX_LENGTH = 128;
+const TRACKED_LINK_ID_PATTERN = /^[!-~]+$/;
 
 function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
   const trackingUrl = `${baseUrl}/t/${row.id}`;
@@ -36,6 +38,14 @@ function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
 function getBaseUrl(c: { req: { url: string } }): string {
   const url = new URL(c.req.url);
   return `${url.protocol}//${url.host}`;
+}
+
+function parsePublicTrackedLinkId(raw: string | undefined): string | null {
+  const linkId = raw?.trim() ?? '';
+  if (!linkId) return null;
+  if (linkId.length > TRACKED_LINK_ID_MAX_LENGTH) return null;
+  if (!TRACKED_LINK_ID_PATTERN.test(linkId)) return null;
+  return linkId;
 }
 
 // GET /api/tracked-links — list all
@@ -227,7 +237,10 @@ function buildAppRedirectHtml(destinationUrl: string): string {
 
 // GET /t/:linkId — click tracking redirect (no auth, fast redirect)
 trackedLinks.get('/t/:linkId', async (c) => {
-  const linkId = c.req.param('linkId');
+  const linkId = parsePublicTrackedLinkId(c.req.param('linkId'));
+  if (!linkId) {
+    return c.json({ success: false, error: 'Link not found' }, 404);
+  }
   const returnedFromVerifiedLiff = c.req.query(LIFF_TRACKED_LINK_RETURN_PARAM) === '1';
 
   // Look up the link first
@@ -266,7 +279,7 @@ trackedLinks.get('/t/:linkId', async (c) => {
           await recordLinkClick(c.env.DB, linkId, null);
         }
       } catch (err) {
-        console.error(`/t/${linkId} async tracking error:`, err);
+        console.error('/t/:linkId async tracking error:', err);
       }
     })(),
   );

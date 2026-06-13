@@ -31,6 +31,7 @@ updated: 2026-06-13
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
 - Meet Harness完了callback `/api/meet-callback` は `MEET_CALLBACK_SECRET` と `X-Meet-Callback-Signature` のHMAC-SHA256署名検証を必須にし、未設定/未署名/不正署名ではDB lookupやLINE push前に止める
+- Stripe webhook `/api/integrations/stripe/webhook` は署名検証を維持しつつ、1MiB超body、壊れたJSON、必須ID/type/object欠落、巨大metadataをDB記録や自動化副作用前に400/413で止める
 - 公開QR proxy `/api/qr` はQR化する `data` をHTTP(S) URLかつ2048文字以内、`size` を120-512pxの正方形だけに制限し、外部QR rendererの非画像レスポンスを中継しない
 - フォーム管理API（一覧、作成、更新、削除、回答一覧）はowner/adminだけに制限し、LIFF用のフォーム定義GET、opened、partial、submit公開エンドポイントは維持
 - `/api/forms/:id` の公開認証skipはGET/HEADだけに限定し、同じパスのPUT/DELETEが未認証で通らないようにした
@@ -40,7 +41,7 @@ updated: 2026-06-13
 - `/api/liff/profile` はcaller supplied `lineUserId` で友だち情報を返さず、LINE ID token検証済みのLINE user IDだけでプロフィールを解決する
 - `/api/liff/send-form-link` はフォームURL push前にLINE ID tokenのsubjectとcaller supplied `lineUserId` の一致を必須にする
 - `/api/liff/link` と `/api/liff/send-form-link` は壊れたJSON、巨大なID token/ref/gate/xh/IGSID/displayName/lineUserId/formIdをLINE verify、DB lookup、LINE push前に400で止める
-- tracked-link公開リダイレクト `/t/:linkId` はcaller supplied `f` / `lu` を友だち本人として扱わず、LINEアプリ内では `ref` 付きLIFFへ回し、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionを行う
+- tracked-link公開リダイレクト `/t/:linkId` は空白/非ASCII/128文字超の `linkId` をDB lookupやclick記録前に404で止め、caller supplied `f` / `lu` を友だち本人として扱わず、LINEアプリ内では `ref` 付きLIFFへ回し、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionを行う
 - event booking LIFF予約作成 `/api/liff/events/:id/bookings` は `Idempotency-Key` を128文字以内の可視ASCIIに制限し、不正/巨大keyはLINE verifyやidempotency予約前に400で止める
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
@@ -191,11 +192,12 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token and resolves the friend only from the verified token subject.
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
-- Operations and LIFF access route tests confirm `/t/:linkId` ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
+- Operations and LIFF access route tests confirm `/t/:linkId` rejects malformed or oversized link IDs before lookup/click recording, ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings while the public incoming receive endpoint remains signature-gated.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
+- Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.
 - Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs.

@@ -46,11 +46,11 @@ const { trackedLinks } = await import('./tracked-links.js');
 type StaffRole = 'owner' | 'admin' | 'staff';
 
 type TestEnv = {
-  Bindings: { DB: D1Database; WORKER_URL: string; LIFF_URL: string };
+  Bindings: { DB: D1Database; WORKER_URL: string; LIFF_URL: string; STRIPE_WEBHOOK_SECRET?: string };
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(role: StaffRole = 'staff') {
+function setupApp(role: StaffRole = 'staff', envOverrides: Partial<TestEnv['Bindings']> = {}) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: 'Tajima', role });
@@ -58,6 +58,7 @@ function setupApp(role: StaffRole = 'staff') {
       DB: {} as D1Database,
       WORKER_URL: 'https://worker.example.com',
       LIFF_URL: 'https://liff.example.com',
+      ...envOverrides,
     };
     await next();
   });
@@ -68,9 +69,36 @@ function setupApp(role: StaffRole = 'staff') {
   return app;
 }
 
+async function stripeSignature(secret: string, rawBody: string, timestamp = 1_812_345_678): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(`${timestamp}.${rawBody}`));
+  const hex = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `t=${timestamp},v1=${hex}`;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.getStripeEvents.mockResolvedValue([]);
+  dbMocks.getStripeEventByStripeId.mockResolvedValue(null);
+  dbMocks.createStripeEvent.mockResolvedValue({
+    id: 'stripe-row-1',
+    stripe_event_id: 'evt_1',
+    event_type: 'charge.succeeded',
+    friend_id: 'friend-1',
+    amount: 1200,
+    currency: 'jpy',
+    metadata: JSON.stringify({ line_friend_id: 'friend-1' }),
+    processed_at: '2026-06-13T10:00:00.000',
+  });
   dbMocks.getAdPlatforms.mockResolvedValue([
     {
       id: 'platform-1',
@@ -206,6 +234,74 @@ describe('operations API role guards', () => {
     });
   });
 
+  test('public Stripe webhook accepts valid signed bounded payloads', async () => {
+    const secret = 'whsec_test_secret';
+    const rawBody = JSON.stringify({
+      id: 'evt_1',
+      type: 'charge.succeeded',
+      data: {
+        object: {
+          id: 'ch_1',
+          amount: 1200,
+          currency: 'jpy',
+          metadata: { line_friend_id: 'friend-1' },
+        },
+      },
+    });
+    const res = await setupApp('staff', { STRIPE_WEBHOOK_SECRET: secret }).request('/api/integrations/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': await stripeSignature(secret, rawBody),
+      },
+      body: rawBody,
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getStripeEventByStripeId).toHaveBeenCalledWith({} as D1Database, 'evt_1');
+    expect(dbMocks.createStripeEvent).toHaveBeenCalledWith({} as D1Database, {
+      stripeEventId: 'evt_1',
+      eventType: 'charge.succeeded',
+      friendId: 'friend-1',
+      amount: 1200,
+      currency: 'jpy',
+      metadata: JSON.stringify({ line_friend_id: 'friend-1' }),
+    });
+  });
+
+  test('public Stripe webhook rejects malformed signed payloads before DB writes', async () => {
+    const secret = 'whsec_test_secret';
+    const rawBody = '{not-json';
+    const res = await setupApp('staff', { STRIPE_WEBHOOK_SECRET: secret }).request('/api/integrations/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Stripe-Signature': await stripeSignature(secret, rawBody),
+      },
+      body: rawBody,
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getStripeEventByStripeId).not.toHaveBeenCalled();
+    expect(dbMocks.createStripeEvent).not.toHaveBeenCalled();
+  });
+
+  test('public Stripe webhook rejects oversized payloads before DB writes', async () => {
+    const res = await setupApp('staff', { STRIPE_WEBHOOK_SECRET: 'whsec_test_secret' }).request('/api/integrations/stripe/webhook', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': String(1024 * 1024 + 1),
+        'Stripe-Signature': 't=1812345678,v1=0000000000000000000000000000000000000000000000000000000000000000',
+      },
+      body: '{}',
+    });
+
+    expect(res.status).toBe(413);
+    expect(dbMocks.getStripeEventByStripeId).not.toHaveBeenCalled();
+    expect(dbMocks.createStripeEvent).not.toHaveBeenCalled();
+  });
+
   test('owner ad conversion logs clamp invalid and oversized limit query values', async () => {
     dbMocks.getAdConversionLogs.mockResolvedValue([]);
     const app = setupApp('owner');
@@ -309,6 +405,35 @@ describe('operations API role guards', () => {
     expect(dbMocks.recordLinkClick).toHaveBeenCalledWith({} as D1Database, 'link-1', null);
     expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
     expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('public tracked-link redirect rejects malformed link IDs before lookup or click recording', async () => {
+    const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+    const executionCtx = {
+      waitUntil,
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+    const app = setupApp('staff');
+
+    const withSpace = await app.request(
+      '/t/bad%20id',
+      { method: 'GET' },
+      {} as TestEnv['Bindings'],
+      executionCtx,
+    );
+    const oversized = await app.request(
+      `/t/${'l'.repeat(129)}`,
+      { method: 'GET' },
+      {} as TestEnv['Bindings'],
+      executionCtx,
+    );
+
+    expect(withSpace.status).toBe(404);
+    expect(oversized.status).toBe(404);
+    expect(dbMocks.getTrackedLinkById).not.toHaveBeenCalled();
+    expect(waitUntil).not.toHaveBeenCalled();
+    expect(dbMocks.recordLinkClick).not.toHaveBeenCalled();
   });
 
   test('LINE in-app tracked-link redirects to LIFF with ref for verified attribution', async () => {

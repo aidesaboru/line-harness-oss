@@ -9,11 +9,23 @@ import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 
 const stripe = new Hono<Env>();
+const STRIPE_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
+const STRIPE_SIGNATURE_HEADER_MAX_LENGTH = 4096;
+const STRIPE_ID_MAX_LENGTH = 255;
+const STRIPE_EVENT_TYPE_MAX_LENGTH = 128;
+const STRIPE_CURRENCY_MAX_LENGTH = 16;
+const STRIPE_METADATA_MAX_KEYS = 50;
+const STRIPE_METADATA_KEY_MAX_LENGTH = 64;
+const STRIPE_METADATA_VALUE_MAX_LENGTH = 500;
 
 function clampLimit(raw: string | undefined, fallback = 100): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 interface StripeWebhookBody {
@@ -29,6 +41,108 @@ interface StripeWebhookBody {
       status?: string;
     };
   };
+}
+
+type ParsedStripeWebhookBody =
+  | { ok: true; body: StripeWebhookBody }
+  | { ok: false; error: string };
+
+function safeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function parseOptionalBoundedString(raw: unknown, maxLength: number): string | undefined | null {
+  if (raw == null) return undefined;
+  if (typeof raw !== 'string') return null;
+  const value = raw.trim();
+  if (!value || value.length > maxLength) return null;
+  return value;
+}
+
+function parseStripeMetadata(raw: unknown): Record<string, string> | undefined | null {
+  if (raw == null) return undefined;
+  if (!isRecord(raw)) return null;
+  const entries = Object.entries(raw);
+  if (entries.length > STRIPE_METADATA_MAX_KEYS) return null;
+
+  const metadata: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (!key || key.length > STRIPE_METADATA_KEY_MAX_LENGTH) return null;
+    if (typeof value !== 'string' || value.length > STRIPE_METADATA_VALUE_MAX_LENGTH) return null;
+    metadata[key] = value;
+  }
+  return metadata;
+}
+
+function parseStripeWebhookBody(raw: unknown): ParsedStripeWebhookBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid Stripe payload' };
+
+  const id = parseOptionalBoundedString(raw.id, STRIPE_ID_MAX_LENGTH);
+  const type = parseOptionalBoundedString(raw.type, STRIPE_EVENT_TYPE_MAX_LENGTH);
+  if (!id || !type) return { ok: false, error: 'Invalid Stripe event' };
+
+  if (!isRecord(raw.data) || !isRecord(raw.data.object)) {
+    return { ok: false, error: 'Invalid Stripe object' };
+  }
+
+  const objectId = parseOptionalBoundedString(raw.data.object.id, STRIPE_ID_MAX_LENGTH);
+  if (!objectId) return { ok: false, error: 'Invalid Stripe object' };
+
+  let amount: number | undefined;
+  const amountRaw = raw.data.object.amount;
+  if (amountRaw != null) {
+    if (typeof amountRaw !== 'number' || !Number.isSafeInteger(amountRaw) || amountRaw < 0) {
+      return { ok: false, error: 'Invalid Stripe amount' };
+    }
+    amount = amountRaw;
+  }
+
+  const currency = parseOptionalBoundedString(raw.data.object.currency, STRIPE_CURRENCY_MAX_LENGTH);
+  if (currency === null) return { ok: false, error: 'Invalid Stripe currency' };
+
+  const metadata = parseStripeMetadata(raw.data.object.metadata);
+  if (metadata === null) return { ok: false, error: 'Invalid Stripe metadata' };
+
+  const customer = parseOptionalBoundedString(raw.data.object.customer, STRIPE_ID_MAX_LENGTH);
+  if (customer === null) return { ok: false, error: 'Invalid Stripe customer' };
+
+  const status = parseOptionalBoundedString(raw.data.object.status, STRIPE_ID_MAX_LENGTH);
+  if (status === null) return { ok: false, error: 'Invalid Stripe status' };
+
+  return {
+    ok: true,
+    body: {
+      id,
+      type,
+      data: {
+        object: {
+          id: objectId,
+          amount,
+          currency,
+          metadata,
+          customer,
+          status,
+        },
+      },
+    },
+  };
+}
+
+function parseStripeWebhookJson(rawBody: string): ParsedStripeWebhookBody {
+  try {
+    return parseStripeWebhookBody(JSON.parse(rawBody) as unknown);
+  } catch {
+    return { ok: false, error: 'Invalid JSON' };
+  }
+}
+
+function rawBodyByteLength(rawBody: string): number {
+  return new TextEncoder().encode(rawBody).byteLength;
 }
 
 // ========== Stripeイベント一覧 ==========
@@ -62,6 +176,7 @@ stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), asy
 
 /** Stripe署名検証 */
 async function verifyStripeSignature(secret: string, rawBody: string, sigHeader: string): Promise<boolean> {
+  if (!sigHeader || sigHeader.length > STRIPE_SIGNATURE_HEADER_MAX_LENGTH) return false;
   // Stripe署名形式: t=timestamp,v1=signature
   const parts = Object.fromEntries(
     sigHeader.split(',').map((p) => {
@@ -70,8 +185,9 @@ async function verifyStripeSignature(secret: string, rawBody: string, sigHeader:
     }),
   );
   const timestamp = parts.t;
-  const expectedSig = parts.v1;
+  const expectedSig = parts.v1?.toLowerCase();
   if (!timestamp || !expectedSig) return false;
+  if (!/^\d{1,20}$/.test(timestamp) || !/^[0-9a-f]{64}$/.test(expectedSig)) return false;
 
   const encoder = new TextEncoder();
   const signedPayload = `${timestamp}.${rawBody}`;
@@ -86,28 +202,35 @@ async function verifyStripeSignature(secret: string, rawBody: string, sigHeader:
   const computedSig = Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
-  return computedSig === expectedSig;
+  return safeEqualHex(computedSig, expectedSig);
 }
 
 stripe.post('/api/integrations/stripe/webhook', async (c) => {
   try {
     const stripeSecret = (c.env as unknown as Record<string, string | undefined>).STRIPE_WEBHOOK_SECRET;
-    let body: StripeWebhookBody;
+    const contentLength = Number(c.req.header('Content-Length') ?? 0);
+    if (Number.isFinite(contentLength) && contentLength > STRIPE_WEBHOOK_MAX_BODY_BYTES) {
+      return c.json({ success: false, error: 'Stripe payload too large' }, 413);
+    }
+
+    const rawBody = await c.req.text();
+    if (rawBodyByteLength(rawBody) > STRIPE_WEBHOOK_MAX_BODY_BYTES) {
+      return c.json({ success: false, error: 'Stripe payload too large' }, 413);
+    }
 
     if (stripeSecret) {
       // 署名検証モード（本番環境）
       const sigHeader = c.req.header('Stripe-Signature') ?? '';
-      const rawBody = await c.req.text();
 
       const valid = await verifyStripeSignature(stripeSecret, rawBody, sigHeader);
       if (!valid) {
         return c.json({ success: false, error: 'Stripe signature verification failed' }, 401);
       }
-      body = JSON.parse(rawBody) as StripeWebhookBody;
-    } else {
-      // シークレット未設定（開発環境向け）
-      body = await c.req.json<StripeWebhookBody>();
     }
+
+    const parsed = parseStripeWebhookJson(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     // 冪等性チェック
     const existing = await getStripeEventByStripeId(c.env.DB, body.id);

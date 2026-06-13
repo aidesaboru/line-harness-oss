@@ -16,6 +16,20 @@ import {
 import type { LineClient, Message } from '@line-crm/line-sdk';
 import { addJitter, sleep } from './stealth.js';
 
+function reminderDeliveryLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function reminderDeliveryErrorKind(err: unknown): string {
+  const status = reminderDeliveryLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export async function processReminderDeliveries(
   db: D1Database,
   lineClient: LineClient,
@@ -75,7 +89,7 @@ export async function processReminderDeliveries(
       // 全ステップ配信済みかチェック
       await completeReminderIfDone(db, fr.id, fr.reminder_id);
     } catch (err) {
-      console.error(`リマインダ配信エラー (friend_reminder ${fr.id}):`, err);
+      console.error(`リマインダ配信エラー: ${reminderDeliveryErrorKind(err)}`);
     }
   }
 }

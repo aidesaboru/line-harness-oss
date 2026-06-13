@@ -17,6 +17,20 @@ import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js'
 
 const MULTICAST_BATCH_SIZE = 500;
 
+function broadcastServiceLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function broadcastServiceErrorKind(err: unknown): string {
+  const status = broadcastServiceLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export async function processBroadcastSend(
   db: D1Database,
   lineClient: LineClient,
@@ -114,7 +128,7 @@ export async function processBroadcastSend(
           );
           await db.batch(logStmts);
         } catch (err) {
-          console.error(`Multicast batch ${i / MULTICAST_BATCH_SIZE} failed:`, err);
+          console.error(`Multicast batch failed: ${broadcastServiceErrorKind(err)}`);
           // Continue with next batch; failed batch is not logged
         }
       }
@@ -181,13 +195,13 @@ export async function processScheduledBroadcasts(
 
       await processBroadcastSend(db, deliveryClient, broadcast.id, workerUrl);
     } catch (err) {
-      console.error(`Failed to send scheduled broadcast ${broadcast.id}:`, err);
+      console.error(`Failed to send scheduled broadcast: ${broadcastServiceErrorKind(err)}`);
       // Reset to scheduled so it can be retried next cron
       try {
         await db.prepare(`UPDATE broadcasts SET status = 'scheduled' WHERE id = ? AND status = 'sending'`)
           .bind(broadcast.id).run();
       } catch (resetErr) {
-        console.error(`Failed to reset broadcast ${broadcast.id} status:`, resetErr);
+        console.error(`Failed to reset broadcast status: ${broadcastServiceErrorKind(resetErr)}`);
       }
     }
   }
@@ -216,7 +230,7 @@ export async function processQueuedBroadcasts(
     try {
       await processQueuedBroadcastBatches(db, client, broadcast, workerUrl);
     } catch (err) {
-      console.error(`Failed to process queued broadcast ${broadcast.id}:`, err);
+      console.error(`Failed to process queued broadcast: ${broadcastServiceErrorKind(err)}`);
     }
   }
 }
@@ -353,7 +367,7 @@ async function processQueuedBroadcastBatches(
     try {
       await lineClient.multicast(lineUserIds, [batchMessage], [unit]);
     } catch (err) {
-      console.error(`Queued broadcast batch ${batchIndex} send failed:`, err);
+      console.error(`Queued broadcast batch send failed: ${broadcastServiceErrorKind(err)}`);
       // 送信失敗: ロック解除 + offsetを保存して次のCronで再開
       await updateBroadcastBatchProgress(db, broadcast.id, currentOffset, 0);
       return; // batch_offset が currentOffset に戻り、次の cron で再開可能
@@ -372,7 +386,7 @@ async function processQueuedBroadcastBatches(
       );
       await db.batch(stmts);
     } catch (logErr) {
-      console.error(`Queued broadcast batch ${batchIndex} log failed (messages already sent):`, logErr);
+      console.error(`Queued broadcast batch log failed (messages already sent): ${broadcastServiceErrorKind(logErr)}`);
     }
 
     currentOffset += batch.length;

@@ -77,6 +77,12 @@ import { support } from './routes/support.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 
+function scheduledErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export type Env = {
   Bindings: {
     DB: D1Database;
@@ -739,7 +745,7 @@ async function scheduled(
   try {
     await processInsightFetch(env.DB, lineClients, defaultLineClient);
   } catch (e) {
-    console.error('Insight fetch error:', e);
+    console.error(`Insight fetch error: ${scheduledErrorKind(e)}`);
   }
 
   // Booking reminders — every 5-minute tick scans due reminders.
@@ -753,7 +759,7 @@ async function scheduled(
       console.log(`[booking-reminders] sent=${result.sent} failed=${result.failed}`);
     }
   } catch (e) {
-    console.error('booking-reminders error:', e);
+    console.error(`booking-reminders error: ${scheduledErrorKind(e)}`);
   }
 
   // Booking expirer — runs only on the 6h cron tick.
@@ -767,7 +773,7 @@ async function scheduled(
         `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
       );
     } catch (e) {
-      console.error('booking-expirer error:', e);
+      console.error(`booking-expirer error: ${scheduledErrorKind(e)}`);
     }
   }
 
@@ -781,7 +787,7 @@ async function scheduled(
       console.log(`[event-booking-reminders] sent=${result.sent} failed=${result.failed}`);
     }
   } catch (e) {
-    console.error('event-booking-reminders error:', e);
+    console.error(`event-booking-reminders error: ${scheduledErrorKind(e)}`);
   }
 
   // Event-booking expirer — 6h cron tick.
@@ -792,7 +798,7 @@ async function scheduled(
         `[event-booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
       );
     } catch (e) {
-      console.error('event-booking-expirer error:', e);
+      console.error(`event-booking-expirer error: ${scheduledErrorKind(e)}`);
     }
   }
 

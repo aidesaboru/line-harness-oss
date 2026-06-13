@@ -322,6 +322,7 @@ strict Preflight:
 - Broadcast access tests confirm manual and scheduled per-account insight fetch failures keep only exception kind or LINE HTTP status in logs and stored insight raw responses, omitting account IDs from logs, channel tokens, LINE user IDs, token-like text, and raw LINE/API exception messages.
 - Step delivery and event bus tests confirm scenario condition/action failure logs and automation action failure results keep only exception kind or LINE HTTP status, omitting friend IDs, tag IDs, webhook IDs, token-like text, and raw exception messages.
 - Booking reminder, event booking reminder, and ad conversion tests confirm retry `last_error` / conversion `errorMessage` persistence keeps only exception kind or provider HTTP status, omitting channel tokens, LINE user IDs, friend IDs, click IDs, token-like text, and raw external response bodies.
+- Broadcast, reminder delivery, and health monitor tests confirm multicast/reminder/health failure logs keep only exception kind or LINE HTTP status, omitting broadcast IDs, friend IDs, LINE user IDs, account IDs, token-like text, and raw external response bodies. Segment send and scheduled cron failure logs follow the same bounded error-kind pattern.
 - Chat route tests confirm loading/send/send-validate failure logs and error responses omit LINE API response bodies, channel tokens, LINE user IDs, friend IDs, and raw exception messages while keeping HTTP status or exception kind observable.
 
 ローカル画面応答:

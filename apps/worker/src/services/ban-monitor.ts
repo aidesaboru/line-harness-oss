@@ -10,6 +10,12 @@ import {
   createAccountHealthLog,
 } from '@line-crm/db';
 
+function banMonitorErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export async function checkAccountHealth(
   db: D1Database,
 ): Promise<void> {
@@ -21,7 +27,7 @@ export async function checkAccountHealth(
     try {
       await checkSingleAccount(db, account);
     } catch (err) {
-      console.error(`ヘルスチェックエラー (account ${account.id}):`, err);
+      console.error(`ヘルスチェックエラー: ${banMonitorErrorKind(err)}`);
     }
   }
 }
@@ -85,6 +91,6 @@ async function checkSingleAccount(
   });
 
   if (riskLevel === 'danger') {
-    console.error(`⚠️ BAN検知: アカウント ${account.id} で403エラー発生。即座に確認が必要。`);
+    console.error('BAN検知: active account returned 403. Immediate review required.');
   }
 }

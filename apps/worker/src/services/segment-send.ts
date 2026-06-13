@@ -14,6 +14,20 @@ import { buildMessage } from './broadcast.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
+function segmentSendLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function segmentSendErrorKind(err: unknown): string {
+  const status = segmentSendLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 interface FriendRow {
   id: string;
   line_user_id: string;
@@ -92,7 +106,7 @@ export async function processSegmentSend(
         );
         await db.batch(logStmts);
       } catch (err) {
-        console.error(`Segment multicast batch ${batchIndex} failed:`, err);
+        console.error(`Segment multicast batch failed: ${segmentSendErrorKind(err)}`);
         // Continue with next batch; failed batch is not logged
       }
     }

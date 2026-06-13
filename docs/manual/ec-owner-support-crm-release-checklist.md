@@ -178,7 +178,9 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 ## 3. 画面確認
 
 - [ ] `/login` でAPIキーによるログインができる
+- Local login browser smokeでは、未認証 `/support` が `/login` に戻り、APIキー入力で `/api/auth/login` が成功し、続く `/api/auth/session` 成功後に `/` のダッシュボードへ遷移して、ログインスタッフ名、ownerロール、LINEアカウント、KPIカードが表示されることを確認済み。
 - [ ] セッション切れ時に `/support` から `/login` へ戻る
+- Local login browser smokeでは、最初の `/api/auth/session` が未認証の状態で `/support` から `/login` へ戻ることを確認済み。
 - [ ] owner/adminで「新規案件」が表示される
 - [ ] staffで「新規案件」が表示されない
 - Local mock browser smokeでは、owner/adminで「新規案件」ボタンが1件、staffで0件であることを確認済み。ここは本番切替前に実データでも同じ確認をします。
@@ -286,6 +288,7 @@ N/A
 - `corepack pnpm --filter worker build`
 - `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787 corepack pnpm --filter web build`
 - `git diff --check`
+- Browser smoke with login mock session confirms unauthenticated `/support` redirects to `/login`; entering an API key calls `/api/auth/login`, the next `/api/auth/session` succeeds, and the dashboard renders the login staff identity, owner role, selected LINE account, and KPI cards.
 - Browser smoke with owner/admin/staff mock sessions confirms `/support` role UI: owner/admin show one `新規案件` button; staff shows zero `新規案件` buttons. Staff mock sidebar only shows 友だち管理, 個別チャット, サポートCRM, and 未対応 while hiding management menus; direct staff access to `/broadcasts` returns to `/support`; direct admin access to `/staff` also returns to `/support`.
 - Browser smoke with empty staff-name mock session confirms `/support` shows the staff-name warning, does not render the dummy case/manual/staff suggestion/unanswered badge, and does not call `/api/support/summary`, `/api/support/cases`, `/api/support/manuals`, `/api/chats`, `/api/staff`, or `/api/inbox/unanswered/count`.
 - Browser smoke with list-control mock session confirms updated sort is `updatedAt` desc even when API order differs, initial detail matches the first displayed case, priority sort reorders locally, overdue queue sends `queue=overdue`, status selection clears queue, and search sends `q=Gamma`.
@@ -306,7 +309,7 @@ N/A
 - Remote test Worker deploy after friend API guard: `3f920e16-3789-430d-8e5e-e2316e266ecf`.
 - Remote strict Preflight result after friend score/reminder guard: `32 passed, 0 skipped, 0 failed`.
 - Remote cleanup verification: synthetic fixture line_accounts/staff/cases/events/friends/messages/chats are all `0` after cleanup; the one-time owner staff row is also `0`.
-- Browser: `/support` redirects to `/login` when unauthenticated, login screen renders, console error count is 0.
+- Browser: `/support` redirects to `/login` when unauthenticated, login screen renders, API-key login reaches `/`, and console error count is 0.
 - HTTP: `/staff`, `/support`, `/chats?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke` return 200 locally.
 - Not tested: 本番LINE公式アカウントへの実切替、実顧客へのLINE送信、本番LINE公式アカウントの実顧客データを使ったstrict Preflight。
 

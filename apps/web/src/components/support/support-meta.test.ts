@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SupportCase } from '../../lib/api'
 import {
   buildSupportCaseSearch,
+  canLoadSupportWorkspaceData,
   canOpenChatWithDraft,
   emptyCaseForm,
   formatSupportErrorMessage,
@@ -187,6 +188,37 @@ describe('support identity issues', () => {
   it('allows owner and named staff identities', () => {
     expect(getSupportIdentityIssue({ ready: true, role: 'owner', staffName: '' })).toBeNull()
     expect(getSupportIdentityIssue({ ready: true, role: 'staff', staffName: '田島' })).toBeNull()
+  })
+})
+
+describe('support workspace data loading gate', () => {
+  it('waits for a selected account and verified staff identity', () => {
+    expect(canLoadSupportWorkspaceData({
+      selectedAccountId: null,
+      staffIdentityReady: true,
+      identityIssue: null,
+    })).toBe(false)
+    expect(canLoadSupportWorkspaceData({
+      selectedAccountId: 'acc-1',
+      staffIdentityReady: false,
+      identityIssue: null,
+    })).toBe(false)
+  })
+
+  it('blocks support data loading when the verified identity is not usable', () => {
+    expect(canLoadSupportWorkspaceData({
+      selectedAccountId: 'acc-1',
+      staffIdentityReady: true,
+      identityIssue: 'staff権限の表示範囲を判定できません。',
+    })).toBe(false)
+  })
+
+  it('allows support data loading after account and identity checks pass', () => {
+    expect(canLoadSupportWorkspaceData({
+      selectedAccountId: 'acc-1',
+      staffIdentityReady: true,
+      identityIssue: null,
+    })).toBe(true)
   })
 })
 

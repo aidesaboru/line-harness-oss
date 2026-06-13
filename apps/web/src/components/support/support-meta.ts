@@ -64,6 +64,14 @@ export function getSupportIdentityIssue(input: {
   return null
 }
 
+export function canLoadSupportWorkspaceData(input: {
+  selectedAccountId: string | null | undefined
+  staffIdentityReady: boolean
+  identityIssue: string | null
+}): boolean {
+  return Boolean(input.selectedAccountId) && input.staffIdentityReady && !input.identityIssue
+}
+
 export interface SupportEmptyState {
   title: string
   description: string

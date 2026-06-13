@@ -32,6 +32,7 @@ import QueueStrip, { type QueueKey } from '@/components/support/queue-strip'
 import {
   buildSupportCaseSearch,
   caseFormFromDetail,
+  canLoadSupportWorkspaceData,
   emptyCaseForm,
   fromInputDateTime,
   formatSupportErrorMessage,
@@ -143,6 +144,11 @@ export default function SupportPage() {
     staffName: verifiedStaffName,
   })
   const identityUnavailable = Boolean(identityIssue)
+  const supportDataReady = canLoadSupportWorkspaceData({
+    selectedAccountId,
+    staffIdentityReady,
+    identityIssue,
+  })
   const controlsDisabled = !staffIdentityReady || identityUnavailable || saving || loading || detailLoading
   const busyMessage = (() => {
     if (!staffIdentityReady) return 'ログイン権限を確認中です。'
@@ -227,7 +233,7 @@ export default function SupportPage() {
   // ─── データ読み込み ───
 
   const loadCases = useCallback(async () => {
-    if (!selectedAccountId) return
+    if (!supportDataReady || !selectedAccountId) return
     const requestId = ++casesRequestRef.current
     let summaryRes: Awaited<ReturnType<typeof api.support.summary>>
     let casesRes: Awaited<ReturnType<typeof api.support.cases.list>>
@@ -259,11 +265,11 @@ export default function SupportPage() {
     setCases(casesRes.data)
     // 初回のみ先頭を自動選択。絞り込みで一覧から消えても選択中の案件は維持する
     setSelectedCaseId((prev) => prev ?? casesRes.data[0]?.id ?? null)
-  }, [selectedAccountId, statusFilter, queueFilter, appliedSearch])
+  }, [selectedAccountId, statusFilter, queueFilter, appliedSearch, supportDataReady])
 
   const loadDetail = useCallback(async (id: string | null) => {
     const requestId = ++detailRequestRef.current
-    if (!id || !selectedAccountId) {
+    if (!id || !selectedAccountId || !supportDataReady) {
       setDetail(null)
       setCaseForm(emptyCaseForm)
       setSavedForm(emptyCaseForm)
@@ -294,10 +300,10 @@ export default function SupportPage() {
     } finally {
       if (requestId === detailRequestRef.current) setDetailLoading(false)
     }
-  }, [selectedAccountId])
+  }, [selectedAccountId, supportDataReady])
 
   const loadManuals = useCallback(async () => {
-    if (!selectedAccountId) return
+    if (!selectedAccountId || !supportDataReady) return
     const res = await api.support.manuals.list({
       accountId: selectedAccountId,
       category: manualCategory === 'all' ? undefined : manualCategory,
@@ -306,10 +312,32 @@ export default function SupportPage() {
     })
     if (!res.success) throw new Error(supportApiErrorMessage(res, 'マニュアルの読み込みに失敗しました'))
     setManuals(res.data)
-  }, [selectedAccountId, manualCategory, appliedManualSearch])
+  }, [selectedAccountId, manualCategory, appliedManualSearch, supportDataReady])
 
   useEffect(() => {
-    if (!selectedAccountId) return
+    if (!staffIdentityReady || !identityUnavailable) return
+    casesRequestRef.current += 1
+    detailRequestRef.current += 1
+    setSummary(null)
+    setCases([])
+    setSelectedCaseId(null)
+    setDetail(null)
+    setCaseForm(emptyCaseForm)
+    setSavedForm(emptyCaseForm)
+    setManuals([])
+    setChats([])
+    setChatOptionsError(null)
+    setLoadError(null)
+    setLoading(false)
+    setDetailLoading(false)
+  }, [identityUnavailable, staffIdentityReady])
+
+  useEffect(() => {
+    if (!supportDataReady || !selectedAccountId) {
+      setChats([])
+      setChatOptionsError(null)
+      return
+    }
     let active = true
     setChatOptionsError(null)
     api.chats.list({ accountId: selectedAccountId })
@@ -329,7 +357,7 @@ export default function SupportPage() {
         setChatOptionsError(formatSupportErrorMessage(err, 'LINE会話候補の取得に失敗しました'))
       })
     return () => { active = false }
-  }, [selectedAccountId])
+  }, [selectedAccountId, supportDataReady])
 
   useEffect(() => {
     let active = true
@@ -344,7 +372,7 @@ export default function SupportPage() {
   }, [])
 
   useEffect(() => {
-    if (!selectedAccountId) return
+    if (!supportDataReady || !selectedAccountId) return
     let active = true
     setLoading(true)
     setLoadError(null)
@@ -356,16 +384,16 @@ export default function SupportPage() {
         if (active) setLoading(false)
       })
     return () => { active = false }
-  }, [selectedAccountId, loadCases])
+  }, [selectedAccountId, loadCases, supportDataReady])
 
   useEffect(() => {
-    if (!selectedAccountId) return
+    if (!supportDataReady || !selectedAccountId) return
     let active = true
     loadManuals().catch((err) => {
       if (active) setLoadError(formatSupportErrorMessage(err, 'マニュアルの読み込みに失敗しました'))
     })
     return () => { active = false }
-  }, [selectedAccountId, loadManuals])
+  }, [selectedAccountId, loadManuals, supportDataReady])
 
   useEffect(() => {
     void loadDetail(selectedCaseId).catch((err) => {

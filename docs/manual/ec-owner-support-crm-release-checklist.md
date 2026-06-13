@@ -186,6 +186,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] staffで自分に関係する案件に紐づくチャットだけが表示される
 - [ ] staffで自分に関係しない友だちのdirect履歴APIが表示されない
 - [ ] staff名が空欄の古いアカウントでは、画面に理由が表示され操作が止まる
+- Local empty-staff browser smokeでは、理由文が表示され、ダミー案件/マニュアルは表示されず、サポート案件/マニュアル/チャット候補APIも呼ばれないことを確認済み。
 - [ ] 案件一覧の未完了、期限超過、24h滞留、担当者なし、エスカレ、自分宛、顧客返信待ち、完了のキューが切り替わる
 - [ ] 検索、ステータス絞り込み、並び替えが使える
 - [ ] 選択中の案件が絞り込み外にある場合、画面に理由と戻り操作が出る
@@ -274,6 +275,7 @@ N/A
 - `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787 corepack pnpm --filter web build`
 - `git diff --check`
 - Browser smoke with owner/admin/staff mock sessions confirms `/support` role UI: owner/admin show one `新規案件` button; staff shows zero `新規案件` buttons. Staff mock sidebar only shows 友だち管理, 個別チャット, サポートCRM, and 未対応 while hiding management menus; direct staff access to `/broadcasts` returns to `/support`; direct admin access to `/staff` also returns to `/support`.
+- Browser smoke with empty staff-name mock session confirms `/support` shows the staff-name warning, does not render the dummy case/manual, and does not call `/api/support/summary`, `/api/support/cases`, `/api/support/manuals`, or `/api/chats`.
 - Browser smoke with chat mock session confirms `/chats?friend=friend-visible&supportCase=case-visible` shows the support-case link banner without a sessionStorage draft.
 - `corepack pnpm preflight:support-crm:dry-run` success path: strict release env shape passes with secrets redacted.
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.

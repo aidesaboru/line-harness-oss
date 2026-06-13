@@ -353,7 +353,7 @@ strict Preflight:
 - image+text mock sessionでLINE画像のHTTPS URL直接入力とテキストを同時に入れて送信し、画像payloadだけに `supportCaseId`/`lineAccountId` が入り、続くテキストpayloadには案件紐付けが二重に入らないことを確認
 - worker chat route testsで、テキスト返信と画像返信が `customer_reply_sent` 案件履歴イベントを残し、案件を `customer_reply` へ更新すること、完了済み案件への `/send` と `/send/validate` はLINE送信/DB記録前に拒否されることを確認
 - support-meta/clipboard/staff-form testsで、マニュアル保存前検証、コピーfallback、スタッフ作成payload検証、スタッフ管理の固定エラー文、未知のsupport API rawエラーをfallbackに落とすことを確認
-- raw chat/staff UI error searchesで、チャット一覧/詳細/過去読み込み/送信/ローディング/ステータス/メモ保存とスタッフ管理がAPI応答文字列やraw exceptionを直接表示しないことを確認
+- raw chat/staff UI error searchesで、チャット一覧/詳細/過去読み込み/送信/ローディング/ステータス/メモ保存、友だち詳細サイドバー、スタッフ管理がAPI応答文字列やraw exceptionを直接表示しないことを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

@@ -39,6 +39,8 @@ const statusLabels: Record<NonNullable<ChatStatusInfo['status']>, { label: strin
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
 }
 
+const FRIEND_INFO_ERROR_MESSAGE = '友だち情報の取得に失敗しました。もう一度お試しください。'
+
 /** Render a metadata value safely as text. Objects/arrays → JSON, primitives → as-is. */
 function renderValue(value: unknown): string {
   if (value === null || value === undefined) return '-'
@@ -69,11 +71,11 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
       if (res.success && res.data) {
         setFriend(res.data as unknown as FriendDetail)
       } else {
-        setError((res as { error?: string }).error ?? '友だち情報を取得できませんでした')
+        setError(FRIEND_INFO_ERROR_MESSAGE)
       }
-    }).catch((err) => {
+    }).catch(() => {
       if (cancelled) return
-      setError(err instanceof Error ? err.message : String(err))
+      setError(FRIEND_INFO_ERROR_MESSAGE)
     }).finally(() => {
       if (!cancelled) setLoading(false)
     })

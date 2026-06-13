@@ -8,8 +8,11 @@ import {
   updateAccountMigration,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const health = new Hono<Env>();
+
+health.use('/api/accounts/*', requireRole('owner', 'admin'));
 
 // ========== アカウントヘルス ==========
 

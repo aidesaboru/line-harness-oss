@@ -42,6 +42,33 @@ const dbMocks = {
   getLineAccountById: vi.fn(),
   updateChat: vi.fn(),
   getLineAccounts: vi.fn(),
+  getEntryRoutes: vi.fn(),
+  getEntryRouteById: vi.fn(),
+  createEntryRoute: vi.fn(),
+  updateEntryRoute: vi.fn(),
+  deleteEntryRoute: vi.fn(),
+  getEntryRouteFunnel: vi.fn(),
+  getConversionPoints: vi.fn(),
+  getConversionPointById: vi.fn(),
+  createConversionPoint: vi.fn(),
+  deleteConversionPoint: vi.fn(),
+  trackConversion: vi.fn(),
+  getCalendarConnections: vi.fn(),
+  getCalendarConnectionById: vi.fn(),
+  createCalendarConnection: vi.fn(),
+  deleteCalendarConnection: vi.fn(),
+  getCalendarBookingById: vi.fn(),
+  createCalendarBooking: vi.fn(),
+  updateCalendarBookingStatus: vi.fn(),
+  updateCalendarBookingEventId: vi.fn(),
+  getBookingsInRange: vi.fn(),
+  toJstString: vi.fn((date: Date) => date.toISOString()),
+  getAccountHealthLogs: vi.fn(),
+  getLatestRiskLevel: vi.fn(),
+  getAccountMigrations: vi.fn(),
+  getAccountMigrationById: vi.fn(),
+  createAccountMigration: vi.fn(),
+  updateAccountMigration: vi.fn(),
   jstNow: vi.fn(() => '2026-06-13T00:00:00.000+09:00'),
 };
 
@@ -54,6 +81,10 @@ const { notifications } = await import('./notifications.js');
 const { chats } = await import('./chats.js');
 const { default: booking } = await import('./booking.js');
 const { default: events } = await import('./events.js');
+const { entryRoutes } = await import('./entry-routes.js');
+const { conversions } = await import('./conversions.js');
+const { calendar } = await import('./calendar.js');
+const { health } = await import('./health.js');
 
 type StaffRole = 'owner' | 'admin' | 'staff';
 
@@ -76,6 +107,10 @@ function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) 
   app.route('/', chats);
   app.route('/', booking);
   app.route('/', events);
+  app.route('/', entryRoutes);
+  app.route('/', conversions);
+  app.route('/', calendar);
+  app.route('/', health);
   return app;
 }
 
@@ -224,5 +259,60 @@ describe('management role guards', () => {
     }
 
     expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('staff cannot manage entry routes, conversion points, calendar connections, or account migrations', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp('staff', db);
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/entry-routes'],
+      ['POST', '/api/entry-routes', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refCode: 'launch', name: 'Launch route' }),
+      }],
+      ['PATCH', '/api/entry-routes/route-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/entry-routes/route-1'],
+      ['GET', '/api/entry-routes/route-1/funnel'],
+      ['POST', '/api/conversions/points', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Purchase', eventType: 'purchase', value: 1000 }),
+      }],
+      ['DELETE', '/api/conversions/points/point-1'],
+      ['POST', '/api/integrations/google-calendar/connect', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ calendarId: 'primary', authType: 'api_key' }),
+      }],
+      ['DELETE', '/api/integrations/google-calendar/conn-1'],
+      ['GET', '/api/accounts/acc-1/health'],
+      ['GET', '/api/accounts/migrations'],
+      ['POST', '/api/accounts/acc-1/migrate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toAccountId: 'acc-2' }),
+      }],
+      ['GET', '/api/accounts/migrations/migration-1'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(dbMocks.getEntryRoutes).not.toHaveBeenCalled();
+    expect(dbMocks.createEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.updateEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.deleteEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.getEntryRouteFunnel).not.toHaveBeenCalled();
+    expect(dbMocks.createConversionPoint).not.toHaveBeenCalled();
+    expect(dbMocks.deleteConversionPoint).not.toHaveBeenCalled();
+    expect(dbMocks.createCalendarConnection).not.toHaveBeenCalled();
+    expect(dbMocks.deleteCalendarConnection).not.toHaveBeenCalled();
+    expect(dbMocks.getLatestRiskLevel).not.toHaveBeenCalled();
+    expect(dbMocks.getAccountMigrations).not.toHaveBeenCalled();
+    expect(dbMocks.createAccountMigration).not.toHaveBeenCalled();
+    expect(dbMocks.getAccountMigrationById).not.toHaveBeenCalled();
   });
 });

@@ -9,8 +9,12 @@ import {
 } from '@line-crm/db';
 import type { EntryRoute } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const entryRoutes = new Hono<Env>();
+
+entryRoutes.use('/api/entry-routes', requireRole('owner', 'admin'));
+entryRoutes.use('/api/entry-routes/*', requireRole('owner', 'admin'));
 
 function serialize(row: EntryRoute) {
   return {

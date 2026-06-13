@@ -9,6 +9,7 @@ import {
 import type { Env } from '../index.js';
 import { supportFriendVisibilitySql } from '../services/support-access.js';
 import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const conversions = new Hono<Env>();
 
@@ -167,7 +168,7 @@ conversions.get('/api/conversions/points', async (c) => {
 });
 
 // POST /api/conversions/points - create
-conversions.post('/api/conversions/points', async (c) => {
+conversions.post('/api/conversions/points', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -197,9 +198,9 @@ conversions.post('/api/conversions/points', async (c) => {
 });
 
 // DELETE /api/conversions/points/:id - delete
-conversions.delete('/api/conversions/points/:id', async (c) => {
+conversions.delete('/api/conversions/points/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteConversionPoint(c.env.DB, c.req.param('id'));
+    await deleteConversionPoint(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/conversions/points/:id error:', err);

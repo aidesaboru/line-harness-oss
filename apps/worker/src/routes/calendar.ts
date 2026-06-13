@@ -15,6 +15,7 @@ import { GoogleCalendarClient } from '../services/google-calendar.js';
 import type { Env } from '../index.js';
 import { supportFriendVisibilitySql } from '../services/support-access.js';
 import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const calendar = new Hono<Env>();
 
@@ -90,7 +91,7 @@ calendar.get('/api/integrations/google-calendar', async (c) => {
   }
 });
 
-calendar.post('/api/integrations/google-calendar/connect', async (c) => {
+calendar.post('/api/integrations/google-calendar/connect', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ calendarId: string; authType: string; accessToken?: string; refreshToken?: string; apiKey?: string }>();
     if (!body.calendarId) return c.json({ success: false, error: 'calendarId is required' }, 400);
@@ -105,9 +106,9 @@ calendar.post('/api/integrations/google-calendar/connect', async (c) => {
   }
 });
 
-calendar.delete('/api/integrations/google-calendar/:id', async (c) => {
+calendar.delete('/api/integrations/google-calendar/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteCalendarConnection(c.env.DB, c.req.param('id'));
+    await deleteCalendarConnection(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/integrations/google-calendar/:id error:', err);

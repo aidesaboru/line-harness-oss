@@ -27,6 +27,7 @@ export type WorkflowRunSnapshot = {
   headSha?: string;
   workflowName?: string;
   databaseId?: number;
+  url?: string;
 };
 
 export type ReadinessSnapshot = {
@@ -95,6 +96,10 @@ function mergeStateItem(mergeStateStatus: string | undefined): ReadinessItem {
     default:
       return item('wait', 'pr: merge state', status, 'Refresh PR metadata and confirm GitHub reports a mergeable state.');
   }
+}
+
+function workflowRunAction(run: WorkflowRunSnapshot, fallback: string): string {
+  return run.url ? `${fallback} ${run.url}` : fallback;
 }
 
 export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): ReadinessItem[] {
@@ -174,11 +179,11 @@ export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): Readiness
     } else if (run.conclusion === 'success') {
       items.push(item('pass', 'ci: latest GitHub Actions run', detail));
     } else if (run.conclusion === 'action_required') {
-      items.push(item('wait', 'ci: latest GitHub Actions run', detail, 'Repository maintainer/admin must approve the fork PR workflow run.'));
+      items.push(item('wait', 'ci: latest GitHub Actions run', detail, workflowRunAction(run, 'Repository maintainer/admin must approve the fork PR workflow run.')));
     } else if (run.status === 'in_progress' || run.status === 'queued' || !run.conclusion) {
-      items.push(item('wait', 'ci: latest GitHub Actions run', detail, 'Wait for GitHub Actions to finish.'));
+      items.push(item('wait', 'ci: latest GitHub Actions run', detail, workflowRunAction(run, 'Wait for GitHub Actions to finish.')));
     } else {
-      items.push(item('fail', 'ci: latest GitHub Actions run', detail, 'Open the failed run logs and fix the failing check.'));
+      items.push(item('fail', 'ci: latest GitHub Actions run', detail, workflowRunAction(run, 'Open the failed run logs and fix the failing check.')));
     }
   } else {
     items.push(item('wait', 'ci: latest GitHub Actions run', snapshot.runError ?? 'run metadata unavailable', 'Run `gh run list --branch <branch>` after authenticating GitHub CLI.'));
@@ -236,7 +241,7 @@ export function collectReleaseReadiness(): ReadinessSnapshot {
     '--limit',
     '1',
     '--json',
-    'status,conclusion,headSha,workflowName,databaseId',
+    'status,conclusion,headSha,workflowName,databaseId,url',
   ]);
   if (runResult.ok) {
     const runs = parseJson<WorkflowRunSnapshot[]>(runResult.stdout);

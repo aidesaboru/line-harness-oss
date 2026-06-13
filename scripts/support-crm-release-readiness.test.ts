@@ -69,6 +69,7 @@ describe('support CRM release readiness', () => {
         conclusion: 'action_required',
         workflowName: 'Worker CI',
         databaseId: 27445335204,
+        url: 'https://github.com/example/repo/actions/runs/27445335204',
       },
     }));
 
@@ -89,7 +90,7 @@ describe('support CRM release readiness', () => {
       expect.objectContaining({
         status: 'wait',
         name: 'ci: latest GitHub Actions run',
-        next: 'Repository maintainer/admin must approve the fork PR workflow run.',
+        next: expect.stringContaining('https://github.com/example/repo/actions/runs/27445335204'),
       }),
     ]));
     expect(items.some((entry) => entry.status === 'fail')).toBe(false);

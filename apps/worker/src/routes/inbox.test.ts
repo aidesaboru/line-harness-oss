@@ -65,6 +65,40 @@ describe('inbox routes support visibility', () => {
     });
   });
 
+  test('unanswered list rejects unsafe text and account filters before service calls', async () => {
+    const db = {} as D1Database;
+    const tooLongQuery = 'a'.repeat(257);
+    const paths = [
+      `/api/inbox/unanswered?q=${tooLongQuery}`,
+      '/api/inbox/unanswered?account=bad%20account',
+      `/api/inbox/unanswered?account=${'a'.repeat(129)}`,
+    ];
+
+    for (const path of paths) {
+      const res = await setupApp(db).request(path);
+      expect(res.status, path).toBe(400);
+      expect(inboxMocks.computeUnansweredInbox, path).not.toHaveBeenCalled();
+    }
+  });
+
+  test('unanswered list trims filters and caps oversized numeric values before service calls', async () => {
+    const db = {} as D1Database;
+
+    const res = await setupApp(db).request(
+      '/api/inbox/unanswered?q=%20%E7%9B%B8%E8%AB%87%20&account=%20acc-1%20&page=999999&pageSize=999999&minWaitMinutes=999999',
+    );
+
+    expect(res.status).toBe(200);
+    expect(inboxMocks.computeUnansweredInbox).toHaveBeenCalledWith(db, {
+      q: '相談',
+      account: 'acc-1',
+      minWaitMinutes: 525_600,
+      page: 10_000,
+      pageSize: 2_000,
+      staff: { id: 'staff-1', name: '田島', role: 'staff' },
+    });
+  });
+
   test('unanswered count passes filters and current staff into the service scope', async () => {
     const db = {} as D1Database;
 
@@ -83,6 +117,20 @@ describe('inbox routes support visibility', () => {
     });
   });
 
+  test('unanswered count rejects unsafe filters before service calls', async () => {
+    const db = {} as D1Database;
+    const paths = [
+      `/api/inbox/unanswered/count?q=${'a'.repeat(257)}`,
+      '/api/inbox/unanswered/count?account=bad%20account',
+    ];
+
+    for (const path of paths) {
+      const res = await setupApp(db).request(path);
+      expect(res.status, path).toBe(400);
+      expect(inboxMocks.countUnanswered, path).not.toHaveBeenCalled();
+    }
+  });
+
   test('unanswered count ignores invalid minWaitMinutes before calling the service', async () => {
     const db = {} as D1Database;
 
@@ -93,6 +141,26 @@ describe('inbox routes support visibility', () => {
       q: undefined,
       account: undefined,
       minWaitMinutes: undefined,
+      staff: {
+        id: 'staff-1',
+        name: '田島',
+        role: 'staff',
+      },
+    });
+  });
+
+  test('unanswered count trims filters and caps oversized wait filter before service calls', async () => {
+    const db = {} as D1Database;
+
+    const res = await setupApp(db).request(
+      '/api/inbox/unanswered/count?q=%20%E7%9B%B8%E8%AB%87%20&account=%20acc-1%20&minWaitMinutes=999999',
+    );
+
+    expect(res.status).toBe(200);
+    expect(inboxMocks.countUnanswered).toHaveBeenCalledWith(db, {
+      q: '相談',
+      account: 'acc-1',
+      minWaitMinutes: 525_600,
       staff: {
         id: 'staff-1',
         name: '田島',

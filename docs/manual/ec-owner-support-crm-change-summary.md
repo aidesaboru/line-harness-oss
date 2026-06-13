@@ -243,6 +243,7 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token and resolves the friend only from the verified token subject.
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
+- LIFF access route tests confirm public `/api/liff/config` rejects unsafe `liffId` before DB lookup or LINE bot info fetch, and owner/admin ref analytics reject unsafe `lineAccountId/refCode` before DB access while valid filters are trimmed before SQL bind.
 - Operations and LIFF access route tests confirm `/t/:linkId` rejects malformed or oversized link IDs before lookup/click recording, ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management path IDs and payloads reject malformed JSON, unsafe route IDs/codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB lookup, DB writes, click-detail lookup, logs lookup, deletion, or test-send lookup, while valid values are trimmed and normalized before persistence.
@@ -302,14 +303,14 @@ strict Preflight:
 - `apps/worker/src/services/support-access.ts`: staff可視範囲のSQL条件
 - `apps/worker/src/routes/support.ts`: role別更新制限、完了/再オープン、エスカレーション制限、support case/escalation/manual query/path/JSON検証
 - `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、chat query/path/payload検証、送信前検証、顧客返信イベント
-- `apps/worker/src/routes/inbox.ts` / `services/unanswered-inbox.ts`: staffの未対応インボックス一覧、件数、未対応friend ID集合の可視範囲
+- `apps/worker/src/routes/inbox.ts` / `services/unanswered-inbox.ts`: staffの未対応インボックス一覧、件数、未対応friend ID集合の可視範囲、unanswered inbox query検証
 - `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲、users-grouped query検証
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限とautomation/auto-reply/notification rule/traffic pool/operator path/payload検証
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限、event admin/LIFF event query/path検証、LIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限、rich menu catalog query/path/payload/image検証、rich menu group query/path/payload/R2 key検証、friend単位操作の維持
-- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route path/payload検証、conversion point path/payload検証、calendar query/path/payload検証
+- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFF config/ref analytics入力検証、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route path/payload検証、conversion point path/payload検証、calendar query/path/payload検証
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限、broadcast query/path/payload/segment条件検証、dedup-preview payload検証
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限、path/payload検証、incoming receive署名検証の維持

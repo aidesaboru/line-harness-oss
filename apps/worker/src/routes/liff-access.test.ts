@@ -233,6 +233,46 @@ describe('public LIFF link endpoint', () => {
   });
 });
 
+describe('public LIFF config endpoint', () => {
+  test('rejects unsafe liffId before DB lookup or LINE bot info fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const paths = [
+      '/api/liff/config',
+      '/api/liff/config?liffId=bad%20liff',
+      `/api/liff/config?liffId=${'a'.repeat(129)}`,
+    ];
+
+    for (const path of paths) {
+      const res = await setupApp(db).request(path);
+      expect(res.status, path).toBe(400);
+      expect(db.prepare, path).not.toHaveBeenCalled();
+      expect(fetchMock, path).not.toHaveBeenCalled();
+    }
+  });
+
+  test('trims valid liffId before account lookup', async () => {
+    const first = vi.fn().mockResolvedValue({
+      id: 'acc-1',
+      name: 'Main',
+      channel_access_token: 'line-token',
+    });
+    const bind = vi.fn(() => ({ first }));
+    const prepare = vi.fn(() => ({ bind }));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ basicId: '@main' }),
+    }));
+
+    const res = await setupApp({ prepare } as unknown as D1Database)
+      .request('/api/liff/config?liffId=%20LIFF-1%20');
+
+    expect(res.status).toBe(200);
+    expect(bind).toHaveBeenCalledWith('LIFF-1');
+  });
+});
+
 describe('management LIFF analytics endpoints', () => {
   test('staff cannot read ref analytics or wrap management links', async () => {
     const db = { prepare: vi.fn() } as unknown as D1Database;
@@ -267,6 +307,40 @@ describe('management LIFF analytics endpoints', () => {
       success: true,
       data: { url: 'https://liff.example.com?redirect=https%3A%2F%2Fexample.com%2Flp&ref=launch' },
     });
+  });
+
+  test('owner analytics rejects unsafe filters before DB access', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp(db, 'owner');
+    const paths = [
+      '/api/analytics/ref-summary?lineAccountId=bad%20account',
+      `/api/analytics/ref-summary?lineAccountId=${'a'.repeat(129)}`,
+      '/api/analytics/ref/bad%20ref',
+      '/api/analytics/ref/launch?lineAccountId=bad%20account',
+    ];
+
+    for (const path of paths) {
+      const res = await app.request(path);
+      expect(res.status, path).toBe(400);
+      expect(db.prepare, path).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner analytics trims valid account and ref filters before SQL binds', async () => {
+    const first = vi.fn().mockResolvedValue({ count: 0 });
+    const all = vi.fn().mockResolvedValue({ results: [] });
+    const bind = vi.fn(() => ({ first, all }));
+    const prepare = vi.fn(() => ({ bind, first, all }));
+    const app = setupApp({ prepare } as unknown as D1Database, 'owner');
+
+    const summary = await app.request('/api/analytics/ref-summary?lineAccountId=%20acc-1%20');
+    expect(summary.status).toBe(200);
+    expect(bind.mock.calls.slice(0, 3)).toEqual([['acc-1'], ['acc-1'], ['acc-1']]);
+
+    bind.mockClear();
+    const detail = await app.request('/api/analytics/ref/%20launch%20?lineAccountId=%20acc-1%20');
+    expect(detail.status).toBe(200);
+    expect(bind.mock.calls).toEqual([['launch'], ['launch', 'launch', 'acc-1']]);
   });
 });
 

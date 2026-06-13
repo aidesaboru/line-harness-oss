@@ -32,6 +32,8 @@ const MAX_LIFF_FORM_ID_LENGTH = 128;
 const MAX_LIFF_DISPLAY_NAME_LENGTH = 256;
 const MAX_LIFF_REF_LENGTH = 512;
 const MAX_LIFF_IGSID_LENGTH = 512;
+const MAX_LIFF_VISIBLE_ID_LENGTH = 128;
+const LIFF_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type LiffLinkBody = {
   idToken: string;
@@ -50,6 +52,8 @@ type LiffSendFormLinkBody = {
   xh?: string;
   ig?: string;
 };
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function errorKind(err: unknown): string {
   return err instanceof Error && err.name ? err.name : typeof err;
@@ -72,6 +76,33 @@ function boundedOptionalString(value: unknown, maxLength: number): string | unde
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > maxLength) return null;
   return trimmed;
+}
+
+function parseRequiredVisibleString(
+  value: unknown,
+  label: string,
+  maxLength = MAX_LIFF_VISIBLE_ID_LENGTH,
+): ValueResult<string> {
+  if (typeof value !== 'string') return { ok: false, error: `${label} is required` };
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: false, error: `${label} is required` };
+  if (trimmed.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!LIFF_VISIBLE_ASCII_PATTERN.test(trimmed)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value: trimmed };
+}
+
+function parseOptionalVisibleString(
+  value: unknown,
+  label: string,
+  maxLength = MAX_LIFF_VISIBLE_ID_LENGTH,
+): ValueResult<string | undefined> {
+  if (value === undefined || value === null) return { ok: true, value: undefined };
+  if (typeof value !== 'string') return { ok: false, error: `${label} must be a string` };
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true, value: undefined };
+  if (trimmed.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!LIFF_VISIBLE_ASCII_PATTERN.test(trimmed)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value: trimmed };
 }
 
 function parseLiffLinkBody(value: unknown): LiffLinkBody | null {
@@ -1146,14 +1177,12 @@ liffRoutes.get('/auth/callback', async (c) => {
 // GET /api/liff/config - resolve account info from LIFF ID (public, no auth)
 liffRoutes.get('/api/liff/config', async (c) => {
   try {
-    const liffId = c.req.query('liffId');
-    if (!liffId) {
-      return c.json({ success: false, error: 'liffId is required' }, 400);
-    }
+    const liffId = parseRequiredVisibleString(c.req.query('liffId'), 'liffId');
+    if (!liffId.ok) return c.json({ success: false, error: liffId.error }, 400);
 
     const account = await c.env.DB
       .prepare('SELECT id, name, channel_access_token FROM line_accounts WHERE liff_id = ? AND is_active = 1')
-      .bind(liffId)
+      .bind(liffId.value)
       .first<{ id: string; name: string; channel_access_token: string }>();
 
     // Fallback to default env account if liff_id not found in DB
@@ -1403,9 +1432,10 @@ liffRoutes.post('/api/liff/link', async (c) => {
 liffRoutes.get('/api/analytics/ref-summary', requireRole('owner', 'admin'), async (c) => {
   try {
     const db = c.env.DB;
-    const lineAccountId = c.req.query('lineAccountId');
-    const accountFilter = lineAccountId ? 'AND f.line_account_id = ?' : '';
-    const accountBinds = lineAccountId ? [lineAccountId] : [];
+    const lineAccountId = parseOptionalVisibleString(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const accountFilter = lineAccountId.value ? 'AND f.line_account_id = ?' : '';
+    const accountBinds = lineAccountId.value ? [lineAccountId.value] : [];
 
     // friends 起点で集計することで、entry_routes に登録されていない ref
     // (例えば X Harness が発行する UUID ref) も summary に拾えるようにする。
@@ -1436,13 +1466,13 @@ liffRoutes.get('/api/analytics/ref-summary', requireRole('owner', 'admin'), asyn
         latest_at: string | null;
       }>();
 
-    const totalStmt = lineAccountId
-      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE line_account_id = ?`).bind(lineAccountId)
+    const totalStmt = lineAccountId.value
+      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE line_account_id = ?`).bind(lineAccountId.value)
       : db.prepare(`SELECT COUNT(*) as count FROM friends`);
     const totalFriendsRes = await totalStmt.first<{ count: number }>();
 
-    const refStmt = lineAccountId
-      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != '' AND line_account_id = ?`).bind(lineAccountId)
+    const refStmt = lineAccountId.value
+      ? db.prepare(`SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != '' AND line_account_id = ?`).bind(lineAccountId.value)
       : db.prepare(`SELECT COUNT(*) as count FROM friends WHERE ref_code IS NOT NULL AND ref_code != ''`);
     const friendsWithRefRes = await refStmt.first<{ count: number }>();
 
@@ -1476,7 +1506,10 @@ liffRoutes.get('/api/analytics/ref-summary', requireRole('owner', 'admin'), asyn
 liffRoutes.get('/api/analytics/ref/:refCode', requireRole('owner', 'admin'), async (c) => {
   try {
     const db = c.env.DB;
-    const refCode = c.req.param('refCode');
+    const refCode = parseRequiredVisibleString(c.req.param('refCode'), 'refCode', MAX_LIFF_REF_LENGTH);
+    if (!refCode.ok) return c.json({ success: false, error: refCode.error }, 400);
+    const lineAccountId = parseOptionalVisibleString(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
 
     // Look up the registered entry_route to surface the operator-facing name,
     // but do NOT 404 when missing. /inflow-links surfaces refs that exist in
@@ -1485,12 +1518,13 @@ liffRoutes.get('/api/analytics/ref/:refCode', requireRole('owner', 'admin'), asy
     // expand — name just falls back to the raw ref_code in that case.
     const routeRow = await db
       .prepare(`SELECT ref_code, name FROM entry_routes WHERE ref_code = ?`)
-      .bind(refCode)
+      .bind(refCode.value)
       .first<{ ref_code: string; name: string }>();
 
-    const lineAccountId = c.req.query('lineAccountId');
-    const accountFilter = lineAccountId ? 'AND f.line_account_id = ?' : '';
-    const binds = lineAccountId ? [refCode, refCode, lineAccountId] : [refCode, refCode];
+    const accountFilter = lineAccountId.value ? 'AND f.line_account_id = ?' : '';
+    const binds = lineAccountId.value
+      ? [refCode.value, refCode.value, lineAccountId.value]
+      : [refCode.value, refCode.value];
 
     const friends = await db
       .prepare(
@@ -1515,7 +1549,7 @@ liffRoutes.get('/api/analytics/ref/:refCode', requireRole('owner', 'admin'), asy
     return c.json({
       success: true,
       data: {
-        refCode: routeRow?.ref_code ?? refCode,
+        refCode: routeRow?.ref_code ?? refCode.value,
         name: routeRow?.name ?? null,
         friends: (friends.results ?? []).map((f) => ({
           id: f.id,

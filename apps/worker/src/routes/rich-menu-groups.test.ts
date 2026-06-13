@@ -65,10 +65,10 @@ function makeMinimalDbStub(): D1Database {
   } as unknown as D1Database;
 }
 
-function setupApp(opts: { r2?: R2Bucket; db?: D1Database } = {}) {
+function setupApp(opts: { r2?: R2Bucket; db?: D1Database; role?: 'owner' | 'admin' | 'staff' } = {}) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
-    c.set('staff', { id: 'staff-1', role: 'owner' });
+    c.set('staff', { id: 'staff-1', role: opts.role ?? 'owner' });
     c.env = { DB: opts.db ?? makeMinimalDbStub(), IMAGES: opts.r2 ?? makeR2Stub() };
     await next();
   });
@@ -83,6 +83,34 @@ beforeEach(() => {
 // ----- GET /api/rich-menu-groups -----
 
 describe('GET /api/rich-menu-groups', () => {
+  test('staff cannot access rich menu group management routes', async () => {
+    const app = setupApp({ role: 'staff' });
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/rich-menu-groups?accountId=acc-1'],
+      ['POST', '/api/rich-menu-groups', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: 'acc-1', name: 'VIP' }),
+      }],
+      ['PATCH', '/api/rich-menu-groups/group-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/rich-menu-groups/group-1'],
+      ['POST', '/api/rich-menu-groups/group-1/publish'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(dbMocks.getRichMenuGroups).not.toHaveBeenCalled();
+    expect(dbMocks.createRichMenuGroup).not.toHaveBeenCalled();
+    expect(dbMocks.updateRichMenuGroupMeta).not.toHaveBeenCalled();
+    expect(dbMocks.deleteRichMenuGroup).not.toHaveBeenCalled();
+    expect(dbMocks.acquirePublishLock).not.toHaveBeenCalled();
+  });
+
   test('returns empty list when accountId has no groups', async () => {
     dbMocks.getRichMenuGroups.mockResolvedValue([]);
     const app = setupApp();

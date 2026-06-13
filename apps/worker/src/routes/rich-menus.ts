@@ -3,8 +3,12 @@ import { LineClient } from '@line-crm/line-sdk';
 import { getFriendById, getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { ensureSupportFriendAccess } from './support-friend-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const richMenus = new Hono<Env>();
+
+richMenus.use('/api/rich-menus', requireRole('owner', 'admin'));
+richMenus.use('/api/rich-menus/*', requireRole('owner', 'admin'));
 
 /** Resolve LINE access token — uses accountId query param if provided, otherwise default */
 async function resolveLineClient(c: { env: Env['Bindings']; req: { query(key: string): string | undefined } }): Promise<LineClient> {

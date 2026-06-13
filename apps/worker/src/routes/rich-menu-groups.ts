@@ -33,8 +33,12 @@ import {
   type R2Like,
   type GroupInput,
 } from '../lib/rich-menu-publisher.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 export const richMenuGroups = new Hono<Env>();
+
+richMenuGroups.use('/api/rich-menu-groups', requireRole('owner', 'admin'));
+richMenuGroups.use('/api/rich-menu-groups/*', requireRole('owner', 'admin'));
 
 // ----- Serialization (snake_case row → camelCase response) -----
 

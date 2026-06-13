@@ -277,6 +277,31 @@ describe('friend-scoped support visibility guards', () => {
     expect(dbMocks.cancelFriendReminder).toHaveBeenCalledWith(db, 'friend-reminder-visible');
   });
 
+  test('staff cannot manage LINE rich menu catalog routes', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'staff');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/rich-menus'],
+      ['POST', '/api/rich-menus', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'VIP' }),
+      }],
+      ['POST', '/api/rich-menus/menu-1/default'],
+      ['POST', '/api/rich-menus/menu-1/image', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: 'data:image/png;base64,AAAA' }),
+      }],
+      ['DELETE', '/api/rich-menus/menu-1'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(lineClientConstructor).not.toHaveBeenCalled();
+  });
+
   test('staff cannot read or mutate hidden friend rich menu state', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
     const app = setupApp(db, 'staff');

@@ -670,7 +670,7 @@ chats.get('/api/operators', requireRole('owner', 'admin'), async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/operators error:', err);
+    console.error(`GET /api/operators error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -682,7 +682,7 @@ chats.post('/api/operators', requireRole('owner', 'admin'), async (c) => {
     const item = await createOperator(c.env.DB, parsed.value);
     return c.json({ success: true, data: { id: item.id, name: item.name, email: item.email, role: item.role } }, 201);
   } catch (err) {
-    console.error('POST /api/operators error:', err);
+    console.error(`POST /api/operators error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -698,7 +698,7 @@ chats.put('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: { id: updated.id, name: updated.name, email: updated.email, role: updated.role, isActive: Boolean(updated.is_active) } });
   } catch (err) {
-    console.error('PUT /api/operators/:id error:', err);
+    console.error(`PUT /api/operators/:id error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -710,7 +710,7 @@ chats.delete('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
     await deleteOperator(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/operators/:id error:', err);
+    console.error(`DELETE /api/operators/:id error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -895,7 +895,7 @@ chats.get('/api/chats', async (c) => {
 
     return c.json({ success: true, data });
   } catch (err) {
-    console.error('GET /api/chats error:', err);
+    console.error(`GET /api/chats error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1000,7 +1000,7 @@ chats.get('/api/chats/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/chats/:id error:', err);
+    console.error(`GET /api/chats/:id error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1021,7 +1021,7 @@ chats.post('/api/chats', async (c) => {
     }
     return c.json({ success: true, data: { id: item.id, friendId: item.friend_id, status: item.status } }, 201);
   } catch (err) {
-    console.error('POST /api/chats error:', err);
+    console.error(`POST /api/chats error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1047,7 +1047,7 @@ chats.put('/api/chats/:id', async (c) => {
       data: { id: updated.friend_id, friendId: updated.friend_id, operatorId: updated.operator_id, status: updated.status, notes: updated.notes },
     });
   } catch (err) {
-    console.error('PUT /api/chats/:id error:', err);
+    console.error(`PUT /api/chats/:id error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

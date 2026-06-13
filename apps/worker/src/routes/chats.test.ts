@@ -263,6 +263,14 @@ function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
   return spy.mock.calls.flat().map(String).join(' ');
 }
 
+function makeThrowingDb(message: string): D1Database {
+  return {
+    prepare() {
+      throw new Error(message);
+    },
+  } as unknown as D1Database;
+}
+
 const rows: ChatListRow[] = [
   {
     id: 'friend-visible',
@@ -562,6 +570,89 @@ describe('chat support visibility', () => {
       expect(dbMocks.updateChat, `${method} ${path}`).not.toHaveBeenCalled();
       expect(calls, `${method} ${path}`).toEqual([]);
       expect(lineSdkMocks.LineClient, `${method} ${path}`).not.toHaveBeenCalled();
+    }
+  });
+
+  test('chat list failure logs only the error kind', async () => {
+    const db = makeThrowingDb('chat list secret account-token U-visible friend-visible');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/chats?lineAccountId=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/chats error: Error');
+      expect(logged).not.toContain('chat list secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('chat create failure does not log raw chat payload details', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.createChat.mockRejectedValue(new Error('chat create secret account-token U-visible friend-visible'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/chats', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          friendId: 'friend-visible',
+          operatorId: 'operator-1',
+          lineAccountId: 'acc-1',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/chats error: Error');
+      expect(logged).not.toContain('chat create secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('operator-1');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('operator creation failure does not log raw operator payload details', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.createOperator.mockRejectedValue(new Error('operator create secret owner@example.com account-token'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/operators', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'operator create secret',
+          email: 'owner@example.com',
+          role: 'support',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/operators error: Error');
+      expect(logged).not.toContain('operator create secret');
+      expect(logged).not.toContain('owner@example.com');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('support');
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 

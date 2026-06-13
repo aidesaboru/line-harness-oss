@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canShowSidebarItem } from './sidebar-access'
+import { canAccessStaffRoute, canShowSidebarItem } from './sidebar-access'
 
 describe('sidebar role access', () => {
   it('keeps staff focused on support work only', () => {
@@ -28,5 +28,21 @@ describe('sidebar role access', () => {
     expect(canShowSidebarItem('/accounts', null)).toBe(true)
     expect(canShowSidebarItem('/broadcasts', undefined)).toBe(true)
     expect(canShowSidebarItem('/staff', '')).toBe(false)
+  })
+
+  it('redirects staff away from management routes while allowing support routes', () => {
+    expect(canAccessStaffRoute('/support', 'staff')).toBe(true)
+    expect(canAccessStaffRoute('/support/case-1', 'staff')).toBe(true)
+    expect(canAccessStaffRoute('/chats', 'staff')).toBe(true)
+    expect(canAccessStaffRoute('/notifications', 'staff')).toBe(true)
+
+    expect(canAccessStaffRoute('/', 'staff')).toBe(false)
+    expect(canAccessStaffRoute('/broadcasts', 'staff')).toBe(false)
+    expect(canAccessStaffRoute('/accounts', 'staff')).toBe(false)
+    expect(canAccessStaffRoute('/staff', 'staff')).toBe(false)
+
+    expect(canAccessStaffRoute('/broadcasts', 'owner')).toBe(true)
+    expect(canAccessStaffRoute('/broadcasts', 'admin')).toBe(true)
+    expect(canAccessStaffRoute('/broadcasts', null)).toBe(true)
   })
 })

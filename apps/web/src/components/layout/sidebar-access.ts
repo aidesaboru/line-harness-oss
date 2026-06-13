@@ -7,8 +7,20 @@ const STAFF_VISIBLE_HREFS = new Set([
   '/notifications',
 ])
 
+function normalizeRole(role: SidebarRole): string {
+  return typeof role === 'string' ? role.trim() : ''
+}
+
+function isStaffRole(role: SidebarRole): boolean {
+  return normalizeRole(role) === 'staff'
+}
+
+function matchesStaffPath(pathname: string, href: string): boolean {
+  return pathname === href || pathname.startsWith(`${href}/`)
+}
+
 export function canShowSidebarItem(href: string, role: SidebarRole): boolean {
-  const normalizedRole = typeof role === 'string' ? role.trim() : ''
+  const normalizedRole = normalizeRole(role)
 
   if (normalizedRole === 'staff') {
     return STAFF_VISIBLE_HREFS.has(href)
@@ -19,4 +31,10 @@ export function canShowSidebarItem(href: string, role: SidebarRole): boolean {
   }
 
   return true
+}
+
+export function canAccessStaffRoute(pathname: string, role: SidebarRole): boolean {
+  if (!isStaffRole(role)) return true
+
+  return Array.from(STAFF_VISIBLE_HREFS).some((href) => matchesStaffPath(pathname, href))
 }

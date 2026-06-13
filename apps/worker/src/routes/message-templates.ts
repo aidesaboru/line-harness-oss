@@ -12,9 +12,11 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const messageTemplates = new Hono<Env>();
 
+const MESSAGE_TEMPLATE_ID_MAX_LENGTH = 128;
 const MESSAGE_TEMPLATE_NAME_MAX_LENGTH = 120;
 const MESSAGE_TEMPLATE_CONTENT_MAX_LENGTH = 64 * 1024;
 const MESSAGE_TEMPLATE_TYPES = new Set(['text', 'flex']);
+const MESSAGE_TEMPLATE_ID_PATTERN = /^[!-~]+$/;
 
 type MessageTemplateInput = {
   name: string;
@@ -45,6 +47,13 @@ function parseRequiredString(raw: unknown, label: string, maxLength: number): Va
 function parseOptionalString(raw: unknown, label: string, maxLength: number): ValueResult<string | undefined> {
   if (raw === undefined) return { ok: true, value: undefined };
   return parseRequiredString(raw, label, maxLength);
+}
+
+function parseMessageTemplatePathId(raw: unknown): ValueResult<string> {
+  const id = parseRequiredString(raw, 'messageTemplateId', MESSAGE_TEMPLATE_ID_MAX_LENGTH);
+  if (!id.ok) return id;
+  if (!MESSAGE_TEMPLATE_ID_PATTERN.test(id.value)) return { ok: false, error: 'messageTemplateId is invalid' };
+  return id;
 }
 
 function parseMessageType(raw: unknown, required: boolean): ValueResult<'text' | 'flex' | undefined> {
@@ -127,7 +136,9 @@ messageTemplates.get('/api/message-templates', requireRole('owner', 'admin'), as
 // GET /api/message-templates/:id — get by id
 messageTemplates.get('/api/message-templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const t = await getMessageTemplateById(c.env.DB, c.req.param('id')!);
+    const id = parseMessageTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const t = await getMessageTemplateById(c.env.DB, id.value);
     if (!t) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(t) });
   } catch (err) {
@@ -159,21 +170,22 @@ messageTemplates.post('/api/message-templates', requireRole('owner', 'admin'), a
 // PUT /api/message-templates/:id — update
 messageTemplates.put('/api/message-templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
+    const id = parseMessageTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseMessageTemplateUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
 
     // Resolve effective type and content for validation
-    const id = c.req.param('id')!;
-    const existing = await getMessageTemplateById(c.env.DB, id);
+    const existing = await getMessageTemplateById(c.env.DB, id.value);
     if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
     const effectiveType = body.messageType ?? existing.message_type;
     const effectiveContent = body.messageContent ?? existing.message_content;
     const content = validateMessageContent(effectiveType, effectiveContent);
     if (!content.ok) return c.json({ success: false, error: content.error }, 400);
 
-    const t = await updateMessageTemplate(c.env.DB, id, {
+    const t = await updateMessageTemplate(c.env.DB, id.value, {
       name: body.name,
       messageType: body.messageType,
       messageContent: body.messageContent,
@@ -189,7 +201,9 @@ messageTemplates.put('/api/message-templates/:id', requireRole('owner', 'admin')
 // DELETE /api/message-templates/:id — delete
 messageTemplates.delete('/api/message-templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const deleted = await deleteMessageTemplate(c.env.DB, c.req.param('id')!);
+    const id = parseMessageTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const deleted = await deleteMessageTemplate(c.env.DB, id.value);
     if (!deleted) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true });
   } catch (err) {

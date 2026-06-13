@@ -13,10 +13,12 @@ import { requireRole } from '../middleware/role-guard.js';
 const templates = new Hono<Env>();
 
 const TEMPLATE_NAME_MAX_LENGTH = 120;
+const TEMPLATE_ID_MAX_LENGTH = 128;
 const TEMPLATE_CATEGORY_MAX_LENGTH = 64;
 const TEMPLATE_CONTENT_MAX_LENGTH = 64 * 1024;
 const TEMPLATE_IMAGE_URL_MAX_LENGTH = 2048;
 const TEMPLATE_MESSAGE_TYPES = new Set(['text', 'image', 'flex', 'carousel']);
+const TEMPLATE_ID_PATTERN = /^[!-~]+$/;
 
 type TemplateInput = {
   name: string;
@@ -56,6 +58,13 @@ function parseOptionalQueryString(raw: string | undefined, label: string, maxLen
   if (!value) return { ok: true, value: undefined };
   if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
   return { ok: true, value };
+}
+
+function parseTemplatePathId(raw: unknown): ValueResult<string> {
+  const id = parseRequiredString(raw, 'templateId', TEMPLATE_ID_MAX_LENGTH);
+  if (!id.ok) return id;
+  if (!TEMPLATE_ID_PATTERN.test(id.value)) return { ok: false, error: 'templateId is invalid' };
+  return id;
 }
 
 function parseMessageType(raw: unknown, required: boolean): ValueResult<string | undefined> {
@@ -178,10 +187,11 @@ templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
 
 templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const item = await getTemplateById(c.env.DB, id);
+    const id = parseTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const item = await getTemplateById(c.env.DB, id.value);
     if (!item) return c.json({ success: false, error: 'Template not found' }, 404);
-    const usedBy = await getTemplateUsage(c.env.DB, id);
+    const usedBy = await getTemplateUsage(c.env.DB, id.value);
     return c.json({
       success: true,
       data: {
@@ -204,11 +214,12 @@ templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
 // GET /api/templates/:id/usages — auto_replies + scenario_steps での使用箇所
 templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async (c) => {
   try {
-    const templateId = c.req.param('id');
+    const templateId = parseTemplatePathId(c.req.param('id'));
+    if (!templateId.ok) return c.json({ success: false, error: templateId.error }, 400);
 
     const tpl = await c.env.DB
       .prepare(`SELECT id FROM templates WHERE id = ?`)
-      .bind(templateId)
+      .bind(templateId.value)
       .first<{ id: string }>();
     if (!tpl) {
       return c.json({ success: false, error: 'Template not found' }, 404);
@@ -218,7 +229,7 @@ templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async 
       .prepare(
         `SELECT id, keyword, line_account_id FROM auto_replies WHERE template_id = ?`,
       )
-      .bind(templateId)
+      .bind(templateId.value)
       .all<{ id: string; keyword: string; line_account_id: string | null }>();
 
     const scenarioStepsResult = await c.env.DB
@@ -230,7 +241,7 @@ templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async 
          WHERE ss.template_id = ?
          ORDER BY s.name, ss.step_order`,
       )
-      .bind(templateId)
+      .bind(templateId.value)
       .all<{
         step_id: string;
         step_order: number;
@@ -276,19 +287,20 @@ templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
 
 templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseTemplateUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
-    const existing = await getTemplateById(c.env.DB, id);
+    const existing = await getTemplateById(c.env.DB, id.value);
     if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
     const effectiveType = body.messageType ?? existing.message_type;
     const effectiveContent = body.messageContent ?? existing.message_content;
     const content = validateMessageContent(effectiveType, effectiveContent);
     if (!content.ok) return c.json({ success: false, error: content.error }, 400);
-    await updateTemplate(c.env.DB, id, body);
-    const updated = await getTemplateById(c.env.DB, id);
+    await updateTemplate(c.env.DB, id.value, body);
+    const updated = await getTemplateById(c.env.DB, id.value);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
@@ -302,12 +314,13 @@ templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
 
 templates.delete('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseTemplatePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     // automations.actions JSON には FK が無いので、削除すると orphan な template_id が
     // 残って実行時に空メッセージ送信→partial fail を引き起こす。auto_replies は
     // ON DELETE SET NULL + inline fallback (responseContent snapshot) で大丈夫だが、
     // automations は安全な fallback パスがないので、参照があれば削除を拒否する。
-    const usage = await getTemplateUsage(c.env.DB, id);
+    const usage = await getTemplateUsage(c.env.DB, id.value);
     if (usage.automations.length > 0) {
       return c.json({
         success: false,
@@ -315,7 +328,7 @@ templates.delete('/api/templates/:id', requireRole('owner', 'admin'), async (c) 
         usedBy: usage,
       }, 409);
     }
-    await deleteTemplate(c.env.DB, id);
+    await deleteTemplate(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/templates/:id error:', err);

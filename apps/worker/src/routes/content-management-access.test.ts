@@ -31,11 +31,11 @@ type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(role: StaffRole = 'staff') {
+function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: 'Tajima', role });
-    c.env = { DB: {} as D1Database };
+    c.env = { DB: db };
     await next();
   });
   app.route('/', tags);
@@ -333,6 +333,40 @@ describe('content management payload validation', () => {
     expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
   });
 
+  test('template and message-template routes reject malformed path IDs before DB helpers', async () => {
+    const prepare = vi.fn();
+    const app = setupApp('owner', { prepare } as unknown as D1Database);
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/templates/bad%20template'],
+      ['GET', '/api/templates/bad%20template/usages'],
+      ['PUT', '/api/templates/bad%20template', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/templates/bad%20template'],
+      ['GET', '/api/message-templates/bad%20message'],
+      ['PUT', '/api/message-templates/bad%20message', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/message-templates/bad%20message'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(prepare).not.toHaveBeenCalled();
+    expect(dbMocks.getTemplateById).not.toHaveBeenCalled();
+    expect(dbMocks.getTemplateUsage).not.toHaveBeenCalled();
+    expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
+    expect(dbMocks.deleteTemplate).not.toHaveBeenCalled();
+    expect(dbMocks.getMessageTemplateById).not.toHaveBeenCalled();
+    expect(dbMocks.updateMessageTemplate).not.toHaveBeenCalled();
+    expect(dbMocks.deleteMessageTemplate).not.toHaveBeenCalled();
+  });
+
   test('reusable template update rejects invalid effective content before DB writes', async () => {
     const app = setupApp('owner');
     dbMocks.getTemplateById.mockResolvedValueOnce({
@@ -345,14 +379,14 @@ describe('content management payload validation', () => {
       updated_at: '2026-06-13T10:00:00.000',
     });
 
-    const res = await app.request('/api/templates/template-1', {
+    const res = await app.request('/api/templates/%20template-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messageContent: '{' }),
     });
 
     expect(res.status).toBe(400);
-    expect(dbMocks.getTemplateById).toHaveBeenCalledTimes(1);
+    expect(dbMocks.getTemplateById).toHaveBeenCalledWith({} as D1Database, 'template-1');
     expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
   });
 
@@ -411,7 +445,7 @@ describe('content management payload validation', () => {
     const app = setupApp('owner');
     const flexContent = JSON.stringify({ type: 'bubble' });
 
-    const res = await app.request('/api/message-templates/message-template-1', {
+    const res = await app.request('/api/message-templates/%20message-template-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

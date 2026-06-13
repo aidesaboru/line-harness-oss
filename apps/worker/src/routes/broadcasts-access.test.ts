@@ -8,10 +8,13 @@ const dbMocks = {
   updateBroadcast: vi.fn(),
   deleteBroadcast: vi.fn(),
   getLineAccountById: vi.fn(),
+  jstNow: vi.fn(),
 };
 
 const lineClientMethods = {
   pushMessage: vi.fn(),
+  getUnitInsight: vi.fn(),
+  getMessageEventInsight: vi.fn(),
 };
 
 const lineClientConstructor = vi.fn(() => lineClientMethods);
@@ -60,6 +63,7 @@ function makeDb(state: {
   configuredFriendIds?: string[];
   visibleFriendIds?: string[];
   friends?: FriendRow[];
+  broadcastRow?: Record<string, string | null>;
 } = {}) {
   const configuredFriendIds = state.configuredFriendIds ?? ['friend-visible', 'friend-hidden'];
   const visibleFriendIds = new Set(state.visibleFriendIds ?? []);
@@ -81,6 +85,9 @@ function makeDb(state: {
           calls.push({ method: 'first', sql, binds: bound });
           if (sql.includes("key = 'test_recipients'")) {
             return { value: JSON.stringify(configuredFriendIds) } as T;
+          }
+          if (sql.includes('FROM broadcasts')) {
+            return (state.broadcastRow ?? null) as T | null;
           }
           return null as T | null;
         },
@@ -145,8 +152,11 @@ beforeEach(() => {
     id: 'acc-1',
     channel_access_token: 'account-token',
   });
+  dbMocks.jstNow.mockReturnValue('2026-06-13T10:00:00.000+09:00');
   lineClientConstructor.mockImplementation(() => lineClientMethods);
   lineClientMethods.pushMessage.mockResolvedValue({ success: true });
+  lineClientMethods.getUnitInsight.mockResolvedValue({ messages: [] });
+  lineClientMethods.getMessageEventInsight.mockResolvedValue({ overview: {} });
 });
 
 describe('broadcast support role guards', () => {
@@ -542,5 +552,66 @@ describe('broadcast management payload validation', () => {
     expect(createSqlUpdate?.binds).toEqual(['acc-1', 'Alt', 'broadcast-created']);
     const countCall = db.calls.find((call) => call.sql.includes('SELECT COUNT(*) as count FROM'));
     expect(countCall?.binds).toEqual(['acc-1', 'tag-1', '$.plan', 'vip']);
+  });
+
+  test('fetch insight stores only error kind for per-account LINE failures', async () => {
+    const db = makeDb({
+      broadcastRow: {
+        line_request_id: null,
+        aggregation_unit: 'agg-secret',
+        line_account_id: null,
+        target_type: 'multi-account-dedup',
+        account_ids: JSON.stringify(['acc-1', 'acc-2']),
+        failed_account_ids: null,
+      },
+    });
+    dbMocks.getBroadcastById.mockResolvedValue({
+      id: 'broadcast-1',
+      title: 'Dedup',
+      message_type: 'text',
+      message_content: 'hello',
+      target_type: 'multi-account-dedup',
+      target_tag_id: null,
+      status: 'sent',
+      scheduled_at: null,
+      sent_at: '2026-06-13T10:00:00.000+09:00',
+      total_count: 2,
+      success_count: 2,
+      created_at: '2026-06-13T09:00:00.000+09:00',
+      line_request_id: null,
+      aggregation_unit: 'agg-secret',
+      account_ids: JSON.stringify(['acc-1', 'acc-2']),
+      dedup_priority: JSON.stringify(['acc-1', 'acc-2']),
+      failed_account_ids: null,
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ id: 'acc-1', channel_access_token: 'line-token-secret' });
+    lineClientMethods.getUnitInsight
+      .mockRejectedValueOnce(new Error('LINE API error: 500 Internal Server Error — SECRET_INSIGHT U-secret'))
+      .mockResolvedValueOnce({ messages: [{ uniqueImpression: 2, uniqueClick: 1, uniqueMediaPlayed: 0 }] });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/broadcasts/broadcast-1/fetch-insight', {
+        method: 'POST',
+      });
+
+      const responseText = await res.text();
+      const logged = errorSpy.mock.calls.flat().map(String).join('\n');
+      expect(res.status, responseText).toBe(200);
+      expect(logged).toContain('[fetch-insight] dedup account insight failed: line_http_status_500');
+      expect(logged).not.toContain('SECRET_INSIGHT');
+      expect(logged).not.toContain('U-secret');
+      expect(logged).not.toContain('acc-1');
+      expect(logged).not.toContain('line-token-secret');
+
+      const insightWrite = db.calls.find((call) => call.sql.includes('INSERT INTO broadcast_insights'));
+      const boundText = insightWrite?.binds.map(String).join('\n') ?? '';
+      expect(boundText).toContain('"error":"line_http_status_500"');
+      expect(boundText).not.toContain('SECRET_INSIGHT');
+      expect(boundText).not.toContain('U-secret');
+      expect(boundText).not.toContain('line-token-secret');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

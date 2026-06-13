@@ -319,6 +319,7 @@ strict Preflight:
 - Event booking route tests confirm booking-flow and notification failure logs keep only the exception kind and omit LINE user IDs, channel tokens, and raw external error messages.
 - Incoming image service tests confirm LINE image fetch/R2 store failure logs keep only HTTP status or exception kind and omit channel tokens, LINE message IDs, LINE account IDs, and raw exception messages.
 - Dedup broadcast service tests confirm multi-account broadcast failure/skip console logs omit LINE account IDs, channel tokens, LINE user IDs, and raw multicast exception messages while preserving failedAccountIds in return values and DB state.
+- Broadcast access tests confirm manual and scheduled per-account insight fetch failures keep only exception kind or LINE HTTP status in logs and stored insight raw responses, omitting account IDs from logs, channel tokens, LINE user IDs, token-like text, and raw LINE/API exception messages.
 - Chat route tests confirm loading/send/send-validate failure logs and error responses omit LINE API response bodies, channel tokens, LINE user IDs, friend IDs, and raw exception messages while keeping HTTP status or exception kind observable.
 
 ローカル画面応答:

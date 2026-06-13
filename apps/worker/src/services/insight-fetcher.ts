@@ -10,6 +10,20 @@ import {
 const INSIGHT_INTERVAL_MS = 24 * 60 * 60 * 1000
 let lastInsightRun = 0
 
+function insightLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/)
+  return match ? Number(match[1]) : null
+}
+
+function insightFetcherErrorKind(err: unknown): string {
+  const status = insightLineErrorStatus(err)
+  if (status != null) return `line_http_status_${status}`
+  if (err instanceof TypeError) return 'network_error'
+  if (err instanceof Error) return err.name || 'error'
+  return typeof err
+}
+
 export async function processInsightFetch(
   db: D1Database,
   lineClients: Map<string, LineClient>,
@@ -81,8 +95,9 @@ export async function processInsightFetch(
             aggMedia += (overview.uniqueMediaPlayed as number) ?? 0
             if (messages && messages.length > 0) hasAnyData = true
           } catch (err) {
-            console.error(`[insight-fetcher] dedup account ${aid} failed:`, err)
-            perAccountResponses.push({ accountId: aid, data: { error: String(err) } })
+            const errorKind = insightFetcherErrorKind(err)
+            console.error(`[insight-fetcher] dedup account insight failed: ${errorKind}`)
+            perAccountResponses.push({ accountId: aid, data: { error: errorKind } })
           }
         }
 
@@ -128,8 +143,7 @@ export async function processInsightFetch(
       }
     } catch (error) {
       console.error(
-        `Insight fetch failed for broadcast ${item.broadcastId}:`,
-        error,
+        `Insight fetch failed: ${insightFetcherErrorKind(error)}`,
       )
       await markInsightFailed(db, item.insightId, item.retryCount)
     }

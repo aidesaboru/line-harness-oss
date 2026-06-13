@@ -153,6 +153,20 @@ function parseScheduledAt(raw: unknown): ValueResult<string | null | undefined> 
   return { ok: true, value };
 }
 
+function broadcastLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function broadcastRouteErrorKind(err: unknown): string {
+  const status = broadcastLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > BROADCAST_URL_MAX_LENGTH) return false;
   try {
@@ -406,7 +420,7 @@ broadcasts.get('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
     const items = await getBroadcasts(c.env.DB, lineAccountId.value);
     return c.json({ success: true, data: items.map(serializeBroadcast) });
   } catch (err) {
-    console.error('GET /api/broadcasts error:', err);
+    console.error(`GET /api/broadcasts error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -424,7 +438,7 @@ broadcasts.get('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
 
     return c.json({ success: true, data: serializeBroadcast(broadcast) });
   } catch (err) {
-    console.error('GET /api/broadcasts/:id error:', err);
+    console.error(`GET /api/broadcasts/:id error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -491,7 +505,7 @@ broadcasts.get('/api/broadcasts/:id/preview-count', requireRole('owner', 'admin'
 
     return c.json({ success: true, data: { count, perAccount } });
   } catch (err) {
-    console.error('GET /api/broadcasts/:id/preview-count error:', err);
+    console.error(`GET /api/broadcasts/:id/preview-count error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -577,7 +591,7 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', requireRole('owner', 'ad
               uniqueClick: (overview.uniqueClick as number) ?? null,
             });
           } catch (err) {
-            console.error(`[per-account-stats] account ${aid} insight failed:`, err);
+            console.error(`[per-account-stats] insight failed: ${broadcastRouteErrorKind(err)}`);
           }
         }),
       );
@@ -593,7 +607,7 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', requireRole('owner', 'ad
 
     return c.json({ success: true, data: result });
   } catch (err) {
-    console.error('GET /api/broadcasts/:id/per-account-stats error:', err);
+    console.error(`GET /api/broadcasts/:id/per-account-stats error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -630,7 +644,7 @@ broadcasts.post('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
 
     return c.json({ success: true, data: serializeBroadcast(broadcast) }, 201);
   } catch (err) {
-    console.error('POST /api/broadcasts error:', err);
+    console.error(`POST /api/broadcasts error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -689,7 +703,7 @@ broadcasts.put('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
 
     return c.json({ success: true, data: updated ? serializeBroadcast(updated) : null });
   } catch (err) {
-    console.error('PUT /api/broadcasts/:id error:', err);
+    console.error(`PUT /api/broadcasts/:id error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -702,7 +716,7 @@ broadcasts.delete('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c
     await deleteBroadcast(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/broadcasts/:id error:', err);
+    console.error(`DELETE /api/broadcasts/:id error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -770,12 +784,12 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
         const defaultClient = new LineClient(c.env.LINE_CHANNEL_ACCESS_TOKEN);
         ctx.waitUntil(
           processQueuedBroadcasts(c.env.DB, defaultClient, c.env.WORKER_URL).catch((err) => {
-            console.error('[multi-account-dedup] background queue processing failed:', err);
+            console.error(`[multi-account-dedup] background queue processing failed: ${broadcastRouteErrorKind(err)}`);
           }),
         );
       } catch (kickErr) {
         // ExecutionContext 未利用環境 (test 等) — cron 経由にフォールバック
-        console.warn('[multi-account-dedup] waitUntil unavailable, falling back to cron:', kickErr);
+        console.warn(`[multi-account-dedup] waitUntil unavailable, falling back to cron: ${broadcastRouteErrorKind(kickErr)}`);
       }
 
       return c.json({
@@ -855,7 +869,7 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
     const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
-    console.error('POST /api/broadcasts/:id/send error:', err);
+    console.error(`POST /api/broadcasts/:id/send error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -886,7 +900,7 @@ broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'
     const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
   } catch (err) {
-    console.error('POST /api/broadcasts/:id/send-segment error:', err);
+    console.error(`POST /api/broadcasts/:id/send-segment error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -919,7 +933,7 @@ broadcasts.get('/api/broadcasts/:id/insight', requireRole('owner', 'admin'), asy
       },
     });
   } catch (err) {
-    console.error('GET /api/broadcasts/:id/insight error:', err);
+    console.error(`GET /api/broadcasts/:id/insight error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1010,8 +1024,9 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
           aggMedia += (overview.uniqueMediaPlayed as number) ?? 0;
           if (messages && messages.length > 0) hasAnyData = true;
         } catch (err) {
-          console.error(`[fetch-insight] dedup account ${aid} failed:`, err);
-          responses.push({ accountId: aid, data: { error: String(err) } });
+          const errorKind = broadcastRouteErrorKind(err);
+          console.error(`[fetch-insight] dedup account insight failed: ${errorKind}`);
+          responses.push({ accountId: aid, data: { error: errorKind } });
         }
       }
 
@@ -1085,7 +1100,7 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
       data: { delivered, uniqueImpression, uniqueClick, uniqueMediaPlayed, openRate, clickRate },
     });
   } catch (err) {
-    console.error('POST /api/broadcasts/:id/fetch-insight error:', err);
+    console.error(`POST /api/broadcasts/:id/fetch-insight error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1156,14 +1171,14 @@ broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), 
            VALUES (?, ?, 'outgoing', ?, ?, NULL, 'test', 'broadcast', ?)`
         ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, messageContent, now).run();
       } catch (err) {
-        console.error('Broadcast test send failed:', err);
+        console.error(`Broadcast test send failed: ${broadcastRouteErrorKind(err)}`);
         failed++;
       }
     }
 
     return c.json({ success: true, sent, failed });
   } catch (err) {
-    console.error('POST /api/broadcasts/:id/test-send error:', err);
+    console.error(`POST /api/broadcasts/:id/test-send error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1211,7 +1226,7 @@ broadcasts.post('/api/segments/count', requireRole('owner', 'admin'), async (c) 
 
     return c.json({ success: true, count: result?.count ?? 0 });
   } catch (err) {
-    console.error('POST /api/segments/count error:', err);
+    console.error(`POST /api/segments/count error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Invalid segment conditions' }, 400);
   }
 });

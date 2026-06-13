@@ -22,6 +22,7 @@ import {
   supportFriendVisibilitySql,
   type SupportAccessStaff,
 } from '../services/support-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const chats = new Hono<Env>();
 
@@ -409,7 +410,7 @@ chats.get('/api/operators', async (c) => {
   }
 });
 
-chats.post('/api/operators', async (c) => {
+chats.post('/api/operators', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ name: string; email: string; role?: string }>();
     if (!body.name || !body.email) return c.json({ success: false, error: 'name and email are required' }, 400);
@@ -421,9 +422,9 @@ chats.post('/api/operators', async (c) => {
   }
 });
 
-chats.put('/api/operators/:id', async (c) => {
+chats.put('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json();
     await updateOperator(c.env.DB, id, body);
     const updated = await getOperatorById(c.env.DB, id);
@@ -435,9 +436,9 @@ chats.put('/api/operators/:id', async (c) => {
   }
 });
 
-chats.delete('/api/operators/:id', async (c) => {
+chats.delete('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteOperator(c.env.DB, c.req.param('id'));
+    await deleteOperator(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/operators/:id error:', err);

@@ -8,6 +8,7 @@ import {
   getNotifications,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const notifications = new Hono<Env>();
 
@@ -73,7 +74,7 @@ notifications.get('/api/notifications/rules/:id', async (c) => {
   }
 });
 
-notifications.post('/api/notifications/rules', async (c) => {
+notifications.post('/api/notifications/rules', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ name: string; eventType: string; conditions?: Record<string, unknown>; channels?: string[] }>();
     if (!body.name || !body.eventType) return c.json({ success: false, error: 'name and eventType are required' }, 400);
@@ -88,9 +89,9 @@ notifications.post('/api/notifications/rules', async (c) => {
   }
 });
 
-notifications.put('/api/notifications/rules/:id', async (c) => {
+notifications.put('/api/notifications/rules/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json();
     await updateNotificationRule(c.env.DB, id, body);
     const updated = await getNotificationRuleById(c.env.DB, id);
@@ -105,9 +106,9 @@ notifications.put('/api/notifications/rules/:id', async (c) => {
   }
 });
 
-notifications.delete('/api/notifications/rules/:id', async (c) => {
+notifications.delete('/api/notifications/rules/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteNotificationRule(c.env.DB, c.req.param('id'));
+    await deleteNotificationRule(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/notifications/rules/:id error:', err);

@@ -94,6 +94,20 @@ function parseContentFilterBody(raw: unknown): ValueResult<{ tagName: string; co
   return { ok: true, value: { tagName: tagName.value, contentSubstring: contentSubstring.value } };
 }
 
+function lineApiErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function profileRefreshErrorKind(err: unknown): string {
+  const status = lineApiErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 /**
  * 友だち全員のプロフィール (display_name / picture_url / status_message) を
  * LINE Messaging API から再取得して messages_log の dedup 品質を維持する。
@@ -184,12 +198,12 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
           .run();
         updated += 1;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('404') || msg.includes('403')) {
+        const status = lineApiErrorStatus(err);
+        if (status === 404 || status === 403) {
           notFound += 1;
         } else {
           otherErrors += 1;
-          console.error('refresh-profile failed:', msg);
+          console.error(`refresh-profile failed: ${profileRefreshErrorKind(err)}`);
         }
       } finally {
         processed += 1;

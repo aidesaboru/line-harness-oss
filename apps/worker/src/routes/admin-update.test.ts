@@ -175,17 +175,24 @@ describe('POST /admin/update/start', () => {
   it('returns 500 update_failed when runUpdate rejects before snapshot creation', async () => {
     // Simulate getLatestDeployment failing inside the engine — runUpdate
     // rejects synchronously before producing a handle, so there's no
-    // updateId to return. The route should surface 500 update_failed so
-    // the dashboard can tell the operator the run never started.
-    runUpdate.mockRejectedValueOnce(new Error('cf pages api down'));
+    // updateId to return. The route should surface a safe 500 update_failed
+    // without echoing Cloudflare/API response details to the dashboard.
+    runUpdate.mockRejectedValueOnce(
+      new Error('cf pages api down SECRET_ADMIN_TOKEN project=line-harness-admin'),
+    );
     const res = await request('/admin/update/start', {
       method: 'POST',
       headers: { 'x-admin-api-key': 'test-admin-key' },
     });
     expect(res.status).toBe(500);
-    const body = (await res.json()) as { error: string; message: string };
+    const bodyText = await res.text();
+    expect(bodyText).not.toContain('cf pages api down');
+    expect(bodyText).not.toContain('SECRET_ADMIN_TOKEN');
+    expect(bodyText).not.toContain('line-harness-admin');
+    const body = JSON.parse(bodyText) as { error: string; message: string; errorKind: string };
     expect(body.error).toBe('update_failed');
-    expect(body.message).toContain('cf pages api down');
+    expect(body.message).toBe('Update setup failed');
+    expect(body.errorKind).toBe('Error');
   });
 });
 
@@ -277,5 +284,24 @@ describe('GET /admin/update/stream/:id', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('Content-Type')).toBe('text/event-stream');
     expect(res.headers.get('Cache-Control')).toBe('no-cache');
+  });
+
+  it('redacts unexpected stream errors in SSE error frames', async () => {
+    getSnapshot.mockRejectedValueOnce(
+      new Error('snapshot read failed UPDATE_SECRET_TOKEN id=UPDATE_ID_123'),
+    );
+
+    const res = await request('/admin/update/stream/abc', {
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('event: error');
+    expect(body).toContain('"error":"stream_failed"');
+    expect(body).toContain('"errorKind":"Error"');
+    expect(body).not.toContain('snapshot read failed');
+    expect(body).not.toContain('UPDATE_SECRET_TOKEN');
+    expect(body).not.toContain('UPDATE_ID_123');
   });
 });

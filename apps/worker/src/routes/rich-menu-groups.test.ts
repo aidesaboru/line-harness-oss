@@ -16,7 +16,9 @@ const dbMocks = {
   releasePublishLock: vi.fn(),
   setPageRichMenuId: vi.fn(),
   markRichMenuGroupPublished: vi.fn(),
+  markRichMenuGroupUnpublished: vi.fn(),
   getLineAccountById: vi.fn(),
+  getFollowingLineUserIdsByTag: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -74,6 +76,36 @@ function setupApp(opts: { r2?: R2Bucket; db?: D1Database; role?: 'owner' | 'admi
   });
   app.route('/', richMenuGroups);
   return app;
+}
+
+function publishedGroup(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'gid12345-aaaa',
+    account_id: 'acc-1',
+    name: 'x',
+    chat_bar_text: 'メニュー',
+    size: 'large',
+    default_page_id: 'p1',
+    is_default_for_all: 0,
+    status: 'published',
+    publishing_at: null,
+    created_at: '',
+    updated_at: '',
+    pages: [{
+      id: 'p1',
+      group_id: 'gid12345-aaaa',
+      order_index: 0,
+      name: 'p1',
+      alias_id: 'lhx-gid12345-0',
+      line_richmenu_id: 'richmenu-secret-old',
+      image_r2_key: 'rich-menus/acc-1/gid12345-aaaa/p1/123.png',
+      image_content_type: 'image/png',
+      created_at: '',
+      updated_at: '',
+      areas: [],
+    }],
+    ...overrides,
+  };
 }
 
 beforeEach(() => {
@@ -598,25 +630,100 @@ describe('POST /api/rich-menu-groups/:groupId/publish', () => {
     expect(res.status).toBe(409);
   });
 
-  test('500 when LINE fetch throws — releases lock', async () => {
-    dbMocks.getRichMenuGroupWithPages.mockResolvedValue({
-      id: 'gid12345-aaaa', account_id: 'acc-1',
-      name: 'x', chat_bar_text: 'メニュー', size: 'large',
-      default_page_id: 'p1', is_default_for_all: 0, status: 'draft', publishing_at: null,
-      created_at: '', updated_at: '',
-      pages: [{
-        id: 'p1', group_id: 'gid12345-aaaa', order_index: 0, name: 'p1',
-        alias_id: 'lhx-gid12345-0', line_richmenu_id: null,
-        image_r2_key: null, image_content_type: null,
-        created_at: '', updated_at: '', areas: [],
-      }],
-    });
-    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'tk' });
+  test('500 when LINE publish fails — releases lock and redacts response details', async () => {
+    dbMocks.getRichMenuGroupWithPages.mockResolvedValue(publishedGroup({ status: 'draft' }));
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'line-token-secret' });
     dbMocks.acquirePublishLock.mockResolvedValue(true);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response('upstream publish body SECRET_PUBLISH richmenu-secret-old', { status: 500 }),
+    ));
 
     const app = setupApp();
     const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/publish', { method: 'POST' });
     expect(res.status).toBe(500);
     expect(dbMocks.releasePublishLock).toHaveBeenCalledWith(expect.anything(), 'gid12345-aaaa');
+    const text = await res.text();
+    expect(text).toContain('"error":"rich_menu_publish_failed"');
+    expect(text).toContain('"errorKind":"line_http_status_500"');
+    expect(text).not.toContain('SECRET_PUBLISH');
+    expect(text).not.toContain('upstream publish body');
+    expect(text).not.toContain('richmenu-secret-old');
+    expect(text).not.toContain('line-token-secret');
+  });
+});
+
+describe('rich menu publish/apply failure redaction', () => {
+  test('redacts unpublish persistence failure details', async () => {
+    dbMocks.getRichMenuGroupWithPages.mockResolvedValue(publishedGroup());
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'line-token-secret' });
+    dbMocks.markRichMenuGroupUnpublished.mockRejectedValueOnce(
+      new Error('D1 failed group=gid12345-aaaa SECRET_UNPUBLISH'),
+    );
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/user/all/richmenu')) return new Response('', { status: 404 });
+      return new Response('', { status: 200 });
+    }));
+
+    const app = setupApp();
+    const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/unpublish', { method: 'POST' });
+
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).toContain('"error":"rich_menu_unpublish_failed"');
+    expect(text).toContain('"errorKind":"Error"');
+    expect(text).not.toContain('SECRET_UNPUBLISH');
+    expect(text).not.toContain('gid12345-aaaa');
+    expect(text).not.toContain('line-token-secret');
+  });
+
+  test('redacts set-default LINE failure details', async () => {
+    dbMocks.getRichMenuGroupWithPages.mockResolvedValue(publishedGroup({ is_default_for_all: 1 }));
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'line-token-secret' });
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response('default failure SECRET_DEFAULT richmenu-secret-old', { status: 502 }),
+    ));
+
+    const app = setupApp();
+    const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/apply-to-tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'set-default' }),
+    });
+
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).toContain('"error":"rich_menu_set_default_failed"');
+    expect(text).toContain('"errorKind":"line_http_status_502"');
+    expect(text).not.toContain('SECRET_DEFAULT');
+    expect(text).not.toContain('default failure');
+    expect(text).not.toContain('richmenu-secret-old');
+    expect(text).not.toContain('line-token-secret');
+  });
+
+  test('redacts bulk-link LINE failure details', async () => {
+    dbMocks.getRichMenuGroupWithPages.mockResolvedValue(publishedGroup());
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'line-token-secret' });
+    dbMocks.getFollowingLineUserIdsByTag.mockResolvedValue(['Usecret-1']);
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response('bulk failure SECRET_BULK Usecret-1 richmenu-secret-old', { status: 429 }),
+    ));
+
+    const app = setupApp();
+    const res = await app.request('/api/rich-menu-groups/gid12345-aaaa/apply-to-tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'bulk-link', tagId: null }),
+    });
+
+    expect(res.status).toBe(500);
+    const text = await res.text();
+    expect(text).toContain('"error":"rich_menu_bulk_link_failed"');
+    expect(text).toContain('"errorKind":"line_http_status_429"');
+    expect(text).not.toContain('SECRET_BULK');
+    expect(text).not.toContain('bulk failure');
+    expect(text).not.toContain('Usecret-1');
+    expect(text).not.toContain('richmenu-secret-old');
+    expect(text).not.toContain('line-token-secret');
   });
 });

@@ -35,6 +35,27 @@ function makeDb() {
   return db as unknown as D1Database & { prepare: ReturnType<typeof vi.fn>; calls: DbCall[] };
 }
 
+function makeDbWithProfileRows(
+  rows: Array<{
+    id: string;
+    line_user_id: string;
+    line_account_id: string | null;
+    channel_access_token: string | null;
+  }>,
+) {
+  const db = makeDb();
+  db.prepare.mockImplementation((sql: string) => ({
+    bind: vi.fn(function bind(...args: unknown[]) {
+      db.calls.push({ sql, binds: args });
+      return this;
+    }),
+    all: vi.fn().mockResolvedValue({ results: sql.includes('FROM friends f') ? rows : [] }),
+    first: vi.fn().mockResolvedValue(null),
+    run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
+  }));
+  return db;
+}
+
 function setupApp(role: StaffRole = 'staff', db = makeDb()) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
@@ -139,6 +160,45 @@ describe('admin diagnostics role guards', () => {
     expect(res.status).toBe(200);
     const batchCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
     expect(batchCall?.binds).toEqual(['acc-1', 10, 0]);
+  });
+
+  test('refresh profiles logs only LINE status/kind for profile fetch failures', async () => {
+    const db = makeDbWithProfileRows([
+      { id: 'friend-403', line_user_id: 'U403', line_account_id: 'acc-1', channel_access_token: 'line-token-1' },
+      { id: 'friend-500', line_user_id: 'U500', line_account_id: 'acc-1', channel_access_token: 'line-token-2' },
+    ]);
+    const getProfile = vi.fn()
+      .mockRejectedValueOnce(new Error('LINE API error: 403 Forbidden — blocked-user SECRET_403'))
+      .mockRejectedValueOnce(new Error('LINE API error: 500 Internal Server Error — upstream SECRET_500'));
+    lineClientConstructor.mockImplementation(() => ({ getProfile }));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { app } = setupApp('owner', db);
+
+    try {
+      const res = await app.request('/api/admin/refresh-profiles?limit=2&offset=0', { method: 'POST' });
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        data: { processed: number; updated: number; notFound: number; otherErrors: number };
+      };
+      expect(body.data).toMatchObject({
+        processed: 2,
+        updated: 0,
+        notFound: 1,
+        otherErrors: 1,
+      });
+
+      const logged = errorSpy.mock.calls.flat().map(String).join('\n');
+      expect(logged).toContain('refresh-profile failed: line_http_status_500');
+      expect(logged).not.toContain('SECRET_403');
+      expect(logged).not.toContain('SECRET_500');
+      expect(logged).not.toContain('blocked-user');
+      expect(logged).not.toContain('upstream');
+      expect(logged).not.toContain('line-token-1');
+      expect(logged).not.toContain('line-token-2');
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('admin repair and debug routes reject unsafe path ids before DB access', async () => {

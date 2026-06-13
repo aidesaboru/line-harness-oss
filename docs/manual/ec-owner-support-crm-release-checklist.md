@@ -242,7 +242,7 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
 - [ ] automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの不正な数値queryがDB helper呼び出しやSQL bind前に安全な値へ戻る
   - Worker route testsでは、無効値、小数、過大値、`Infinity` が既定値、上限、整数へ正規化されることを確認済み。Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` 検索も0件。
 - [ ] admin diagnostics/repair APIの `accountId` query、broadcast/friend path ID、tag/content診断payloadが副作用前に検証される
-  - Worker admin diagnostics route testsでは、不正な `accountId`、unsafeなbroadcast/friend path ID、壊れたJSON、空/過大なtag/content payloadがDB accessやLINE profile refresh前に400で止まり、正常値はtrimされることを確認済み。
+  - Worker admin diagnostics route testsでは、不正な `accountId`、unsafeなbroadcast/friend path ID、壊れたJSON、空/過大なtag/content payloadがDB accessやLINE profile refresh前に400で止まり、正常値はtrimされることを確認済み。LINE profile refresh失敗ログもLINE HTTP statusまたは例外種別だけを残し、channel token、LINE response body、token-like text、raw例外本文を出さないことを確認済み。
 - [ ] Stripe eventsの `friendId` / `eventType` queryがDB helper呼び出し前に検証される
   - Worker operations route testsでは、不正な `friendId/eventType` がDB helper前に400で止まり、正常queryはtrimされることを確認済み。
 - [ ] affiliate reportの `id` / `startDate` / `endDate` path/queryがDB helper呼び出し前に検証される
@@ -275,6 +275,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker events route testsでは、不正な `account_id/liffId/eventId/slotId/bookingId/status/slot_id` がDB access、LIFF auth helper、availability helper、booking判断/更新前に400で止まり、正常query/path IDはtrimされることを確認済み。
 - [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
   - Webhook/events/broadcast/admin-diagnostics route tests、Worker typecheck、Worker buildで、Webhook/profile refresh/broadcast test-sendの失敗ログ匿名化後も動作が壊れていないことを確認済み。
+- [ ] admin update APIのsetup/stream失敗時に、Cloudflare project名、update ID、token-like text、raw例外本文がエラー応答へ出ない
+  - Worker admin update route testsでは、`/admin/update/start` setup失敗と `/admin/update/stream/:id` SSE error frameが固定errorと例外種別だけを返すことを確認済み。
 - [ ] Webhook管理APIがowner/adminだけに制限され、path/payloadをDB lookup/write前に検証し、incoming receive公開エンドポイントは署名検証付きで維持される
   - Worker webhooks route testsでは、staffがincoming/outgoing webhook設定の一覧、作成、更新、削除を実行できず、不正な更新/削除/receive path ID、壊れたJSON、不正なname/sourceType/url/eventTypes/secret/isActiveはDB lookup/write前に400で止まり、外部システム用の `/api/webhooks/incoming/:id/receive` は有効IDでは403ではなく署名不足の401で止まることを確認済み。
 - [ ] Webhook管理/公開incoming receive API失敗時に、webhook ID、sourceType、URL、eventTypes、secret、signature、payload本文、token-like text、raw例外本文がconsole/エラー応答へ出ない
@@ -549,6 +551,8 @@ N/A
 - Notifications route tests verify malformed or unsafe notification rule query/path/payload values stop before DB helpers or SQL bind while valid rule payloads are trimmed and channels are deduped.
 - Automations route tests verify malformed or unsafe automation query/path/payload values stop before DB helpers or SQL bind while valid rule payloads, action types, priorities, and account scopes are normalized before persistence.
 - Rich-menu group route tests verify malformed or unsafe rich menu account/rich-menu/group/page/tag query/path values, apply-to-tag bodies, force query values, and image R2 keys stop before DB helpers, SQL bind, LINE fetch, or R2 get/put while valid IDs and labels are normalized.
+- Rich-menu group route tests verify publish/unpublish/set-default/bulk-link failure responses keep only fixed error codes plus exception kind or LINE HTTP status, without channel tokens, richMenu IDs, LINE user IDs, token-like text, or raw LINE/API/DB error messages.
+- Admin update route tests verify setup and SSE stream failures keep only fixed errors plus exception kind, without Cloudflare project names, update IDs, token-like text, or raw exception messages.
 - Web support-meta/clipboard/staff-form tests verify manual editor validation, copy fallback behavior, and staff creation payload validation; support/staff pages route destructive actions through the shared in-app confirmation dialog before API calls.
 - `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale PR body commit evidence, unmergeable PR states, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval. When GitHub returns a workflow run URL, the next action includes that URL for maintainer approval or log review.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.

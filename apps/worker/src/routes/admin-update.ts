@@ -103,6 +103,12 @@ function adaptD1(db: D1Database): D1Like {
   };
 }
 
+function adminUpdateErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 /** Auth gate — single source of truth for every endpoint in this router. */
 app.use('/*', async (c, next) => {
   const key = c.req.header('x-admin-api-key');
@@ -121,7 +127,7 @@ app.use('/*', async (c, next) => {
  *   - 409 { error: 'fork_detected', reason } for non-vanilla builds
  *   - 500 { error: 'manifest_missing_target' | 'no_current_release' } when
  *     the manifest is missing the version we need to look up
- *   - 500 { error: 'update_failed', message } when engine setup fails
+ *   - 500 { error: 'update_failed', message, errorKind } when engine setup fails
  *     BEFORE the snapshot row is created (e.g. CF Pages API down so
  *     `getLatestDeployment` rejects). Once `runUpdate` resolves with a
  *     handle this branch is unreachable — phase failures land in the
@@ -205,10 +211,14 @@ app.post('/start', async (c) => {
     });
   } catch (err) {
     // Setup failure (before snapshot row creation). No tracking id to
-    // return; the operator must retry. We don't have a row to mark
-    // failed because the engine never got that far.
-    const message = err instanceof Error ? err.message : String(err);
-    return c.json({ error: 'update_failed', message }, 500);
+    // return; the operator must retry. We keep only a bounded exception kind
+    // because Cloudflare/API errors can include project names or token-like
+    // response details.
+    return c.json({
+      error: 'update_failed',
+      message: 'Update setup failed',
+      errorKind: adminUpdateErrorKind(err),
+    }, 500);
   }
 
   // Phase work runs in the background. Attach a no-op .catch so an
@@ -309,12 +319,16 @@ app.get('/stream/:id', (c) => {
         }
       } catch (err) {
         // Surface unexpected errors as an SSE error frame instead of
-        // crashing the stream silently.
-        const message = err instanceof Error ? err.message : String(err);
+        // crashing the stream silently. Keep details out of the event payload;
+        // polling `/status/:id` remains the source of truth for persisted
+        // update phase errors.
         try {
           await writer.write(
             enc.encode(
-              `event: error\ndata: ${JSON.stringify({ error: message })}\n\n`,
+              `event: error\ndata: ${JSON.stringify({
+                error: 'stream_failed',
+                errorKind: adminUpdateErrorKind(err),
+              })}\n\n`,
             ),
           );
         } catch {

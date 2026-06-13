@@ -126,6 +126,24 @@ function parseImageKey(raw: unknown): Parsed<string> {
   return { ok: true, value };
 }
 
+function lineRichMenuErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE [^:]+ failed:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function richMenuGroupErrorKind(err: unknown): string {
+  const status = lineRichMenuErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
+function safeRouteFailure(error: string, err: unknown) {
+  return { success: false, error, errorKind: richMenuGroupErrorKind(err) };
+}
+
 function parseAreaInput(raw: unknown): Parsed<RichMenuAreaInput> {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'area must be object' };
   const r = raw as Record<string, unknown>;
@@ -959,8 +977,7 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/publish', async (c) => {
     return c.json({ success: true, data: result });
   } catch (e) {
     await releasePublishLock(c.env.DB, groupId.value);
-    const message = e instanceof Error ? e.message : String(e);
-    return c.json({ success: false, error: message }, 500);
+    return c.json(safeRouteFailure('rich_menu_publish_failed', e), 500);
   }
 });
 
@@ -999,8 +1016,7 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/unpublish', async (c) => {
     await markRichMenuGroupUnpublished(c.env.DB, groupId.value);
     return c.json({ success: true, data: result });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return c.json({ success: false, error: message }, 500);
+    return c.json(safeRouteFailure('rich_menu_unpublish_failed', e), 500);
   }
 });
 
@@ -1077,8 +1093,7 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/apply-to-tag', async (c) => 
         data: { mode: 'set-default', total: 0, chunks: 0, message: '全員のデフォルトに設定しました' },
       });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      return c.json({ success: false, error: message }, 500);
+      return c.json(safeRouteFailure('rich_menu_set_default_failed', e), 500);
     }
   }
 
@@ -1104,7 +1119,6 @@ richMenuGroups.post('/api/rich-menu-groups/:groupId/apply-to-tag', async (c) => 
     );
     return c.json({ success: true, data: result });
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    return c.json({ success: false, error: message }, 500);
+    return c.json(safeRouteFailure('rich_menu_bulk_link_failed', e), 500);
   }
 });

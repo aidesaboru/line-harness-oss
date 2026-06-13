@@ -1,7 +1,7 @@
 ---
 title: ECオーナー通達LINE サポートCRM 本番投入前チェックリスト
 status: draft
-updated: 2026-06-13
+updated: 2026-06-14
 ---
 
 # ECオーナー通達LINE サポートCRM 本番投入前チェックリスト
@@ -183,6 +183,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
 - [ ] support案件/エスカレーション/manual APIのquery/path ID/JSON payloadがDB/イベント副作用前に検証される
   - Worker support route testsでは、壊れたJSON、不正なlineAccountId/caseId/escalationId/manualId/friendId/manualIds/activeがDB access、SQL bind、support event作成、case/escalation/manual更新前に400で止まり、正常IDはtrimされることを確認済み。
   - Worker support route testsでは、巨大な案件本文、内部メモ、event metadata、エスカレーション質問/回答、manual本文がcase/escalation/manual/eventのDB mutation前に400で止まることも確認済み。
+- [ ] support案件/エスカレーション/manual API失敗時に、案件本文、内部メモ、manual本文、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker support route testsでは、summary/case作成/manual作成の失敗時にconsoleへ例外種別だけが残り、customer summary、manual本文、friend ID、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] users-grouped顧客統合一覧のqueryが集計前に検証される
   - Worker users-grouped route testsでは、不正な `q/account/page/pageSize/onlyDups/refresh` が顧客統合集計service呼び出し前に400で止まり、正常queryはtrim/parse/上限丸めされることを確認済み。
 - [ ] conversionイベント一覧/reportのID/date queryがfriend可視範囲check/SQL bind前に検証される

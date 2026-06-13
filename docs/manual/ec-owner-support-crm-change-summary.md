@@ -1,7 +1,7 @@
 ---
 title: ECオーナー通達LINE サポートCRM 変更サマリー
 status: draft
-updated: 2026-06-13
+updated: 2026-06-14
 ---
 
 # ECオーナー通達LINE サポートCRM 変更サマリー
@@ -32,6 +32,7 @@ updated: 2026-06-13
 - admin diagnostics/repair APIの `accountId` query、broadcast/friend path ID、tag/content診断payloadは、DB lookup、LINE profile refresh、repair SQL前に検証し、正常値はtrimする
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - support案件/エスカレーション/manual APIのquery/path ID/JSON payloadは、壊れたJSON、不正なlineAccountId/caseId/escalationId/manualId/friendId/manualIds/active、巨大な案件本文/内部メモ/返信案/イベントmetadata/エスカレーション質問・回答/manual本文をDB lookup/write、SQL bind、friend可視範囲check、support event作成前または更新前に400で止め、正常IDと文字列はtrimして参照・更新する
+- support案件/エスカレーション/manual APIの失敗ログは、案件本文、manual本文、内部メモ、token-like text、raw例外本文をconsoleへ出さず、例外種別だけにする
 - users-grouped顧客統合一覧の `q/account/page/pageSize/onlyDups/refresh` queryは、顧客統合集計とstaff可視範囲付きDB read前に検証し、正常値はtrim/上限丸めしてserviceへ渡す
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、chat一覧/詳細/作成/更新/送信、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
@@ -236,6 +237,7 @@ strict Preflight:
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - Support route tests confirm malformed support case/escalation/manual query values, path IDs, JSON payloads, and oversized write payload text/metadata stop before DB access, SQL bind, support event writes, or manual/case/escalation mutations while valid IDs and strings are trimmed before lookup or update.
+- Support route tests also confirm support summary/case/manual failure logs keep only exception kind and omit customer summaries, manual body text, friend IDs, token-like text, and raw exception messages from console output and API error responses.
 - Users-grouped route tests confirm malformed customer aggregation query values stop before aggregation/service calls while valid `q/account/page/pageSize/onlyDups/refresh` values are trimmed, parsed, and capped.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - friends route tests confirm malformed list/count/ref-stats query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects.

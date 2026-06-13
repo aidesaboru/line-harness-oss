@@ -144,6 +144,12 @@ type SupportEventRow = {
   created_at: string;
 };
 
+function supportRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function text(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -564,7 +570,7 @@ support.get('/api/support/summary', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/support/summary error:', err);
+    console.error(`GET /api/support/summary error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -668,7 +674,7 @@ support.get('/api/support/cases', async (c) => {
     const result = await c.env.DB.prepare(sql).bind(...binds, limit, offset).all<SupportCaseRow>();
     return c.json({ success: true, data: result.results.map(serializeCase) });
   } catch (err) {
-    console.error('GET /api/support/cases error:', err);
+    console.error(`GET /api/support/cases error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -824,7 +830,7 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
     const created = await getCaseRow(c.env.DB, id, lineAccountId, staff);
     return c.json({ success: true, data: serializeCase(created!) }, 201);
   } catch (err) {
-    console.error('POST /api/support/cases error:', err);
+    console.error(`POST /api/support/cases error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -894,7 +900,7 @@ support.get('/api/support/cases/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/support/cases/:id error:', err);
+    console.error(`GET /api/support/cases/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1020,7 +1026,7 @@ support.patch('/api/support/cases/:id', async (c) => {
     const updated = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     return c.json({ success: true, data: serializeCase(updated!) });
   } catch (err) {
-    console.error('PATCH /api/support/cases/:id error:', err);
+    console.error(`PATCH /api/support/cases/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1054,7 +1060,7 @@ support.post('/api/support/cases/:id/events', async (c) => {
     );
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
-    console.error('POST /api/support/cases/:id/events error:', err);
+    console.error(`POST /api/support/cases/:id/events error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1161,7 +1167,7 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
       .first<SupportEscalationRow>();
     return c.json({ success: true, data: serializeEscalation(escalation!) }, 201);
   } catch (err) {
-    console.error('POST /api/support/cases/:id/escalations error:', err);
+    console.error(`POST /api/support/cases/:id/escalations error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1222,7 +1228,7 @@ support.get('/api/support/escalations', async (c) => {
       .all<SupportEscalationRow>();
     return c.json({ success: true, data: result.results.map(serializeEscalation) });
   } catch (err) {
-    console.error('GET /api/support/escalations error:', err);
+    console.error(`GET /api/support/escalations error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1356,7 +1362,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
       .first<SupportEscalationRow>();
     return c.json({ success: true, data: serializeEscalation(updated!) });
   } catch (err) {
-    console.error('PATCH /api/support/escalations/:id error:', err);
+    console.error(`PATCH /api/support/escalations/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1404,7 +1410,7 @@ support.get('/api/support/manuals', async (c) => {
       .all<SupportManualRow>();
     return c.json({ success: true, data: result.results.map(serializeManual) });
   } catch (err) {
-    console.error('GET /api/support/manuals error:', err);
+    console.error(`GET /api/support/manuals error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1468,7 +1474,7 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     const created = await c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ?`).bind(id).first<SupportManualRow>();
     return c.json({ success: true, data: serializeManual(created!) }, 201);
   } catch (err) {
-    console.error('POST /api/support/manuals error:', err);
+    console.error(`POST /api/support/manuals error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1540,7 +1546,7 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       .first<SupportManualRow>();
     return c.json({ success: true, data: serializeManual(updated!) });
   } catch (err) {
-    console.error('PATCH /api/support/manuals/:id error:', err);
+    console.error(`PATCH /api/support/manuals/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1565,7 +1571,7 @@ support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async 
       .run();
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/support/manuals/:id error:', err);
+    console.error(`DELETE /api/support/manuals/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

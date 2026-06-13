@@ -598,11 +598,109 @@ function setupApp(db: D1Database, staff: Staff = { id: 'staff-1', name: '田島'
   return app;
 }
 
+function makeThrowingDb(message: string): D1Database {
+  return {
+    prepare() {
+      throw new Error(message);
+    },
+  } as unknown as D1Database;
+}
+
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('support CRM routes', () => {
+  test('summary failure logs only the error kind', async () => {
+    const db = makeThrowingDb('customer secret account-token friend-visible manual body');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+        .request('/api/support/summary?lineAccountId=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/support/summary error: Error');
+      expect(logged).not.toContain('customer secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('manual body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('case creation failure does not log raw customer payload details', async () => {
+    const db = makeThrowingDb('DB write failed customer secret account-token friend-1');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          friendId: 'friend-1',
+          title: 'customer secret title',
+          category: 'reward',
+          priority: 'high',
+          customerSummary: 'customer secret account-token friend-1',
+          primaryAssignee: '松山',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/support/cases error: Error');
+      expect(logged).not.toContain('DB write failed');
+      expect(logged).not.toContain('customer secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('friend-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('manual creation failure does not log raw manual payload details', async () => {
+    const db = makeThrowingDb('DB write failed manual body secret account-token');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/manuals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          title: 'manual body secret title',
+          category: 'reward',
+          body: '報酬の確認手順です。 account-token',
+          url: 'https://example.com/reward-manual',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/support/manuals error: Error');
+      expect(logged).not.toContain('DB write failed');
+      expect(logged).not.toContain('manual body secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('報酬の確認手順');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('creates a case from a friend and records an audit event', async () => {
     const { db, state } = makeSupportDb({
       friends: [{

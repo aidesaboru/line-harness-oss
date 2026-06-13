@@ -26,6 +26,10 @@ function setupApp(db: D1Database) {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 describe('inbox routes support visibility', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -167,5 +171,57 @@ describe('inbox routes support visibility', () => {
         role: 'staff',
       },
     });
+  });
+
+  test('unanswered list failure logs only the error kind', async () => {
+    const db = {} as D1Database;
+    inboxMocks.computeUnansweredInbox.mockRejectedValueOnce(
+      new Error('unanswered secret account-token U-visible friend-visible 相談'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db).request('/api/inbox/unanswered?q=%E7%9B%B8%E8%AB%87&account=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/inbox/unanswered error: Error');
+      expect(logged).not.toContain('unanswered secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('相談');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('unanswered count failure logs only the error kind', async () => {
+    const db = {} as D1Database;
+    inboxMocks.countUnanswered.mockRejectedValueOnce(
+      new Error('unanswered count secret account-token U-visible friend-visible 相談'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db).request('/api/inbox/unanswered/count?q=%E7%9B%B8%E8%AB%87&account=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/inbox/unanswered/count error: Error');
+      expect(logged).not.toContain('unanswered count secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('相談');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

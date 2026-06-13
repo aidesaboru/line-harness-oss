@@ -23,6 +23,12 @@ type InboxQueryReader = {
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+function inboxRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function parseOptionalQueryText(raw: unknown, label: string): ValueResult<string | undefined> {
   if (raw === undefined || raw === null) return { ok: true, value: undefined };
   if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
@@ -83,7 +89,7 @@ inbox.get('/api/inbox/unanswered', async (c) => {
     const result = await computeUnansweredInbox(c.env.DB, opts.value);
     return c.json({ success: true, data: result });
   } catch (err) {
-    console.error('GET /api/inbox/unanswered error:', err);
+    console.error(`GET /api/inbox/unanswered error: ${inboxRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -95,7 +101,7 @@ inbox.get('/api/inbox/unanswered/count', async (c) => {
     const result = await countUnanswered(c.env.DB, opts.value);
     return c.json({ success: true, data: result });
   } catch (err) {
-    console.error('GET /api/inbox/unanswered/count error:', err);
+    console.error(`GET /api/inbox/unanswered/count error: ${inboxRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

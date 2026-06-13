@@ -327,6 +327,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker chat route testsでは、loadingのLINE API非200、send/validate内部例外、sendのLINE push失敗時にHTTP statusや例外種別だけを残し、外部本文、channel token、LINE user ID、friend ID、raw例外本文をconsoleやAPI errorへ出さないことを確認済み。
 - [ ] チャット一覧/詳細/作成/更新とoperator管理失敗時に、friend ID、LINE user ID、LINE account ID、operator payload、token-like text、raw例外本文がconsole/エラー応答へ出ない
   - Worker chat route testsでは、chat list、chat作成、operator作成の失敗時にconsoleへ例外種別だけが残り、friend ID、LINE user ID、LINE account ID、operator payload details、token-like text、raw例外本文が出ないことを確認済み。
+- [ ] 未対応インボックス一覧/件数失敗時に、検索語、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker inbox route testsでは、unanswered list/countの失敗時にconsoleへ例外種別だけが残り、検索語、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
 
 ## 3. 画面確認

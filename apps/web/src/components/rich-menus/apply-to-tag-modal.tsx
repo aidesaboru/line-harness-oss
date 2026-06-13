@@ -16,6 +16,8 @@ type Mode =
   | { kind: 'all-followers' }
   | { kind: 'set-default' }
 
+const RICH_MENU_APPLY_ERROR_MESSAGE = 'リッチメニューの適用に失敗しました。もう一度お試しください。'
+
 export function ApplyToTagModal({ groupId, groupName, onClose }: Props) {
   const [tags, setTags] = useState<Tag[]>([])
   const [mode, setMode] = useState<Mode>({ kind: 'all-followers' })
@@ -64,11 +66,11 @@ export function ApplyToTagModal({ groupId, groupName, onClose }: Props) {
             ? { mode: 'bulk-link' as const, tagId: null }
             : { mode: 'set-default' as const }
       const res = await api.richMenuGroups.applyToTag(groupId, params)
-      if (!res.success) throw new Error(res.error ?? '適用失敗')
+      if (!res.success) throw new Error(RICH_MENU_APPLY_ERROR_MESSAGE)
       setResult(res.data)
       setPhase('done')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_APPLY_ERROR_MESSAGE)
       setPhase('error')
     }
   }

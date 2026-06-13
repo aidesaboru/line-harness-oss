@@ -37,6 +37,13 @@ const SIZE_LABEL: Record<Group['size'], string> = {
   compact: '2500×843',
 }
 
+const RICH_MENU_LOAD_ERROR_MESSAGE = 'リッチメニューの読み込みに失敗しました。もう一度お試しください。'
+const RICH_MENU_SAVE_ERROR_MESSAGE = 'リッチメニューの保存に失敗しました。もう一度お試しください。'
+const RICH_MENU_PUBLISH_ERROR_MESSAGE = 'リッチメニューの保存またはLINE登録に失敗しました。もう一度お試しください。'
+const RICH_MENU_UNPUBLISH_ERROR_MESSAGE = 'リッチメニューの取り下げに失敗しました。もう一度お試しください。'
+const RICH_MENU_DELETE_ERROR_MESSAGE = 'リッチメニューの削除に失敗しました。もう一度お試しください。'
+const RICH_MENU_IMAGE_UPLOAD_ERROR_MESSAGE = 'リッチメニュー画像のアップロードに失敗しました。もう一度お試しください。'
+
 export default function RichMenuEditPage() {
   return (
     <Suspense
@@ -104,7 +111,7 @@ function Editor({
     setError(null)
     try {
       const res = await api.richMenuGroups.get(groupId)
-      if (!res.success) throw new Error(res.error ?? '取得失敗')
+      if (!res.success) throw new Error(RICH_MENU_LOAD_ERROR_MESSAGE)
       const g = res.data as Group
       setGroup(g)
       setName(g.name)
@@ -115,8 +122,8 @@ function Editor({
         prev && g.pages.some((p) => p.id === prev) ? prev : (g.pages[0]?.id ?? null),
       )
       setSelectedAreaId(null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -234,7 +241,7 @@ function Editor({
         })),
       })),
     })
-    if (!res.success) throw new Error(res.error ?? '保存失敗')
+    if (!res.success) throw new Error(RICH_MENU_SAVE_ERROR_MESSAGE)
   }
 
   async function handleSave() {
@@ -243,8 +250,8 @@ function Editor({
     try {
       await persistDraft()
       await reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -262,11 +269,11 @@ function Editor({
     try {
       await persistDraft()
       const res = await api.richMenuGroups.publish(groupId)
-      if (!res.success) throw new Error(res.error ?? 'LINE 登録失敗')
+      if (!res.success) throw new Error(RICH_MENU_PUBLISH_ERROR_MESSAGE)
       alert('LINE への登録が完了しました。\n\n友だちに表示するには、一覧画面の「友だちに表示」を実行してください。')
       await reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_PUBLISH_ERROR_MESSAGE)
     } finally {
       setPublishing(false)
     }
@@ -283,16 +290,16 @@ function Editor({
     setError(null)
     try {
       const res = await api.richMenuGroups.unpublish(groupId)
-      if (!res.success) throw new Error(res.error ?? '取り下げ失敗')
+      if (!res.success) throw new Error(RICH_MENU_UNPUBLISH_ERROR_MESSAGE)
       const warnings = res.data?.warnings ?? []
       if (warnings.length > 0) {
-        alert(`取り下げ完了 (一部 warnings あり):\n\n${warnings.join('\n')}`)
+        alert('LINE 上のメニュー登録を取り下げました。一部の反映に時間がかかる可能性があります。')
       } else {
         alert('LINE 上のメニュー登録を取り下げました。')
       }
       await reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_UNPUBLISH_ERROR_MESSAGE)
     } finally {
       setUnpublishing(false)
     }
@@ -318,10 +325,10 @@ function Editor({
     }
     try {
       const res = await api.richMenuGroups.delete(groupId)
-      if (!res.success) throw new Error(res.error ?? '削除失敗')
+      if (!res.success) throw new Error(RICH_MENU_DELETE_ERROR_MESSAGE)
       router.push('/rich-menus')
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
+    } catch {
+      alert(RICH_MENU_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -339,8 +346,8 @@ function Editor({
         imageContentType: res.data.imageContentType,
       })
       setImageVersion((v) => v + 1)
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
+    } catch {
+      alert(RICH_MENU_IMAGE_UPLOAD_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }

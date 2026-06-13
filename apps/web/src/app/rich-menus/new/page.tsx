@@ -8,6 +8,8 @@ import { useAccount } from '@/contexts/account-context'
 import { api } from '@/lib/api'
 import { TEMPLATES, templateToAreas } from '@/lib/rich-menu-templates'
 
+const RICH_MENU_CREATE_ERROR_MESSAGE = 'リッチメニューの作成に失敗しました。もう一度お試しください。'
+
 export default function NewRichMenuPage() {
   const router = useRouter()
   const { selectedAccount } = useAccount()
@@ -41,10 +43,10 @@ export default function NewRichMenuPage() {
           { name: 'ページ 1', orderIndex: 0, areas: templateToAreas(tmpl) },
         ],
       })
-      if (!res.success) throw new Error(res.error ?? '作成失敗')
+      if (!res.success) throw new Error(RICH_MENU_CREATE_ERROR_MESSAGE)
       router.push(`/rich-menus/edit?id=${res.data.id}`)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(RICH_MENU_CREATE_ERROR_MESSAGE)
       setSubmitting(false)
     }
   }

@@ -18,6 +18,12 @@ type RichMenuGroupListItem = {
   updatedAt: string
 }
 
+const RICH_MENU_LIST_ERROR_MESSAGE = 'リッチメニュー一覧の読み込みに失敗しました。もう一度お試しください。'
+const RICH_MENU_EXTERNAL_ERROR_MESSAGE = 'LINE上のリッチメニュー状態の取得に失敗しました。もう一度お試しください。'
+const RICH_MENU_DELETE_ERROR_MESSAGE = 'リッチメニューの削除に失敗しました。もう一度お試しください。'
+const RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE = 'LINE上のリッチメニュー削除に失敗しました。もう一度お試しください。'
+const RICH_MENU_IMPORT_ERROR_MESSAGE = 'リッチメニューの取り込みに失敗しました。もう一度お試しください。'
+
 function StatusBadge({ status }: { status: 'draft' | 'published' }) {
   const cls =
     status === 'published'
@@ -70,29 +76,26 @@ export default function RichMenusListPage() {
         api.richMenuGroups.external(selectedAccount.id),
       ])
       if (groupsRes.status === 'fulfilled') {
-        if (!groupsRes.value.success) throw new Error(groupsRes.value.error ?? '取得失敗')
+        if (!groupsRes.value.success) throw new Error(RICH_MENU_LIST_ERROR_MESSAGE)
         setGroups(groupsRes.value.data)
       } else {
-        throw groupsRes.reason
+        throw new Error(RICH_MENU_LIST_ERROR_MESSAGE)
       }
       if (externalRes.status === 'fulfilled') {
         const v = externalRes.value
         if (v.success) {
           setExternal(v.data)
         } else {
-          setExternalError(v.error ?? 'LINE 上の状態取得に失敗')
+          setExternalError(RICH_MENU_EXTERNAL_ERROR_MESSAGE)
           setExternal(null)
         }
       } else {
-        setExternalError(
-          externalRes.reason instanceof Error
-            ? externalRes.reason.message
-            : String(externalRes.reason),
-        )
+        setExternalError(RICH_MENU_EXTERNAL_ERROR_MESSAGE)
         setExternal(null)
       }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setGroups([])
+      setError(RICH_MENU_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -113,10 +116,10 @@ export default function RichMenusListPage() {
     if (!confirm(`「${group.name}」を削除します。元には戻せません。`)) return
     try {
       const res = await api.richMenuGroups.delete(group.id)
-      if (!res.success) throw new Error(res.error ?? '削除失敗')
+      if (!res.success) throw new Error(RICH_MENU_DELETE_ERROR_MESSAGE)
       await reload()
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
+    } catch {
+      alert(RICH_MENU_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -131,10 +134,10 @@ export default function RichMenusListPage() {
       return
     try {
       const res = await api.richMenuGroups.deleteExternal(menu.richMenuId, selectedAccount.id)
-      if (!res.success) throw new Error(res.error ?? '削除失敗')
+      if (!res.success) throw new Error(RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE)
       await reload()
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
+    } catch {
+      alert(RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -149,11 +152,11 @@ export default function RichMenusListPage() {
       return
     try {
       const res = await api.richMenuGroups.importFromLine(menu.richMenuId, selectedAccount.id)
-      if (!res.success) throw new Error(res.error ?? '取り込み失敗')
+      if (!res.success) throw new Error(RICH_MENU_IMPORT_ERROR_MESSAGE)
       alert(`取り込みました: ${res.data?.name ?? menu.name}`)
       await reload()
-    } catch (e) {
-      alert(e instanceof Error ? e.message : String(e))
+    } catch {
+      alert(RICH_MENU_IMPORT_ERROR_MESSAGE)
     }
   }
 

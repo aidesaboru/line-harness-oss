@@ -52,6 +52,10 @@ function makeAutomationDb(rows: AutomationRow[]) {
           }
           return { results: [] };
         },
+        async run() {
+          calls.push({ sql, binds: bound });
+          return { success: true, meta: { changes: 1 } };
+        },
       };
       return stmt;
     },
@@ -160,5 +164,140 @@ describe('GET /api/automations/:id/logs', () => {
     expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(1, db, 'auto-1', 100);
     expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(2, db, 'auto-1', 2);
     expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(3, db, 'auto-1', 500);
+  });
+});
+
+describe('automation payload validation', () => {
+  test('rejects malformed query, path, and payload values before DB helpers or SQL', async () => {
+    const { db, calls } = makeAutomationDb([]);
+    const app = setupApp(db);
+    const cases: Array<{ method: string; path: string; body?: string }> = [
+      { method: 'GET', path: '/api/automations?lineAccountId=bad account' },
+      { method: 'GET', path: '/api/automations/bad id' },
+      { method: 'GET', path: '/api/automations/bad id/logs' },
+      { method: 'POST', path: '/api/automations', body: '{not-json' },
+      {
+        method: 'POST',
+        path: '/api/automations',
+        body: JSON.stringify({ name: 'Welcome', eventType: 'bad event', actions: [] }),
+      },
+      {
+        method: 'POST',
+        path: '/api/automations',
+        body: JSON.stringify({ name: 'Welcome', eventType: 'friend_add', actions: [{ type: 'bad action', params: {} }] }),
+      },
+      {
+        method: 'PUT',
+        path: '/api/automations/auto-1',
+        body: JSON.stringify({}),
+      },
+      {
+        method: 'PUT',
+        path: '/api/automations/auto-1',
+        body: JSON.stringify({ isActive: 1 }),
+      },
+      { method: 'DELETE', path: '/api/automations/bad id' },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request(item.path, {
+        method: item.method,
+        headers: item.body ? { 'Content-Type': 'application/json' } : undefined,
+        body: item.body,
+      });
+      expect(res.status, `${item.method} ${item.path}`).toBe(400);
+    }
+
+    expect(dbMocks.getAutomations).not.toHaveBeenCalled();
+    expect(dbMocks.getAutomationById).not.toHaveBeenCalled();
+    expect(dbMocks.createAutomation).not.toHaveBeenCalled();
+    expect(dbMocks.updateAutomation).not.toHaveBeenCalled();
+    expect(dbMocks.deleteAutomation).not.toHaveBeenCalled();
+    expect(dbMocks.getAutomationLogs).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test('trims and normalizes valid create and update payloads before DB helpers', async () => {
+    const { db, calls } = makeAutomationDb([]);
+    const created = {
+      id: 'auto-1',
+      name: 'Welcome',
+      description: 'Desc',
+      event_type: 'message_received',
+      conditions: '{"keyword":"hi"}',
+      actions: '[{"type":"send_message","params":{"content":"hello"}}]',
+      is_active: 1,
+      priority: 2,
+      created_at: '2026-06-14T00:00:00.000',
+      updated_at: '2026-06-14T00:00:00.000',
+      line_account_id: 'acc-1',
+    };
+    dbMocks.createAutomation.mockResolvedValue(created);
+    dbMocks.getAutomationById.mockResolvedValue({
+      ...created,
+      name: 'Updated',
+      description: '',
+      event_type: 'friend_add',
+      conditions: '{}',
+      actions: '[{"type":"add_tag","params":{"tagId":"tag-1"}}]',
+      is_active: 0,
+      priority: 3,
+      line_account_id: null,
+    });
+
+    const app = setupApp(db);
+    const createRes = await app.request('/api/automations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Welcome ',
+        description: ' Desc ',
+        eventType: ' message_received ',
+        conditions: { keyword: 'hi' },
+        actions: [{ type: ' send_message ', params: { content: 'hello' } }],
+        priority: 2,
+        lineAccountId: ' acc-1 ',
+      }),
+    });
+    const updateRes = await app.request('/api/automations/auto-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Updated ',
+        description: null,
+        eventType: ' friend_add ',
+        conditions: {},
+        actions: [{ type: ' add_tag ', params: { tagId: 'tag-1' } }],
+        priority: 3,
+        isActive: false,
+        lineAccountId: '',
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.createAutomation).toHaveBeenCalledWith(db, {
+      name: 'Welcome',
+      description: 'Desc',
+      eventType: 'message_received',
+      conditions: { keyword: 'hi' },
+      actions: [{ type: 'send_message', params: { content: 'hello' } }],
+      priority: 2,
+      lineAccountId: 'acc-1',
+    });
+    expect(dbMocks.updateAutomation).toHaveBeenCalledWith(db, 'auto-1', {
+      name: 'Updated',
+      description: '',
+      eventType: 'friend_add',
+      conditions: {},
+      actions: [{ type: 'add_tag', params: { tagId: 'tag-1' } }],
+      priority: 3,
+      isActive: false,
+    });
+    const lineAccountUpdates = calls.filter((call) => call.sql.includes('UPDATE automations SET line_account_id = ?'));
+    expect(lineAccountUpdates.map((call) => call.binds)).toEqual([
+      ['acc-1', 'auto-1'],
+      [null, 'auto-1'],
+    ]);
   });
 });

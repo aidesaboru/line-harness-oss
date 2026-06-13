@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
 import { normalizeLineImageUrls } from '@/lib/line-image-url'
 
+const IMAGE_UPLOAD_ERROR_MESSAGE = '画像のアップロードに失敗しました。もう一度お試しください。'
+
 export type ImageUploaderMode = 'url' | 'line-image'
 
 export type ImageUploaderValue =
@@ -78,7 +80,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
       try {
         const res = await api.uploads.image(file)
         if (!res.success) {
-          setError(res.error ?? 'アップロード失敗')
+          setError(IMAGE_UPLOAD_ERROR_MESSAGE)
           return
         }
         const url = res.data.url
@@ -88,7 +90,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
           onChange({ mode: 'line-image', originalContentUrl: url, previewImageUrl: url })
         }
       } catch {
-        setError('アップロード失敗')
+        setError(IMAGE_UPLOAD_ERROR_MESSAGE)
       } finally {
         setBusy(false)
       }

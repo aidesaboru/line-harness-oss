@@ -167,6 +167,10 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 const rowBase = {
   description: null,
   trigger_type: 'friend_add',
@@ -461,6 +465,41 @@ describe('scenario payload validation', () => {
     });
   });
 
+  test('scenario create failure logs only the error kind', async () => {
+    const { db } = makeScenarioDb([]);
+    dbMocks.createScenario.mockRejectedValueOnce(
+      new Error('scenario secret account-token scenario-1 Welcome message body raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/scenarios', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Welcome',
+          description: 'message body',
+          triggerType: 'manual',
+          deliveryMode: 'elapsed',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/scenarios error: Error');
+      expect(logged).not.toContain('scenario secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('scenario-1');
+      expect(logged).not.toContain('Welcome');
+      expect(logged).not.toContain('message body');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('scenario step create/update/reorder rejects malformed payloads before DB lookup', async () => {
     const { db, calls } = makeScenarioDb([]);
     const app = setupApp(db, 'owner');
@@ -730,5 +769,50 @@ describe('POST /api/scenarios/:id/enroll/:friendId support visibility', () => {
       status: 'active',
     });
     expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith(db, 'friend-visible', 'scenario-1');
+  });
+
+  test('manual scenario enrollment failure does not leak raw exception into logs or response', async () => {
+    const { db } = makeScenarioDb(
+      [{ id: 'scenario-1', name: 's', line_account_id: null, ...rowBase }],
+      { visibleFriendIds: ['friend-visible'] },
+    );
+    dbMocks.getScenarioById.mockResolvedValue({
+      id: 'scenario-1',
+      name: 'Welcome',
+      description: null,
+      trigger_type: 'manual',
+      trigger_tag_id: null,
+      is_active: 1,
+      delivery_mode: 'relative',
+      line_account_id: null,
+      created_at: '2026-06-12T10:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+      steps: [],
+    });
+    dbMocks.getFriendById.mockResolvedValue({ id: 'friend-visible', line_user_id: 'U-visible' });
+    dbMocks.enrollFriendInScenario.mockRejectedValueOnce(
+      new Error('scenario enroll secret account-token scenario-1 friend-visible U-visible raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'staff').request('/api/scenarios/scenario-1/enroll/friend-visible', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/scenarios/:id/enroll/:friendId error: Error');
+      expect(logged).not.toContain('scenario enroll secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('scenario-1');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

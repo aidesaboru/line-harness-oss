@@ -66,13 +66,19 @@ function serializeTag(row: DbTag) {
   };
 }
 
+function tagRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // GET /api/tags - list all tags
 tags.get('/api/tags', async (c) => {
   try {
     const items = await getTags(c.env.DB);
     return c.json({ success: true, data: items.map(serializeTag) });
   } catch (err) {
-    console.error('GET /api/tags error:', err);
+    console.error(`GET /api/tags error: ${tagRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -92,7 +98,7 @@ tags.post('/api/tags', requireRole('owner', 'admin'), async (c) => {
 
     return c.json({ success: true, data: serializeTag(tag) }, 201);
   } catch (err) {
-    console.error('POST /api/tags error:', err);
+    console.error(`POST /api/tags error: ${tagRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -105,7 +111,7 @@ tags.delete('/api/tags/:id', requireRole('owner', 'admin'), async (c) => {
     await deleteTag(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/tags/:id error:', err);
+    console.error(`DELETE /api/tags/:id error: ${tagRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

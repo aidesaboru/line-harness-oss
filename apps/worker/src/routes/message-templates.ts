@@ -122,13 +122,19 @@ function serialize(t: MessageTemplate) {
   };
 }
 
+function messageTemplateRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // GET /api/message-templates — list all
 messageTemplates.get('/api/message-templates', requireRole('owner', 'admin'), async (c) => {
   try {
     const templates = await listMessageTemplates(c.env.DB);
     return c.json({ success: true, data: templates.map(serialize) });
   } catch (err) {
-    console.error('GET /api/message-templates error:', err);
+    console.error(`GET /api/message-templates error: ${messageTemplateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -142,7 +148,7 @@ messageTemplates.get('/api/message-templates/:id', requireRole('owner', 'admin')
     if (!t) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(t) });
   } catch (err) {
-    console.error('GET /api/message-templates/:id error:', err);
+    console.error(`GET /api/message-templates/:id error: ${messageTemplateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -162,7 +168,7 @@ messageTemplates.post('/api/message-templates', requireRole('owner', 'admin'), a
     });
     return c.json({ success: true, data: serialize(t) }, 201);
   } catch (err) {
-    console.error('POST /api/message-templates error:', err);
+    console.error(`POST /api/message-templates error: ${messageTemplateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -193,7 +199,7 @@ messageTemplates.put('/api/message-templates/:id', requireRole('owner', 'admin')
     if (!t) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(t) });
   } catch (err) {
-    console.error('PUT /api/message-templates/:id error:', err);
+    console.error(`PUT /api/message-templates/:id error: ${messageTemplateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -207,7 +213,7 @@ messageTemplates.delete('/api/message-templates/:id', requireRole('owner', 'admi
     if (!deleted) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/message-templates/:id error:', err);
+    console.error(`DELETE /api/message-templates/:id error: ${messageTemplateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

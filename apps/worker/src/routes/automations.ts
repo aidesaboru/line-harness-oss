@@ -243,6 +243,12 @@ function parseAutomationUpdate(body: Record<string, unknown>): ValueResult<Autom
   return { ok: true, value: input };
 }
 
+function automationRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // ========== 自動化ルールCRUD ==========
 
 automations.get('/api/automations', requireRole('owner', 'admin'), async (c) => {
@@ -276,7 +282,7 @@ automations.get('/api/automations', requireRole('owner', 'admin'), async (c) => 
       })),
     });
   } catch (err) {
-    console.error('GET /api/automations error:', err);
+    console.error(`GET /api/automations error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -315,7 +321,7 @@ automations.get('/api/automations/:id', requireRole('owner', 'admin'), async (c)
       },
     });
   } catch (err) {
-    console.error('GET /api/automations/:id error:', err);
+    console.error(`GET /api/automations/:id error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -345,7 +351,7 @@ automations.post('/api/automations', requireRole('owner', 'admin'), async (c) =>
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/automations error:', err);
+    console.error(`POST /api/automations error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -381,7 +387,7 @@ automations.put('/api/automations/:id', requireRole('owner', 'admin'), async (c)
       },
     });
   } catch (err) {
-    console.error('PUT /api/automations/:id error:', err);
+    console.error(`PUT /api/automations/:id error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -393,7 +399,7 @@ automations.delete('/api/automations/:id', requireRole('owner', 'admin'), async 
     await deleteAutomation(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/automations/:id error:', err);
+    console.error(`DELETE /api/automations/:id error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -419,7 +425,7 @@ automations.get('/api/automations/:id/logs', requireRole('owner', 'admin'), asyn
       })),
     });
   } catch (err) {
-    console.error('GET /api/automations/:id/logs error:', err);
+    console.error(`GET /api/automations/:id/logs error: ${automationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

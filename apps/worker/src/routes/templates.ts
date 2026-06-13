@@ -161,6 +161,12 @@ function parseTemplateUpdateBody(raw: unknown): ParseResult<TemplateUpdateInput>
   };
 }
 
+function templateRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
   try {
     const category = parseOptionalQueryString(c.req.query('category'), 'category', TEMPLATE_CATEGORY_MAX_LENGTH);
@@ -180,7 +186,7 @@ templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/templates error:', err);
+    console.error(`GET /api/templates error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -206,7 +212,7 @@ templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
       },
     });
   } catch (err) {
-    console.error('GET /api/templates/:id error:', err);
+    console.error(`GET /api/templates/:id error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -266,7 +272,7 @@ templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async 
       },
     });
   } catch (err) {
-    console.error('GET /api/templates/:id/usages error:', err);
+    console.error(`GET /api/templates/:id/usages error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -280,7 +286,7 @@ templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
     const item = await createTemplate(c.env.DB, body);
     return c.json({ success: true, data: { id: item.id, name: item.name, category: item.category, messageType: item.message_type, createdAt: item.created_at } }, 201);
   } catch (err) {
-    console.error('POST /api/templates error:', err);
+    console.error(`POST /api/templates error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -307,7 +313,7 @@ templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
       data: { id: updated.id, name: updated.name, category: updated.category, messageType: updated.message_type, messageContent: updated.message_content },
     });
   } catch (err) {
-    console.error('PUT /api/templates/:id error:', err);
+    console.error(`PUT /api/templates/:id error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -331,7 +337,7 @@ templates.delete('/api/templates/:id', requireRole('owner', 'admin'), async (c) 
     await deleteTemplate(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/templates/:id error:', err);
+    console.error(`DELETE /api/templates/:id error: ${templateRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

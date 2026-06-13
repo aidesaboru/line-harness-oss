@@ -44,6 +44,10 @@ function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) 
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.createTag.mockResolvedValue({
@@ -255,6 +259,34 @@ describe('content management payload validation', () => {
     expect(dbMocks.deleteTag).toHaveBeenCalledWith({} as D1Database, 'tag-1');
   });
 
+  test('tag failure logs only the error kind', async () => {
+    dbMocks.createTag.mockRejectedValueOnce(
+      new Error('tag secret account-token tag-1 VIP raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner').request('/api/tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'VIP', color: '#2563eb' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/tags error: Error');
+      expect(logged).not.toContain('tag secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('tag-1');
+      expect(logged).not.toContain('VIP');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('reusable template create rejects malformed or invalid payloads before DB writes', async () => {
     const app = setupApp('owner');
 
@@ -305,6 +337,35 @@ describe('content management payload validation', () => {
       messageType: 'image',
       messageContent: imageContent,
     });
+  });
+
+  test('reusable template failure does not leak raw exception into logs or response', async () => {
+    dbMocks.createTemplate.mockRejectedValueOnce(
+      new Error('template secret account-token template-1 Greeting message body raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner').request('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Greeting', category: 'general', messageType: 'text', messageContent: 'message body' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/templates error: Error');
+      expect(logged).not.toContain('template secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('template-1');
+      expect(logged).not.toContain('Greeting');
+      expect(logged).not.toContain('message body');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('reusable template update rejects malformed or empty payloads before lookup', async () => {
@@ -462,5 +523,34 @@ describe('content management payload validation', () => {
       messageType: 'flex',
       messageContent: flexContent,
     });
+  });
+
+  test('message template failure does not leak raw exception into logs or response', async () => {
+    dbMocks.createMessageTemplate.mockRejectedValueOnce(
+      new Error('message template secret account-token message-template-1 Reward message body raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner').request('/api/message-templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Reward', messageType: 'text', messageContent: 'message body' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/message-templates error: Error');
+      expect(logged).not.toContain('message template secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('message-template-1');
+      expect(logged).not.toContain('Reward');
+      expect(logged).not.toContain('message body');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

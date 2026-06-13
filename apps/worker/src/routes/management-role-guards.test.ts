@@ -114,6 +114,10 @@ function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) 
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -300,6 +304,98 @@ describe('management role guards', () => {
       responseContent: '{"type":"bubble"}',
       responseType: 'flex',
     });
+  });
+
+  test('auto-reply failure does not leak raw exception into logs or response', async () => {
+    dbMocks.createAutoReply.mockRejectedValueOnce(
+      new Error('auto reply secret account-token reply-1 keyword help response body raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('admin').request('/api/auto-replies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: 'help', responseType: 'text', responseContent: 'response body' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/auto-replies error: Error');
+      expect(logged).not.toContain('auto reply secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('reply-1');
+      expect(logged).not.toContain('keyword help');
+      expect(logged).not.toContain('response body');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('automation failure does not leak raw exception into logs or response', async () => {
+    dbMocks.createAutomation.mockRejectedValueOnce(
+      new Error('automation secret account-token automation-1 Welcome actions raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('admin').request('/api/automations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Welcome',
+          eventType: 'friend_add',
+          conditions: { tag: 'VIP' },
+          actions: [{ type: 'send_message', params: { text: 'hello account-token' } }],
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/automations error: Error');
+      expect(logged).not.toContain('automation secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('automation-1');
+      expect(logged).not.toContain('Welcome');
+      expect(logged).not.toContain('actions');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('notification rule failure does not leak raw exception into logs or response', async () => {
+    dbMocks.createNotificationRule.mockRejectedValueOnce(
+      new Error('notification secret account-token rule-1 Booking channels raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('admin').request('/api/notifications/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Booking', eventType: 'booking_created', channels: ['slack'] }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/notifications/rules error: Error');
+      expect(logged).not.toContain('notification secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('rule-1');
+      expect(logged).not.toContain('Booking');
+      expect(logged).not.toContain('channels');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('staff cannot manage traffic pools or pool accounts', async () => {

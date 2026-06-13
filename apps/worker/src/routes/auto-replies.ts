@@ -216,6 +216,12 @@ function serializeAutoReply(row: DbAutoReply): SerializedAutoReply {
   };
 }
 
+function autoReplyRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 /**
  * 全 active LINE accounts と全 active automations を一発で取って、各 auto_reply の
  * 「実際にどのアカで返信するか」を計算する。auto_reply の line_account_id が null
@@ -299,7 +305,7 @@ autoReplies.get('/api/auto-replies', requireRole('owner', 'admin'), async (c) =>
 
     return c.json({ success: true, data });
   } catch (err) {
-    console.error('GET /api/auto-replies error:', err);
+    console.error(`GET /api/auto-replies error: ${autoReplyRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -315,7 +321,7 @@ autoReplies.get('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c
     }
     return c.json({ success: true, data: serializeAutoReply(item) });
   } catch (err) {
-    console.error('GET /api/auto-replies/:id error:', err);
+    console.error(`GET /api/auto-replies/:id error: ${autoReplyRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -354,7 +360,7 @@ autoReplies.post('/api/auto-replies', requireRole('owner', 'admin'), async (c) =
 
     return c.json({ success: true, data: serializeAutoReply(item) }, 201);
   } catch (err) {
-    console.error('POST /api/auto-replies error:', err);
+    console.error(`POST /api/auto-replies error: ${autoReplyRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -390,7 +396,7 @@ autoReplies.put('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c
 
     return c.json({ success: true, data: serializeAutoReply(updated) });
   } catch (err) {
-    console.error('PUT /api/auto-replies/:id error:', err);
+    console.error(`PUT /api/auto-replies/:id error: ${autoReplyRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -407,7 +413,7 @@ autoReplies.delete('/api/auto-replies/:id', requireRole('owner', 'admin'), async
     await deleteAutoReply(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/auto-replies/:id error:', err);
+    console.error(`DELETE /api/auto-replies/:id error: ${autoReplyRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

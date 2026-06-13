@@ -212,6 +212,12 @@ function parseOptionalBoolean(raw: unknown, label: string): ValueResult<boolean 
   return { ok: true, value: raw };
 }
 
+function scenarioRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function parseEnumValue<T extends string>(
   raw: unknown,
   label: string,
@@ -656,7 +662,7 @@ scenarios.get('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/scenarios error:', err);
+    console.error(`GET /api/scenarios error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -680,7 +686,7 @@ scenarios.get('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => 
       },
     });
   } catch (err) {
-    console.error('GET /api/scenarios/:id error:', err);
+    console.error(`GET /api/scenarios/:id error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -715,7 +721,7 @@ scenarios.post('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
 
     return c.json({ success: true, data: serializeScenario(scenario) }, 201);
   } catch (err) {
-    console.error('POST /api/scenarios error:', err);
+    console.error(`POST /api/scenarios error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -744,7 +750,7 @@ scenarios.put('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => 
 
     return c.json({ success: true, data: serializeScenario(updated) });
   } catch (err) {
-    console.error('PUT /api/scenarios/:id error:', err);
+    console.error(`PUT /api/scenarios/:id error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -757,7 +763,7 @@ scenarios.delete('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) 
     await deleteScenario(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/scenarios/:id error:', err);
+    console.error(`DELETE /api/scenarios/:id error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -817,7 +823,7 @@ scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async 
 
     return c.json({ success: true, data: serializeStep(step) }, 201);
   } catch (err) {
-    console.error('POST /api/scenarios/:id/steps error:', err);
+    console.error(`POST /api/scenarios/:id/steps error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -968,7 +974,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
 
     return c.json({ success: true, data: serializeStep(updated) });
   } catch (err) {
-    console.error('PUT /api/scenarios/:id/steps/:stepId error:', err);
+    console.error(`PUT /api/scenarios/:id/steps/:stepId error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -988,7 +994,7 @@ scenarios.delete('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin
     await deleteScenarioStep(c.env.DB, stepId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/scenarios/:id/steps/:stepId error:', err);
+    console.error(`DELETE /api/scenarios/:id/steps/:stepId error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1062,7 +1068,7 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('POST /api/scenarios/:id/steps/reorder error:', err);
+    console.error(`POST /api/scenarios/:id/steps/reorder error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1157,7 +1163,7 @@ scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async
       },
     });
   } catch (err) {
-    console.error('GET /api/scenarios/:id/preview error:', err);
+    console.error(`GET /api/scenarios/:id/preview error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1177,7 +1183,7 @@ scenarios.get('/api/scenarios/:id/stats', requireRole('owner', 'admin'), async (
     const stats = await computeScenarioStats(c.env.DB, scenarioId.value);
     return c.json({ success: true, data: stats });
   } catch (err) {
-    console.error('GET /api/scenarios/:id/stats error:', err);
+    console.error(`GET /api/scenarios/:id/stats error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1210,7 +1216,7 @@ scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
     }
     return c.json({ success: true, data: serializeFriendScenario(enrollment) }, 201);
   } catch (err) {
-    console.error('POST /api/scenarios/:id/enroll/:friendId error:', err);
+    console.error(`POST /api/scenarios/:id/enroll/:friendId error: ${scenarioRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

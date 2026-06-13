@@ -162,6 +162,12 @@ function parseNotificationRuleUpdate(
   return { ok: true, value: input };
 }
 
+function notificationRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // ========== 通知ルールCRUD ==========
 
 notifications.get('/api/notifications/rules', requireRole('owner', 'admin'), async (c) => {
@@ -192,7 +198,7 @@ notifications.get('/api/notifications/rules', requireRole('owner', 'admin'), asy
       })),
     });
   } catch (err) {
-    console.error('GET /api/notifications/rules error:', err);
+    console.error(`GET /api/notifications/rules error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -216,7 +222,7 @@ notifications.get('/api/notifications/rules/:id', requireRole('owner', 'admin'),
       },
     });
   } catch (err) {
-    console.error('GET /api/notifications/rules/:id error:', err);
+    console.error(`GET /api/notifications/rules/:id error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -233,7 +239,7 @@ notifications.post('/api/notifications/rules', requireRole('owner', 'admin'), as
       data: { id: item.id, name: item.name, eventType: item.event_type, channels: JSON.parse(item.channels), createdAt: item.created_at },
     }, 201);
   } catch (err) {
-    console.error('POST /api/notifications/rules error:', err);
+    console.error(`POST /api/notifications/rules error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -254,7 +260,7 @@ notifications.put('/api/notifications/rules/:id', requireRole('owner', 'admin'),
       data: { id: updated.id, name: updated.name, eventType: updated.event_type, channels: JSON.parse(updated.channels), isActive: Boolean(updated.is_active) },
     });
   } catch (err) {
-    console.error('PUT /api/notifications/rules/:id error:', err);
+    console.error(`PUT /api/notifications/rules/:id error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -266,7 +272,7 @@ notifications.delete('/api/notifications/rules/:id', requireRole('owner', 'admin
     await deleteNotificationRule(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/notifications/rules/:id error:', err);
+    console.error(`DELETE /api/notifications/rules/:id error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -312,7 +318,7 @@ notifications.get('/api/notifications', requireRole('owner', 'admin'), async (c)
       })),
     });
   } catch (err) {
-    console.error('GET /api/notifications error:', err);
+    console.error(`GET /api/notifications error: ${notificationRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -157,6 +157,17 @@ function parseImageContentType(raw: unknown): ValueResult<'image/png' | 'image/j
   return { ok: false, error: 'invalid_content_type' };
 }
 
+function richMenuRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
+function richMenuRouteErrorIncludes(err: unknown, fragment: string): boolean {
+  if (err instanceof Error) return err.message.includes(fragment);
+  return typeof err === 'string' && err.includes(fragment);
+}
+
 /** Resolve LINE access token — uses accountId query param if provided, otherwise default */
 async function resolveLineClient(c: Context<Env>): Promise<ValueResult<LineClient>> {
   const accountId = parseOptionalVisibleId(c.req.query('accountId'), 'account_id');
@@ -176,9 +187,8 @@ richMenus.get('/api/rich-menus', async (c) => {
     const result = await lineClient.value.getRichMenuList();
     return c.json({ success: true, data: result.richmenus ?? [] });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('GET /api/rich-menus error:', message);
-    return c.json({ success: false, error: `Failed to fetch rich menus: ${message}` }, 500);
+    console.error(`GET /api/rich-menus error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -194,9 +204,8 @@ richMenus.post('/api/rich-menus', async (c) => {
     const result = await lineClient.value.createRichMenu(body.value);
     return c.json({ success: true, data: result }, 201);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/rich-menus error:', message);
-    return c.json({ success: false, error: `Failed to create rich menu: ${message}` }, 500);
+    console.error(`POST /api/rich-menus error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -210,9 +219,8 @@ richMenus.delete('/api/rich-menus/:id', async (c) => {
     await lineClient.value.deleteRichMenu(richMenuId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('DELETE /api/rich-menus/:id error:', message);
-    return c.json({ success: false, error: `Failed to delete rich menu: ${message}` }, 500);
+    console.error(`DELETE /api/rich-menus/:id error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -226,9 +234,8 @@ richMenus.post('/api/rich-menus/:id/default', async (c) => {
     await lineClient.value.setDefaultRichMenu(richMenuId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/rich-menus/:id/default error:', message);
-    return c.json({ success: false, error: `Failed to set default rich menu: ${message}` }, 500);
+    console.error(`POST /api/rich-menus/:id/default error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -261,9 +268,8 @@ richMenus.post('/api/friends/:friendId/rich-menu', async (c) => {
 
     return c.json({ success: true, data: null });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/friends/:friendId/rich-menu error:', message);
-    return c.json({ success: false, error: `Failed to link rich menu to friend: ${message}` }, 500);
+    console.error(`POST /api/friends/:friendId/rich-menu error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -292,9 +298,8 @@ richMenus.delete('/api/friends/:friendId/rich-menu', async (c) => {
 
     return c.json({ success: true, data: null });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('DELETE /api/friends/:friendId/rich-menu error:', message);
-    return c.json({ success: false, error: `Failed to unlink rich menu from friend: ${message}` }, 500);
+    console.error(`DELETE /api/friends/:friendId/rich-menu error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -328,8 +333,7 @@ richMenus.get('/api/friends/:friendId/rich-menu', async (c) => {
       const r = await lineClient.getRichMenuIdOfUser(friend.line_user_id);
       userMenuId = r.richMenuId;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('404')) {
+      if (richMenuRouteErrorIncludes(err, '404')) {
         userMenuId = null;
       } else {
         throw err;
@@ -362,9 +366,8 @@ richMenus.get('/api/friends/:friendId/rich-menu', async (c) => {
       data: { id: effectiveId, name, isDefault },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('GET /api/friends/:friendId/rich-menu error:', message);
-    return c.json({ success: false, error: `Failed to fetch friend rich menu: ${message}` }, 500);
+    console.error(`GET /api/friends/:friendId/rich-menu error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -408,8 +411,7 @@ richMenus.post('/api/rich-menus/:id/image', async (c) => {
 
     return c.json({ success: true, data: null });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/rich-menus/:id/image error:', message);
-    return c.json({ success: false, error: `Failed to upload rich menu image: ${message}` }, 500);
+    console.error(`POST /api/rich-menus/:id/image error: ${richMenuRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

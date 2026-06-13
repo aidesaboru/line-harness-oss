@@ -116,6 +116,10 @@ function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.createScoringRule.mockResolvedValue({
@@ -566,6 +570,61 @@ describe('friend-scoped support visibility guards', () => {
     expect(body.data).toEqual({ id: 'menu-1', name: 'VIP Menu', isDefault: false });
     expect(dbMocks.getFriendById).toHaveBeenCalledWith(db, 'friend-visible');
     expect(lineClientMethods.getRichMenuIdOfUser).toHaveBeenCalledWith('U-visible');
+  });
+
+  test('rich menu catalog failure logs only the error kind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    lineClientMethods.getRichMenuList.mockRejectedValueOnce(
+      new Error('rich menu catalog secret account-token acc-1 richmenu-1 raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/rich-menus?accountId=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/rich-menus error: Error');
+      expect(logged).not.toContain('rich menu catalog secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('acc-1');
+      expect(logged).not.toContain('richmenu-1');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('friend rich menu link failure does not leak raw exception into logs or response', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    lineClientMethods.linkRichMenuToUser.mockRejectedValueOnce(
+      new Error('friend rich menu secret account-token U-visible friend-visible menu-1 raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'staff').request('/api/friends/friend-visible/rich-menu', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ richMenuId: 'menu-1' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/friends/:friendId/rich-menu error: Error');
+      expect(logged).not.toContain('friend rich menu secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('menu-1');
+      expect(logged).not.toContain('raw-body');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('rich menu routes reject malformed catalog and friend inputs before DB or LINE side effects', async () => {

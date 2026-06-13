@@ -54,6 +54,10 @@ const STAFF_ALLOWED_ESCALATION_CREATE_KEYS = new Set([
 const STAFF_ALLOWED_ESCALATION_STATUSES = new Set(['answered', 'needs_info']);
 const SUPPORT_ID_MAX_LENGTH = 128;
 const SUPPORT_QUERY_TEXT_MAX_LENGTH = 256;
+const SUPPORT_SHORT_TEXT_MAX_LENGTH = 256;
+const SUPPORT_URL_MAX_LENGTH = 2048;
+const SUPPORT_LONG_TEXT_MAX_LENGTH = 64 * 1024;
+const SUPPORT_EVENT_METADATA_MAX_LENGTH = 16 * 1024;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -144,6 +148,31 @@ function text(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function parseOptionalTextField(raw: unknown, label: string, maxLength = SUPPORT_SHORT_TEXT_MAX_LENGTH): ValueResult<string | null> {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseRequiredTextField(raw: unknown, label: string, maxLength = SUPPORT_SHORT_TEXT_MAX_LENGTH): ValueResult<string> {
+  const parsed = parseOptionalTextField(raw, label, maxLength);
+  if (!parsed.ok) return parsed;
+  if (!parsed.value) return { ok: false, error: `${label} is required` };
+  return { ok: true, value: parsed.value };
+}
+
+function parseOptionalEventMetadata(raw: unknown): ValueResult<Record<string, unknown>> {
+  if (raw === undefined || raw === null) return { ok: true, value: {} };
+  if (!isRecord(raw)) return { ok: false, error: 'metadata must be an object' };
+  if (JSON.stringify(raw).length > SUPPORT_EVENT_METADATA_MAX_LENGTH) {
+    return { ok: false, error: 'metadata is too long' };
+  }
+  return { ok: true, value: raw };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -674,19 +703,33 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
       return c.json({ success: false, error: 'friend not found' }, 404);
     }
 
-    const category = text(body.category) ?? 'other';
-    const priority = text(body.priority) ?? 'medium';
-    const status = text(body.status) ?? 'open';
+    const parsedCategory = parseOptionalTextField(body.category, 'category');
+    if (!parsedCategory.ok) return c.json({ success: false, error: parsedCategory.error }, 400);
+    const parsedPriority = parseOptionalTextField(body.priority, 'priority');
+    if (!parsedPriority.ok) return c.json({ success: false, error: parsedPriority.error }, 400);
+    const parsedStatus = parseOptionalTextField(body.status, 'status');
+    if (!parsedStatus.ok) return c.json({ success: false, error: parsedStatus.error }, 400);
+    const category = parsedCategory.value ?? 'other';
+    const priority = parsedPriority.value ?? 'medium';
+    const status = parsedStatus.value ?? 'open';
     if (!PRIORITIES.has(priority)) return c.json({ success: false, error: 'invalid priority' }, 400);
     if (!CASE_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
 
-    const customerSummary = text(body.customerSummary) ?? '';
+    const parsedCustomerSummary = parseOptionalTextField(body.customerSummary, 'customerSummary', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedCustomerSummary.ok) return c.json({ success: false, error: parsedCustomerSummary.error }, 400);
+    const customerSummary = parsedCustomerSummary.value ?? '';
     if (!friendId && !customerSummary.trim()) {
       return c.json({ success: false, error: 'LINE会話を選ぶか、問い合わせ要約を入力してください。' }, 400);
     }
-    const internalNote = text(body.internalNote) ?? '';
-    const resolutionNote = text(body.resolutionNote) ?? '';
-    const nextCheckAt = text(body.nextCheckAt);
+    const parsedInternalNote = parseOptionalTextField(body.internalNote, 'internalNote', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedInternalNote.ok) return c.json({ success: false, error: parsedInternalNote.error }, 400);
+    const parsedResolutionNote = parseOptionalTextField(body.resolutionNote, 'resolutionNote', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedResolutionNote.ok) return c.json({ success: false, error: parsedResolutionNote.error }, 400);
+    const parsedNextCheckAt = parseOptionalTextField(body.nextCheckAt, 'nextCheckAt');
+    if (!parsedNextCheckAt.ok) return c.json({ success: false, error: parsedNextCheckAt.error }, 400);
+    const internalNote = parsedInternalNote.value ?? '';
+    const resolutionNote = parsedResolutionNote.value ?? '';
+    const nextCheckAt = parsedNextCheckAt.value;
     const validationError = validateCaseState({
       status,
       next_check_at: nextCheckAt,
@@ -702,8 +745,30 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
     const manualValidation = await validateManualIds(c.env.DB, lineAccountId, manualIdsInput.value);
     if (!manualValidation.ok) return c.json({ success: false, error: manualValidation.error }, 400);
     const manualIds = JSON.stringify(manualValidation.ids);
+    const parsedTitle = parseOptionalTextField(body.title, 'title');
+    if (!parsedTitle.ok) return c.json({ success: false, error: parsedTitle.error }, 400);
+    const parsedPrimaryAssignee = parseOptionalTextField(body.primaryAssignee, 'primaryAssignee');
+    if (!parsedPrimaryAssignee.ok) return c.json({ success: false, error: parsedPrimaryAssignee.error }, 400);
+    const parsedEscalationAssignee = parseOptionalTextField(body.escalationAssignee, 'escalationAssignee');
+    if (!parsedEscalationAssignee.ok) return c.json({ success: false, error: parsedEscalationAssignee.error }, 400);
+    const parsedEscalationLevel = parseOptionalTextField(body.escalationLevel, 'escalationLevel');
+    if (!parsedEscalationLevel.ok) return c.json({ success: false, error: parsedEscalationLevel.error }, 400);
+    const parsedDueAt = parseOptionalTextField(body.dueAt, 'dueAt');
+    if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
+    const parsedCustomerNumber = parseOptionalTextField(body.customerNumber, 'customerNumber');
+    if (!parsedCustomerNumber.ok) return c.json({ success: false, error: parsedCustomerNumber.error }, 400);
+    const parsedCompanyName = parseOptionalTextField(body.companyName, 'companyName');
+    if (!parsedCompanyName.ok) return c.json({ success: false, error: parsedCompanyName.error }, 400);
+    const parsedContactName = parseOptionalTextField(body.contactName, 'contactName');
+    if (!parsedContactName.ok) return c.json({ success: false, error: parsedContactName.error }, 400);
+    const parsedStoreName = parseOptionalTextField(body.storeName, 'storeName');
+    if (!parsedStoreName.ok) return c.json({ success: false, error: parsedStoreName.error }, 400);
+    const parsedContractType = parseOptionalTextField(body.contractType, 'contractType');
+    if (!parsedContractType.ok) return c.json({ success: false, error: parsedContractType.error }, 400);
+    const parsedCustomerReplyDraft = parseOptionalTextField(body.customerReplyDraft, 'customerReplyDraft', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedCustomerReplyDraft.ok) return c.json({ success: false, error: parsedCustomerReplyDraft.error }, 400);
     const title =
-      text(body.title) ??
+      parsedTitle.value ??
       (customerSummary ? customerSummary.slice(0, 42) : null) ??
       '新規問い合わせ';
 
@@ -725,19 +790,19 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
         category,
         priority,
         status,
-        text(body.primaryAssignee),
-        text(body.escalationAssignee),
-        text(body.escalationLevel) ?? 'L1',
-        text(body.dueAt),
+        parsedPrimaryAssignee.value,
+        parsedEscalationAssignee.value,
+        parsedEscalationLevel.value ?? 'L1',
+        parsedDueAt.value,
         nextCheckAt,
-        text(body.customerNumber),
-        text(body.companyName),
-        text(body.contactName),
-        text(body.storeName),
-        text(body.contractType),
+        parsedCustomerNumber.value,
+        parsedCompanyName.value,
+        parsedContactName.value,
+        parsedStoreName.value,
+        parsedContractType.value,
         customerSummary,
         internalNote,
-        text(body.customerReplyDraft) ?? '',
+        parsedCustomerReplyDraft.value ?? '',
         resolutionNote,
         manualIds,
         staff.id,
@@ -860,30 +925,32 @@ support.patch('/api/support/cases/:id', async (c) => {
     const fields: Array<[string, unknown]> = [];
     const next = { ...existing };
 
-    const stringFields: Array<[keyof SupportCaseRow, string]> = [
-      ['title', 'title'],
-      ['category', 'category'],
-      ['priority', 'priority'],
-      ['status', 'status'],
-      ['primary_assignee', 'primaryAssignee'],
-      ['escalation_assignee', 'escalationAssignee'],
-      ['escalation_level', 'escalationLevel'],
-      ['due_at', 'dueAt'],
-      ['next_check_at', 'nextCheckAt'],
-      ['customer_number', 'customerNumber'],
-      ['company_name', 'companyName'],
-      ['contact_name', 'contactName'],
-      ['store_name', 'storeName'],
-      ['contract_type', 'contractType'],
-      ['customer_summary', 'customerSummary'],
-      ['internal_note', 'internalNote'],
-      ['customer_reply_draft', 'customerReplyDraft'],
-      ['resolution_note', 'resolutionNote'],
+    const stringFields: Array<[keyof SupportCaseRow, string, number]> = [
+      ['title', 'title', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['category', 'category', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['priority', 'priority', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['status', 'status', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['primary_assignee', 'primaryAssignee', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['escalation_assignee', 'escalationAssignee', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['escalation_level', 'escalationLevel', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['due_at', 'dueAt', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['next_check_at', 'nextCheckAt', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['customer_number', 'customerNumber', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['company_name', 'companyName', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['contact_name', 'contactName', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['store_name', 'storeName', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['contract_type', 'contractType', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['customer_summary', 'customerSummary', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['internal_note', 'internalNote', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['customer_reply_draft', 'customerReplyDraft', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['resolution_note', 'resolutionNote', SUPPORT_LONG_TEXT_MAX_LENGTH],
     ];
 
-    for (const [column, key] of stringFields) {
+    for (const [column, key, maxLength] of stringFields) {
       if (!(key in body)) continue;
-      const value = nullableText(body[key]);
+      const parsed = parseOptionalTextField(body[key], key, maxLength);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      const value = parsed.value;
       next[column] = (value ?? '') as never;
       if (['due_at', 'next_check_at', 'primary_assignee', 'escalation_assignee', 'customer_number', 'company_name', 'contact_name', 'store_name', 'contract_type'].includes(column)) {
         fields.push([column, value ?? null]);
@@ -967,17 +1034,23 @@ support.post('/api/support/cases/:id/events', async (c) => {
     const body = parsedBody.value;
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const eventType = parseOptionalTextField(body.eventType, 'eventType');
+    if (!eventType.ok) return c.json({ success: false, error: eventType.error }, 400);
+    const eventBody = parseOptionalTextField(body.body, 'body', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!eventBody.ok) return c.json({ success: false, error: eventBody.error }, 400);
+    const metadata = parseOptionalEventMetadata(body.metadata);
+    if (!metadata.ok) return c.json({ success: false, error: metadata.error }, 400);
     const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, currentStaff(c));
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     const staff = currentStaff(c);
     await addCaseEvent(
       c.env.DB,
       row.id,
-      text(body.eventType) ?? 'note',
+      eventType.value ?? 'note',
       staff.id,
       staff.name,
-      text(body.body) ?? '',
-      typeof body.metadata === 'object' && body.metadata !== null ? body.metadata as Record<string, unknown> : {},
+      eventBody.value ?? '',
+      metadata.value,
     );
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
@@ -1012,10 +1085,18 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
       }
     }
 
-    const assignee = canRouteEscalation ? text(body.assignee) : text(row.escalation_assignee);
-    const question = text(body.question);
+    const parsedAssignee = canRouteEscalation
+      ? parseOptionalTextField(body.assignee, 'assignee')
+      : parseOptionalTextField(row.escalation_assignee, 'assignee');
+    if (!parsedAssignee.ok) return c.json({ success: false, error: parsedAssignee.error }, 400);
+    const parsedQuestion = parseOptionalTextField(body.question, 'question', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedQuestion.ok) return c.json({ success: false, error: parsedQuestion.error }, 400);
+    const assignee = parsedAssignee.value;
+    const question = parsedQuestion.value;
     const levelFromCase = ESCALATION_LEVELS.has(row.escalation_level) ? row.escalation_level : 'L2';
-    const level = canRouteEscalation ? (text(body.level) ?? 'L2') : levelFromCase;
+    const parsedLevel = canRouteEscalation ? parseOptionalTextField(body.level, 'level') : { ok: true as const, value: levelFromCase };
+    if (!parsedLevel.ok) return c.json({ success: false, error: parsedLevel.error }, 400);
+    const level = parsedLevel.value ?? 'L2';
     if (!assignee) {
       return c.json({
         success: false,
@@ -1027,7 +1108,9 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
 
     const now = jstNow();
     const id = crypto.randomUUID();
-    const dueAt = canRouteEscalation ? text(body.dueAt) : null;
+    const parsedDueAt = canRouteEscalation ? parseOptionalTextField(body.dueAt, 'dueAt') : { ok: true as const, value: null };
+    if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
+    const dueAt = parsedDueAt.value;
     await c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
@@ -1169,11 +1252,25 @@ support.patch('/api/support/escalations/:id', async (c) => {
 
     const fields: Array<[string, unknown]> = [];
     const statusRequested = 'status' in body;
-    const status = text(body.status) ?? existing.status;
-    const level = text(body.level) ?? existing.level;
+    const parsedStatus = parseOptionalTextField(body.status, 'status');
+    if (!parsedStatus.ok) return c.json({ success: false, error: parsedStatus.error }, 400);
+    const parsedLevel = parseOptionalTextField(body.level, 'level');
+    if (!parsedLevel.ok) return c.json({ success: false, error: parsedLevel.error }, 400);
+    const parsedAnswer = parseOptionalTextField(body.answer, 'answer', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedAnswer.ok) return c.json({ success: false, error: parsedAnswer.error }, 400);
+    const parsedAssignee = parseOptionalTextField(body.assignee, 'assignee');
+    if (!parsedAssignee.ok) return c.json({ success: false, error: parsedAssignee.error }, 400);
+    const parsedQuestion = parseOptionalTextField(body.question, 'question', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedQuestion.ok) return c.json({ success: false, error: parsedQuestion.error }, 400);
+    const parsedDueAt = parseOptionalTextField(body.dueAt, 'dueAt');
+    if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
+    const parsedEventBody = parseOptionalTextField(body.eventBody, 'eventBody', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!parsedEventBody.ok) return c.json({ success: false, error: parsedEventBody.error }, 400);
+    const status = parsedStatus.value ?? existing.status;
+    const level = parsedLevel.value ?? existing.level;
     if (!ESCALATION_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
     if (!ESCALATION_LEVELS.has(level)) return c.json({ success: false, error: 'invalid level' }, 400);
-    const nextAnswer = 'answer' in body ? (text(body.answer) ?? '') : existing.answer;
+    const nextAnswer = 'answer' in body ? (parsedAnswer.value ?? '') : existing.answer;
     if (status === 'answered' && !nextAnswer.trim()) {
       return c.json({ success: false, error: '回答済みにする場合は回答要点が必要です' }, 400);
     }
@@ -1195,10 +1292,10 @@ support.patch('/api/support/escalations/:id', async (c) => {
 
     if ('status' in body) fields.push(['status', status]);
     if ('level' in body) fields.push(['level', level]);
-    if ('assignee' in body) fields.push(['assignee', text(body.assignee) ?? existing.assignee]);
-    if ('question' in body) fields.push(['question', text(body.question) ?? existing.question]);
+    if ('assignee' in body) fields.push(['assignee', parsedAssignee.value ?? existing.assignee]);
+    if ('question' in body) fields.push(['question', parsedQuestion.value ?? existing.question]);
     if ('answer' in body) fields.push(['answer', nextAnswer]);
-    if ('dueAt' in body) fields.push(['due_at', text(body.dueAt)]);
+    if ('dueAt' in body) fields.push(['due_at', parsedDueAt.value]);
 
     let nextCaseStatus: string | null = null;
     if (statusRequested) {
@@ -1243,7 +1340,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
       'escalation_updated',
       staff.id,
       staff.name,
-      text(body.eventBody) ?? text(body.answer) ?? 'エスカレーションを更新しました',
+      parsedEventBody.value ?? parsedAnswer.value ?? 'エスカレーションを更新しました',
       { escalationId: id.value, status, nextCaseStatus },
     );
 
@@ -1317,11 +1414,25 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     const parsedBody = await readJsonRecord(c);
     if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
     const body = parsedBody.value;
-    const title = text(body.title);
-    if (!title) return c.json({ success: false, error: 'title is required' }, 400);
-    const manualBody = text(body.body);
-    if (!manualBody) return c.json({ success: false, error: 'body is required' }, 400);
-    const manualUrl = text(body.url);
+    const titleInput = parseRequiredTextField(body.title, 'title');
+    if (!titleInput.ok) return c.json({ success: false, error: titleInput.error }, 400);
+    const manualBodyInput = parseRequiredTextField(body.body, 'body', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!manualBodyInput.ok) return c.json({ success: false, error: manualBodyInput.error }, 400);
+    const manualUrlInput = parseOptionalTextField(body.url, 'url', SUPPORT_URL_MAX_LENGTH);
+    if (!manualUrlInput.ok) return c.json({ success: false, error: manualUrlInput.error }, 400);
+    const category = parseOptionalTextField(body.category, 'category');
+    if (!category.ok) return c.json({ success: false, error: category.error }, 400);
+    const keywords = parseOptionalTextField(body.keywords, 'keywords', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!keywords.ok) return c.json({ success: false, error: keywords.error }, 400);
+    const owner = parseOptionalTextField(body.owner, 'owner');
+    if (!owner.ok) return c.json({ success: false, error: owner.error }, 400);
+    const approvedBy = parseOptionalTextField(body.approvedBy, 'approvedBy');
+    if (!approvedBy.ok) return c.json({ success: false, error: approvedBy.error }, 400);
+    const revisedAt = parseOptionalTextField(body.revisedAt, 'revisedAt');
+    if (!revisedAt.ok) return c.json({ success: false, error: revisedAt.error }, 400);
+    const title = titleInput.value;
+    const manualBody = manualBodyInput.value;
+    const manualUrl = manualUrlInput.value;
     if (manualUrl && !isHttpUrl(manualUrl)) {
       return c.json({ success: false, error: 'url must start with http:// or https://' }, 400);
     }
@@ -1340,13 +1451,13 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
       id,
       lineAccountId.value,
       title,
-      text(body.category) ?? 'basic',
+      category.value ?? 'basic',
       manualBody,
       manualUrl,
-      text(body.keywords) ?? '',
-      text(body.owner),
-      text(body.approvedBy),
-      text(body.revisedAt) ?? now.slice(0, 10),
+      keywords.value ?? '',
+      owner.value,
+      approvedBy.value,
+      revisedAt.value ?? now.slice(0, 10),
       body.isActive === false ? 0 : 1,
       staff.id,
       staff.id,
@@ -1377,9 +1488,26 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       .bind(id.value, lineAccountId.value)
       .first<SupportManualRow>();
     if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
-    if ('title' in body && !text(body.title)) return c.json({ success: false, error: 'title is required' }, 400);
-    if ('body' in body && !text(body.body)) return c.json({ success: false, error: 'body is required' }, 400);
-    const manualUrl = 'url' in body ? text(body.url) : null;
+    const manualInputs: Record<string, string | null> = {};
+    const manualFieldLimits: Record<string, number> = {
+      title: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+      category: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+      body: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      url: SUPPORT_URL_MAX_LENGTH,
+      keywords: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      owner: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+      approvedBy: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+      revisedAt: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+    };
+    for (const [key, maxLength] of Object.entries(manualFieldLimits)) {
+      if (!(key in body)) continue;
+      const parsed = parseOptionalTextField(body[key], key, maxLength);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      manualInputs[key] = parsed.value;
+    }
+    if ('title' in body && !manualInputs.title) return c.json({ success: false, error: 'title is required' }, 400);
+    if ('body' in body && !manualInputs.body) return c.json({ success: false, error: 'body is required' }, 400);
+    const manualUrl = 'url' in body ? manualInputs.url : null;
     if (manualUrl && !isHttpUrl(manualUrl)) {
       return c.json({ success: false, error: 'url must start with http:// or https://' }, 400);
     }
@@ -1396,7 +1524,7 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       ['revised_at', 'revisedAt'],
     ];
     for (const [column, key] of mapping) {
-      if (key in body) fields.push([column, text(body[key])]);
+      if (key in body) fields.push([column, manualInputs[key] ?? null]);
     }
     if ('isActive' in body) fields.push(['is_active', body.isActive === false ? 0 : 1]);
     const staff = currentStaff(c);

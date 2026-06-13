@@ -1303,6 +1303,105 @@ describe('support CRM routes', () => {
     }
   });
 
+  test('rejects oversized support write payloads before DB mutation', async () => {
+    const hugeText = 'x'.repeat(70_000);
+    const hugeMetadata = { note: 'x'.repeat(20_000) };
+
+    {
+      const { db, calls, state } = makeSupportDb({});
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', customerSummary: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'customerSummary is too long' });
+      expect(state.cases).toHaveLength(0);
+      expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_cases'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({ cases: [baseCase({ id: 'case-1' })] });
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases/case-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', internalNote: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'internalNote is too long' });
+      expect(state.cases[0].internal_note).toBe('');
+      expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_cases'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({ cases: [baseCase({ id: 'case-1' })] });
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases/case-1/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', body: 'note', metadata: hugeMetadata }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'metadata is too long' });
+      expect(state.events).toHaveLength(0);
+      expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_case_events'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({ cases: [baseCase({ id: 'case-esc', escalation_assignee: 'Admin Smoke' })] });
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases/case-esc/escalations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', assignee: 'Admin Smoke', level: 'L2', question: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'question is too long' });
+      expect(state.escalations).toHaveLength(0);
+      expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_escalations'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({
+        cases: [baseCase({ id: 'case-esc', status: 'waiting_secondary' })],
+        escalations: [baseEscalation({ id: 'esc-1', case_id: 'case-esc' })],
+      });
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/escalations/esc-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', answer: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'answer is too long' });
+      expect(state.escalations[0].answer).toBe('');
+      expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_escalations'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({});
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/manuals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', title: '巨大本文', body: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'body is too long' });
+      expect(state.manuals).toHaveLength(0);
+      expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_manuals'))).toBe(false);
+    }
+
+    {
+      const { db, calls, state } = makeSupportDb({ manuals: [baseManual({ id: 'manual-1', line_account_id: 'acc-1', body: '既存本文' })] });
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/manuals/manual-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', body: hugeText }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ success: false, error: 'body is too long' });
+      expect(state.manuals[0].body).toBe('既存本文');
+      expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_manuals'))).toBe(false);
+    }
+  });
+
   test('trims support IDs before case and manual lookup', async () => {
     const { db, calls, state } = makeSupportDb({
       cases: [baseCase({ id: 'case-1', line_account_id: 'acc-1' })],

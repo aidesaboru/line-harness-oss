@@ -128,10 +128,38 @@ function apiErrorStatus(err: unknown): number | null {
   return match ? Number(match[1]) : null
 }
 
-function chatFailureMessage(kind: 'detail' | 'older' | 'loading'): string {
-  if (kind === 'detail') return 'チャット詳細の読み込みに失敗しました。もう一度お試しください。'
-  if (kind === 'older') return '過去メッセージの読み込みに失敗しました。もう一度お試しください。'
-  return 'ローディング表示の開始に失敗しました。'
+type ChatFailureKind =
+  | 'list'
+  | 'detail'
+  | 'older'
+  | 'loading'
+  | 'direct-send'
+  | 'image-send'
+  | 'text-send'
+  | 'status'
+  | 'notes'
+
+function chatFailureMessage(kind: ChatFailureKind): string {
+  switch (kind) {
+    case 'list':
+      return 'チャットの読み込みに失敗しました。もう一度お試しください。'
+    case 'detail':
+      return 'チャット詳細の読み込みに失敗しました。もう一度お試しください。'
+    case 'older':
+      return '過去メッセージの読み込みに失敗しました。もう一度お試しください。'
+    case 'loading':
+      return 'ローディング表示の開始に失敗しました。'
+    case 'direct-send':
+      return 'メッセージの送信に失敗しました。もう一度お試しください。'
+    case 'image-send':
+      return '画像メッセージの送信に失敗しました。もう一度お試しください。'
+    case 'text-send':
+      return 'メッセージの送信に失敗しました。もう一度お試しください。'
+    case 'status':
+      return 'ステータスの更新に失敗しました。もう一度お試しください。'
+    case 'notes':
+      return 'メモの保存に失敗しました。もう一度お試しください。'
+  }
 }
 
 function buildEmptyChatDetailFromFriend(friend: {
@@ -275,7 +303,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         body: JSON.stringify({ content, messageType: 'text' }),
       })
       if (!res.success) {
-        setSendError(res.error ?? 'メッセージの送信に失敗しました。')
+        setSendError(chatFailureMessage('direct-send'))
         return
       }
       setMessages((prev) => [...prev, {
@@ -503,10 +531,10 @@ export default function ChatsPage() {
       if (chatRes.success) {
         setChats(chatRes.data as unknown as Chat[])
       } else {
-        setError(chatRes.error ?? 'チャットの読み込みに失敗しました。もう一度お試しください。')
+        setError(chatFailureMessage('list'))
       }
     } catch {
-      setError('チャットの読み込みに失敗しました。もう一度お試しください。')
+      setError(chatFailureMessage('list'))
     } finally {
       setLoading(false)
     }
@@ -783,7 +811,7 @@ export default function ChatsPage() {
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
         })
         if (!imageResult.success) {
-          setError(imageResult.error ?? '画像メッセージの送信に失敗しました。')
+          setError(chatFailureMessage('image-send'))
           return
         }
         if (attachSupportToImage) {
@@ -844,7 +872,7 @@ export default function ChatsPage() {
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
         })
         if (!sendResult.success) {
-          setError(sendResult.error ?? 'メッセージの送信に失敗しました。')
+          setError(chatFailureMessage('text-send'))
           return
         }
         const recoveryNotice = buildSupportChatRecoveryNotice(sendResult.data.supportCase, supportContext)
@@ -902,7 +930,7 @@ export default function ChatsPage() {
         })
       }
     } catch {
-      setError('メッセージの送信に失敗しました。')
+      setError(chatFailureMessage('text-send'))
     } finally {
       setSending(false)
       sendLockRef.current = false
@@ -914,14 +942,14 @@ export default function ChatsPage() {
     try {
       const res = await api.chats.update(selectedChatId, { status: newStatus })
       if (!res.success) {
-        setError(res.error ?? 'ステータスの更新に失敗しました。')
+        setError(chatFailureMessage('status'))
         return
       }
       setError('')
       loadChatDetail(selectedChatId)
       loadChats()
     } catch {
-      setError('ステータスの更新に失敗しました。')
+      setError(chatFailureMessage('status'))
     }
   }
 
@@ -931,13 +959,13 @@ export default function ChatsPage() {
     try {
       const res = await api.chats.update(selectedChatId, { notes })
       if (!res.success) {
-        setError(res.error ?? 'メモの保存に失敗しました。')
+        setError(chatFailureMessage('notes'))
         return
       }
       setError('')
       loadChatDetail(selectedChatId)
     } catch {
-      setError('メモの保存に失敗しました。')
+      setError(chatFailureMessage('notes'))
     } finally {
       setSavingNotes(false)
     }

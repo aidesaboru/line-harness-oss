@@ -23,6 +23,7 @@ updated: 2026-06-13
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
+- scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
 - automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operatorの管理一覧・変更APIはowner/adminだけに制限し、staffが運用ルールや流入先、担当者マスタを直接参照/変更できないようにした。traffic pool管理payloadは壊れたJSON、不正なslug/name/activeAccountId/lineAccountId/isActiveをDB書き込み前に400で止める
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
@@ -205,7 +206,7 @@ strict Preflight:
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.
-- Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends. Content management tests also confirm malformed or unsafe tag/template/message-template payloads stop before DB writes or lookup, while valid values are trimmed.
+- Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends. Scenario route tests also confirm malformed or unsafe scenario/step/reorder payloads stop before DB lookup or writes, valid values are trimmed, and step mutations stay scoped to the path scenario. Content management tests also confirm malformed or unsafe tag/template/message-template payloads stop before DB writes or lookup, while valid values are trimmed.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs, and malformed traffic pool management payloads stop before DB writes.
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
 - Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work.
@@ -273,7 +274,7 @@ strict Preflight:
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard
 - `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲
-- `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限と、staffのscenario手動登録で使うfriend可視範囲
+- `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限、scenario payload検証、staffのscenario手動登録で使うfriend可視範囲
 - `apps/worker/src/routes/scoring.ts` / `reminders.ts`: scoring rule/reminder定義管理のowner/admin制限と、staffのfriend score/reminder操作の可視範囲
 - `apps/worker/src/routes/tags.ts` / `templates.ts` / `message-templates.ts`: tag/template/message template定義管理のowner/admin制限
 - `apps/worker/src/routes/rich-menus.ts`: staffのrich-menu操作のfriend可視範囲

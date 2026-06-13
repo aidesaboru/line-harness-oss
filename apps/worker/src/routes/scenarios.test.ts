@@ -44,9 +44,41 @@ interface ScenarioRow {
   step_count: number;
 }
 
-function makeScenarioDb(rows: ScenarioRow[], options: { visibleFriendIds?: string[] } = {}) {
+interface ScenarioStepRow {
+  id: string;
+  scenario_id: string;
+  step_order: number;
+  delay_minutes: number;
+  offset_days: number | null;
+  offset_minutes: number | null;
+  delivery_time: string | null;
+  message_type: 'text' | 'image' | 'flex';
+  message_content: string;
+}
+
+interface TemplateRow {
+  id: string;
+  message_type: string;
+  message_content: string;
+}
+
+function makeScenarioDb(
+  rows: ScenarioRow[],
+  options: {
+    visibleFriendIds?: string[];
+    deliveryModeByScenarioId?: Record<string, string>;
+    steps?: ScenarioStepRow[];
+    templates?: TemplateRow[];
+    tagIds?: string[];
+  } = {},
+) {
   const calls: { sql: string; binds: unknown[] }[] = [];
   const visibleFriendIds = new Set(options.visibleFriendIds ?? []);
+  const deliveryModeByScenarioId = options.deliveryModeByScenarioId ?? {};
+  const templates = new Map((options.templates ?? []).map((t) => [t.id, t]));
+  const tagIds = new Set(options.tagIds ?? []);
+  const steps = options.steps ?? [];
+  const batchCalls: unknown[][] = [];
   const db = {
     prepare(sql: string) {
       let bound: unknown[] = [];
@@ -64,6 +96,14 @@ function makeScenarioDb(rows: ScenarioRow[], options: { visibleFriendIds?: strin
             );
             return { results: filtered };
           }
+          if (/SELECT id, step_order FROM scenario_steps WHERE scenario_id = \?/i.test(sql)) {
+            const [scenarioId] = bound as [string];
+            return {
+              results: steps
+                .filter((s) => s.scenario_id === scenarioId)
+                .map((s) => ({ id: s.id, step_order: s.step_order })),
+            };
+          }
           return { results: [] };
         },
         async first<T>() {
@@ -72,13 +112,48 @@ function makeScenarioDb(rows: ScenarioRow[], options: { visibleFriendIds?: strin
             const [friendId] = bound as [string];
             return (visibleFriendIds.has(friendId) ? { ok: 1 } : null) as T | null;
           }
+          if (/SELECT delivery_mode FROM scenarios WHERE id = \?/i.test(sql)) {
+            const [scenarioId] = bound as [string];
+            const mode = deliveryModeByScenarioId[scenarioId] ?? rows.find((r) => r.id === scenarioId)?.delivery_mode;
+            return (mode ? { delivery_mode: mode } : null) as T | null;
+          }
+          if (/SELECT id, message_type, message_content FROM templates WHERE id = \?/i.test(sql)) {
+            const [templateId] = bound as [string];
+            const tpl = templates.get(templateId);
+            return (tpl ? { id: tpl.id, message_type: tpl.message_type, message_content: tpl.message_content } : null) as T | null;
+          }
+          if (/SELECT id FROM templates WHERE id = \?/i.test(sql)) {
+            const [templateId] = bound as [string];
+            return (templates.has(templateId) ? { id: templateId } : null) as T | null;
+          }
+          if (/SELECT id FROM tags WHERE id = \?/i.test(sql)) {
+            const [tagId] = bound as [string];
+            return (tagIds.has(tagId) ? { id: tagId } : null) as T | null;
+          }
+          if (/FROM scenario_steps WHERE id = \? AND scenario_id = \?/i.test(sql)) {
+            const [stepId, scenarioId] = bound as [string, string];
+            const step = steps.find((s) => s.id === stepId && s.scenario_id === scenarioId);
+            if (!step) return null as T | null;
+            return {
+              delay_minutes: step.delay_minutes,
+              offset_days: step.offset_days,
+              offset_minutes: step.offset_minutes,
+              delivery_time: step.delivery_time,
+              message_type: step.message_type,
+              message_content: step.message_content,
+            } as T;
+          }
           return null as T | null;
         },
       };
       return stmt;
     },
+    async batch(statements: unknown[]) {
+      batchCalls.push(statements);
+      return [];
+    },
   } as unknown as D1Database;
-  return { db, calls };
+  return { db, calls, batchCalls };
 }
 
 function setupApp(db: D1Database, role: StaffRole = 'staff') {
@@ -212,6 +287,302 @@ describe('scenario definition role guards', () => {
     expect(dbMocks.createScenarioStep).not.toHaveBeenCalled();
     expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
     expect(dbMocks.deleteScenarioStep).not.toHaveBeenCalled();
+  });
+});
+
+describe('scenario payload validation', () => {
+  test('scenario create/update rejects malformed or invalid payloads before DB writes', async () => {
+    const { db, calls } = makeScenarioDb([]);
+    const app = setupApp(db, 'owner');
+
+    const requests: Array<[string, string, BodyInit]> = [
+      ['POST', '/api/scenarios', '{'],
+      ['POST', '/api/scenarios', JSON.stringify({ name: 'x', triggerType: 'friend_add', deliveryMode: 'weekly' })],
+      ['POST', '/api/scenarios', JSON.stringify({ name: 'x', triggerType: 'unknown' })],
+      ['PUT', '/api/scenarios/scenario-1', '{'],
+      ['PUT', '/api/scenarios/scenario-1', JSON.stringify({})],
+      ['PUT', '/api/scenarios/scenario-1', JSON.stringify({ deliveryMode: 'relative' })],
+      ['PUT', '/api/scenarios/scenario-1', JSON.stringify({ isActive: 'yes' })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(calls).toHaveLength(0);
+    expect(dbMocks.createScenario).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenario).not.toHaveBeenCalled();
+  });
+
+  test('scenario create/update trims valid payloads before DB writes', async () => {
+    const { db } = makeScenarioDb([]);
+    dbMocks.createScenario.mockResolvedValue({
+      id: 'scenario-1',
+      name: 'Welcome',
+      description: 'Intro',
+      trigger_type: 'manual',
+      trigger_tag_id: null,
+      is_active: 1,
+      delivery_mode: 'elapsed',
+      line_account_id: null,
+      created_at: '2026-06-12T10:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.updateScenario.mockResolvedValue({
+      id: 'scenario-1',
+      name: 'Welcome 2',
+      description: null,
+      trigger_type: 'manual',
+      trigger_tag_id: 'tag-1',
+      is_active: 0,
+      delivery_mode: 'elapsed',
+      line_account_id: null,
+      created_at: '2026-06-12T10:00:00.000',
+      updated_at: '2026-06-12T10:05:00.000',
+    });
+    const app = setupApp(db, 'owner');
+
+    const createRes = await app.request('/api/scenarios', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Welcome ',
+        description: ' Intro ',
+        triggerType: 'manual',
+        deliveryMode: 'elapsed',
+      }),
+    });
+    expect(createRes.status).toBe(201);
+    expect(dbMocks.createScenario).toHaveBeenCalledWith(db, {
+      name: 'Welcome',
+      description: 'Intro',
+      triggerType: 'manual',
+      triggerTagId: null,
+      deliveryMode: 'elapsed',
+    });
+
+    const updateRes = await app.request('/api/scenarios/scenario-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Welcome 2 ',
+        description: ' ',
+        triggerTagId: ' tag-1 ',
+        isActive: false,
+      }),
+    });
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.updateScenario).toHaveBeenLastCalledWith(db, 'scenario-1', {
+      name: 'Welcome 2',
+      description: null,
+      trigger_type: undefined,
+      trigger_tag_id: 'tag-1',
+      is_active: 0,
+    });
+  });
+
+  test('scenario step create/update/reorder rejects malformed payloads before DB lookup', async () => {
+    const { db, calls } = makeScenarioDb([]);
+    const app = setupApp(db, 'owner');
+
+    const requests: Array<[string, string, BodyInit]> = [
+      ['POST', '/api/scenarios/scenario-1/steps', '{'],
+      ['POST', '/api/scenarios/scenario-1/steps', JSON.stringify({
+        stepOrder: 1,
+        delayMinutes: 0,
+        messageType: 'video',
+        messageContent: 'hello',
+      })],
+      ['POST', '/api/scenarios/scenario-1/steps', JSON.stringify({
+        stepOrder: 1,
+        delayMinutes: 0,
+        messageType: 'flex',
+        messageContent: '{bad',
+      })],
+      ['POST', '/api/scenarios/scenario-1/steps', JSON.stringify({
+        stepOrder: 1,
+        delayMinutes: 0,
+        messageType: 'text',
+        messageContent: 'hello',
+        conditionType: 'tag_exists',
+      })],
+      ['PUT', '/api/scenarios/scenario-1/steps/step-1', '{'],
+      ['PUT', '/api/scenarios/scenario-1/steps/step-1', JSON.stringify({})],
+      ['PUT', '/api/scenarios/scenario-1/steps/step-1', JSON.stringify({
+        messageType: 'image',
+        messageContent: '{}',
+      })],
+      ['POST', '/api/scenarios/scenario-1/steps/reorder', '{'],
+      ['POST', '/api/scenarios/scenario-1/steps/reorder', JSON.stringify({
+        orders: [
+          { stepId: 'step-1', stepOrder: 1 },
+          { stepId: 'step-2', stepOrder: 1 },
+        ],
+      })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(calls).toHaveLength(0);
+    expect(dbMocks.createScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
+  });
+
+  test('scenario step create trims valid payloads before DB writes', async () => {
+    const stepRow = {
+      id: 'step-1',
+      scenario_id: 'scenario-1',
+      step_order: 1,
+      delay_minutes: 0,
+      offset_days: null,
+      offset_minutes: null,
+      delivery_time: null,
+      message_type: 'text',
+      message_content: 'Hello',
+      condition_type: 'tag_exists',
+      condition_value: 'tag-1',
+      next_step_on_false: 2,
+      template_id: null,
+      on_reach_tag_id: null,
+      created_at: '2026-06-12T10:00:00.000',
+    };
+    const { db } = makeScenarioDb([{ id: 'scenario-1', name: 's', line_account_id: null, ...rowBase }]);
+    dbMocks.createScenarioStep.mockResolvedValue(stepRow);
+    const app = setupApp(db, 'owner');
+
+    const res = await app.request('/api/scenarios/scenario-1/steps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        stepOrder: 1,
+        delayMinutes: 0,
+        messageType: 'text',
+        messageContent: ' Hello ',
+        conditionType: 'tag_exists',
+        conditionValue: ' tag-1 ',
+        nextStepOnFalse: 2,
+        templateId: ' ',
+        onReachTagId: null,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createScenarioStep).toHaveBeenCalledWith(db, {
+      scenarioId: 'scenario-1',
+      stepOrder: 1,
+      delayMinutes: 0,
+      messageType: 'text',
+      messageContent: 'Hello',
+      conditionType: 'tag_exists',
+      conditionValue: 'tag-1',
+      nextStepOnFalse: 2,
+      offsetDays: null,
+      offsetMinutes: null,
+      deliveryTime: null,
+      templateId: null,
+      onReachTagId: null,
+    });
+  });
+
+  test('scenario step update validates scenario ownership and trims valid payloads', async () => {
+    const existingStep: ScenarioStepRow = {
+      id: 'step-1',
+      scenario_id: 'scenario-1',
+      step_order: 1,
+      delay_minutes: 0,
+      offset_days: null,
+      offset_minutes: null,
+      delivery_time: null,
+      message_type: 'text',
+      message_content: 'Old',
+    };
+    const updatedStep = {
+      ...existingStep,
+      message_content: 'Updated',
+      condition_type: null,
+      condition_value: null,
+      next_step_on_false: null,
+      template_id: null,
+      on_reach_tag_id: null,
+      created_at: '2026-06-12T10:00:00.000',
+    };
+    const { db } = makeScenarioDb([], { steps: [existingStep] });
+    dbMocks.updateScenarioStep.mockResolvedValue(updatedStep);
+    const app = setupApp(db, 'owner');
+
+    const missingRes = await app.request('/api/scenarios/other-scenario/steps/step-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageContent: 'Nope' }),
+    });
+    expect(missingRes.status).toBe(404);
+    expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
+
+    const res = await app.request('/api/scenarios/scenario-1/steps/step-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messageType: 'text',
+        messageContent: ' Updated ',
+        conditionType: null,
+        conditionValue: null,
+        templateId: null,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateScenarioStep).toHaveBeenCalledWith(db, 'step-1', {
+      step_order: undefined,
+      delay_minutes: undefined,
+      message_type: 'text',
+      message_content: 'Updated',
+      condition_type: null,
+      condition_value: null,
+      next_step_on_false: undefined,
+      offset_days: undefined,
+      offset_minutes: undefined,
+      delivery_time: undefined,
+      template_id: null,
+      on_reach_tag_id: undefined,
+    });
+  });
+
+  test('scenario step reorder rejects unknown steps before batch update', async () => {
+    const { db, batchCalls } = makeScenarioDb([], {
+      steps: [{
+        id: 'step-1',
+        scenario_id: 'scenario-1',
+        step_order: 1,
+        delay_minutes: 0,
+        offset_days: null,
+        offset_minutes: null,
+        delivery_time: null,
+        message_type: 'text',
+        message_content: 'Hello',
+      }],
+    });
+    const app = setupApp(db, 'owner');
+
+    const res = await app.request('/api/scenarios/scenario-1/steps/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orders: [{ stepId: 'step-missing', stepOrder: 1 }] }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(batchCalls).toHaveLength(0);
   });
 });
 

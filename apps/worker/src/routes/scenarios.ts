@@ -70,13 +70,475 @@ function serializeStep(row: DbScenarioStep) {
 }
 
 const VALID_DELIVERY_MODES: readonly DeliveryMode[] = ['relative', 'elapsed', 'absolute_time'];
+const VALID_TRIGGER_TYPES: readonly ScenarioTriggerType[] = ['friend_add', 'tag_added', 'manual'];
+const VALID_MESSAGE_TYPES: readonly MessageType[] = ['text', 'image', 'flex'];
+const VALID_CONDITION_TYPES = [
+  'tag_exists',
+  'tag_not_exists',
+  'metadata_equals',
+  'metadata_not_equals',
+] as const;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const SCENARIO_NAME_MAX_LENGTH = 120;
+const SCENARIO_DESCRIPTION_MAX_LENGTH = 2048;
+const ID_MAX_LENGTH = 128;
+const MESSAGE_CONTENT_MAX_LENGTH = 64 * 1024;
+const IMAGE_URL_MAX_LENGTH = 2048;
+const CONDITION_VALUE_MAX_LENGTH = 16 * 1024;
+const STEP_ORDER_MAX = 10_000;
+const DELAY_MINUTES_MAX = 10 * 365 * 24 * 60;
+const OFFSET_DAYS_MAX = 3650;
+const REORDER_MAX_ITEMS = 1000;
+
+type ConditionType = (typeof VALID_CONDITION_TYPES)[number];
+type ParseResult<T> = { ok: true; body: T } | { ok: false; error: string };
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+interface ScenarioCreateBody {
+  name: string;
+  description?: string | null;
+  triggerType: ScenarioTriggerType;
+  triggerTagId?: string | null;
+  isActive?: boolean;
+  lineAccountId?: string | null;
+  deliveryMode: DeliveryMode;
+}
+
+interface ScenarioUpdateBody {
+  name?: string;
+  description?: string | null;
+  triggerType?: ScenarioTriggerType;
+  triggerTagId?: string | null;
+  isActive?: boolean;
+}
+
+interface ScenarioStepCreateBody extends StepScheduleBody {
+  stepOrder: number;
+  messageType: MessageType;
+  messageContent: string;
+  conditionType?: ConditionType | null;
+  conditionValue?: string | null;
+  nextStepOnFalse?: number | null;
+  templateId?: string | null;
+  onReachTagId?: string | null;
+}
+
+interface ScenarioStepUpdateBody extends StepScheduleBody {
+  stepOrder?: number;
+  messageType?: MessageType;
+  messageContent?: string;
+  conditionType?: ConditionType | null;
+  conditionValue?: string | null;
+  nextStepOnFalse?: number | null;
+  templateId?: string | null;
+  onReachTagId?: string | null;
+}
+
+interface StepReorderBody {
+  orders: { stepId: string; stepOrder: number }[];
+}
 
 interface StepScheduleBody {
   delayMinutes?: number;
   offsetDays?: number;
   offsetMinutes?: number;
   deliveryTime?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseOptionalNullableString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseOptionalBoolean(raw: unknown, label: string): ValueResult<boolean | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'boolean') return { ok: false, error: `${label} must be a boolean` };
+  return { ok: true, value: raw };
+}
+
+function parseEnumValue<T extends string>(
+  raw: unknown,
+  label: string,
+  values: readonly T[],
+  required: true,
+): ValueResult<T>;
+function parseEnumValue<T extends string>(
+  raw: unknown,
+  label: string,
+  values: readonly T[],
+  required: false,
+): ValueResult<T | undefined>;
+function parseEnumValue<T extends string>(
+  raw: unknown,
+  label: string,
+  values: readonly T[],
+  required: boolean,
+): ValueResult<T | undefined> {
+  if (raw === undefined && !required) return { ok: true, value: undefined };
+  const parsed = parseRequiredString(raw, label, 64);
+  if (!parsed.ok) return parsed;
+  if (!values.includes(parsed.value as T)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value: parsed.value as T };
+}
+
+function parseInteger(
+  raw: unknown,
+  label: string,
+  min: number,
+  max: number,
+  required: true,
+): ValueResult<number>;
+function parseInteger(
+  raw: unknown,
+  label: string,
+  min: number,
+  max: number,
+  required: false,
+): ValueResult<number | undefined>;
+function parseInteger(
+  raw: unknown,
+  label: string,
+  min: number,
+  max: number,
+  required: boolean,
+): ValueResult<number | undefined> {
+  if (raw === undefined && !required) return { ok: true, value: undefined };
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || !Number.isFinite(raw)) {
+    return { ok: false, error: `${label} must be an integer` };
+  }
+  if (raw < min || raw > max) return { ok: false, error: `${label} is out of range` };
+  return { ok: true, value: raw };
+}
+
+function parseOptionalNullableInteger(
+  raw: unknown,
+  label: string,
+  min: number,
+  max: number,
+): ValueResult<number | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  return parseInteger(raw, label, min, max, true);
+}
+
+function parseOptionalScheduleString(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  return parseRequiredString(raw, label, 5);
+}
+
+function parseJsonRecord(raw: string, label: string): ValueResult<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: `${label} must be valid JSON` };
+  }
+  if (!isRecord(parsed)) return { ok: false, error: `${label} must be a JSON object` };
+  return { ok: true, value: parsed };
+}
+
+function validateMessageContent(
+  messageType: MessageType,
+  messageContent: string,
+): { ok: true } | { ok: false; error: string } {
+  if (messageType === 'image') {
+    const parsed = parseJsonRecord(messageContent, 'messageContent');
+    if (!parsed.ok) return parsed;
+    for (const key of ['originalContentUrl', 'previewImageUrl']) {
+      const value = parsed.value[key];
+      if (typeof value !== 'string' || !value.trim()) {
+        return { ok: false, error: `messageContent.${key} is required` };
+      }
+      if (value.length > IMAGE_URL_MAX_LENGTH) {
+        return { ok: false, error: `messageContent.${key} is too long` };
+      }
+    }
+  }
+  if (messageType === 'flex') {
+    const parsed = parseJsonRecord(messageContent, 'messageContent');
+    if (!parsed.ok) return parsed;
+  }
+  return { ok: true };
+}
+
+function parseMessageContent(
+  raw: unknown,
+  messageType: MessageType | undefined,
+  required: true,
+): ValueResult<string>;
+function parseMessageContent(
+  raw: unknown,
+  messageType: MessageType | undefined,
+  required: false,
+): ValueResult<string | undefined>;
+function parseMessageContent(
+  raw: unknown,
+  messageType: MessageType | undefined,
+  required: boolean,
+): ValueResult<string | undefined> {
+  if (raw === undefined && !required) return { ok: true, value: undefined };
+  const parsed = parseRequiredString(raw, 'messageContent', MESSAGE_CONTENT_MAX_LENGTH);
+  if (!parsed.ok) return parsed;
+  if (messageType !== undefined) {
+    const content = validateMessageContent(messageType, parsed.value);
+    if (!content.ok) return content;
+  }
+  return { ok: true, value: parsed.value };
+}
+
+function parseConditionType(raw: unknown): ValueResult<ConditionType | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  const parsed = parseRequiredString(raw, 'conditionType', 64);
+  if (!parsed.ok) return parsed;
+  if (!VALID_CONDITION_TYPES.includes(parsed.value as ConditionType)) {
+    return { ok: false, error: 'conditionType is invalid' };
+  }
+  return { ok: true, value: parsed.value as ConditionType };
+}
+
+function validateConditionValue(
+  conditionType: ConditionType,
+  conditionValue: string,
+): { ok: true } | { ok: false; error: string } {
+  if (conditionType === 'metadata_equals' || conditionType === 'metadata_not_equals') {
+    const parsed = parseJsonRecord(conditionValue, 'conditionValue');
+    if (!parsed.ok) return parsed;
+    if (typeof parsed.value.key !== 'string' || !Object.prototype.hasOwnProperty.call(parsed.value, 'value')) {
+      return { ok: false, error: 'conditionValue must include key and value' };
+    }
+  }
+  return { ok: true };
+}
+
+function parseConditionValue(raw: unknown): ValueResult<string | null | undefined> {
+  return parseOptionalNullableString(raw, 'conditionValue', CONDITION_VALUE_MAX_LENGTH);
+}
+
+function parseScenarioCreateBody(raw: unknown): ParseResult<ScenarioCreateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseRequiredString(raw.name, 'name', SCENARIO_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const description = parseOptionalNullableString(raw.description, 'description', SCENARIO_DESCRIPTION_MAX_LENGTH);
+  if (!description.ok) return description;
+  const triggerType = parseEnumValue(raw.triggerType, 'triggerType', VALID_TRIGGER_TYPES, true);
+  if (!triggerType.ok) return triggerType;
+  const triggerTagId = parseOptionalNullableString(raw.triggerTagId, 'triggerTagId', ID_MAX_LENGTH);
+  if (!triggerTagId.ok) return triggerTagId;
+  const isActive = parseOptionalBoolean(raw.isActive, 'isActive');
+  if (!isActive.ok) return isActive;
+  const lineAccountId = parseOptionalNullableString(raw.lineAccountId, 'lineAccountId', ID_MAX_LENGTH);
+  if (!lineAccountId.ok) return lineAccountId;
+  const deliveryMode = raw.deliveryMode === undefined
+    ? { ok: true as const, value: 'relative' as DeliveryMode }
+    : parseEnumValue(raw.deliveryMode, 'deliveryMode', VALID_DELIVERY_MODES, true);
+  if (!deliveryMode.ok) return deliveryMode;
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      description: description.value,
+      triggerType: triggerType.value,
+      triggerTagId: triggerTagId.value,
+      isActive: isActive.value,
+      lineAccountId: lineAccountId.value,
+      deliveryMode: deliveryMode.value,
+    },
+  };
+}
+
+function parseScenarioUpdateBody(raw: unknown): ParseResult<ScenarioUpdateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (raw.deliveryMode !== undefined) {
+    return { ok: false, error: 'deliveryMode cannot be changed after creation' };
+  }
+  const name = raw.name === undefined
+    ? { ok: true as const, value: undefined }
+    : parseRequiredString(raw.name, 'name', SCENARIO_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const description = parseOptionalNullableString(raw.description, 'description', SCENARIO_DESCRIPTION_MAX_LENGTH);
+  if (!description.ok) return description;
+  const triggerType = parseEnumValue(raw.triggerType, 'triggerType', VALID_TRIGGER_TYPES, false);
+  if (!triggerType.ok) return triggerType;
+  const triggerTagId = parseOptionalNullableString(raw.triggerTagId, 'triggerTagId', ID_MAX_LENGTH);
+  if (!triggerTagId.ok) return triggerTagId;
+  const isActive = parseOptionalBoolean(raw.isActive, 'isActive');
+  if (!isActive.ok) return isActive;
+  if (
+    name.value === undefined &&
+    description.value === undefined &&
+    triggerType.value === undefined &&
+    triggerTagId.value === undefined &&
+    isActive.value === undefined
+  ) {
+    return { ok: false, error: 'At least one field is required' };
+  }
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      description: description.value,
+      triggerType: triggerType.value,
+      triggerTagId: triggerTagId.value,
+      isActive: isActive.value,
+    },
+  };
+}
+
+function parseStepScheduleFields(raw: Record<string, unknown>): ValueResult<StepScheduleBody> {
+  const delayMinutes = parseInteger(raw.delayMinutes, 'delayMinutes', 0, DELAY_MINUTES_MAX, false);
+  if (!delayMinutes.ok) return delayMinutes;
+  const offsetDays = parseInteger(raw.offsetDays, 'offsetDays', 0, OFFSET_DAYS_MAX, false);
+  if (!offsetDays.ok) return offsetDays;
+  const offsetMinutes = parseInteger(raw.offsetMinutes, 'offsetMinutes', 0, 1439, false);
+  if (!offsetMinutes.ok) return offsetMinutes;
+  const deliveryTime = parseOptionalScheduleString(raw.deliveryTime, 'deliveryTime');
+  if (!deliveryTime.ok) return deliveryTime;
+  return {
+    ok: true,
+    value: {
+      delayMinutes: delayMinutes.value,
+      offsetDays: offsetDays.value,
+      offsetMinutes: offsetMinutes.value,
+      deliveryTime: deliveryTime.value,
+    },
+  };
+}
+
+function parseScenarioStepCreateBody(raw: unknown): ParseResult<ScenarioStepCreateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const stepOrder = parseInteger(raw.stepOrder, 'stepOrder', 1, STEP_ORDER_MAX, true);
+  if (!stepOrder.ok) return stepOrder;
+  const schedule = parseStepScheduleFields(raw);
+  if (!schedule.ok) return schedule;
+  const messageType = parseEnumValue(raw.messageType, 'messageType', VALID_MESSAGE_TYPES, true);
+  if (!messageType.ok) return messageType;
+  const messageContent = parseMessageContent(raw.messageContent, messageType.value, true);
+  if (!messageContent.ok) return messageContent;
+  const conditionType = parseConditionType(raw.conditionType);
+  if (!conditionType.ok) return conditionType;
+  const conditionValue = parseConditionValue(raw.conditionValue);
+  if (!conditionValue.ok) return conditionValue;
+  if (conditionType.value != null) {
+    if (conditionValue.value == null) return { ok: false, error: 'conditionValue is required' };
+    const condition = validateConditionValue(conditionType.value, conditionValue.value);
+    if (!condition.ok) return condition;
+  } else if (conditionValue.value != null) {
+    return { ok: false, error: 'conditionType is required when conditionValue is set' };
+  }
+  const nextStepOnFalse = parseOptionalNullableInteger(raw.nextStepOnFalse, 'nextStepOnFalse', 1, STEP_ORDER_MAX);
+  if (!nextStepOnFalse.ok) return nextStepOnFalse;
+  const templateId = parseOptionalNullableString(raw.templateId, 'templateId', ID_MAX_LENGTH);
+  if (!templateId.ok) return templateId;
+  const onReachTagId = parseOptionalNullableString(raw.onReachTagId, 'onReachTagId', ID_MAX_LENGTH);
+  if (!onReachTagId.ok) return onReachTagId;
+  return {
+    ok: true,
+    body: {
+      stepOrder: stepOrder.value,
+      ...schedule.value,
+      messageType: messageType.value,
+      messageContent: messageContent.value,
+      conditionType: conditionType.value,
+      conditionValue: conditionValue.value,
+      nextStepOnFalse: nextStepOnFalse.value,
+      templateId: templateId.value,
+      onReachTagId: onReachTagId.value,
+    },
+  };
+}
+
+function parseScenarioStepUpdateBody(raw: unknown): ParseResult<ScenarioStepUpdateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const stepOrder = parseInteger(raw.stepOrder, 'stepOrder', 1, STEP_ORDER_MAX, false);
+  if (!stepOrder.ok) return stepOrder;
+  const schedule = parseStepScheduleFields(raw);
+  if (!schedule.ok) return schedule;
+  const messageType = parseEnumValue(raw.messageType, 'messageType', VALID_MESSAGE_TYPES, false);
+  if (!messageType.ok) return messageType;
+  const messageContent = parseMessageContent(raw.messageContent, messageType.value, false);
+  if (!messageContent.ok) return messageContent;
+  const conditionType = parseConditionType(raw.conditionType);
+  if (!conditionType.ok) return conditionType;
+  const conditionValue = parseConditionValue(raw.conditionValue);
+  if (!conditionValue.ok) return conditionValue;
+  if (conditionType.value != null && conditionValue.value != null) {
+    const condition = validateConditionValue(conditionType.value, conditionValue.value);
+    if (!condition.ok) return condition;
+  }
+  if (conditionType.value === null && conditionValue.value !== undefined && conditionValue.value !== null) {
+    return { ok: false, error: 'conditionValue must be cleared with conditionType' };
+  }
+  const nextStepOnFalse = parseOptionalNullableInteger(raw.nextStepOnFalse, 'nextStepOnFalse', 1, STEP_ORDER_MAX);
+  if (!nextStepOnFalse.ok) return nextStepOnFalse;
+  const templateId = parseOptionalNullableString(raw.templateId, 'templateId', ID_MAX_LENGTH);
+  if (!templateId.ok) return templateId;
+  const onReachTagId = parseOptionalNullableString(raw.onReachTagId, 'onReachTagId', ID_MAX_LENGTH);
+  if (!onReachTagId.ok) return onReachTagId;
+  const body = {
+    stepOrder: stepOrder.value,
+    ...schedule.value,
+    messageType: messageType.value,
+    messageContent: messageContent.value,
+    conditionType: conditionType.value,
+    conditionValue: conditionValue.value,
+    nextStepOnFalse: nextStepOnFalse.value,
+    templateId: templateId.value,
+    onReachTagId: onReachTagId.value,
+  };
+  if (Object.values(body).every((value) => value === undefined)) {
+    return { ok: false, error: 'At least one field is required' };
+  }
+  return { ok: true, body };
+}
+
+function parseStepReorderBody(raw: unknown): ParseResult<StepReorderBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (!Array.isArray(raw.orders) || raw.orders.length === 0) {
+    return { ok: false, error: 'orders must be a non-empty array' };
+  }
+  if (raw.orders.length > REORDER_MAX_ITEMS) return { ok: false, error: 'orders is too large' };
+  const orders: StepReorderBody['orders'] = [];
+  const stepIds = new Set<string>();
+  const stepOrders = new Set<number>();
+  for (const item of raw.orders) {
+    if (!isRecord(item)) return { ok: false, error: 'invalid orders entry' };
+    const stepId = parseRequiredString(item.stepId, 'stepId', ID_MAX_LENGTH);
+    if (!stepId.ok) return { ok: false, error: 'invalid orders entry' };
+    const stepOrder = parseInteger(item.stepOrder, 'stepOrder', 1, STEP_ORDER_MAX, true);
+    if (!stepOrder.ok) return { ok: false, error: 'invalid orders entry' };
+    if (stepIds.has(stepId.value)) return { ok: false, error: 'duplicate stepId in orders' };
+    if (stepOrders.has(stepOrder.value)) return { ok: false, error: 'duplicate stepOrder in orders' };
+    stepIds.add(stepId.value);
+    stepOrders.add(stepOrder.value);
+    orders.push({ stepId: stepId.value, stepOrder: stepOrder.value });
+  }
+  return { ok: true, body: { orders } };
 }
 
 /** delivery_mode に応じてスケジュールフィールドを検証する。 */
@@ -192,31 +654,17 @@ scenarios.get('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => 
 // POST /api/scenarios - create
 scenarios.post('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      name: string;
-      description?: string | null;
-      triggerType: ScenarioTriggerType;
-      triggerTagId?: string | null;
-      isActive?: boolean;
-      lineAccountId?: string | null;
-      deliveryMode?: string;
-    }>();
-
-    if (!body.name || !body.triggerType) {
-      return c.json({ success: false, error: 'name and triggerType are required' }, 400);
-    }
-
-    const deliveryMode = body.deliveryMode ?? 'relative';
-    if (!VALID_DELIVERY_MODES.includes(deliveryMode as DeliveryMode)) {
-      return c.json({ success: false, error: 'invalid deliveryMode' }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseScenarioCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     let scenario = await createScenario(c.env.DB, {
       name: body.name,
       description: body.description ?? null,
       triggerType: body.triggerType,
       triggerTagId: body.triggerTagId ?? null,
-      deliveryMode: deliveryMode as DeliveryMode,
+      deliveryMode: body.deliveryMode,
     });
 
     // Save line_account_id if provided
@@ -242,18 +690,10 @@ scenarios.post('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
 scenarios.put('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      name?: string;
-      description?: string | null;
-      triggerType?: ScenarioTriggerType;
-      triggerTagId?: string | null;
-      isActive?: boolean;
-      deliveryMode?: DeliveryMode;
-    }>();
-
-    if (body.deliveryMode !== undefined) {
-      return c.json({ success: false, error: 'deliveryMode cannot be changed after creation' }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseScenarioUpdateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     const updated = await updateScenario(c.env.DB, id, {
       name: body.name,
@@ -290,27 +730,10 @@ scenarios.delete('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) 
 scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async (c) => {
   try {
     const scenarioId = c.req.param('id')!;
-    const body = await c.req.json<{
-      stepOrder: number;
-      delayMinutes?: number;
-      offsetDays?: number;
-      offsetMinutes?: number;
-      deliveryTime?: string;
-      messageType: MessageType;
-      messageContent: string;
-      conditionType?: string | null;
-      conditionValue?: string | null;
-      nextStepOnFalse?: number | null;
-      templateId?: string | null;
-      onReachTagId?: string | null;
-    }>();
-
-    if (body.stepOrder === undefined || !body.messageType || !body.messageContent) {
-      return c.json(
-        { success: false, error: 'stepOrder, messageType, and messageContent are required' },
-        400,
-      );
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseScenarioStepCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     const scenarioRow = await c.env.DB
       .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
@@ -367,20 +790,28 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
   try {
     const scenarioId = c.req.param('id')!;
     const stepId = c.req.param('stepId')!;
-    const body = await c.req.json<{
-      stepOrder?: number;
-      delayMinutes?: number;
-      offsetDays?: number;
-      offsetMinutes?: number;
-      deliveryTime?: string;
-      messageType?: MessageType;
-      messageContent?: string;
-      conditionType?: string | null;
-      conditionValue?: string | null;
-      nextStepOnFalse?: number | null;
-      templateId?: string | null;
-      onReachTagId?: string | null;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseScenarioStepUpdateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
+
+    const existingStep = await c.env.DB
+      .prepare(
+        `SELECT delay_minutes, offset_days, offset_minutes, delivery_time, message_type, message_content
+         FROM scenario_steps WHERE id = ? AND scenario_id = ?`,
+      )
+      .bind(stepId, scenarioId)
+      .first<{
+        delay_minutes: number;
+        offset_days: number | null;
+        offset_minutes: number | null;
+        delivery_time: string | null;
+        message_type: MessageType;
+        message_content: string;
+      }>();
+    if (!existingStep) {
+      return c.json({ success: false, error: 'Step not found' }, 404);
+    }
 
     // templateId / onReachTagId 参照整合性チェック (null は解除を意図、bypass)
     // templateId が指定された場合は内容も取得して snapshot 更新に使う。
@@ -406,10 +837,10 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
     // (1 フィールドだけ更新するケース、例: elapsed step の offsetMinutes だけ変更、
     //  absolute_time step の deliveryTime だけ変更 を許可するため)
     const scheduleTouched =
-      body.delayMinutes != null ||
-      body.offsetDays != null ||
-      body.offsetMinutes != null ||
-      body.deliveryTime != null;
+      body.delayMinutes !== undefined ||
+      body.offsetDays !== undefined ||
+      body.offsetMinutes !== undefined ||
+      body.deliveryTime !== undefined;
     if (scheduleTouched) {
       const scenarioRow = await c.env.DB
         .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
@@ -417,21 +848,6 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
         .first<{ delivery_mode: DeliveryMode }>();
       if (!scenarioRow) {
         return c.json({ success: false, error: 'Scenario not found' }, 404);
-      }
-      const existingStep = await c.env.DB
-        .prepare(
-          `SELECT delay_minutes, offset_days, offset_minutes, delivery_time
-           FROM scenario_steps WHERE id = ? AND scenario_id = ?`,
-        )
-        .bind(stepId, scenarioId)
-        .first<{
-          delay_minutes: number;
-          offset_days: number | null;
-          offset_minutes: number | null;
-          delivery_time: string | null;
-        }>();
-      if (!existingStep) {
-        return c.json({ success: false, error: 'Step not found' }, 404);
       }
       // mode mismatch (relative scenario に offsetDays を投げる等) は body の生値で検出する。
       // 一方、対応 mode のフィールドが片方だけ送られた場合 (例: absolute_time で deliveryTime のみ)
@@ -481,6 +897,16 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
     const effectiveMessageContent = templateSnapshot
       ? templateSnapshot.message_content
       : body.messageContent;
+    const messageTouched =
+      templateSnapshot !== null ||
+      body.messageType !== undefined ||
+      body.messageContent !== undefined;
+    if (messageTouched) {
+      const finalMessageType = (effectiveMessageType ?? existingStep.message_type) as MessageType;
+      const finalMessageContent = effectiveMessageContent ?? existingStep.message_content;
+      const content = validateMessageContent(finalMessageType, finalMessageContent);
+      if (!content.ok) return c.json({ success: false, error: content.error }, 400);
+    }
 
     const updated = await updateScenarioStep(c.env.DB, stepId, {
       step_order: body.stepOrder,
@@ -524,16 +950,10 @@ scenarios.delete('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin
 scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin'), async (c) => {
   try {
     const scenarioId = c.req.param('id')!;
-    const body = await c.req.json<{ orders: { stepId: string; stepOrder: number }[] }>();
-
-    if (!Array.isArray(body.orders) || body.orders.length === 0) {
-      return c.json({ success: false, error: 'orders must be a non-empty array' }, 400);
-    }
-    for (const o of body.orders) {
-      if (typeof o.stepId !== 'string' || typeof o.stepOrder !== 'number' || o.stepOrder < 1) {
-        return c.json({ success: false, error: 'invalid orders entry' }, 400);
-      }
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseStepReorderBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     // 既存ステップの step_order と next_step_on_false を取得して、
     // 旧 step_order → 新 step_order のマップを構築する。
@@ -544,6 +964,10 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
       .bind(scenarioId)
       .all<{ id: string; step_order: number }>();
     const oldOrderById = new Map(existing.results.map((r) => [r.id, r.step_order]));
+    const missing = body.orders.find((o) => !oldOrderById.has(o.stepId));
+    if (missing) {
+      return c.json({ success: false, error: 'Step not found' }, 404);
+    }
     // moved set: stepId → newOrder
     const newOrderById = new Map(body.orders.map((o) => [o.stepId, o.stepOrder]));
     // old → new step_order map (only for moved steps)

@@ -78,6 +78,25 @@ function commandError(command: string, result: CommandResult): string {
   return result.stderr || result.stdout || `${command} failed`;
 }
 
+function mergeStateItem(mergeStateStatus: string | undefined): ReadinessItem {
+  const status = mergeStateStatus ?? 'unknown';
+  switch (status) {
+    case 'CLEAN':
+    case 'HAS_HOOKS':
+      return item('pass', 'pr: merge state', status);
+    case 'DIRTY':
+      return item('fail', 'pr: merge state', status, 'Resolve merge conflicts with the base branch before draft release review.');
+    case 'BEHIND':
+      return item('fail', 'pr: merge state', status, 'Update this branch with the latest base branch before draft release review.');
+    case 'UNSTABLE':
+      return item('wait', 'pr: merge state', status, 'Wait for required checks or branch protection state to clear.');
+    case 'BLOCKED':
+      return item('wait', 'pr: merge state', status, 'Resolve the blocking review, policy, or branch protection requirement.');
+    default:
+      return item('wait', 'pr: merge state', status, 'Refresh PR metadata and confirm GitHub reports a mergeable state.');
+  }
+}
+
 export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): ReadinessItem[] {
   const items: ReadinessItem[] = [];
 
@@ -104,6 +123,8 @@ export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): Readiness
     } else {
       items.push(item('wait', 'pr: head matches local', 'missing PR head or local head', 'Fetch PR metadata and local HEAD again.'));
     }
+
+    items.push(mergeStateItem(pr.mergeStateStatus));
 
     items.push(pr.isDraft
       ? item('wait', 'pr: draft status', 'PR is still draft', 'Keep draft until CI is approved/green and production strict Preflight inputs are ready.')

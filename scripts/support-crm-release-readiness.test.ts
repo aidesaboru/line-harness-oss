@@ -53,6 +53,7 @@ describe('support CRM release readiness', () => {
       pr: {
         ...basePr,
         isDraft: true,
+        mergeStateStatus: 'UNSTABLE',
         body: [
           basePr.headRefOid,
           'corepack pnpm preflight:support-crm:dry-run',
@@ -75,6 +76,11 @@ describe('support CRM release readiness', () => {
       expect.objectContaining({
         status: 'wait',
         name: 'pr: draft status',
+      }),
+      expect.objectContaining({
+        status: 'wait',
+        name: 'pr: merge state',
+        detail: 'UNSTABLE',
       }),
       expect.objectContaining({
         status: 'wait',
@@ -130,6 +136,7 @@ describe('support CRM release readiness', () => {
         headRefOid: 'def9876543210abcdef',
         isDraft: false,
         state: 'OPEN',
+        mergeStateStatus: 'DIRTY',
         body: 'Remote cleanup verification',
       },
       latestRun: {
@@ -148,6 +155,11 @@ describe('support CRM release readiness', () => {
       expect.objectContaining({
         status: 'fail',
         name: 'pr: head matches local',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'pr: merge state',
+        detail: 'DIRTY',
       }),
       expect.objectContaining({
         status: 'fail',

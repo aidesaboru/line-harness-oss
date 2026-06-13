@@ -468,7 +468,7 @@ N/A
 - Automations route tests verify malformed or unsafe automation query/path/payload values stop before DB helpers or SQL bind while valid rule payloads, action types, priorities, and account scopes are normalized before persistence.
 - Rich-menu group route tests verify malformed or unsafe rich menu account/rich-menu/group/page/tag query/path values, apply-to-tag bodies, force query values, and image R2 keys stop before DB helpers, SQL bind, LINE fetch, or R2 get/put while valid IDs and labels are normalized.
 - Web support-meta/clipboard/staff-form tests verify manual editor validation, copy fallback behavior, and staff creation payload validation; support/staff pages route destructive actions through the shared in-app confirmation dialog before API calls.
-- `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale PR body commit evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
+- `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale PR body commit evidence, unmergeable PR states, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.
 - Local strict Preflight result: `19 passed, 0 skipped, 0 failed`.
@@ -520,9 +520,9 @@ corepack pnpm support-crm:release-readiness
 
 見方:
 
-- `FAIL`: こちらで直してから再確認する項目です。例: ローカル差分あり、PR head未push、PR本文の最新commit SHA/検証証跡不足、CI失敗。
+- `FAIL`: こちらで直してから再確認する項目です。例: ローカル差分あり、PR head未push、PR本文の最新commit SHA/検証証跡不足、merge conflictやbase追従不足、CI失敗。
 - PR本文の検証証跡には、最新commit SHA、`preflight:support-crm:dry-run`、`preflight:support-crm:summary`、remote strict Preflight、remote cleanup verification、GitHub Actions statusを含めます。
-- `WAIT`: 外部状態や本番切替前の未実施確認です。例: fork PRのGitHub Actions承認待ち、最新commitのCI run待ち、PRがdraftのまま、本番LINE公式アカウントの実データstrict Preflight未実施。
+- `WAIT`: 外部状態や本番切替前の未実施確認です。例: fork PRのGitHub Actions承認待ち、PR merge stateがbranch protection/check待ち、最新commitのCI run待ち、PRがdraftのまま、本番LINE公式アカウントの実データstrict Preflight未実施。
 - `PASS`: その項目は現時点の証跡で満たしています。
 
 ## 7. 切替判断

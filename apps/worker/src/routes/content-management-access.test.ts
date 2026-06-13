@@ -165,6 +165,37 @@ describe('content management role guards', () => {
 });
 
 describe('content management payload validation', () => {
+  test('reusable template list rejects oversized category query before DB helper calls', async () => {
+    const app = setupApp('owner');
+    const oversizedCategory = 'x'.repeat(65);
+
+    const res = await app.request(`/api/templates?category=${oversizedCategory}`);
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getTemplatesWithUsageCount).not.toHaveBeenCalled();
+  });
+
+  test('reusable template list trims valid category query before DB helper calls', async () => {
+    dbMocks.getTemplatesWithUsageCount.mockResolvedValue([
+      {
+        id: 'template-1',
+        name: 'Greeting',
+        category: 'general',
+        message_type: 'text',
+        message_content: 'hello',
+        usage_count: 0,
+        created_at: '2026-06-13T10:00:00.000',
+        updated_at: '2026-06-13T10:00:00.000',
+      },
+    ]);
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/templates?category=%20general%20');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getTemplatesWithUsageCount).toHaveBeenCalledWith({} as D1Database, 'general');
+  });
+
   test('tag create rejects malformed or invalid payloads before DB writes', async () => {
     const app = setupApp('owner');
 

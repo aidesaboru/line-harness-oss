@@ -50,6 +50,14 @@ function parseOptionalString(raw: unknown, label: string, maxLength: number): Va
   return parseRequiredString(raw, label, maxLength);
 }
 
+function parseOptionalQueryString(raw: string | undefined, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
 function parseMessageType(raw: unknown, required: boolean): ValueResult<string | undefined> {
   if (raw === undefined && !required) return { ok: true, value: undefined };
   const parsed = parseRequiredString(raw, 'messageType', 32);
@@ -146,8 +154,9 @@ function parseTemplateUpdateBody(raw: unknown): ParseResult<TemplateUpdateInput>
 
 templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
   try {
-    const category = c.req.query('category') ?? undefined;
-    const items = await getTemplatesWithUsageCount(c.env.DB, category);
+    const category = parseOptionalQueryString(c.req.query('category'), 'category', TEMPLATE_CATEGORY_MAX_LENGTH);
+    if (!category.ok) return c.json({ success: false, error: category.error }, 400);
+    const items = await getTemplatesWithUsageCount(c.env.DB, category.value);
     return c.json({
       success: true,
       data: items.map((t) => ({

@@ -22,6 +22,18 @@ import {
 
 const friends = new Hono<Env>();
 
+function clampLimit(raw: string | undefined, fallback = 50): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(100, Math.floor(n)));
+}
+
+function clampOffset(raw: string | undefined): number {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
 }
@@ -107,8 +119,8 @@ function serializeTag(row: DbTag) {
 // GET /api/friends - list with pagination
 friends.get('/api/friends', async (c) => {
   try {
-    const limit = Number(c.req.query('limit') ?? '50');
-    const offset = Number(c.req.query('offset') ?? '0');
+    const limit = clampLimit(c.req.query('limit'), 50);
+    const offset = clampOffset(c.req.query('offset'));
     const tagId = c.req.query('tagId');
     const lineAccountId = c.req.query('lineAccountId');
     const search = c.req.query('search');

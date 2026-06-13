@@ -173,8 +173,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] 未完了案件を再オープンにできない
 - [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
 - [ ] 未対応のチャット `messageType` がLINE送信前、DB記録前に止まる
-- [ ] サポート案件一覧の不正な `limit` / `offset` queryがSQL bind前に安全な値へ戻る
-  - Worker support route testでは、無効な `limit` は既定値に戻り、小数の `offset` は整数化され、`Infinity` のような有限でない値は0へ戻ることを確認済み。
+- [ ] サポート案件一覧と友だち一覧の不正な `limit` / `offset` queryがSQL bind前に安全な値へ戻る
+  - Worker support/friends route testでは、無効な `limit` は既定値に戻り、小数の `offset` は整数化され、`Infinity` のような有限でない値は0へ戻ることを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
@@ -231,6 +231,7 @@ corepack pnpm --filter web test
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker test -- src/routes/support.test.ts
+corepack pnpm --filter worker test -- src/routes/friends.test.ts
 corepack pnpm --filter worker test
 corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
 corepack pnpm build

@@ -217,6 +217,28 @@ describe('friends support visibility', () => {
     expect(listCall?.binds).toEqual(expect.arrayContaining(['staff-1', '%田島%', '%田島%', '%田島%']));
   });
 
+  test('friend list clamps invalid limit and fractional offset before SQL bind', async () => {
+    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/friends?lineAccountId=acc-1&includeTags=false&limit=abc&offset=1.9');
+
+    expect(res.status).toBe(200);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM friends f'));
+    expect(listCall?.binds.slice(-2)).toEqual([50, 1]);
+  });
+
+  test('friend list resets non-finite offset before SQL bind', async () => {
+    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/friends?lineAccountId=acc-1&includeTags=false&offset=Infinity');
+
+    expect(res.status).toBe(200);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM friends f'));
+    expect(listCall?.binds.slice(-2)).toEqual([50, 0]);
+  });
+
   test('owner friend list remains unrestricted', async () => {
     const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 

@@ -141,6 +141,7 @@ strict Preflight:
 
 - 未ログインで `/support` を開くと `/login` に戻る
 - ログイン画面とAPIキー入力欄が表示される
+- owner/admin/staff mock sessionで `/support` を開き、owner/adminは「新規案件」ボタン1件、staffは0件であることを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

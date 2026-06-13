@@ -86,6 +86,28 @@ beforeEach(() => {
   idempotencyMocks.saveIdempotencyResponse.mockResolvedValue(undefined);
 });
 
+describe('public booking LIFF menu staff access', () => {
+  test('rejects unsafe menu path id before staff lookup', async () => {
+    const { app, db } = setupApp();
+
+    const res = await app.request('/api/liff/booking/menus/bad%20menu/staff?liffId=liff-1');
+
+    expect(res.status).toBe(400);
+    expect(db.calls.some((call) => call.sql.includes('FROM staff s'))).toBe(false);
+    expect(availabilityMocks.getAvailability).not.toHaveBeenCalled();
+  });
+
+  test('trims valid menu path id before staff lookup', async () => {
+    const { app, db } = setupApp();
+
+    const res = await app.request('/api/liff/booking/menus/%20menu-1%20/staff?liffId=%20liff-1%20');
+
+    expect(res.status).toBe(200);
+    expect(db.calls.find((call) => call.sql.includes('FROM line_accounts'))?.binds).toEqual(['liff-1']);
+    expect(db.calls.find((call) => call.sql.includes('FROM staff s'))?.binds).toEqual(['acc-1', 'menu-1']);
+  });
+});
+
 describe('public booking LIFF availability access', () => {
   test('rejects unsafe liffId before DB lookup or availability helper calls', async () => {
     const { app, db } = setupApp();

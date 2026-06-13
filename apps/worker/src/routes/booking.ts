@@ -321,7 +321,8 @@ booking.get('/api/liff/booking/menus', async (c) => {
 booking.get('/api/liff/booking/menus/:id/staff', async (c) => {
   const accountId = await resolveAccountIdFromLiff(c);
   if (!accountId) return c.json({ error: 'unknown_liff' }, 404);
-  const menuId = c.req.param('id');
+  const menuId = parseVisibleString(c.req.param('id'), 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!menuId.ok) return c.json({ error: 'invalid_menu_id' }, 400);
   const rows = await c.env.DB
     .prepare(
       `SELECT s.id, s.display_name, s.role, s.profile_image_url, s.bio,
@@ -334,7 +335,7 @@ booking.get('/api/liff/booking/menus/:id/staff', async (c) => {
         WHERE s.line_account_id = ?1 AND s.is_active = 1 AND s.deleted_at IS NULL
         ORDER BY s.is_designation_optional DESC, s.sort_order ASC, s.id ASC`,
     )
-    .bind(accountId, menuId)
+    .bind(accountId, menuId.value)
     .all();
   return c.json({ staff: rows.results });
 });

@@ -221,7 +221,8 @@ async function verifyCallerLineUserId(c: Context<Env>): Promise<string | null> {
 }
 
 async function resolveAccountIdAdmin(c: Context<Env>): Promise<string | null> {
-  return c.req.query('account_id') ?? null;
+  const accountId = parseVisibleString(c.req.query('account_id'), 'account_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  return accountId.ok ? accountId.value : null;
 }
 
 // staff が指定 account に属することを保証する。属していなければ null を返す。

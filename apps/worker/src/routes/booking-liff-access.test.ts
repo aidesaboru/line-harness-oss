@@ -66,9 +66,12 @@ function makeDb() {
   return db as unknown as D1Database & { calls: DbCall[]; prepare: ReturnType<typeof vi.fn> };
 }
 
-function setupApp(db = makeDb()) {
+function setupApp(db = makeDb(), role?: StaffRole) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
+    if (role) {
+      c.set('staff', { id: 'staff-1', name: 'Tajima', role });
+    }
     c.env = { DB: db, LINE_LOGIN_CHANNEL_ID: 'login-channel' };
     await next();
   });
@@ -84,6 +87,26 @@ beforeEach(() => {
   dbMocks.getLineAccounts.mockResolvedValue([]);
   idempotencyMocks.findIdempotencyResponse.mockResolvedValue(null);
   idempotencyMocks.saveIdempotencyResponse.mockResolvedValue(undefined);
+});
+
+describe('booking admin account access', () => {
+  test('rejects unsafe account_id before DB lookup', async () => {
+    const { app, db } = setupApp(makeDb(), 'owner');
+
+    const res = await app.request('/api/booking/admin/menus?account_id=bad%20account');
+
+    expect(res.status).toBe(400);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('trims valid account_id before SQL bind', async () => {
+    const { app, db } = setupApp(makeDb(), 'owner');
+
+    const res = await app.request('/api/booking/admin/menus?account_id=%20acc-1%20');
+
+    expect(res.status).toBe(200);
+    expect(db.calls.find((call) => call.sql.includes('FROM menus'))?.binds).toEqual(['acc-1']);
+  });
 });
 
 describe('public booking LIFF menu staff access', () => {

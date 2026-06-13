@@ -457,6 +457,110 @@ describe('management role guards', () => {
   });
 });
 
+describe('account health and migration payload validation', () => {
+  test('owner account health and migration routes reject unsafe input before DB helpers', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp('owner', db);
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/accounts/bad%20account/health'],
+      ['POST', '/api/accounts/bad%20account/migrate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toAccountId: 'acc-2' }),
+      }],
+      ['POST', '/api/accounts/acc-1/migrate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/accounts/acc-1/migrate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }],
+      ['POST', '/api/accounts/acc-1/migrate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toAccountId: 'bad account' }),
+      }],
+      ['GET', '/api/accounts/migrations/bad%20migration'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      vi.clearAllMocks();
+      const res = await app.request(path, { ...init, method });
+
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(db.prepare).not.toHaveBeenCalled();
+      expect(dbMocks.getLatestRiskLevel).not.toHaveBeenCalled();
+      expect(dbMocks.getAccountHealthLogs).not.toHaveBeenCalled();
+      expect(dbMocks.createAccountMigration).not.toHaveBeenCalled();
+      expect(dbMocks.updateAccountMigration).not.toHaveBeenCalled();
+      expect(dbMocks.getAccountMigrationById).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner account health and migration routes trim valid IDs before DB helpers', async () => {
+    const countFirst = vi.fn().mockResolvedValue({ count: 7 });
+    const db = {
+      prepare: vi.fn(() => ({ first: countFirst })),
+    } as unknown as D1Database;
+    const app = setupApp('owner', db);
+    dbMocks.getLatestRiskLevel.mockResolvedValue('normal');
+    dbMocks.getAccountHealthLogs.mockResolvedValue([
+      {
+        id: 'log-1',
+        error_code: null,
+        error_count: 0,
+        check_period: '24h',
+        risk_level: 'normal',
+        created_at: '2026-06-13T10:00:00.000',
+      },
+    ]);
+    dbMocks.createAccountMigration.mockResolvedValue({
+      id: 'migration-1',
+      from_account_id: 'acc-1',
+      to_account_id: 'acc-2',
+      status: 'pending',
+      migrated_count: 0,
+      total_count: 7,
+      created_at: '2026-06-13T10:00:00.000',
+      completed_at: null,
+    });
+    dbMocks.updateAccountMigration.mockResolvedValue(undefined);
+    dbMocks.getAccountMigrationById.mockResolvedValue({
+      id: 'migration-1',
+      from_account_id: 'acc-1',
+      to_account_id: 'acc-2',
+      status: 'in_progress',
+      migrated_count: 0,
+      total_count: 7,
+      created_at: '2026-06-13T10:00:00.000',
+      completed_at: null,
+    });
+
+    const healthRes = await app.request('/api/accounts/%20acc-1%20/health');
+    expect(healthRes.status).toBe(200);
+    expect(dbMocks.getLatestRiskLevel).toHaveBeenCalledWith(db, 'acc-1');
+    expect(dbMocks.getAccountHealthLogs).toHaveBeenCalledWith(db, 'acc-1');
+
+    const migrateRes = await app.request('/api/accounts/%20acc-1%20/migrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toAccountId: ' acc-2 ' }),
+    });
+    expect(migrateRes.status).toBe(201);
+    expect(dbMocks.createAccountMigration).toHaveBeenCalledWith(db, {
+      fromAccountId: 'acc-1',
+      toAccountId: 'acc-2',
+      totalCount: 7,
+    });
+    expect(dbMocks.updateAccountMigration).toHaveBeenCalledWith(db, 'migration-1', {
+      status: 'in_progress',
+    });
+
+    const migrationRes = await app.request('/api/accounts/migrations/%20migration-1%20');
+    expect(migrationRes.status).toBe(200);
+    expect(dbMocks.getAccountMigrationById).toHaveBeenCalledWith(db, 'migration-1');
+  });
+});
+
 describe('conversion point payload validation', () => {
   const conversionPointRow = {
     id: 'point-1',

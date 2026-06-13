@@ -263,6 +263,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker management role guard testsでは、staffが流入経路、conversion point一覧/作成/削除、Google Calendar接続一覧/作成/削除、account health/migration管理APIへ直接アクセスしても403で止まり、DB helperやD1へ到達しないことを確認済み。Conversion/calendar access route testsでは、friend単位のconversion/calendar booking操作が引き続き可視範囲内で通ることを確認済み。
 - [ ] entry route管理payloadがDB書き込み前に検証される
   - Worker management role guard testsでは、壊れたJSON、不正なrefCode/name/redirectUrl/関連ID/runAccountFriendAddScenarios/isActiveがDB write前に400で止まり、正常payloadはtrim/null正規化されることを確認済み。
+- [ ] account health/migration APIのaccount/migration path IDとmigration作成payloadがDB helperやD1 count前に検証される
+  - Worker management role guard testsでは、壊れたJSON、不正なfromAccountId/toAccountId/migrationIdがDB helperやD1 count前に400で止まり、正常payload/path IDはtrimされることを確認済み。
 - [ ] conversion point作成payloadがDB書き込み前に検証される
   - Worker management role guard testsでは、壊れたJSON、不正なname/eventType/valueがDB write前に400で止まり、正常payloadはtrim/value null正規化されることを確認済み。
 - [ ] conversion記録payloadがfriend可視範囲check/DB書き込み前に検証される

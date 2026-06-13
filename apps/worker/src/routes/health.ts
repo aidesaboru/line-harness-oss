@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getAccountHealthLogs,
   getLatestRiskLevel,
@@ -12,21 +12,48 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const health = new Hono<Env>();
 
+const HEALTH_VISIBLE_ID_MAX_LENGTH = 128;
+const HEALTH_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseVisibleId(raw: unknown, label: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > HEALTH_VISIBLE_ID_MAX_LENGTH || !HEALTH_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return { ok: true, value };
+}
+
 health.use('/api/accounts/*', requireRole('owner', 'admin'));
 
 // ========== アカウントヘルス ==========
 
 health.get('/api/accounts/:id/health', async (c) => {
   try {
-    const lineAccountId = c.req.param('id');
+    const lineAccountId = parseVisibleId(c.req.param('id'), 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const [riskLevel, logs] = await Promise.all([
-      getLatestRiskLevel(c.env.DB, lineAccountId),
-      getAccountHealthLogs(c.env.DB, lineAccountId),
+      getLatestRiskLevel(c.env.DB, lineAccountId.value),
+      getAccountHealthLogs(c.env.DB, lineAccountId.value),
     ]);
     return c.json({
       success: true,
       data: {
-        lineAccountId,
+        lineAccountId: lineAccountId.value,
         riskLevel,
         logs: logs.map((l) => ({
           id: l.id,
@@ -70,9 +97,12 @@ health.get('/api/accounts/migrations', async (c) => {
 
 health.post('/api/accounts/:id/migrate', async (c) => {
   try {
-    const fromAccountId = c.req.param('id');
-    const body = await c.req.json<{ toAccountId: string }>();
-    if (!body.toAccountId) return c.json({ success: false, error: 'toAccountId is required' }, 400);
+    const fromAccountId = parseVisibleId(c.req.param('id'), 'from_account_id');
+    if (!fromAccountId.ok) return c.json({ success: false, error: fromAccountId.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const toAccountId = parseVisibleId(rawBody.value.toAccountId, 'to_account_id');
+    if (!toAccountId.ok) return c.json({ success: false, error: toAccountId.error }, 400);
 
     const db = c.env.DB;
 
@@ -84,8 +114,8 @@ health.post('/api/accounts/:id/migrate', async (c) => {
     const totalCount = countResult?.count ?? 0;
 
     const migration = await createAccountMigration(db, {
-      fromAccountId,
-      toAccountId: body.toAccountId,
+      fromAccountId: fromAccountId.value,
+      toAccountId: toAccountId.value,
       totalCount,
     });
 
@@ -113,7 +143,9 @@ health.post('/api/accounts/:id/migrate', async (c) => {
 
 health.get('/api/accounts/migrations/:migrationId', async (c) => {
   try {
-    const item = await getAccountMigrationById(c.env.DB, c.req.param('migrationId'));
+    const migrationId = parseVisibleId(c.req.param('migrationId'), 'migration_id');
+    if (!migrationId.ok) return c.json({ success: false, error: migrationId.error }, 400);
+    const item = await getAccountMigrationById(c.env.DB, migrationId.value);
     if (!item) return c.json({ success: false, error: 'Migration not found' }, 404);
     return c.json({
       success: true,

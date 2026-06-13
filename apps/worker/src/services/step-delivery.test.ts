@@ -192,6 +192,31 @@ describe('evaluateCondition', () => {
       expect(errorSpy).toHaveBeenCalled();
     });
 
+    it('logs only exception kind when condition lookup throws', async () => {
+      const db = {
+        prepare: () => ({
+          bind: () => ({
+            first: async () => {
+              throw new Error('D1 secret body friend-1 tag-secret token-abc');
+            },
+          }),
+        }),
+      } as unknown as D1Database;
+
+      const result = await evaluateCondition(db, 'friend-1', {
+        condition_type: 'tag_exists',
+        condition_value: 'tag-secret',
+      });
+
+      expect(result).toBe(false);
+      const logged = errorSpy.mock.calls.flat().map(String).join('\n');
+      expect(logged).toContain('[scenario] condition evaluation failed: Error');
+      expect(logged).not.toContain('D1 secret body');
+      expect(logged).not.toContain('friend-1');
+      expect(logged).not.toContain('tag-secret');
+      expect(logged).not.toContain('token-abc');
+    });
+
     it('friend metadata stored as invalid JSON → treated as empty map (does not throw)', async () => {
       const db = {
         prepare: () => ({

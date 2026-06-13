@@ -94,6 +94,12 @@ export async function resolveMetadata(
 
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
 
+function stepDeliveryErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export async function processStepDeliveries(
   db: D1Database,
   lineClient: LineClient,
@@ -114,7 +120,7 @@ export async function processStepDeliveries(
       const sent = await processSingleDelivery(db, lineClient, fs, workerUrl);
       if (sent) sendCount++;
     } catch (err) {
-      console.error(`Error processing friend_scenario ${fs.id}:`, err);
+      console.error(`Error processing friend_scenario delivery: ${stepDeliveryErrorKind(err)}`);
       // Continue with next one
     }
   }
@@ -268,7 +274,7 @@ async function processSingleDelivery(
     try {
       await addTagToFriend(db, friend.id, currentStep.on_reach_tag_id);
     } catch (err) {
-      console.error(`[scenario] tag attach failed step=${currentStep.id}:`, err);
+      console.error(`[scenario] tag attach failed: ${stepDeliveryErrorKind(err)}`);
     }
   }
   return true;
@@ -338,7 +344,7 @@ export async function evaluateCondition(
       }
     }
   } catch (err) {
-    console.error('[scenario] condition evaluation failed', err);
+    console.error(`[scenario] condition evaluation failed: ${stepDeliveryErrorKind(err)}`);
     return false;
   }
 }

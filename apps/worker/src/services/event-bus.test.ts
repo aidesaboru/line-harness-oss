@@ -224,4 +224,44 @@ describe('fireEvent — send_message action logging', () => {
     expect(captured[0].binds[2]).toBe('flex');
     expect(String(captured[0].binds[3])).toContain('from-template');
   });
+
+  it('stores only exception kind in automation action failure logs', async () => {
+    const db = await import('@line-crm/db');
+    (db.getActiveAutomationsByEvent as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue([
+      {
+        id: 'auto-redact',
+        line_account_id: null,
+        conditions: JSON.stringify({}),
+        actions: JSON.stringify([
+          { type: 'add_tag', params: { tagId: 'tag-secret' } },
+        ]),
+      },
+    ]);
+    (db.addTagToFriend as unknown as { mockRejectedValueOnce: (v: unknown) => void }).mockRejectedValueOnce(
+      new Error('D1 secret body friend-1 tag-secret token-abc'),
+    );
+
+    const dbFake = fakeDb({
+      capturedInserts: captured,
+    });
+    await fireEvent(
+      dbFake,
+      'manual_test',
+      { friendId: 'friend-1', eventData: { text: 'secret customer text' } },
+      'channel-token',
+      null,
+    );
+
+    const createAutomationLog = db.createAutomationLog as unknown as { mock: { calls: unknown[][] } };
+    const call = createAutomationLog.mock.calls.at(-1)?.[1] as {
+      actionsResult: string;
+      status: string;
+    };
+    expect(call.status).toBe('failed');
+    expect(call.actionsResult).toContain('"error":"Error"');
+    expect(call.actionsResult).not.toContain('D1 secret body');
+    expect(call.actionsResult).not.toContain('friend-1');
+    expect(call.actionsResult).not.toContain('tag-secret');
+    expect(call.actionsResult).not.toContain('token-abc');
+  });
 });

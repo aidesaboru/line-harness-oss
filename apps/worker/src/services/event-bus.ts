@@ -32,6 +32,25 @@ export interface EventPayload {
   replyToken?: string;
 }
 
+function eventBusLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function eventBusErrorKind(err: unknown): string {
+  const status = eventBusLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
+function isInvalidReplyTokenError(err: unknown): boolean {
+  if (eventBusLineErrorStatus(err) === 400) return true;
+  return err instanceof Error && err.message.includes('Invalid reply token');
+}
+
 /**
  * Fire an event and run all registered handlers.
  *
@@ -112,11 +131,11 @@ async function fireOutgoingWebhooks(
 
         await fetch(wh.url, { method: 'POST', headers, body });
       } catch (err) {
-        console.error(`送信Webhook ${wh.id} への通知失敗:`, err);
+        console.error(`送信Webhook通知失敗: ${eventBusErrorKind(err)}`);
       }
     }
   } catch (err) {
-    console.error('fireOutgoingWebhooks error:', err);
+    console.error(`fireOutgoingWebhooks error: ${eventBusErrorKind(err)}`);
   }
 }
 
@@ -130,7 +149,7 @@ async function processScoring(
   try {
     await applyScoring(db, payload.friendId, eventType);
   } catch (err) {
-    console.error('processScoring error:', err);
+    console.error(`processScoring error: ${eventBusErrorKind(err)}`);
   }
 }
 
@@ -163,8 +182,7 @@ async function processAutomations(
           await executeAction(db, action, payload, lineAccessToken, lineAccountId);
           results.push({ action: action.type, success: true });
         } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          results.push({ action: action.type, success: false, error: errorMsg });
+          results.push({ action: action.type, success: false, error: eventBusErrorKind(err) });
         }
       }
 
@@ -180,7 +198,7 @@ async function processAutomations(
       });
     }
   } catch (err) {
-    console.error('processAutomations error:', err);
+    console.error(`processAutomations error: ${eventBusErrorKind(err)}`);
   }
 }
 
@@ -301,9 +319,7 @@ async function executeAction(
           payload.replyToken = undefined;
           deliveryType = 'reply';
         } catch (err: unknown) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          const isTokenError = errMsg.includes('400') || errMsg.includes('Invalid reply token');
-          if (isTokenError) {
+          if (isInvalidReplyTokenError(err)) {
             await lineClient.pushMessage(friend.line_user_id, [msg]);
             deliveryType = 'push';
           } else {
@@ -430,6 +446,6 @@ async function logOutgoingMessage(
       )
       .run();
   } catch (err) {
-    console.error('logOutgoingMessage failed:', err);
+    console.error(`logOutgoingMessage failed: ${eventBusErrorKind(err)}`);
   }
 }

@@ -830,6 +830,29 @@ describe('entry route payload validation', () => {
     updated_at: '2026-06-13T10:00:00.000',
   };
 
+  test('owner entry route path IDs reject malformed values before DB helpers', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/entry-routes/bad%20route'],
+      ['PATCH', '/api/entry-routes/bad%20route', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/entry-routes/bad%20route'],
+      ['GET', '/api/entry-routes/bad%20route/funnel'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.getEntryRouteById).not.toHaveBeenCalled();
+    expect(dbMocks.updateEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.deleteEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.getEntryRouteFunnel).not.toHaveBeenCalled();
+  });
+
   test('owner entry route create/update rejects malformed or invalid payloads before DB writes', async () => {
     const app = setupApp('owner');
     const requests: Array<[string, string, BodyInit]> = [
@@ -896,7 +919,7 @@ describe('entry route payload validation', () => {
     dbMocks.updateEntryRoute.mockResolvedValue({ ...entryRouteRow, ref_code: 'sale_2026' });
     const app = setupApp('owner');
 
-    const res = await app.request('/api/entry-routes/route-1', {
+    const res = await app.request('/api/entry-routes/%20route-1%20', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -924,5 +947,22 @@ describe('entry route payload validation', () => {
       runAccountFriendAddScenarios: false,
       isActive: false,
     });
+  });
+
+  test('owner entry route read/delete/funnel trims valid path IDs before DB helpers', async () => {
+    dbMocks.getEntryRouteById.mockResolvedValue(entryRouteRow);
+    dbMocks.getEntryRouteFunnel.mockResolvedValue([]);
+    const app = setupApp('owner');
+
+    const readRes = await app.request('/api/entry-routes/%20route-1%20');
+    const deleteRes = await app.request('/api/entry-routes/%20route-1%20', { method: 'DELETE' });
+    const funnelRes = await app.request('/api/entry-routes/%20route-1%20/funnel');
+
+    expect(readRes.status).toBe(200);
+    expect(deleteRes.status).toBe(200);
+    expect(funnelRes.status).toBe(200);
+    expect(dbMocks.getEntryRouteById).toHaveBeenCalledWith(expect.anything(), 'route-1');
+    expect(dbMocks.deleteEntryRoute).toHaveBeenCalledWith(expect.anything(), 'route-1');
+    expect(dbMocks.getEntryRouteFunnel).toHaveBeenCalledWith(expect.anything(), 'route-1');
   });
 });

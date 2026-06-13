@@ -78,6 +78,10 @@ function parseRequiredString(
   return { ok: true, value };
 }
 
+function parseEntryRoutePathId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  return parseRequiredString(raw, 'entryRouteId', ENTRY_ROUTE_ID_MAX_LENGTH, ENTRY_ROUTE_ID_PATTERN);
+}
+
 function parseOptionalString(
   raw: unknown,
   label: string,
@@ -244,8 +248,9 @@ entryRoutes.get('/api/entry-routes', async (c) => {
 // GET /api/entry-routes/:id — single
 entryRoutes.get('/api/entry-routes/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    const row = await getEntryRouteById(c.env.DB, id);
+    const id = parseEntryRoutePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const row = await getEntryRouteById(c.env.DB, id.value);
     if (!row) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(row) });
   } catch (err) {
@@ -272,12 +277,13 @@ entryRoutes.post('/api/entry-routes', async (c) => {
 // PATCH /api/entry-routes/:id — update
 entryRoutes.patch('/api/entry-routes/:id', async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = parseEntryRoutePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseEntryRouteUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
-    const row = await updateEntryRoute(c.env.DB, id, body);
+    const row = await updateEntryRoute(c.env.DB, id.value, body);
     if (!row) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(row) });
   } catch (err) {
@@ -289,8 +295,9 @@ entryRoutes.patch('/api/entry-routes/:id', async (c) => {
 // DELETE /api/entry-routes/:id
 entryRoutes.delete('/api/entry-routes/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    await deleteEntryRoute(c.env.DB, id);
+    const id = parseEntryRoutePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteEntryRoute(c.env.DB, id.value);
     return c.json({ success: true });
   } catch (err) {
     console.error('DELETE /api/entry-routes/:id error:', err);
@@ -301,10 +308,11 @@ entryRoutes.delete('/api/entry-routes/:id', async (c) => {
 // GET /api/entry-routes/:id/funnel
 entryRoutes.get('/api/entry-routes/:id/funnel', async (c) => {
   try {
-    const id = c.req.param('id');
-    const route = await getEntryRouteById(c.env.DB, id);
+    const id = parseEntryRoutePathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const route = await getEntryRouteById(c.env.DB, id.value);
     if (!route) return c.json({ success: false, error: 'Not found' }, 404);
-    const funnel = await getEntryRouteFunnel(c.env.DB, id);
+    const funnel = await getEntryRouteFunnel(c.env.DB, id.value);
     return c.json({ success: true, data: funnel });
   } catch (err) {
     console.error('GET /api/entry-routes/:id/funnel error:', err);

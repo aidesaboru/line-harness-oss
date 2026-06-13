@@ -160,12 +160,6 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
     path.startsWith('/r/') ||
     path.startsWith('/pool/') ||
     path.startsWith('/images/') ||
-    // 画像 src として <img> 経由でブラウザが取得するため (Authorization ヘッダ不可)。
-    // R2 key 内に group_id / page_id (UUID) が含まれるので推測困難。draft 画像も
-    // 最終的に LINE 上で公開されるため機密性は低い。
-    path.startsWith('/api/rich-menu-images/') ||
-    // LINE 上 rich menu 画像 proxy (Authorization ヘッダなしで <img src> 経由表示)
-    path.match(/^\/api\/rich-menu-groups\/external\/[^/]+\/image$/) ||
     path.startsWith('/api/liff/') ||
     // Admin login/logout — issue/clear the session cookie before auth exists.
     path === '/api/auth/login' ||

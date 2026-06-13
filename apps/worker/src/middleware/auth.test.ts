@@ -4,6 +4,7 @@ import { authMiddleware } from './auth.js';
 import { credentialedCors } from './cors.js';
 import { resolveCorsOrigin } from './admin-auth-config.js';
 import { adminAuth } from '../routes/admin-auth.js';
+import { requireRole } from './role-guard.js';
 import type { Env } from '../index.js';
 
 vi.mock('@line-crm/db', () => ({
@@ -49,6 +50,9 @@ function app() {
   a.put('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
   a.delete('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
   a.post('/api/forms/:id/submit', (c) => c.json({ success: true, data: { id: c.req.param('id') } }, 201));
+  a.get('/api/rich-menu-images/:key{.+}', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.get('/api/rich-menu-groups/external/:id/image', requireRole('owner', 'admin'), (c) =>
+    c.json({ success: true, data: c.get('staff') }));
   return a;
 }
 
@@ -187,6 +191,44 @@ describe('public form auth exceptions', () => {
     }, crossSiteEnv());
 
     expect(res.status).toBe(201);
+  });
+});
+
+describe('rich menu image auth', () => {
+  test('requires auth for stored rich menu editor images but accepts session cookies', async () => {
+    const unauthenticated = await app().request(
+      '/api/rich-menu-images/rich-menus/acc-1/group-1/page-1/123.png',
+      {},
+      crossSiteEnv(),
+    );
+    const authenticated = await app().request(
+      '/api/rich-menu-images/rich-menus/acc-1/group-1/page-1/123.png',
+      { headers: { Cookie: 'lh_admin_session=staff-key' } },
+      crossSiteEnv(),
+    );
+
+    expect(unauthenticated.status).toBe(401);
+    expect(authenticated.status).toBe(200);
+    const body = await authenticated.json() as { data: { role: string } };
+    expect(body.data.role).toBe('admin');
+  });
+
+  test('keeps external rich menu image proxy behind owner/admin auth', async () => {
+    const unauthenticated = await app().request(
+      '/api/rich-menu-groups/external/richmenu-1/image?accountId=acc-1',
+      {},
+      crossSiteEnv(),
+    );
+    const authenticated = await app().request(
+      '/api/rich-menu-groups/external/richmenu-1/image?accountId=acc-1',
+      { headers: { Cookie: 'lh_admin_session=staff-key' } },
+      crossSiteEnv(),
+    );
+
+    expect(unauthenticated.status).toBe(401);
+    expect(authenticated.status).toBe(200);
+    const body = await authenticated.json() as { data: { role: string } };
+    expect(body.data.role).toBe('admin');
   });
 });
 

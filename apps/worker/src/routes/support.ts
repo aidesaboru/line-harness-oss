@@ -52,6 +52,11 @@ const STAFF_ALLOWED_ESCALATION_CREATE_KEYS = new Set([
   'eventBody',
 ]);
 const STAFF_ALLOWED_ESCALATION_STATUSES = new Set(['answered', 'needs_info']);
+const SUPPORT_ID_MAX_LENGTH = 128;
+const SUPPORT_QUERY_TEXT_MAX_LENGTH = 256;
+const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 type SupportCaseRow = {
   id: string;
@@ -141,6 +146,64 @@ function text(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readJsonRecord(c: { req: { json(): Promise<unknown> } }): Promise<ValueResult<Record<string, unknown>>> {
+  const raw = await c.req.json().catch(() => null);
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  return { ok: true, value: raw };
+}
+
+function parseRequiredVisibleId(raw: unknown, label: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > SUPPORT_ID_MAX_LENGTH) return { ok: false, error: `${label} is too long` };
+  if (!SUPPORT_VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleId(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > SUPPORT_ID_MAX_LENGTH) return { ok: false, error: `${label} is too long` };
+  if (!SUPPORT_VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalQueryText(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > SUPPORT_QUERY_TEXT_MAX_LENGTH) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseManualIdsInput(raw: unknown): ValueResult<string[]> {
+  if (raw === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) return { ok: false, error: 'manualIds must be an array' };
+  const ids: string[] = [];
+  for (const item of raw) {
+    const id = parseRequiredVisibleId(item, 'manualId');
+    if (!id.ok) return id;
+    ids.push(id.value);
+  }
+  return { ok: true, value: ids };
+}
+
+function parseActiveFilter(raw: unknown): ValueResult<'0' | '1' | 'all'> {
+  if (raw === undefined || raw === null) return { ok: true, value: '1' };
+  if (typeof raw !== 'string') return { ok: false, error: 'active must be a string' };
+  const value = raw.trim();
+  if (value === '0' || value === '1' || value === 'all') return { ok: true, value };
+  return { ok: false, error: 'active is invalid' };
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -187,8 +250,11 @@ function canManageSupportCaseRouting(staff: SupportAccessStaff): boolean {
   return staff.role === 'owner' || staff.role === 'admin';
 }
 
-function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): string | null {
-  return text(body?.lineAccountId) ?? text(c.req.query('lineAccountId'));
+function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): ValueResult<string> {
+  const raw = body && Object.prototype.hasOwnProperty.call(body, 'lineAccountId')
+    ? body.lineAccountId
+    : c.req.query('lineAccountId');
+  return parseRequiredVisibleId(raw, 'lineAccountId');
 }
 
 function serializeCase(row: SupportCaseRow) {
@@ -388,15 +454,15 @@ function validateCaseState(payload: {
 
 support.get('/api/support/summary', async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
 
     const now = jstNow();
     const staff = currentStaff(c);
     const myEscalationPattern = supportStaffLikePattern(staff);
     const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_summary_scope');
     const caseWhere = ['sc.line_account_id = ?'];
-    const caseBinds: unknown[] = [lineAccountId];
+    const caseBinds: unknown[] = [lineAccountId.value];
     if (visibility.sql) {
       caseWhere.push(visibility.sql);
       caseBinds.push(...visibility.binds);
@@ -476,19 +542,24 @@ support.get('/api/support/summary', async (c) => {
 
 support.get('/api/support/cases', async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-
-    const status = c.req.query('status');
-    const queue = c.req.query('queue');
-    const scope = c.req.query('scope');
-    const assignee = c.req.query('assignee');
-    const escalationAssignee = c.req.query('escalationAssignee');
-    const q = c.req.query('q');
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const status = parseOptionalQueryText(c.req.query('status'), 'status');
+    if (!status.ok) return c.json({ success: false, error: status.error }, 400);
+    const queue = parseOptionalQueryText(c.req.query('queue'), 'queue');
+    if (!queue.ok) return c.json({ success: false, error: queue.error }, 400);
+    const scope = parseOptionalQueryText(c.req.query('scope'), 'scope');
+    if (!scope.ok) return c.json({ success: false, error: scope.error }, 400);
+    const assignee = parseOptionalQueryText(c.req.query('assignee'), 'assignee');
+    if (!assignee.ok) return c.json({ success: false, error: assignee.error }, 400);
+    const escalationAssignee = parseOptionalQueryText(c.req.query('escalationAssignee'), 'escalationAssignee');
+    if (!escalationAssignee.ok) return c.json({ success: false, error: escalationAssignee.error }, 400);
+    const q = parseOptionalQueryText(c.req.query('q'), 'q');
+    if (!q.ok) return c.json({ success: false, error: q.error }, 400);
     const limit = clampLimit(c.req.query('limit'), 50);
     const offset = clampOffset(c.req.query('offset'));
     const conditions = ['sc.line_account_id = ?'];
-    const binds: unknown[] = [lineAccountId];
+    const binds: unknown[] = [lineAccountId.value];
     const staff = currentStaff(c);
     const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_case_list_scope');
     if (visibility.sql) {
@@ -496,24 +567,24 @@ support.get('/api/support/cases', async (c) => {
       binds.push(...visibility.binds);
     }
 
-    if (status && status !== 'all') {
-      if (!CASE_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
+    if (status.value && status.value !== 'all') {
+      if (!CASE_STATUSES.has(status.value)) return c.json({ success: false, error: 'invalid status' }, 400);
       conditions.push('sc.status = ?');
-      binds.push(status);
+      binds.push(status.value);
     }
 
-    const isMyEscalationScope = queue === 'my_escalations' || scope === 'my_escalations';
+    const isMyEscalationScope = queue.value === 'my_escalations' || scope.value === 'my_escalations';
 
-    if (queue === 'escalated') {
+    if (queue.value === 'escalated') {
       conditions.push(`sc.status IN ('escalated', 'waiting_secondary')`);
-    } else if (queue === 'overdue') {
+    } else if (queue.value === 'overdue') {
       conditions.push(`sc.due_at IS NOT NULL AND sc.due_at < ? AND sc.status != 'resolved'`);
       binds.push(jstNow());
-    } else if (queue === 'unassigned') {
+    } else if (queue.value === 'unassigned') {
       conditions.push(`(sc.primary_assignee IS NULL OR sc.primary_assignee = '') AND sc.status != 'resolved'`);
-    } else if (queue === 'waiting_customer') {
+    } else if (queue.value === 'waiting_customer') {
       conditions.push(`sc.status = 'customer_reply'`);
-    } else if (queue === 'unresolved') {
+    } else if (queue.value === 'unresolved') {
       conditions.push(`sc.status != 'resolved'`);
     }
 
@@ -532,17 +603,17 @@ support.get('/api/support/cases', async (c) => {
       binds.push(pattern, pattern);
     }
 
-    if (assignee) {
+    if (assignee.value) {
       conditions.push(`(sc.primary_assignee LIKE ? OR sc.escalation_assignee LIKE ?)`);
-      binds.push(`%${assignee}%`, `%${assignee}%`);
+      binds.push(`%${assignee.value}%`, `%${assignee.value}%`);
     }
-    if (escalationAssignee) {
+    if (escalationAssignee.value) {
       conditions.push(`sc.escalation_assignee LIKE ?`);
-      binds.push(`%${escalationAssignee}%`);
+      binds.push(`%${escalationAssignee.value}%`);
     }
 
-    if (q) {
-      const pattern = `%${q}%`;
+    if (q.value) {
+      const pattern = `%${q.value}%`;
       conditions.push(
         `(sc.title LIKE ? OR sc.customer_summary LIKE ? OR sc.internal_note LIKE ? OR
           sc.customer_number LIKE ? OR sc.company_name LIKE ? OR sc.store_name LIKE ? OR
@@ -575,9 +646,15 @@ support.get('/api/support/cases', async (c) => {
 
 support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<Record<string, unknown>>();
-    const friendId = text(body.friendId);
-    let lineAccountId = text(body.lineAccountId);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const parsedFriendId = parseOptionalVisibleId(body.friendId, 'friendId');
+    if (!parsedFriendId.ok) return c.json({ success: false, error: parsedFriendId.error }, 400);
+    const friendId = parsedFriendId.value;
+    const parsedLineAccountId = parseOptionalVisibleId(body.lineAccountId, 'lineAccountId');
+    if (!parsedLineAccountId.ok) return c.json({ success: false, error: parsedLineAccountId.error }, 400);
+    let lineAccountId: string | undefined | null = parsedLineAccountId.value;
 
     if (friendId) {
       const friend = await c.env.DB
@@ -620,10 +697,9 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
 
     const now = jstNow();
     const id = crypto.randomUUID();
-    const manualIdsInput = Array.isArray(body.manualIds)
-      ? body.manualIds.filter((item): item is string => typeof item === 'string')
-      : [];
-    const manualValidation = await validateManualIds(c.env.DB, lineAccountId, manualIdsInput);
+    const manualIdsInput = parseManualIdsInput(body.manualIds);
+    if (!manualIdsInput.ok) return c.json({ success: false, error: manualIdsInput.error }, 400);
+    const manualValidation = await validateManualIds(c.env.DB, lineAccountId, manualIdsInput.value);
     if (!manualValidation.ok) return c.json({ success: false, error: manualValidation.error }, 400);
     const manualIds = JSON.stringify(manualValidation.ids);
     const title =
@@ -690,9 +766,11 @@ support.post('/api/support/cases', requireRole('owner', 'admin'), async (c) => {
 
 support.get('/api/support/cases/:id', async (c) => {
   try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const lineAccountId = lineAccountIdFrom(c);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId, currentStaff(c));
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, currentStaff(c));
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
 
     const [events, escalations] = await Promise.all([
@@ -729,7 +807,7 @@ support.get('/api/support/cases/:id', async (c) => {
              AND (line_account_id = ? OR line_account_id IS NULL)
            ORDER BY revised_at DESC, title ASC`,
         )
-        .bind(...manualIds, lineAccountId)
+        .bind(...manualIds, lineAccountId.value)
         .all<SupportManualRow>();
       manuals = res.results;
     }
@@ -758,12 +836,15 @@ support.get('/api/support/cases/:id', async (c) => {
 
 support.patch('/api/support/cases/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    const body = await c.req.json<Record<string, unknown>>();
+    const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
     const lineAccountId = lineAccountIdFrom(c, body);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const staff = currentStaff(c);
-    const existing = await getCaseRow(c.env.DB, id, lineAccountId, staff);
+    const existing = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     if (!existing) return c.json({ success: false, error: 'case not found' }, 404);
 
     if (!canManageSupportCaseRouting(staff)) {
@@ -812,11 +893,12 @@ support.patch('/api/support/cases/:id', async (c) => {
     }
 
     if ('manualIds' in body) {
-      if (!Array.isArray(body.manualIds)) return c.json({ success: false, error: 'manualIds must be an array' }, 400);
+      const manualIdsInput = parseManualIdsInput(body.manualIds);
+      if (!manualIdsInput.ok) return c.json({ success: false, error: manualIdsInput.error }, 400);
       const manualValidation = await validateManualIds(
         c.env.DB,
-        lineAccountId,
-        body.manualIds.filter((item): item is string => typeof item === 'string'),
+        lineAccountId.value,
+        manualIdsInput.value,
       );
       if (!manualValidation.ok) return c.json({ success: false, error: manualValidation.error }, 400);
       next.manual_ids = JSON.stringify(manualValidation.ids);
@@ -859,16 +941,16 @@ support.patch('/api/support/cases/:id', async (c) => {
     const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
     await c.env.DB
       .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-      .bind(...fields.map(([, value]) => value), id, lineAccountId)
+      .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
       .run();
 
-    await addCaseEvent(c.env.DB, id, 'updated', staff.id, staff.name, text(body.eventBody) ?? '案件を更新しました', {
+    await addCaseEvent(c.env.DB, id.value, 'updated', staff.id, staff.name, text(body.eventBody) ?? '案件を更新しました', {
       changed: fields.map(([column]) => column),
       fromStatus: existing.status,
       toStatus: next.status,
     });
 
-    const updated = await getCaseRow(c.env.DB, id, lineAccountId, staff);
+    const updated = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     return c.json({ success: true, data: serializeCase(updated!) });
   } catch (err) {
     console.error('PATCH /api/support/cases/:id error:', err);
@@ -878,10 +960,14 @@ support.patch('/api/support/cases/:id', async (c) => {
 
 support.post('/api/support/cases/:id/events', async (c) => {
   try {
-    const body = await c.req.json<Record<string, unknown>>();
+    const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
     const lineAccountId = lineAccountIdFrom(c, body);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const row = await getCaseRow(c.env.DB, c.req.param('id'), lineAccountId, currentStaff(c));
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, currentStaff(c));
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     const staff = currentStaff(c);
     await addCaseEvent(
@@ -902,12 +988,15 @@ support.post('/api/support/cases/:id/events', async (c) => {
 
 support.post('/api/support/cases/:id/escalations', async (c) => {
   try {
-    const caseId = c.req.param('id');
-    const body = await c.req.json<Record<string, unknown>>();
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
     const lineAccountId = lineAccountIdFrom(c, body);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const staff = currentStaff(c);
-    const row = await getCaseRow(c.env.DB, caseId, lineAccountId, staff);
+    const row = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     if (row.status === 'resolved') {
       return c.json({ success: false, error: '完了済み案件は再オープンしてからエスカレーションしてください' }, 400);
@@ -946,7 +1035,7 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
           due_at, answered_at, created_by, updated_by, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
       )
-      .bind(id, caseId, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now)
+      .bind(id, caseId.value, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now)
       .run();
 
     if (canRouteEscalation) {
@@ -961,7 +1050,7 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
                updated_at = ?
            WHERE id = ? AND line_account_id = ?`,
         )
-        .bind(assignee, level, dueAt, staff.id, now, caseId, lineAccountId)
+        .bind(assignee, level, dueAt, staff.id, now, caseId.value, lineAccountId.value)
         .run();
     } else {
       await c.env.DB
@@ -972,11 +1061,11 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
                updated_at = ?
            WHERE id = ? AND line_account_id = ?`,
         )
-        .bind(staff.id, now, caseId, lineAccountId)
+        .bind(staff.id, now, caseId.value, lineAccountId.value)
         .run();
     }
 
-    await addCaseEvent(c.env.DB, caseId, 'escalated', staff.id, staff.name, question, {
+    await addCaseEvent(c.env.DB, caseId.value, 'escalated', staff.id, staff.name, question, {
       escalationId: id,
       assignee,
       level,
@@ -985,7 +1074,7 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
 
     const escalation = await c.env.DB
       .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
-      .bind(id, lineAccountId)
+      .bind(id, lineAccountId.value)
       .first<SupportEscalationRow>();
     return c.json({ success: true, data: serializeEscalation(escalation!) }, 201);
   } catch (err) {
@@ -996,14 +1085,18 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
 
 support.get('/api/support/escalations', async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
-    const status = c.req.query('status');
-    const assignee = c.req.query('assignee');
-    const queue = c.req.query('queue');
-    const scope = c.req.query('scope');
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const status = parseOptionalQueryText(c.req.query('status'), 'status');
+    if (!status.ok) return c.json({ success: false, error: status.error }, 400);
+    const assignee = parseOptionalQueryText(c.req.query('assignee'), 'assignee');
+    if (!assignee.ok) return c.json({ success: false, error: assignee.error }, 400);
+    const queue = parseOptionalQueryText(c.req.query('queue'), 'queue');
+    if (!queue.ok) return c.json({ success: false, error: queue.error }, 400);
+    const scope = parseOptionalQueryText(c.req.query('scope'), 'scope');
+    if (!scope.ok) return c.json({ success: false, error: scope.error }, 400);
     const conditions = ['se.line_account_id = ?'];
-    const binds: unknown[] = [lineAccountId];
+    const binds: unknown[] = [lineAccountId.value];
     const staff = currentStaff(c);
     const visibility = supportEscalationVisibilitySql(staff, 'se', 'sc_escalation_list_scope');
     if (visibility.sql) {
@@ -1011,20 +1104,20 @@ support.get('/api/support/escalations', async (c) => {
       binds.push(...visibility.binds);
     }
 
-    if (status && status !== 'all') {
-      if (!ESCALATION_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
+    if (status.value && status.value !== 'all') {
+      if (!ESCALATION_STATUSES.has(status.value)) return c.json({ success: false, error: 'invalid status' }, 400);
       conditions.push('se.status = ?');
-      binds.push(status);
+      binds.push(status.value);
     }
-    if (assignee) {
+    if (assignee.value) {
       conditions.push('se.assignee LIKE ?');
-      binds.push(`%${assignee}%`);
+      binds.push(`%${assignee.value}%`);
     }
-    if (scope === 'my_escalations' || queue === 'my_escalations') {
+    if (scope.value === 'my_escalations' || queue.value === 'my_escalations') {
       conditions.push(`se.assignee LIKE ? ESCAPE '\\'`);
       binds.push(supportStaffLikePattern(staff));
     }
-    if (queue === 'due') {
+    if (queue.value === 'due') {
       conditions.push(`se.status = 'pending' AND se.due_at IS NOT NULL AND se.due_at <= ?`);
       binds.push(jstNow());
     }
@@ -1053,14 +1146,17 @@ support.get('/api/support/escalations', async (c) => {
 
 support.patch('/api/support/escalations/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    const body = await c.req.json<Record<string, unknown>>();
+    const id = parseRequiredVisibleId(c.req.param('id'), 'escalationId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
     const lineAccountId = lineAccountIdFrom(c, body);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const staffForScope = currentStaff(c);
     const visibility = supportEscalationVisibilitySql(staffForScope, 'se', 'sc_escalation_update_scope');
     const conditions = ['se.id = ?', 'se.line_account_id = ?'];
-    const binds: unknown[] = [id, lineAccountId];
+    const binds: unknown[] = [id.value, lineAccountId.value];
     if (visibility.sql) {
       conditions.push(visibility.sql);
       binds.push(...visibility.binds);
@@ -1113,7 +1209,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (nextCaseStatus) {
       const linkedCase = await c.env.DB
         .prepare(`SELECT status FROM support_cases WHERE id = ? AND line_account_id = ?`)
-        .bind(existing.case_id, lineAccountId)
+        .bind(existing.case_id, lineAccountId.value)
         .first<{ status: string }>();
       if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
       if (linkedCase.status === 'resolved') {
@@ -1131,13 +1227,13 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (fields.length > 0) {
       const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
       await c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-        .bind(...fields.map(([, value]) => value), id, lineAccountId)
+        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
         .run();
     }
 
     if (nextCaseStatus) {
       await c.env.DB.prepare(`UPDATE support_cases SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
-        .bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId)
+        .bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId.value)
         .run();
     }
 
@@ -1148,7 +1244,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
       staff.id,
       staff.name,
       text(body.eventBody) ?? text(body.answer) ?? 'エスカレーションを更新しました',
-      { escalationId: id, status, nextCaseStatus },
+      { escalationId: id.value, status, nextCaseStatus },
     );
 
     const updated = await c.env.DB
@@ -1159,7 +1255,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
          LEFT JOIN friends f ON f.id = sc.friend_id
          WHERE se.id = ? AND se.line_account_id = ?`,
       )
-      .bind(id, lineAccountId)
+      .bind(id.value, lineAccountId.value)
       .first<SupportEscalationRow>();
     return c.json({ success: true, data: serializeEscalation(updated!) });
   } catch (err) {
@@ -1170,27 +1266,31 @@ support.patch('/api/support/escalations/:id', async (c) => {
 
 support.get('/api/support/manuals', async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    const category = c.req.query('category');
-    const q = c.req.query('q');
-    const active = c.req.query('active') ?? '1';
+    const lineAccountId = parseOptionalVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const category = parseOptionalQueryText(c.req.query('category'), 'category');
+    if (!category.ok) return c.json({ success: false, error: category.error }, 400);
+    const q = parseOptionalQueryText(c.req.query('q'), 'q');
+    if (!q.ok) return c.json({ success: false, error: q.error }, 400);
+    const active = parseActiveFilter(c.req.query('active'));
+    if (!active.ok) return c.json({ success: false, error: active.error }, 400);
     const conditions: string[] = [];
     const binds: unknown[] = [];
 
-    if (lineAccountId) {
+    if (lineAccountId.value) {
       conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
-      binds.push(lineAccountId);
+      binds.push(lineAccountId.value);
     }
-    if (category && category !== 'all') {
+    if (category.value && category.value !== 'all') {
       conditions.push('category = ?');
-      binds.push(category);
+      binds.push(category.value);
     }
-    if (active !== 'all') {
+    if (active.value !== 'all') {
       conditions.push('is_active = ?');
-      binds.push(active === '0' ? 0 : 1);
+      binds.push(active.value === '0' ? 0 : 1);
     }
-    if (q) {
-      const pattern = `%${q}%`;
+    if (q.value) {
+      const pattern = `%${q.value}%`;
       conditions.push('(title LIKE ? OR body LIKE ? OR keywords LIKE ?)');
       binds.push(pattern, pattern, pattern);
     }
@@ -1214,7 +1314,9 @@ support.get('/api/support/manuals', async (c) => {
 
 support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<Record<string, unknown>>();
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
     const title = text(body.title);
     if (!title) return c.json({ success: false, error: 'title is required' }, 400);
     const manualBody = text(body.body);
@@ -1223,8 +1325,8 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     if (manualUrl && !isHttpUrl(manualUrl)) {
       return c.json({ success: false, error: 'url must start with http:// or https://' }, 400);
     }
-    const lineAccountId = text(body.lineAccountId);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
 
     const staff = currentStaff(c);
     const now = jstNow();
@@ -1236,7 +1338,7 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
-      lineAccountId,
+      lineAccountId.value,
       title,
       text(body.category) ?? 'basic',
       manualBody,
@@ -1262,14 +1364,17 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
 
 support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
-    const body = await c.req.json<Record<string, unknown>>();
-    const lineAccountId = text(c.req.query('lineAccountId')) ?? text(body.lineAccountId);
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const id = parseRequiredVisibleId(c.req.param('id'), 'manualId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
 
     const existing = await c.env.DB
       .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
-      .bind(id, lineAccountId)
+      .bind(id.value, lineAccountId.value)
       .first<SupportManualRow>();
     if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
     if ('title' in body && !text(body.title)) return c.json({ success: false, error: 'title is required' }, 400);
@@ -1298,12 +1403,12 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
     fields.push(['updated_by', staff.id], ['updated_at', jstNow()]);
 
     await c.env.DB.prepare(`UPDATE support_manuals SET ${fields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`)
-      .bind(...fields.map(([, value]) => value), id, lineAccountId)
+      .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
       .run();
 
     const updated = await c.env.DB
       .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
-      .bind(id, lineAccountId)
+      .bind(id.value, lineAccountId.value)
       .first<SupportManualRow>();
     return c.json({ success: true, data: serializeManual(updated!) });
   } catch (err) {
@@ -1315,18 +1420,20 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
 support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const staff = currentStaff(c);
-    const lineAccountId = text(c.req.query('lineAccountId'));
-    if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const id = parseRequiredVisibleId(c.req.param('id'), 'manualId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
 
     const existing = await c.env.DB
       .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
-      .bind(c.req.param('id'), lineAccountId)
+      .bind(id.value, lineAccountId.value)
       .first<SupportManualRow>();
     if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
 
     await c.env.DB
       .prepare(`UPDATE support_manuals SET is_active = 0, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
-      .bind(staff.id, jstNow(), c.req.param('id'), lineAccountId)
+      .bind(staff.id, jstNow(), id.value, lineAccountId.value)
       .run();
     return c.json({ success: true, data: null });
   } catch (err) {

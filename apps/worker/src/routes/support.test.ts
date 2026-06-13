@@ -1246,6 +1246,92 @@ describe('support CRM routes', () => {
     expect(listCall?.binds.slice(-2)).toEqual([50, 0]);
   });
 
+  test('rejects malformed support query, path, and JSON inputs before DB access', async () => {
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/support/summary?lineAccountId=bad%20account'],
+      ['GET', '/api/support/cases?lineAccountId=bad%20account'],
+      ['POST', '/api/support/cases', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/support/cases', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', friendId: 'bad friend', customerSummary: '相談' }),
+      }],
+      ['POST', '/api/support/cases', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', customerSummary: '相談', manualIds: ['bad manual'] }),
+      }],
+      ['GET', '/api/support/cases/bad%20case?lineAccountId=acc-1'],
+      ['PATCH', '/api/support/cases/case-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/support/cases/bad%20case/events', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', body: 'note' }),
+      }],
+      ['POST', '/api/support/cases/bad%20case/escalations', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', question: '確認してください' }),
+      }],
+      ['GET', '/api/support/escalations?lineAccountId=bad%20account'],
+      ['PATCH', '/api/support/escalations/bad%20escalation', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', status: 'answered', answer: '確認済み' }),
+      }],
+      ['GET', '/api/support/manuals?lineAccountId=bad%20account'],
+      ['GET', '/api/support/manuals?active=maybe'],
+      ['POST', '/api/support/manuals', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['PATCH', '/api/support/manuals/bad%20manual', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1', title: '更新' }),
+      }],
+      ['DELETE', '/api/support/manuals/bad%20manual?lineAccountId=acc-1'],
+    ];
+
+    for (const [method, path, init] of cases) {
+      const { db, calls } = makeSupportDb({});
+      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+        .request(path, { ...init, method });
+
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(calls, `${method} ${path}`).toEqual([]);
+    }
+  });
+
+  test('trims support IDs before case and manual lookup', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-1', line_account_id: 'acc-1' })],
+      manuals: [baseManual({ id: 'manual-1', line_account_id: 'acc-1', title: '元の手順' })],
+    });
+    const app = setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' });
+
+    const caseRes = await app.request('/api/support/cases/%20case-1%20?lineAccountId=%20acc-1%20');
+    expect(caseRes.status).toBe(200);
+    const caseLookup = calls.find((call) => (
+      call.method === 'first' &&
+      call.sql.includes('FROM support_cases sc') &&
+      call.sql.includes('WHERE sc.id = ? AND sc.line_account_id = ?')
+    ));
+    expect(caseLookup?.binds).toEqual(['case-1', 'acc-1']);
+
+    const manualRes = await app.request('/api/support/manuals/%20manual-1%20?lineAccountId=%20acc-1%20', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: ' 更新済み手順 ' }),
+    });
+    expect(manualRes.status).toBe(200);
+    expect(state.manuals.find((manual) => manual.id === 'manual-1')).toMatchObject({
+      title: '更新済み手順',
+    });
+    const manualUpdate = calls.find((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_manuals SET'));
+    expect(manualUpdate?.binds.slice(-2)).toEqual(['manual-1', 'acc-1']);
+  });
+
   test('staff can only list and open cases in their support scope', async () => {
     const { db } = makeSupportDb({
       cases: [

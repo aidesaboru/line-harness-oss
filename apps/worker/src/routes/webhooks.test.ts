@@ -25,10 +25,12 @@ import {
   getIncomingWebhookById,
   createIncomingWebhook,
   updateIncomingWebhook,
+  deleteIncomingWebhook,
   getOutgoingWebhooks,
   getOutgoingWebhookById,
   createOutgoingWebhook,
   updateOutgoingWebhook,
+  deleteOutgoingWebhook,
 } from '@line-crm/db';
 import { webhooks } from './webhooks.js';
 
@@ -120,6 +122,40 @@ describe('webhook management role guards', () => {
 
     expect(res.status).toBe(401);
     expect(getIncomingWebhookById).toHaveBeenCalledWith({} as D1Database, 'iwh-1');
+  });
+});
+
+describe('webhook path ID validation', () => {
+  test('rejects malformed management and receive IDs before DB helpers', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['PUT', '/api/webhooks/incoming/bad%20id', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'renamed' }),
+      }],
+      ['DELETE', '/api/webhooks/incoming/bad%20id'],
+      ['PUT', '/api/webhooks/outgoing/bad%20id', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'renamed' }),
+      }],
+      ['DELETE', '/api/webhooks/outgoing/bad%20id'],
+      ['POST', '/api/webhooks/incoming/bad%20id/receive', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ping: true }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method }, baseEnv);
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(getIncomingWebhookById).not.toHaveBeenCalled();
+    expect(updateIncomingWebhook).not.toHaveBeenCalled();
+    expect(deleteIncomingWebhook).not.toHaveBeenCalled();
+    expect(getOutgoingWebhookById).not.toHaveBeenCalled();
+    expect(updateOutgoingWebhook).not.toHaveBeenCalled();
+    expect(deleteOutgoingWebhook).not.toHaveBeenCalled();
   });
 });
 

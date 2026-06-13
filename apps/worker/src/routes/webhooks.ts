@@ -21,6 +21,7 @@ const MAX_SECRET_LENGTH = 4096;
 const WEBHOOK_NAME_MAX_LENGTH = 120;
 const WEBHOOK_SOURCE_TYPE_MAX_LENGTH = 64;
 const WEBHOOK_URL_MAX_LENGTH = 2048;
+const WEBHOOK_ID_MAX_LENGTH = 128;
 const WEBHOOK_EVENT_TYPES_MAX_COUNT = 32;
 const WEBHOOK_EVENT_TYPE_MAX_LENGTH = 128;
 const WEBHOOK_TOKEN_PATTERN = /^[!-~]+$/;
@@ -92,6 +93,15 @@ function parseWebhookSourceType(raw: unknown): { ok: true; value?: string } | { 
   if (!value) return { ok: true };
   if (value.length > WEBHOOK_SOURCE_TYPE_MAX_LENGTH || !WEBHOOK_TOKEN_PATTERN.test(value)) {
     return { ok: false, error: 'sourceType is invalid' };
+  }
+  return { ok: true, value };
+}
+
+function parseWebhookId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: 'webhookId must be a string' };
+  const value = raw.trim();
+  if (!value || value.length > WEBHOOK_ID_MAX_LENGTH || !WEBHOOK_TOKEN_PATTERN.test(value)) {
+    return { ok: false, error: 'webhookId is invalid' };
   }
   return { ok: true, value };
 }
@@ -286,7 +296,8 @@ webhooks.post('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c)
 
 webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseWebhookId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseIncomingUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -295,7 +306,7 @@ webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async 
     // would still be invalid. Otherwise migration 034 can be bypassed by
     // toggling isActive without touching the legacy null/short secret.
     if (body.isActive === true) {
-      const existing = await getIncomingWebhookById(c.env.DB, id);
+      const existing = await getIncomingWebhookById(c.env.DB, id.value);
       if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
       const effectiveSecret = body.secret ?? existing.secret;
       if (!effectiveSecret || effectiveSecret.length < MIN_SECRET_LENGTH) {
@@ -308,8 +319,8 @@ webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async 
         );
       }
     }
-    await updateIncomingWebhook(c.env.DB, id, body);
-    const updated = await getIncomingWebhookById(c.env.DB, id);
+    await updateIncomingWebhook(c.env.DB, id.value, body);
+    const updated = await getIncomingWebhookById(c.env.DB, id.value);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
@@ -329,7 +340,9 @@ webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async 
 
 webhooks.delete('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteIncomingWebhook(c.env.DB, c.req.param('id')!);
+    const id = parseWebhookId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteIncomingWebhook(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/webhooks/incoming/:id error:', err);
@@ -397,7 +410,8 @@ webhooks.post('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c)
 
 webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseWebhookId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseOutgoingUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -407,7 +421,7 @@ webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async 
     // partial update. Without this, migration 034 can be bypassed by
     // sending {isActive:true} on a legacy http:// or secret-less row.
     if (body.isActive === true) {
-      const existing = await getOutgoingWebhookById(c.env.DB, id);
+      const existing = await getOutgoingWebhookById(c.env.DB, id.value);
       if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
       const effectiveSecret = body.secret ?? existing.secret;
       const effectiveUrl = body.url ?? existing.url;
@@ -428,8 +442,8 @@ webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async 
         );
       }
     }
-    await updateOutgoingWebhook(c.env.DB, id, body);
-    const updated = await getOutgoingWebhookById(c.env.DB, id);
+    await updateOutgoingWebhook(c.env.DB, id.value, body);
+    const updated = await getOutgoingWebhookById(c.env.DB, id.value);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
@@ -450,7 +464,9 @@ webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async 
 
 webhooks.delete('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteOutgoingWebhook(c.env.DB, c.req.param('id')!);
+    const id = parseWebhookId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteOutgoingWebhook(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/webhooks/outgoing/:id error:', err);
@@ -462,8 +478,9 @@ webhooks.delete('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), asy
 
 webhooks.post('/api/webhooks/incoming/:id/receive', async (c) => {
   try {
-    const id = c.req.param('id');
-    const wh = await getIncomingWebhookById(c.env.DB, id);
+    const id = parseWebhookId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const wh = await getIncomingWebhookById(c.env.DB, id.value);
     if (!wh || !wh.is_active) {
       return c.json({ success: false, error: 'Webhook not found or inactive' }, 404);
     }

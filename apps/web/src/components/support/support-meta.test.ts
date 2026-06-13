@@ -344,9 +344,16 @@ describe('support error messages', () => {
     expect(formatSupportErrorMessage('support case is resolved', '送信に失敗しました')).toContain('再オープン')
   })
 
-  it('keeps explicit API messages when they are already user-facing', () => {
-    expect(supportApiErrorMessage({ error: '完了には対応結果メモが必要です' }, '保存に失敗しました')).toBe('完了には対応結果メモが必要です')
+  it('keeps allowlisted API messages when they are already user-facing', () => {
+    expect(supportApiErrorMessage({ error: '完了にする場合は、対応結果メモが必要です' }, '保存に失敗しました')).toBe('完了にする場合は、対応結果メモが必要です')
     expect(supportApiErrorMessage({}, '保存に失敗しました')).toBe('保存に失敗しました')
+  })
+
+  it('falls back instead of showing unknown raw API messages', () => {
+    expect(supportApiErrorMessage({
+      error: 'D1_ERROR friend-visible token-secret customer payload leaked',
+    }, '保存に失敗しました')).toBe('保存に失敗しました')
+    expect(formatSupportErrorMessage(new Error('unexpected raw backend failure'), '読み込みに失敗しました')).toBe('読み込みに失敗しました')
   })
 })
 

@@ -194,6 +194,19 @@ export function supportApiErrorMessage(res: { error?: string }, fallback: string
   return formatSupportErrorMessage(res.error, fallback)
 }
 
+const supportUserFacingApiMessages = new Set([
+  'LINE会話を選ぶか、問い合わせ要約を入力してください。',
+  '保留にする場合は、保留理由の内部メモと次回確認日が必要です',
+  '完了にする場合は、対応結果メモが必要です',
+  '完了済み案件を戻す場合は再オープンを選択してください',
+  '再オープンは完了済み案件だけで選択できます',
+  '完了済み案件は再オープンしてからエスカレーションしてください',
+  'staff権限では二次対応先が設定済みの案件だけエスカレーションできます',
+  '回答済みにする場合は回答要点が必要です',
+  'staff権限ではエスカレーションを回答済み、または差し戻しにのみ変更できます',
+  '完了済み案件は再オープンしてからエスカレーションを更新してください',
+])
+
 export function formatSupportErrorMessage(error: unknown, fallback: string): string {
   const raw = typeof error === 'string'
     ? error
@@ -242,7 +255,9 @@ export function formatSupportErrorMessage(error: unknown, fallback: string): str
     return `${fallback} 対象が見つかりません。最新データで再読み込みしてください。`
   }
 
-  return message
+  if (supportUserFacingApiMessages.has(message)) return message
+
+  return fallback
 }
 
 export const priorityOptions: Array<{ value: SupportPriority; label: string }> = [

@@ -208,6 +208,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - Worker chat route testでは、画像返信後にLINE画像送信、`chat_messages` 記録、`support_case_events.customer_reply_sent` 記録、案件ステータスの `customer_reply` 更新が揃うことを確認済み。
 - [ ] 画像とテキストを同時に送っても、不要な「案件更新だけ確認が必要」警告が出ない
 - Web helper testでは、画像+テキスト同時送信時にサポート案件紐付けを画像側だけへ付け、テキスト側で二重更新しない送信計画になることを確認済み。復旧通知helper testでは、案件が既に `customer_reply` の場合は不要な警告を出さないことを確認済み。
+- Local image+text browser smokeでは、LINE画像のHTTPS URL直接入力とテキストを同時に入れて送信し、画像送信payloadだけに `supportCaseId` と `lineAccountId` が入り、続くテキスト送信payloadには案件紐付けが二重に入らないことを確認済み。
 - [ ] 完了済み案件では、再オープンしてから返信する運用になっている
 - Worker chat route testでは、完了済み案件への `/send` と `/send/validate` がどちらも `再オープン` エラーで400になり、LINE送信、チャット記録、案件履歴記録、案件更新が起きないことを確認済み。
 - [ ] マニュアル作成/編集でタイトル、本文、URL形式の保存前チェックが効く

@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '@/lib/api'
+import { normalizeLineImageUrls } from '@/lib/line-image-url'
 
 export type ImageUploaderMode = 'url' | 'line-image'
 
@@ -28,6 +29,31 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [manualUrlMode, setManualUrlMode] = useState(false)
+  const [manualOriginalUrl, setManualOriginalUrl] = useState('')
+  const [manualPreviewUrl, setManualPreviewUrl] = useState('')
+  const [manualPreviewTouched, setManualPreviewTouched] = useState(false)
+
+  useEffect(() => {
+    if (value?.mode !== 'line-image') return
+    setManualOriginalUrl(value.originalContentUrl)
+    if (value.previewImageUrl !== value.originalContentUrl) {
+      setManualPreviewUrl(value.previewImageUrl)
+      setManualPreviewTouched(true)
+    } else if (!manualPreviewTouched) {
+      setManualPreviewUrl('')
+    }
+  }, [manualPreviewTouched, value])
+
+  const applyManualLineImageUrl = useCallback((originalUrl: string, previewUrl?: string) => {
+    const result = normalizeLineImageUrls(originalUrl, previewUrl)
+    if (!result.ok) {
+      onChange(null)
+      setError(originalUrl || previewUrl ? result.error : '')
+      return
+    }
+    setError('')
+    onChange(result.value)
+  }, [onChange])
 
   const upload = useCallback(
     async (file: File) => {
@@ -105,7 +131,7 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
   return (
     <div className="space-y-2">
       {label && <div className="text-sm font-medium text-gray-700">{label}</div>}
-      {mode === 'url' && (
+      {(mode === 'url' || mode === 'line-image') && (
         <div className="flex justify-end">
           <button
             type="button"
@@ -127,6 +153,53 @@ export default function ImageUploader({ mode, value, onChange, label }: ImageUpl
           placeholder="https://... (外部 CDN / R2 URL)"
           className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
         />
+      ) : mode === 'line-image' && manualUrlMode ? (
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-gray-600">
+            元画像URL (HTTPS)
+            <input
+              type="url"
+              value={manualOriginalUrl}
+              onChange={(e) => {
+                const next = e.target.value
+                setManualOriginalUrl(next)
+                applyManualLineImageUrl(next, manualPreviewTouched ? manualPreviewUrl : '')
+              }}
+              placeholder="https://.../original.jpg"
+              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block text-xs font-medium text-gray-600">
+            プレビュー画像URL (任意)
+            <input
+              type="url"
+              value={manualPreviewUrl}
+              onChange={(e) => {
+                const next = e.target.value
+                setManualPreviewUrl(next)
+                setManualPreviewTouched(Boolean(next.trim()))
+                applyManualLineImageUrl(manualOriginalUrl, next)
+              }}
+              placeholder="未入力なら元画像URLと同じ"
+              className="mt-1 w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+            />
+          </label>
+          {value?.mode === 'line-image' && (
+            <button
+              type="button"
+              onClick={() => {
+                setManualOriginalUrl('')
+                setManualPreviewUrl('')
+                setManualPreviewTouched(false)
+                onChange(null)
+                setError('')
+              }}
+              className="text-xs font-medium text-rose-600 underline"
+            >
+              取り消し
+            </button>
+          )}
+        </div>
       ) : (
         <div
           onDragOver={(e) => e.preventDefault()}

@@ -256,6 +256,12 @@ function parseCalendarStatusBody(raw: unknown): ParseResult<{ status: string }> 
   return { ok: true, body: { status: status.value } };
 }
 
+function calendarRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 async function getScopedCalendarBookings(
   c: Context<Env>,
   opts: { connectionId?: string; friendId?: string } = {},
@@ -303,7 +309,7 @@ calendar.get('/api/integrations/google-calendar', requireRole('owner', 'admin'),
       })),
     });
   } catch (err) {
-    console.error('GET /api/integrations/google-calendar error:', err);
+    console.error(`GET /api/integrations/google-calendar error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -320,7 +326,7 @@ calendar.post('/api/integrations/google-calendar/connect', requireRole('owner', 
       data: { id: conn.id, calendarId: conn.calendar_id, authType: conn.auth_type, isActive: Boolean(conn.is_active), createdAt: conn.created_at },
     }, 201);
   } catch (err) {
-    console.error('POST /api/integrations/google-calendar/connect error:', err);
+    console.error(`POST /api/integrations/google-calendar/connect error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -332,7 +338,7 @@ calendar.delete('/api/integrations/google-calendar/:id', requireRole('owner', 'a
     await deleteCalendarConnection(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/integrations/google-calendar/:id error:', err);
+    console.error(`DELETE /api/integrations/google-calendar/:id error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -370,7 +376,7 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
         googleBusyIntervals = await gcal.getFreeBusy(timeMin, timeMax);
       } catch (err) {
         // Google API 失敗はベストエフォート — D1 のみでフォールバック
-        console.warn('Google FreeBusy API error (falling back to D1 only):', err);
+        console.warn(`Google FreeBusy API error (falling back to D1 only): ${calendarRouteErrorKind(err)}`);
       }
     }
 
@@ -406,7 +412,7 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
 
     return c.json({ success: true, data: slots });
   } catch (err) {
-    console.error('GET /api/integrations/google-calendar/slots error:', err);
+    console.error(`GET /api/integrations/google-calendar/slots error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -443,7 +449,7 @@ calendar.get('/api/integrations/google-calendar/bookings', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/integrations/google-calendar/bookings error:', err);
+    console.error(`GET /api/integrations/google-calendar/bookings error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -485,7 +491,7 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
         booking.event_id = eventId;
       } catch (err) {
         // Google API 失敗はベストエフォート — D1 予約は維持する
-        console.warn('Google Calendar createEvent error (booking still created in D1):', err);
+        console.warn(`Google Calendar createEvent error (booking still created in D1): ${calendarRouteErrorKind(err)}`);
       }
     }
 
@@ -504,7 +510,7 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/integrations/google-calendar/book error:', err);
+    console.error(`POST /api/integrations/google-calendar/book error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -538,7 +544,7 @@ calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) 
             });
             await gcal.deleteEvent(booking.event_id);
           } catch (err) {
-            console.warn('Google Calendar deleteEvent error (status still updated in D1):', err);
+            console.warn(`Google Calendar deleteEvent error (status still updated in D1): ${calendarRouteErrorKind(err)}`);
           }
         }
       }
@@ -547,7 +553,7 @@ calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) 
     await updateCalendarBookingStatus(c.env.DB, id.value, status);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('PUT /api/integrations/google-calendar/bookings/:id/status error:', err);
+    console.error(`PUT /api/integrations/google-calendar/bookings/:id/status error: ${calendarRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

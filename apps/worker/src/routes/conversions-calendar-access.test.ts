@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { GoogleCalendarClient as GoogleCalendarClientInstance } from '../services/google-calendar.js';
 
 const dbMocks = {
   getConversionPoints: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('../services/google-calendar.js', () => ({
 
 const { conversions } = await import('./conversions.js');
 const { calendar } = await import('./calendar.js');
+const { GoogleCalendarClient } = await import('../services/google-calendar.js');
 
 type StaffRole = 'owner' | 'admin' | 'staff';
 
@@ -136,6 +138,16 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
   app.route('/', conversions);
   app.route('/', calendar);
   return app;
+}
+
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
 }
 
 beforeEach(() => {
@@ -422,6 +434,77 @@ describe('conversion friend visibility guards', () => {
 });
 
 describe('calendar booking friend visibility guards', () => {
+  test('calendar connection list failure logs only the error kind', async () => {
+    dbMocks.getCalendarConnections.mockRejectedValueOnce(
+      new Error(
+        'calendar list secret conn-1 calendar-primary google-access-token google-refresh-token raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const db = makeDb();
+
+      const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/integrations/google-calendar error: Error');
+      expectNoLogLeak(logged, [
+        'calendar list secret',
+        'conn-1',
+        'calendar-primary',
+        'google-access-token',
+        'google-refresh-token',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('calendar connection create failure logs only the error kind', async () => {
+    dbMocks.createCalendarConnection.mockRejectedValueOnce(
+      new Error(
+        'calendar connect secret conn-created calendar-primary google-access-token google-refresh-token raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const db = makeDb();
+
+      const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          calendarId: 'calendar-primary',
+          authType: 'oauth',
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/integrations/google-calendar/connect error: Error');
+      expectNoLogLeak(logged, [
+        'calendar connect secret',
+        'conn-created',
+        'calendar-primary',
+        'google-access-token',
+        'google-refresh-token',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('calendar connection create rejects malformed JSON before DB writes', async () => {
     const db = makeDb();
 
@@ -601,6 +684,46 @@ describe('calendar booking friend visibility guards', () => {
     );
   });
 
+  test('calendar slots Google FreeBusy warning logs only the error kind', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarConnectionById.mockResolvedValue({
+      id: 'conn-1',
+      calendar_id: 'calendar-primary',
+      auth_type: 'oauth',
+      access_token: 'google-access-token',
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.getBookingsInRange.mockResolvedValue([]);
+    vi.mocked(GoogleCalendarClient).mockImplementationOnce(() => ({
+      getFreeBusy: vi.fn().mockRejectedValueOnce(
+        new Error('freebusy secret conn-1 calendar-primary google-access-token raw-body'),
+      ),
+      createEvent: vi.fn(),
+      deleteEvent: vi.fn(),
+    } as unknown as GoogleCalendarClientInstance));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner')
+        .request('/api/integrations/google-calendar/slots?connectionId=conn-1&date=2026-06-14&startHour=9&endHour=10');
+
+      expect(res.status).toBe(200);
+      const logged = loggedText(warnSpy);
+      expect(logged).toContain('Google FreeBusy API error (falling back to D1 only): Error');
+      expectNoLogLeak(logged, [
+        'freebusy secret',
+        'conn-1',
+        'calendar-primary',
+        'google-access-token',
+        'raw-body',
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test('staff calendar bookings list is scoped to support-visible friends', async () => {
     const db = makeDb({
       visibleFriendIds: ['friend-visible'],
@@ -771,6 +894,96 @@ describe('calendar booking friend visibility guards', () => {
     expect(dbMocks.getCalendarConnectionById).toHaveBeenCalledWith(db, 'conn-1');
   });
 
+  test('calendar booking create failure logs only the error kind', async () => {
+    dbMocks.createCalendarBooking.mockRejectedValueOnce(
+      new Error(
+        'calendar booking secret conn-1 friend-visible 相談予約 google-access-token raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const db = makeDb();
+
+      const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connectionId: 'conn-1',
+          friendId: 'friend-visible',
+          title: '相談予約',
+          startAt: '2026-06-14T10:00:00.000+09:00',
+          endAt: '2026-06-14T11:00:00.000+09:00',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/integrations/google-calendar/book error: Error');
+      expectNoLogLeak(logged, [
+        'calendar booking secret',
+        'conn-1',
+        'friend-visible',
+        '相談予約',
+        'google-access-token',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('calendar createEvent warning logs only the error kind', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarConnectionById.mockResolvedValue({
+      id: 'conn-1',
+      calendar_id: 'calendar-primary',
+      auth_type: 'oauth',
+      access_token: 'google-access-token',
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    vi.mocked(GoogleCalendarClient).mockImplementationOnce(() => ({
+      getFreeBusy: vi.fn(),
+      createEvent: vi.fn().mockRejectedValueOnce(
+        new Error('createEvent secret conn-1 calendar-primary google-access-token event-secret raw-body'),
+      ),
+      deleteEvent: vi.fn(),
+    } as unknown as GoogleCalendarClientInstance));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/book', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          connectionId: 'conn-1',
+          title: '相談予約',
+          startAt: '2026-06-14T10:00:00.000+09:00',
+          endAt: '2026-06-14T11:00:00.000+09:00',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      expect(dbMocks.updateCalendarBookingEventId).not.toHaveBeenCalled();
+      const logged = loggedText(warnSpy);
+      expect(logged).toContain('Google Calendar createEvent error (booking still created in D1): Error');
+      expectNoLogLeak(logged, [
+        'createEvent secret',
+        'conn-1',
+        'calendar-primary',
+        'google-access-token',
+        'event-secret',
+        'raw-body',
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test('staff cannot update a hidden friend calendar booking by booking id', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
     dbMocks.getCalendarBookingById.mockResolvedValue({
@@ -794,6 +1007,62 @@ describe('calendar booking friend visibility guards', () => {
 
     expect(res.status).toBe(404);
     expect(dbMocks.updateCalendarBookingStatus).not.toHaveBeenCalled();
+  });
+
+  test('calendar deleteEvent warning logs only the error kind', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarBookingById.mockResolvedValue({
+      id: 'booking-1',
+      connection_id: 'conn-1',
+      friend_id: null,
+      event_id: 'gcal-event-1',
+      title: '相談予約',
+      start_at: '2026-06-14T10:00:00.000',
+      end_at: '2026-06-14T11:00:00.000',
+      status: 'confirmed',
+      metadata: null,
+      created_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.getCalendarConnectionById.mockResolvedValue({
+      id: 'conn-1',
+      calendar_id: 'calendar-primary',
+      auth_type: 'oauth',
+      access_token: 'google-access-token',
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    vi.mocked(GoogleCalendarClient).mockImplementationOnce(() => ({
+      getFreeBusy: vi.fn(),
+      createEvent: vi.fn(),
+      deleteEvent: vi.fn().mockRejectedValueOnce(
+        new Error('deleteEvent secret conn-1 calendar-primary gcal-event-1 google-access-token raw-body'),
+      ),
+    } as unknown as GoogleCalendarClientInstance));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bookings/booking-1/status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'cancelled' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(dbMocks.updateCalendarBookingStatus).toHaveBeenCalledWith(db, 'booking-1', 'cancelled');
+      const logged = loggedText(warnSpy);
+      expect(logged).toContain('Google Calendar deleteEvent error (status still updated in D1): Error');
+      expectNoLogLeak(logged, [
+        'deleteEvent secret',
+        'conn-1',
+        'calendar-primary',
+        'gcal-event-1',
+        'google-access-token',
+        'raw-body',
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test('calendar booking status rejects malformed or invalid payloads before booking lookup', async () => {

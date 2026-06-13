@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const images = new Hono<Env>();
 
@@ -90,9 +91,12 @@ images.get('/images/:key', async (c) => {
 });
 
 // DELETE /api/images/:key — delete image
-images.delete('/api/images/:key', async (c) => {
+images.delete('/api/images/:key', requireRole('owner', 'admin'), async (c) => {
   try {
     const key = c.req.param('key');
+    if (!key) {
+      return c.json({ success: false, error: 'key is required' }, 400);
+    }
     await c.env.IMAGES.delete(key);
     return c.json({ success: true, data: null });
   } catch (err) {

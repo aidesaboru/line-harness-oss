@@ -26,6 +26,7 @@ updated: 2026-06-13
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
 - rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した
 - entry route管理、conversion point定義参照/作成/削除、Google Calendar接続管理、account health/migration APIはowner/adminだけに制限し、staffは友だち単位で許可されたcalendar booking/conversion記録だけを使える
+- 重複統計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
@@ -115,6 +116,8 @@ updated: 2026-06-13
 - `apps/worker/src/routes/broadcasts-access.test.ts`
 - `apps/worker/src/routes/forms-access.test.ts`
 - `apps/worker/src/routes/operations-access.test.ts`
+- `apps/worker/src/routes/duplicates-access.test.ts`
+- `apps/worker/src/routes/images-access.test.ts`
 - `apps/worker/src/middleware/auth.test.ts`
 - `apps/worker/src/routes/staff.test.ts`
 - `apps/web/src/components/support/support-meta.test.ts`
@@ -185,6 +188,7 @@ strict Preflight:
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
 - Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work.
 - Management role guard and conversion/calendar access route tests confirm staff cannot manage entry routes, read/mutate conversion points, manage Google Calendar connections, or access account health/migrations while friend-scoped conversion/calendar booking operations still work.
+- Duplicates, LIFF access, and image access route tests confirm staff cannot read duplicate/ref analytics or wrap management links, cannot delete arbitrary stored images, and can still upload chat/reply images.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
 - LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.
 
@@ -235,7 +239,7 @@ strict Preflight:
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限とLIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限とfriend単位操作の維持
-- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration管理APIのowner/admin制限
+- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限とincoming receive署名検証の維持

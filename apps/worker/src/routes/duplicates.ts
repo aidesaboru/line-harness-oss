@@ -6,6 +6,7 @@ import {
   type PerAccountStat,
   type PairwiseOverlap,
 } from '../services/duplicates-stats.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 interface PerAccountStatDTO {
   accountId: string;
@@ -67,7 +68,7 @@ function serializeDuplicatesStats(stats: DuplicatesStats): DuplicatesStatsDTO {
 
 export const duplicates = new Hono<Env>();
 
-duplicates.get('/api/duplicates/stats', async (c) => {
+duplicates.get('/api/duplicates/stats', requireRole('owner', 'admin'), async (c) => {
   try {
     const forceRefresh = c.req.query('refresh') === '1';
     const stats = await computeDuplicatesStats(c.env.DB, { forceRefresh });

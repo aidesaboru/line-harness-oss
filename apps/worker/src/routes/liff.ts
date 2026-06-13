@@ -23,6 +23,7 @@ import {
 import { buildIntroMessage } from '../services/intro-message.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const liffRoutes = new Hono<Env>();
 
@@ -1321,7 +1322,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
 /**
  * GET /api/analytics/ref-summary — ref code analytics summary
  */
-liffRoutes.get('/api/analytics/ref-summary', async (c) => {
+liffRoutes.get('/api/analytics/ref-summary', requireRole('owner', 'admin'), async (c) => {
   try {
     const db = c.env.DB;
     const lineAccountId = c.req.query('lineAccountId');
@@ -1394,7 +1395,7 @@ liffRoutes.get('/api/analytics/ref-summary', async (c) => {
 /**
  * GET /api/analytics/ref/:refCode — detailed friend list for a single ref code
  */
-liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
+liffRoutes.get('/api/analytics/ref/:refCode', requireRole('owner', 'admin'), async (c) => {
   try {
     const db = c.env.DB;
     const refCode = c.req.param('refCode');
@@ -1452,7 +1453,7 @@ liffRoutes.get('/api/analytics/ref/:refCode', async (c) => {
 });
 
 // POST /api/links/wrap - wrap a URL with LIFF redirect proxy
-liffRoutes.post('/api/links/wrap', async (c) => {
+liffRoutes.post('/api/links/wrap', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ url: string; ref?: string }>();
     if (!body.url) {

@@ -41,16 +41,24 @@ type TestEnv = {
     DB: D1Database;
     LINE_LOGIN_CHANNEL_ID?: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
+    LIFF_URL: string;
   };
+  Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(db: D1Database = {} as D1Database) {
+type StaffRole = 'owner' | 'admin' | 'staff';
+
+function setupApp(db: D1Database = {} as D1Database, role?: StaffRole) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
+    if (role) {
+      c.set('staff', { id: 'staff-1', name: 'Tajima', role });
+    }
     c.env = {
       DB: db,
       LINE_LOGIN_CHANNEL_ID: 'login-channel',
       LINE_CHANNEL_ACCESS_TOKEN: 'line-token',
+      LIFF_URL: 'https://liff.example.com',
     };
     await next();
   });
@@ -59,12 +67,14 @@ function setupApp(db: D1Database = {} as D1Database) {
 }
 
 function createPreparedDb() {
+  const bound = {
+    run: vi.fn().mockResolvedValue({}),
+    first: vi.fn().mockResolvedValue(null),
+    all: vi.fn().mockResolvedValue({ results: [] }),
+  };
   const statement = {
-    bind: vi.fn(() => ({
-      run: vi.fn().mockResolvedValue({}),
-      first: vi.fn().mockResolvedValue(null),
-      all: vi.fn().mockResolvedValue({ results: [] }),
-    })),
+    ...bound,
+    bind: vi.fn(() => bound),
   };
   return {
     prepare: vi.fn(() => statement),
@@ -194,6 +204,43 @@ describe('public LIFF link endpoint', () => {
       sourceUrl: null,
     });
     expect(dbMocks.recordLinkClick).toHaveBeenCalledWith(db, 'link-1', 'friend-verified');
+  });
+});
+
+describe('management LIFF analytics endpoints', () => {
+  test('staff cannot read ref analytics or wrap management links', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp(db, 'staff');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/analytics/ref-summary'],
+      ['GET', '/api/analytics/ref/launch'],
+      ['POST', '/api/links/wrap', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/lp', ref: 'launch' }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('owner can wrap a management link through LIFF', async () => {
+    const res = await setupApp({} as D1Database, 'owner').request('/api/links/wrap', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/lp', ref: 'launch' }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = await res.json() as { success: boolean; data: { url: string } };
+    expect(json).toEqual({
+      success: true,
+      data: { url: 'https://liff.example.com?redirect=https%3A%2F%2Fexample.com%2Flp&ref=launch' },
+    });
   });
 });
 

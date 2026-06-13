@@ -110,7 +110,7 @@ export async function createChat(
 export async function updateChat(
   db: D1Database,
   id: string,
-  updates: Partial<{ operatorId: string | null; status: string; notes: string; lastMessageAt: string }>,
+  updates: Partial<{ operatorId: string | null; status: string; notes: string | null; lastMessageAt: string }>,
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [];

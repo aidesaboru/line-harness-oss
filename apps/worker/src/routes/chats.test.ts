@@ -411,6 +411,232 @@ describe('chat support visibility', () => {
     ]);
   });
 
+  test('chat list rejects unsafe filters before SQL bind', async () => {
+    const cases = [
+      '/api/chats?lineAccountId=bad%20account',
+      '/api/chats?operatorId=bad%20operator',
+      '/api/chats?status=archived',
+      '/api/chats?unansweredOnly=maybe',
+    ];
+
+    for (const path of cases) {
+      const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'owner').request(path);
+
+      expect(res.status, path).toBe(400);
+      expect(calls, path).toEqual([]);
+    }
+  });
+
+  test('chat list trims valid filters before SQL bind', async () => {
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'owner')
+      .request('/api/chats?lineAccountId=%20acc-1%20&operatorId=%20operator-1%20&status=%20in_progress%20&unansweredOnly=false');
+
+    expect(res.status).toBe(200);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
+    expect(listCall?.binds).toEqual([
+      'acc-1',
+      'acc-1',
+      'acc-1',
+      'acc-1',
+      'in_progress',
+      'operator-1',
+      'acc-1',
+    ]);
+  });
+
+  test('chat detail rejects unsafe path or cursor values before DB helpers or SQL bind', async () => {
+    const cases = [
+      '/api/chats/bad%20chat',
+      '/api/chats/friend-visible?beforeCreatedAt=not-a-date',
+      '/api/chats/friend-visible?beforeId=msg-1',
+    ];
+
+    for (const path of cases) {
+      dbMocks.getChatById.mockClear();
+      dbMocks.getFriendById.mockClear();
+      const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'owner').request(path);
+
+      expect(res.status, path).toBe(400);
+      expect(dbMocks.getChatById, path).not.toHaveBeenCalled();
+      expect(dbMocks.getFriendById, path).not.toHaveBeenCalled();
+      expect(calls, path).toEqual([]);
+    }
+  });
+
+  test('chat detail trims valid path and cursor values before SQL bind', async () => {
+    const messages: MessageRow[] = [
+      { id: 'msg-1', friend_id: 'friend-visible', direction: 'incoming', message_type: 'text', content: '1件目', created_at: '2026-06-12T09:00:00.000' },
+      { id: 'msg-2', friend_id: 'friend-visible', direction: 'outgoing', message_type: 'text', content: '2件目', created_at: '2026-06-12T09:01:00.000' },
+    ];
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages,
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+
+    const res = await setupApp(db, 'owner')
+      .request('/api/chats/%20friend-visible%20?messageLimit=999&beforeCreatedAt=%202026-06-12T09:01:00.000%2B09:00%20&beforeId=%20msg-2%20');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getChatById).toHaveBeenCalledWith(db, 'friend-visible');
+    expect(dbMocks.getFriendById).toHaveBeenCalledWith(db, 'friend-visible');
+    const messageCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM messages_log'));
+    expect(messageCall?.binds).toEqual([
+      'friend-visible',
+      '2026-06-12T09:01:00.000+09:00',
+      '2026-06-12T09:01:00.000+09:00',
+      'msg-2',
+      1000,
+    ]);
+  });
+
+  test('chat mutations reject malformed IDs and payloads before DB helpers or LINE calls', async () => {
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['POST', '/api/chats', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/chats', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ friendId: 'bad friend' }),
+      }],
+      ['PUT', '/api/chats/bad%20chat', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'in_progress' }),
+      }],
+      ['PUT', '/api/chats/friend-visible', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }],
+      ['PUT', '/api/chats/friend-visible', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'done' }),
+      }],
+      ['POST', '/api/chats/bad%20chat/loading', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loadingSeconds: 10 }),
+      }],
+      ['POST', '/api/chats/bad%20chat/send/validate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '確認します' }),
+      }],
+      ['POST', '/api/chats/friend-visible/send/validate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/chats/bad%20chat/send', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '確認します' }),
+      }],
+      ['POST', '/api/chats/friend-visible/send', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '確認します', supportCaseId: 'bad case' }),
+      }],
+    ];
+
+    for (const [method, path, init] of cases) {
+      dbMocks.getChatById.mockClear();
+      dbMocks.getFriendById.mockClear();
+      dbMocks.createChat.mockClear();
+      dbMocks.updateChat.mockClear();
+      const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'owner').request(path, { ...init, method });
+
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(dbMocks.getChatById, `${method} ${path}`).not.toHaveBeenCalled();
+      expect(dbMocks.getFriendById, `${method} ${path}`).not.toHaveBeenCalled();
+      expect(dbMocks.createChat, `${method} ${path}`).not.toHaveBeenCalled();
+      expect(dbMocks.updateChat, `${method} ${path}`).not.toHaveBeenCalled();
+      expect(calls, `${method} ${path}`).toEqual([]);
+      expect(lineSdkMocks.LineClient, `${method} ${path}`).not.toHaveBeenCalled();
+    }
+  });
+
+  test('chat create trims valid IDs before DB helpers and line-account update', async () => {
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.createChat.mockResolvedValue({
+      id: 'chat-created',
+      friend_id: 'friend-visible',
+      operator_id: 'operator-1',
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T10:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        friendId: ' friend-visible ',
+        operatorId: ' operator-1 ',
+        lineAccountId: ' acc-1 ',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createChat).toHaveBeenCalledWith(db, {
+      friendId: 'friend-visible',
+      operatorId: 'operator-1',
+      lineAccountId: 'acc-1',
+    });
+    const lineAccountUpdate = calls.find((call) => call.method === 'run' && call.sql.includes('UPDATE chats SET line_account_id'));
+    expect(lineAccountUpdate?.binds).toEqual(['acc-1', 'chat-created']);
+  });
+
+  test('chat update trims valid IDs and payload before DB helpers', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockImplementation(async (_db: D1Database, id: string) => {
+      if (id === 'friend-visible') return null;
+      if (id === 'chat-friend-visible') {
+        return {
+          id: 'chat-friend-visible',
+          friend_id: 'friend-visible',
+          operator_id: 'operator-1',
+          status: 'resolved',
+          notes: '次回確認',
+          last_message_at: '2026-06-12T10:00:00.000',
+          created_at: '2026-06-12T09:00:00.000',
+          updated_at: '2026-06-12T10:00:00.000',
+        };
+      }
+      return null;
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const res = await setupApp(db, 'owner').request('/api/chats/%20friend-visible%20', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        operatorId: ' operator-1 ',
+        status: ' resolved ',
+        notes: ' 次回確認 ',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getChatById).toHaveBeenCalledWith(db, 'friend-visible');
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-friend-visible', {
+      operatorId: 'operator-1',
+      status: 'resolved',
+      notes: '次回確認',
+    });
+    expect(dbMocks.getChatById).toHaveBeenCalledWith(db, 'chat-friend-visible');
+  });
+
   test('sending a support reply records the chat message and support case event', async () => {
     const { db, state } = makeChatDb({
       rows,

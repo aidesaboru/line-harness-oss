@@ -30,8 +30,12 @@ const OPERATOR_ID_MAX_LENGTH = 128;
 const OPERATOR_NAME_MAX_LENGTH = 120;
 const OPERATOR_EMAIL_MAX_LENGTH = 254;
 const OPERATOR_ROLE_MAX_LENGTH = 64;
+const CHAT_ID_MAX_LENGTH = 128;
+const CHAT_CURSOR_MAX_LENGTH = 64;
+const CHAT_NOTES_MAX_LENGTH = 4096;
 const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved']);
 
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
@@ -103,6 +107,16 @@ type ChatSendBody = {
 
 type OperatorCreateBody = { name: string; email: string; role?: string };
 type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
+type ChatStatus = 'unread' | 'in_progress' | 'resolved';
+type ChatListQuery = {
+  status?: ChatStatus;
+  operatorId?: string;
+  lineAccountId?: string;
+  unansweredOnly: boolean;
+};
+type ChatCreateInput = { friendId: string; operatorId?: string; lineAccountId?: string };
+type ChatUpdateInput = Partial<{ operatorId: string | null; status: ChatStatus; notes: string | null }>;
+type ChatDetailQuery = { messageLimit: number; beforeCreatedAt?: string; beforeId?: string };
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 type ChatMessageType = 'text' | 'flex' | 'image';
@@ -160,6 +174,110 @@ function parseOperatorPathId(raw: unknown): ValueResult<string> {
   return parseRequiredString(raw, 'operatorId', OPERATOR_ID_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
 }
 
+function parseOptionalVisibleString(raw: unknown, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalNullableVisibleString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+): ValueResult<string | null | undefined> {
+  if (raw === null) return { ok: true, value: null };
+  return parseOptionalVisibleString(raw, label, maxLength);
+}
+
+function parseOptionalNullableText(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseChatPathId(raw: unknown): ValueResult<string> {
+  return parseRequiredString(raw, 'chatId', CHAT_ID_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
+}
+
+function parseChatStatus(raw: unknown): ValueResult<ChatStatus | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'status must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (!CHAT_STATUSES.has(value)) return { ok: false, error: 'status is invalid' };
+  return { ok: true, value: value as ChatStatus };
+}
+
+function parseBooleanFlag(raw: unknown, label: string): ValueResult<boolean> {
+  if (raw === undefined || raw === null) return { ok: true, value: false };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value || value === '0' || value === 'false') return { ok: true, value: false };
+  if (value === '1' || value === 'true') return { ok: true, value: true };
+  return { ok: false, error: `${label} is invalid` };
+}
+
+function parseOptionalCursor(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'beforeCreatedAt must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > CHAT_CURSOR_MAX_LENGTH) return { ok: false, error: 'beforeCreatedAt is too long' };
+  if (!value.includes('T') || !Number.isFinite(new Date(value).getTime())) {
+    return { ok: false, error: 'beforeCreatedAt is invalid' };
+  }
+  return { ok: true, value };
+}
+
+function parseChatListQuery(searchParams: URLSearchParams): ValueResult<ChatListQuery> {
+  const status = parseChatStatus(searchParams.get('status'));
+  if (!status.ok) return status;
+  const operatorId = parseOptionalVisibleString(searchParams.get('operatorId'), 'operatorId', OPERATOR_ID_MAX_LENGTH);
+  if (!operatorId.ok) return operatorId;
+  const lineAccountId = parseOptionalVisibleString(searchParams.get('lineAccountId'), 'lineAccountId', CHAT_ID_MAX_LENGTH);
+  if (!lineAccountId.ok) return lineAccountId;
+  const unansweredOnly = parseBooleanFlag(searchParams.get('unansweredOnly'), 'unansweredOnly');
+  if (!unansweredOnly.ok) return unansweredOnly;
+  return {
+    ok: true,
+    value: {
+      status: status.value,
+      operatorId: operatorId.value,
+      lineAccountId: lineAccountId.value,
+      unansweredOnly: unansweredOnly.value,
+    },
+  };
+}
+
+function parseChatDetailQuery(searchParams: URLSearchParams): ValueResult<ChatDetailQuery> {
+  const beforeCreatedAt = parseOptionalCursor(searchParams.get('beforeCreatedAt') ?? searchParams.get('before'));
+  if (!beforeCreatedAt.ok) return beforeCreatedAt;
+  const beforeId = parseOptionalVisibleString(searchParams.get('beforeId'), 'beforeId', CHAT_ID_MAX_LENGTH);
+  if (!beforeId.ok) return beforeId;
+  if (beforeId.value && !beforeCreatedAt.value) {
+    return { ok: false, error: 'beforeCreatedAt is required when beforeId is provided' };
+  }
+  return {
+    ok: true,
+    value: {
+      messageLimit: clampMessageLimit(searchParams.get('messageLimit') ?? undefined),
+      beforeCreatedAt: beforeCreatedAt.value,
+      beforeId: beforeId.value,
+    },
+  };
+}
+
 function parseOperatorCreateBody(raw: unknown): ValueResult<OperatorCreateBody> {
   if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
   const name = parseRequiredString(raw.name, 'name', OPERATOR_NAME_MAX_LENGTH);
@@ -192,6 +310,64 @@ function parseOperatorUpdateBody(raw: unknown): ValueResult<OperatorUpdateBody> 
     return { ok: false, error: 'At least one field is required' };
   }
   return { ok: true, value };
+}
+
+function parseChatCreateBody(raw: unknown): ValueResult<ChatCreateInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const friendId = parseRequiredString(raw.friendId, 'friendId', CHAT_ID_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
+  if (!friendId.ok) return friendId;
+  const operatorId = parseOptionalNullableVisibleString(raw.operatorId, 'operatorId', OPERATOR_ID_MAX_LENGTH);
+  if (!operatorId.ok) return operatorId;
+  const lineAccountId = parseOptionalNullableVisibleString(raw.lineAccountId, 'lineAccountId', CHAT_ID_MAX_LENGTH);
+  if (!lineAccountId.ok) return lineAccountId;
+  return {
+    ok: true,
+    value: {
+      friendId: friendId.value,
+      operatorId: operatorId.value ?? undefined,
+      lineAccountId: lineAccountId.value ?? undefined,
+    },
+  };
+}
+
+function parseChatUpdateBody(raw: unknown): ValueResult<ChatUpdateInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const operatorId = parseOptionalNullableVisibleString(raw.operatorId, 'operatorId', OPERATOR_ID_MAX_LENGTH);
+  if (!operatorId.ok) return operatorId;
+  const status = parseChatStatus(raw.status);
+  if (!status.ok) return status;
+  const notes = parseOptionalNullableText(raw.notes, 'notes', CHAT_NOTES_MAX_LENGTH);
+  if (!notes.ok) return notes;
+  const value = {
+    operatorId: operatorId.value,
+    status: status.value,
+    notes: notes.value,
+  };
+  if (Object.values(value).every((entry) => entry === undefined)) {
+    return { ok: false, error: 'At least one field is required' };
+  }
+  return { ok: true, value };
+}
+
+function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (raw.messageType !== undefined && typeof raw.messageType !== 'string') {
+    return { ok: false, error: 'messageType must be a string' };
+  }
+  if (typeof raw.content !== 'string') return { ok: false, error: 'content must be a string' };
+  const supportCaseId = parseOptionalVisibleString(raw.supportCaseId, 'supportCaseId', CHAT_ID_MAX_LENGTH);
+  if (!supportCaseId.ok) return supportCaseId;
+  const lineAccountId = parseOptionalNullableVisibleString(raw.lineAccountId, 'lineAccountId', CHAT_ID_MAX_LENGTH);
+  if (!lineAccountId.ok) return lineAccountId;
+  return {
+    ok: true,
+    value: {
+      messageType: raw.messageType,
+      content: raw.content,
+      supportCaseId: supportCaseId.value,
+      lineAccountId: lineAccountId.value ?? undefined,
+    },
+  };
 }
 
 function isHttpsUrl(value: string): boolean {
@@ -531,11 +707,9 @@ chats.delete('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
 
 chats.get('/api/chats', async (c) => {
   try {
-    const status = c.req.query('status') ?? undefined;
-    const operatorId = c.req.query('operatorId') ?? undefined;
-    const lineAccountId = c.req.query('lineAccountId') ?? undefined;
-    const unansweredOnly =
-      c.req.query('unansweredOnly') === 'true' || c.req.query('unansweredOnly') === '1';
+    const parsed = parseChatListQuery(new URL(c.req.url).searchParams);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const { status, operatorId, lineAccountId, unansweredOnly } = parsed.value;
 
     let unansweredIds: Set<string> | null = null;
     if (unansweredOnly) {
@@ -716,7 +890,11 @@ chats.get('/api/chats', async (c) => {
 
 chats.get('/api/chats/:id', async (c) => {
   try {
-    const rawId = c.req.param('id');
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const query = parseChatDetailQuery(new URL(c.req.url).searchParams);
+    if (!query.ok) return c.json({ success: false, error: query.error }, 400);
+    const rawId = id.value;
 
     // id は chats.id または friend.id のどちらでもOK。
     // 優先順: chats.id 一致 → friend.id のとき chats.friend_id 最新行 → 何も無ければ friend のみで synthetic
@@ -756,9 +934,7 @@ chats.get('/api/chats/:id', async (c) => {
 
     // 新しい順で1件多く取り、昇順に戻す。初回は従来どおり最新1000件を返し、
     // beforeCreatedAt/beforeId がある場合だけ古い履歴をページングする。
-    const messageLimit = clampMessageLimit(c.req.query('messageLimit'));
-    const beforeCreatedAt = c.req.query('beforeCreatedAt') ?? c.req.query('before');
-    const beforeId = c.req.query('beforeId');
+    const { messageLimit, beforeCreatedAt, beforeId } = query.value;
     const messageWhere = [
       'friend_id = ?',
       `(delivery_type IS NULL OR delivery_type != 'test')`,
@@ -819,8 +995,9 @@ chats.get('/api/chats/:id', async (c) => {
 
 chats.post('/api/chats', async (c) => {
   try {
-    const body = await c.req.json<{ friendId: string; operatorId?: string; lineAccountId?: string | null }>();
-    if (!body.friendId) return c.json({ success: false, error: 'friendId is required' }, 400);
+    const parsed = parseChatCreateBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.value;
     const denied = await ensureChatFriendAccess(c, body.friendId);
     if (denied) return denied;
 
@@ -840,14 +1017,16 @@ chats.post('/api/chats', async (c) => {
 // チャットのアサイン/ステータス更新/ノート更新
 chats.put('/api/chats/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    const resolved = await resolveOrCreateChat(c.env.DB, id);
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsed = parseChatUpdateBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const resolved = await resolveOrCreateChat(c.env.DB, id.value);
     if (!resolved) return c.json({ success: false, error: 'Not found' }, 404);
     const denied = await ensureChatFriendAccess(c, resolved.friend_id);
     if (denied) return denied;
 
-    const body = await c.req.json<{ operatorId?: string | null; status?: string; notes?: string }>();
-    await updateChat(c.env.DB, resolved.id, body);
+    await updateChat(c.env.DB, resolved.id, parsed.value);
     const updated = await getChatById(c.env.DB, resolved.id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
@@ -864,8 +1043,9 @@ chats.put('/api/chats/:id', async (c) => {
 // オペレーター入力中のローディング表示を開始
 chats.post('/api/chats/:id/loading', async (c) => {
   try {
-    const chatId = c.req.param('id');
-    const chat = await resolveOrCreateChat(c.env.DB, chatId);
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
     const denied = await ensureChatFriendAccess(c, chat.friend_id);
     if (denied) return denied;
@@ -903,15 +1083,17 @@ chats.post('/api/chats/:id/loading', async (c) => {
 // 送信前検証。LINE送信やDB更新は行わず、プリフライトやUI側の安全確認に使う。
 chats.post('/api/chats/:id/send/validate', async (c) => {
   try {
-    const chatId = c.req.param('id');
-    const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId);
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const body = parseChatSendBody(await readJsonBody(c));
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const normalized = normalizeChatSendPayload(body.value);
+    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
+
+    const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId.value);
     if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
     const denied = await ensureChatFriendAccess(c, resolved.friendId);
     if (denied) return denied;
-
-    const body = await c.req.json<ChatSendBody>();
-    const normalized = normalizeChatSendPayload(body);
-    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
 
     const { friend } = await resolveFriendAndAccessToken(
       c.env.DB,
@@ -920,7 +1102,7 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
-    const validation = await validateSupportCaseForSend(c, currentStaff(c), friend, body);
+    const validation = await validateSupportCaseForSend(c, currentStaff(c), friend, body.value);
     if (!validation.ok) return validation.response;
 
     return c.json({
@@ -941,15 +1123,17 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
 // オペレーターからメッセージ送信
 chats.post('/api/chats/:id/send', async (c) => {
   try {
-    const chatId = c.req.param('id');
-    const chat = await resolveOrCreateChat(c.env.DB, chatId);
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const body = parseChatSendBody(await readJsonBody(c));
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const normalized = normalizeChatSendPayload(body.value);
+    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
     const denied = await ensureChatFriendAccess(c, chat.friend_id);
     if (denied) return denied;
-
-    const body = await c.req.json<ChatSendBody>();
-    const normalized = normalizeChatSendPayload(body);
-    if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
 
     const { friend, accessToken } = await resolveFriendAndAccessToken(
       c.env.DB,
@@ -959,7 +1143,7 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
     const staff = currentStaff(c);
-    const validation = await validateSupportCaseForSend(c, staff, friend, body);
+    const validation = await validateSupportCaseForSend(c, staff, friend, body.value);
     if (!validation.ok) return validation.response;
     const { supportCase, supportLineAccountId } = validation;
 

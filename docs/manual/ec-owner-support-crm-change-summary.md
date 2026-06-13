@@ -32,7 +32,7 @@ updated: 2026-06-13
 - admin diagnostics/repair APIの `accountId` query、broadcast/friend path ID、tag/content診断payloadは、DB lookup、LINE profile refresh、repair SQL前に検証し、正常値はtrimする
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
-- staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
+- staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、chat一覧/詳細/作成/更新/送信、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
 - staff管理APIのcreate/update/detail/delete/regenerate-key payload/path IDは、壊れたJSON、不正なstaff ID/name/email/role/isActiveをDB helperや最後のowner保護check前に400で止め、正常値はtrim/null正規化する
 - legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDは、壊れたJSON、不正なemail/phone/externalId/displayName/friendId/userIdをDB helperやfriend可視範囲check前に400で止め、正常値はtrim/null正規化する
@@ -226,6 +226,7 @@ strict Preflight:
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - friends route tests confirm malformed list/count/ref-stats query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects.
+- Chat route tests confirm malformed or unsafe chat list filters, chat/friend path IDs, message cursors, create/update payloads, send payload IDs, and loading/send paths stop before DB helpers, SQL bind, friend access checks, LINE loading/send calls, or writes while valid IDs, filters, cursors, and payload fields are trimmed.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion event/report filters reject malformed IDs or date ranges before friend access checks or SQL bind, valid filters are trimmed, conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops, invalid time windows stop before calendar lookup, malformed or nonexistent calendar date filters are rejected, valid calendar slot/booking query values are trimmed, and malformed or unsafe Calendar connection/booking/status path IDs and payloads stop before DB helpers, DB writes, friend access checks, or Google Calendar lookup.
 - Booking access route tests confirm malformed admin `account_id` values stop before SQL, malformed admin menu/staff/booking path IDs stop before SQL, malformed LIFF staff-selection path IDs stop before staff lookup SQL, malformed `liffId/menu_id/staff_id/from/to` availability queries stop before LINE account lookup or availability helper calls where applicable, malformed `Idempotency-Key` and booking request payloads stop before LINE verification or idempotency lookup, and valid filters/payload IDs are trimmed before use.
 - conversations route tests confirm malformed or unsafe conversation queue/detail query values stop before friend access checks or SQL bind, while valid IDs/cursors are trimmed and paging values are clamped.
@@ -294,7 +295,7 @@ strict Preflight:
 
 - `apps/worker/src/services/support-access.ts`: staff可視範囲のSQL条件
 - `apps/worker/src/routes/support.ts`: role別更新制限、完了/再オープン、エスカレーション制限
-- `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、送信前検証、顧客返信イベント
+- `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、chat query/path/payload検証、送信前検証、顧客返信イベント
 - `apps/worker/src/routes/inbox.ts` / `services/unanswered-inbox.ts`: staffの未対応インボックス一覧、件数、未対応friend ID集合の可視範囲
 - `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲

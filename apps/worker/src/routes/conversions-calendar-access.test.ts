@@ -299,6 +299,49 @@ describe('conversion friend visibility guards', () => {
     expect(listCall?.binds.slice(-2)).toEqual([100, 0]);
   });
 
+  test('conversion events reject unsafe filters before friend access checks or SQL bind', async () => {
+    const queries = [
+      'conversionPointId=bad%20point',
+      'friendId=bad%20friend',
+      'affiliateCode=bad%20code',
+      'startDate=not-a-date',
+      'endDate=not-a-date',
+      'startDate=2026-07-01&endDate=2026-06-01',
+    ];
+
+    for (const query of queries) {
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request(`/api/conversions/events?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(db.calls, query).toEqual([]);
+    }
+  });
+
+  test('conversion events trim valid filters before friend access checks and SQL bind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/conversions/events?conversionPointId=%20point-1%20&friendId=%20friend-visible%20&affiliateCode=%20aff_2026%20&startDate=%202026-06-01%20&endDate=%202026-06-30T23%3A59%3A59%2B09%3A00%20&limit=10&offset=2');
+
+    expect(res.status).toBe(200);
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '%田島%', '%田島%', '%田島%'] });
+    const listCall = db.calls.find((call) => call.sql.includes('FROM conversion_events ce'));
+    expect(listCall?.binds).toEqual([
+      'point-1',
+      'friend-visible',
+      'aff_2026',
+      '2026-06-01',
+      '2026-06-30T23:59:59+09:00',
+      'staff-1',
+      '%田島%',
+      '%田島%',
+      '%田島%',
+      10,
+      2,
+    ]);
+  });
+
   test('staff cannot request hidden friend conversion events directly', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
 
@@ -317,6 +360,40 @@ describe('conversion friend visibility guards', () => {
     const reportCall = db.calls.find((call) => call.sql.includes('FROM conversion_points cp'));
     expect(reportCall?.sql).toContain('sc_friend_scope.friend_id = ce.friend_id');
     expect(reportCall?.binds).toEqual(['2026-06-01', 'staff-1', '%田島%', '%田島%', '%田島%']);
+  });
+
+  test('conversion report rejects unsafe date filters before SQL bind', async () => {
+    const queries = [
+      'startDate=not-a-date',
+      'endDate=not-a-date',
+      'startDate=2026-07-01&endDate=2026-06-01',
+    ];
+
+    for (const query of queries) {
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request(`/api/conversions/report?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(db.calls, query).toEqual([]);
+    }
+  });
+
+  test('conversion report trims valid date filters before SQL bind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/conversions/report?startDate=%202026-06-01%20&endDate=%202026-06-30T23%3A59%3A59%2B09%3A00%20');
+
+    expect(res.status).toBe(200);
+    const reportCall = db.calls.find((call) => call.sql.includes('FROM conversion_points cp'));
+    expect(reportCall?.binds).toEqual([
+      '2026-06-01',
+      '2026-06-30T23:59:59+09:00',
+      'staff-1',
+      '%田島%',
+      '%田島%',
+      '%田島%',
+    ]);
   });
 
   test('owner conversion events keep the global scope', async () => {

@@ -17,6 +17,7 @@ const CONVERSION_POINT_NAME_MAX_LENGTH = 120;
 const CONVERSION_POINT_EVENT_TYPE_MAX_LENGTH = 128;
 const CONVERSION_POINT_VALUE_MAX = 1_000_000_000_000;
 const CONVERSION_ID_MAX_LENGTH = 128;
+const CONVERSION_DATE_QUERY_MAX_LENGTH = 64;
 const CONVERSION_METADATA_MAX_KEYS = 50;
 const CONVERSION_METADATA_MAX_JSON_LENGTH = 16 * 1024;
 const CONVERSION_POINT_EVENT_TYPE_PATTERN = /^[!-~]+$/;
@@ -56,6 +57,13 @@ interface ConversionEventFilters {
   limit?: number;
   offset?: number;
 }
+
+type ConversionDateRange = {
+  startDate?: string;
+  endDate?: string;
+};
+type ParsedConversionEventsQuery = ValueResult<ConversionEventFilters>;
+type ParsedConversionReportQuery = ValueResult<ConversionDateRange>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -119,6 +127,47 @@ function parseOptionalMetadata(raw: unknown): ValueResult<string | null | undefi
     return { ok: false, error: 'metadata is too large' };
   }
   return { ok: true, value: serialized };
+}
+
+function parseOptionalQueryString(
+  raw: string | undefined,
+  label: string,
+  maxLength: number,
+  pattern?: RegExp,
+): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (pattern && !pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalDateQuery(raw: string | undefined, label: string): ValueResult<string | undefined> {
+  const parsed = parseOptionalQueryString(raw, label, CONVERSION_DATE_QUERY_MAX_LENGTH, CONVERSION_ID_PATTERN);
+  if (!parsed.ok || parsed.value === undefined) return parsed;
+  if (!Number.isFinite(new Date(parsed.value).getTime())) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return parsed;
+}
+
+function parseConversionDateRangeQuery(
+  startDateRaw: string | undefined,
+  endDateRaw: string | undefined,
+): ValueResult<ConversionDateRange> {
+  const startDate = parseOptionalDateQuery(startDateRaw, 'startDate');
+  if (!startDate.ok) return startDate;
+  const endDate = parseOptionalDateQuery(endDateRaw, 'endDate');
+  if (!endDate.ok) return endDate;
+  if (
+    startDate.value !== undefined &&
+    endDate.value !== undefined &&
+    new Date(startDate.value).getTime() > new Date(endDate.value).getTime()
+  ) {
+    return { ok: false, error: 'startDate must be before endDate' };
+  }
+  return { ok: true, value: { startDate: startDate.value, endDate: endDate.value } };
 }
 
 function parseConversionPointCreateBody(raw: unknown): ParsedConversionPointCreateBody {
@@ -186,6 +235,47 @@ function parseConversionTrackBody(raw: unknown): ParsedConversionTrackBody {
       metadata: metadata.value ?? null,
     },
   };
+}
+
+function parseConversionEventsQuery(c: Context<Env>): ParsedConversionEventsQuery {
+  const conversionPointId = parseOptionalQueryString(
+    c.req.query('conversionPointId'),
+    'conversionPointId',
+    CONVERSION_ID_MAX_LENGTH,
+    CONVERSION_ID_PATTERN,
+  );
+  if (!conversionPointId.ok) return conversionPointId;
+
+  const friendId = parseOptionalQueryString(c.req.query('friendId'), 'friendId', CONVERSION_ID_MAX_LENGTH, CONVERSION_ID_PATTERN);
+  if (!friendId.ok) return friendId;
+
+  const affiliateCode = parseOptionalQueryString(
+    c.req.query('affiliateCode'),
+    'affiliateCode',
+    CONVERSION_ID_MAX_LENGTH,
+    CONVERSION_ID_PATTERN,
+  );
+  if (!affiliateCode.ok) return affiliateCode;
+
+  const dates = parseConversionDateRangeQuery(c.req.query('startDate'), c.req.query('endDate'));
+  if (!dates.ok) return dates;
+
+  return {
+    ok: true,
+    value: {
+      conversionPointId: conversionPointId.value,
+      friendId: friendId.value,
+      affiliateCode: affiliateCode.value,
+      startDate: dates.value.startDate,
+      endDate: dates.value.endDate,
+      limit: clampLimit(c.req.query('limit'), 100),
+      offset: clampOffset(c.req.query('offset')),
+    },
+  };
+}
+
+function parseConversionReportQuery(c: Context<Env>): ParsedConversionReportQuery {
+  return parseConversionDateRangeQuery(c.req.query('startDate'), c.req.query('endDate'));
 }
 
 function clampLimit(raw: string | undefined, fallback = 100): number {
@@ -399,21 +489,15 @@ conversions.post('/api/conversions/track', async (c) => {
 // GET /api/conversions/events - list events with filters
 conversions.get('/api/conversions/events', async (c) => {
   try {
-    const friendId = c.req.query('friendId');
-    if (friendId) {
-      const denied = await ensureSupportFriendAccess(c, friendId);
+    const parsed = parseConversionEventsQuery(c);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const filters = parsed.value;
+    if (filters.friendId) {
+      const denied = await ensureSupportFriendAccess(c, filters.friendId);
       if (denied) return denied;
     }
 
-    const events = await getScopedConversionEvents(c, {
-      conversionPointId: c.req.query('conversionPointId'),
-      friendId,
-      affiliateCode: c.req.query('affiliateCode'),
-      startDate: c.req.query('startDate'),
-      endDate: c.req.query('endDate'),
-      limit: clampLimit(c.req.query('limit'), 100),
-      offset: clampOffset(c.req.query('offset')),
-    });
+    const events = await getScopedConversionEvents(c, filters);
 
     return c.json({
       success: true,
@@ -436,10 +520,10 @@ conversions.get('/api/conversions/events', async (c) => {
 // GET /api/conversions/report - aggregated report
 conversions.get('/api/conversions/report', async (c) => {
   try {
-    const report = await getScopedConversionReport(c, {
-      startDate: c.req.query('startDate'),
-      endDate: c.req.query('endDate'),
-    });
+    const parsed = parseConversionReportQuery(c);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+
+    const report = await getScopedConversionReport(c, parsed.value);
 
     return c.json({ success: true, data: report });
   } catch (err) {

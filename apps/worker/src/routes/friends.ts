@@ -37,6 +37,12 @@ const FRIEND_MESSAGE_TYPES = new Set(['text', 'image', 'flex']);
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+function friendsRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function clampLimit(raw: string | undefined, fallback = 50): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -530,7 +536,7 @@ friends.get('/api/friends', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/friends error:', err);
+    console.error(`GET /api/friends error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -558,7 +564,7 @@ friends.get('/api/friends/count', async (c) => {
     }
     return c.json({ success: true, data: { count } });
   } catch (err) {
-    console.error('GET /api/friends/count error:', err);
+    console.error(`GET /api/friends/count error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -585,7 +591,7 @@ friends.get('/api/friends/ref-stats', requireRole('owner', 'admin'), async (c) =
       },
     });
   } catch (err) {
-    console.error('GET /api/friends/ref-stats error:', err);
+    console.error(`GET /api/friends/ref-stats error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -616,7 +622,7 @@ friends.get('/api/friends/:id', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/friends/:id error:', err);
+    console.error(`GET /api/friends/:id error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -655,7 +661,7 @@ friends.post('/api/friends/:id/tags', async (c) => {
 
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
-    console.error('POST /api/friends/:id/tags error:', err);
+    console.error(`POST /api/friends/:id/tags error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -677,7 +683,7 @@ friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
 
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/friends/:id/tags/:tagId error:', err);
+    console.error(`DELETE /api/friends/:id/tags/:tagId error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -720,7 +726,7 @@ friends.put('/api/friends/:id/metadata', async (c) => {
       },
     });
   } catch (err) {
-    console.error('PUT /api/friends/:id/metadata error:', err);
+    console.error(`PUT /api/friends/:id/metadata error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -748,7 +754,7 @@ friends.get('/api/friends/:id/messages', async (c) => {
       .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
     return c.json({ success: true, data: result.results.reverse() });
   } catch (err) {
-    console.error('GET /api/friends/:id/messages error:', err);
+    console.error(`GET /api/friends/:id/messages error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -804,9 +810,8 @@ friends.post('/api/friends/:id/messages', async (c) => {
 
     return c.json({ success: true, data: { messageId: logId } });
   } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err);
-    console.error('POST /api/friends/:id/messages error:', errMsg);
-    return c.json({ success: false, error: errMsg }, 500);
+    console.error(`POST /api/friends/:id/messages error: ${friendsRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 

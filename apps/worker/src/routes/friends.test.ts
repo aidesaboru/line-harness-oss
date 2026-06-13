@@ -174,6 +174,14 @@ function makeFriendsDb(state: {
   return { db, calls };
 }
 
+function makeThrowingDb(message: string): D1Database {
+  return {
+    prepare() {
+      throw new Error(message);
+    },
+  } as unknown as D1Database;
+}
+
 function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
@@ -187,6 +195,10 @@ function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
   });
   app.route('/', friends);
   return app;
+}
+
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
 }
 
 beforeEach(() => {
@@ -305,6 +317,58 @@ describe('friends support visibility', () => {
     expect(res.status).toBe(404);
     expect(dbMocks.getFriendById).not.toHaveBeenCalled();
     expect(calls.some((call) => call.method === 'run')).toBe(false);
+  });
+
+  test('friend list failure logs only the error kind', async () => {
+    const db = makeThrowingDb('friend list secret account-token U-visible friend-visible 検索語');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/friends?lineAccountId=acc-1&includeTags=false');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/friends error: Error');
+      expect(logged).not.toContain('friend list secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('検索語');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('direct message failure does not leak raw exception into logs or response', async () => {
+    const { db } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+    dbMocks.getFriendById.mockRejectedValueOnce(
+      new Error('direct message secret account-token U-visible friend-visible 送信本文'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/friends/friend-visible/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '送信本文 account-token' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/friends/:id/messages error: Error');
+      expect(logged).not.toContain('direct message secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('送信本文');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

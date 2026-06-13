@@ -72,12 +72,7 @@ async function startLoadingAnimation(
   });
 
   if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(
-      detail
-        ? `LINE API error: ${response.status} - ${detail}`
-        : `LINE API error: ${response.status}`,
-    );
+    throw lineHttpError(response.status);
   }
 }
 
@@ -118,6 +113,23 @@ type ChatCreateInput = { friendId: string; operatorId?: string; lineAccountId?: 
 type ChatUpdateInput = Partial<{ operatorId: string | null; status: ChatStatus; notes: string | null }>;
 type ChatDetailQuery = { messageLimit: number; beforeCreatedAt?: string; beforeId?: string };
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type ChatRouteError = Error & { status?: number };
+
+function chatRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error && typeof (err as ChatRouteError).status === 'number') {
+    return `${err.name || 'error'}_${(err as ChatRouteError).status}`;
+  }
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
+function lineHttpError(status: number): ChatRouteError {
+  const err = new Error('line_http_error') as ChatRouteError;
+  err.name = 'LineHttpError';
+  err.status = status;
+  return err;
+}
 
 type ChatMessageType = 'text' | 'flex' | 'image';
 
@@ -1074,9 +1086,8 @@ chats.post('/api/chats/:id/loading', async (c) => {
 
     return c.json({ success: true, data: { started: true, loadingSeconds } });
   } catch (err) {
-    console.error('POST /api/chats/:id/loading error:', err);
-    const message = err instanceof Error ? err.message : 'Internal server error';
-    return c.json({ success: false, error: message }, 500);
+    console.error(`POST /api/chats/:id/loading error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -1115,7 +1126,7 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
       },
     });
   } catch (err) {
-    console.error('POST /api/chats/:id/send/validate error:', err);
+    console.error(`POST /api/chats/:id/send/validate error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1211,7 +1222,7 @@ chats.post('/api/chats/:id/send', async (c) => {
 
     return c.json({ success: true, data: { sent: true, messageId: logId, supportCase: supportCaseResult } });
   } catch (err) {
-    console.error('POST /api/chats/:id/send error:', err);
+    console.error(`POST /api/chats/:id/send error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

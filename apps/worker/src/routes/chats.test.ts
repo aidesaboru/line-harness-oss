@@ -259,6 +259,10 @@ function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 const rows: ChatListRow[] = [
   {
     id: 'friend-visible',
@@ -994,6 +998,130 @@ describe('chat support visibility', () => {
     expect(state.messages).toHaveLength(0);
     expect(state.supportEvents).toHaveLength(0);
     expect(state.supportCases.at(-1)).toMatchObject({ id: 'case-visible', status: 'in_progress' });
+  });
+
+  test('loading failure does not leak LINE response body, token, or user ID', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token-secret' });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('LINE upstream secret account-token-secret U-visible friend-visible', { status: 503 }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/chats/chat-visible/loading', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ loadingSeconds: 10 }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      expect(fetchSpy).toHaveBeenCalled();
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/chats/:id/loading error: LineHttpError_503');
+      expect(logged).not.toContain('LINE upstream secret');
+      expect(logged).not.toContain('account-token-secret');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+    } finally {
+      fetchSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('send validation failure logs only error kind', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockRejectedValue(new Error('db secret account-token U-visible friend-visible'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/chats/chat-visible/send/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '確認して折り返します。' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/chats/:id/send/validate error: Error');
+      expect(logged).not.toContain('db secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('send failure does not leak LINE exception body, token, or user ID', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token-secret' });
+    lineSdkMocks.pushTextMessage.mockRejectedValue(
+      new Error('LINE push secret account-token-secret U-visible friend-visible'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/chats/chat-visible/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '確認して折り返します。' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      expect(state.messages).toHaveLength(0);
+      expect(dbMocks.updateChat).not.toHaveBeenCalled();
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/chats/:id/send error: Error');
+      expect(logged).not.toContain('LINE push secret');
+      expect(logged).not.toContain('account-token-secret');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('support reply send reports when the support case status update no longer applies', async () => {

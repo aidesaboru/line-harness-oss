@@ -90,6 +90,7 @@ updated: 2026-06-13
 - 公開affiliate click `/api/affiliates/click` は壊れたJSON、空/128文字超またはURL-safeではない `code`、HTTP(S)以外または2048文字超の `url` をDB lookupやクリック保存前に400で止める
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
+- チャットloading/send/send-validate失敗ログとエラー応答は、LINE APIレスポンス本文、channel token、LINE user ID、friend ID、raw例外本文を出さず、HTTP statusや例外種別だけにする
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
 - 画像だけの返信でも、サポート案件への履歴連携を行う
 - `lineAccountId` を持たないURL fallback経由でも、友だちのLINEアカウントから案件履歴を残す
@@ -275,6 +276,7 @@ strict Preflight:
 - Event booking route tests confirm booking-flow and notification failure logs keep only the exception kind and omit LINE user IDs, channel tokens, and raw external error messages.
 - Incoming image service tests confirm LINE image fetch/R2 store failure logs keep only HTTP status or exception kind and omit channel tokens, LINE message IDs, LINE account IDs, and raw exception messages.
 - Dedup broadcast service tests confirm multi-account broadcast failure/skip console logs omit LINE account IDs, channel tokens, LINE user IDs, and raw multicast exception messages while preserving failedAccountIds in return values and DB state.
+- Chat route tests confirm loading/send/send-validate failure logs and error responses omit LINE API response bodies, channel tokens, LINE user IDs, friend IDs, and raw exception messages while keeping HTTP status or exception kind observable.
 
 ローカル画面応答:
 

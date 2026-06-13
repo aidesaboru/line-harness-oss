@@ -321,6 +321,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker event route testsでは、event bookingの予約処理/通知失敗時にraw例外本文、LINE user ID、channel tokenをconsoleへ出さないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
+- [ ] チャットloading/send/send-validate失敗時に、LINE APIレスポンス本文、channel token、LINE user ID、friend ID、raw例外本文がconsole/エラー応答へ出ない
+  - Worker chat route testsでは、loadingのLINE API非200、send/validate内部例外、sendのLINE push失敗時にHTTP statusや例外種別だけを残し、外部本文、channel token、LINE user ID、friend ID、raw例外本文をconsoleやAPI errorへ出さないことを確認済み。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
 
 ## 3. 画面確認

@@ -110,6 +110,15 @@ export function evaluateReleaseReadiness(snapshot: ReadinessSnapshot): Readiness
       : item('pass', 'pr: draft status', 'PR is ready for review'));
 
     const body = pr.body ?? '';
+    const expectedBodyHead = pr.headRefOid ?? snapshot.localHead;
+    if (expectedBodyHead) {
+      items.push(body.includes(expectedBodyHead)
+        ? item('pass', 'pr body: latest verified commit', expectedBodyHead.slice(0, 12))
+        : item('fail', 'pr body: latest verified commit', 'missing current head SHA', 'Update the PR body so Latest verified commit matches the current PR head.'));
+    } else {
+      items.push(item('wait', 'pr body: latest verified commit', 'missing PR head or local head', 'Fetch PR metadata and local HEAD again.'));
+    }
+
     for (const evidence of REQUIRED_PR_BODY_EVIDENCE) {
       items.push(body.includes(evidence)
         ? item('pass', `pr body: ${evidence}`, 'present')

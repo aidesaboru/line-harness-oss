@@ -19,6 +19,7 @@ function completeSnapshot(overrides: Partial<ReadinessSnapshot> = {}): Readiness
       state: 'OPEN',
       mergeStateStatus: 'CLEAN',
       body: [
+        head,
         'corepack pnpm preflight:support-crm:dry-run',
         'corepack pnpm preflight:support-crm:summary',
         'Remote staff strict Preflight',
@@ -53,6 +54,7 @@ describe('support CRM release readiness', () => {
         ...basePr,
         isDraft: true,
         body: [
+          basePr.headRefOid,
           'corepack pnpm preflight:support-crm:dry-run',
           'corepack pnpm preflight:support-crm:summary',
           'Remote staff strict Preflight',
@@ -146,6 +148,10 @@ describe('support CRM release readiness', () => {
       expect.objectContaining({
         status: 'fail',
         name: 'pr: head matches local',
+      }),
+      expect.objectContaining({
+        status: 'fail',
+        name: 'pr body: latest verified commit',
       }),
       expect.objectContaining({
         status: 'fail',

@@ -456,3 +456,116 @@ describe('management role guards', () => {
     expect(dbMocks.getAccountMigrationById).not.toHaveBeenCalled();
   });
 });
+
+describe('entry route payload validation', () => {
+  const entryRouteRow = {
+    id: 'route-1',
+    ref_code: 'launch_2026',
+    name: 'Launch route',
+    tag_id: 'tag-1',
+    scenario_id: null,
+    redirect_url: null,
+    pool_id: 'pool-1',
+    intro_template_id: 'tmpl-1',
+    run_account_friend_add_scenarios: 0,
+    is_active: 1,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  };
+
+  test('owner entry route create/update rejects malformed or invalid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, BodyInit]> = [
+      ['POST', '/api/entry-routes', '{'],
+      ['POST', '/api/entry-routes', JSON.stringify({ refCode: 'bad/ref', name: 'Bad route' })],
+      ['POST', '/api/entry-routes', JSON.stringify({ refCode: 'launch', name: 'Bad route', redirectUrl: 'javascript:alert(1)' })],
+      ['POST', '/api/entry-routes', JSON.stringify({ refCode: 'launch', name: 'Bad route', isActive: 'yes' })],
+      ['PATCH', '/api/entry-routes/route-1', '{'],
+      ['PATCH', '/api/entry-routes/route-1', JSON.stringify({})],
+      ['PATCH', '/api/entry-routes/route-1', JSON.stringify({ refCode: 'xh:secret' })],
+      ['PATCH', '/api/entry-routes/route-1', JSON.stringify({ poolId: 'bad id' })],
+      ['PATCH', '/api/entry-routes/route-1', JSON.stringify({ redirectUrl: 'ftp://example.com' })],
+      ['PATCH', '/api/entry-routes/route-1', JSON.stringify({ runAccountFriendAddScenarios: 'false' })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.createEntryRoute).not.toHaveBeenCalled();
+    expect(dbMocks.updateEntryRoute).not.toHaveBeenCalled();
+  });
+
+  test('owner entry route create trims and nulls valid payloads before DB writes', async () => {
+    dbMocks.createEntryRoute.mockResolvedValue(entryRouteRow);
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/entry-routes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        refCode: ' launch_2026 ',
+        name: ' Launch route ',
+        tagId: ' tag-1 ',
+        scenarioId: ' ',
+        redirectUrl: ' https://example.com/welcome ',
+        poolId: ' pool-1 ',
+        introTemplateId: ' tmpl-1 ',
+        runAccountFriendAddScenarios: false,
+        isActive: true,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createEntryRoute).toHaveBeenCalledWith(expect.anything(), {
+      refCode: 'launch_2026',
+      name: 'Launch route',
+      tagId: 'tag-1',
+      scenarioId: null,
+      redirectUrl: 'https://example.com/welcome',
+      poolId: 'pool-1',
+      introTemplateId: 'tmpl-1',
+      runAccountFriendAddScenarios: false,
+      isActive: true,
+    });
+  });
+
+  test('owner entry route update trims and nulls valid payloads before DB writes', async () => {
+    dbMocks.updateEntryRoute.mockResolvedValue({ ...entryRouteRow, ref_code: 'sale_2026' });
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/entry-routes/route-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        refCode: ' sale_2026 ',
+        name: ' Sale route ',
+        tagId: null,
+        scenarioId: ' scenario-1 ',
+        redirectUrl: ' ',
+        poolId: ' pool-1 ',
+        introTemplateId: ' ',
+        runAccountFriendAddScenarios: false,
+        isActive: false,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateEntryRoute).toHaveBeenCalledWith(expect.anything(), 'route-1', {
+      refCode: 'sale_2026',
+      name: 'Sale route',
+      tagId: null,
+      scenarioId: 'scenario-1',
+      redirectUrl: null,
+      poolId: 'pool-1',
+      introTemplateId: null,
+      runAccountFriendAddScenarios: false,
+      isActive: false,
+    });
+  });
+});

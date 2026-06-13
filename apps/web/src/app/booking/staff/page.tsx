@@ -18,6 +18,10 @@ const EMPTY: Partial<BookingStaff> = {
   is_active: 1,
 }
 
+const BOOKING_STAFF_LOAD_ERROR_MESSAGE = '予約スタッフの読み込みに失敗しました。もう一度お試しください。'
+const BOOKING_STAFF_SAVE_ERROR_MESSAGE = '予約スタッフの保存に失敗しました。入力内容を確認して、もう一度お試しください。'
+const BOOKING_STAFF_DELETE_ERROR_MESSAGE = '予約スタッフの削除に失敗しました。もう一度お試しください。'
+
 export default function BookingStaffPage() {
   const { selectedAccountId } = useAccount()
   const [items, setItems] = useState<BookingStaff[]>([])
@@ -34,8 +38,8 @@ export default function BookingStaffPage() {
     try {
       const r = await bookingApi.listStaff(selectedAccountId)
       setItems(r.staff)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(BOOKING_STAFF_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -59,8 +63,12 @@ export default function BookingStaffPage() {
   async function remove(id: string) {
     if (!selectedAccountId) return
     if (!confirm('このスタッフを削除しますか？（既存予約は維持されます）')) return
-    await bookingApi.deleteStaff(selectedAccountId, id)
-    await load()
+    try {
+      await bookingApi.deleteStaff(selectedAccountId, id)
+      await load()
+    } catch {
+      setError(BOOKING_STAFF_DELETE_ERROR_MESSAGE)
+    }
   }
 
   return (
@@ -196,8 +204,8 @@ function Modal({
     setErr(null)
     try {
       await onSave(form)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+    } catch {
+      setErr(BOOKING_STAFF_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

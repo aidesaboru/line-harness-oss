@@ -6,6 +6,9 @@ import Header from '@/components/layout/header'
 import { bookingApi, type BookingMenu, type BookingStaff, type StaffMenuMatrix } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
+const STAFF_MENU_MATRIX_LOAD_ERROR_MESSAGE = 'メニュー割当の読み込みに失敗しました。もう一度お試しください。'
+const STAFF_MENU_MATRIX_SAVE_ERROR_MESSAGE = 'メニュー割当の保存に失敗しました。もう一度お試しください。'
+
 // このメニューを各スタッフが提供するか／料金所要を上書きするかの一括編集 UI。
 // staff_menus は staff_id × menu_id 主キー。スタッフごとに個別 PUT で書く。
 export default function MenuStaffMatrix() {
@@ -51,8 +54,8 @@ export default function MenuStaffMatrix() {
         }),
       )
       setRows(rowsMap)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(STAFF_MENU_MATRIX_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -91,8 +94,8 @@ export default function MenuStaffMatrix() {
         await bookingApi.putStaffMenus(selectedAccountId, s.id, updated)
       }
       setSavedAt(Date.now())
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(STAFF_MENU_MATRIX_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

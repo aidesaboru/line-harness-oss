@@ -27,6 +27,10 @@ const DEFAULT_TEMPLATE: Record<DayKey, { start: string; end: string } | null> = 
   sat: { start: '10:00', end: '19:00' },
 }
 
+const BOOKING_SHIFTS_LOAD_ERROR_MESSAGE = 'シフトの読み込みに失敗しました。もう一度お試しください。'
+const BOOKING_SHIFTS_SAVE_ERROR_MESSAGE = 'シフトの生成に失敗しました。入力内容を確認して、もう一度お試しください。'
+const BOOKING_SHIFTS_DELETE_ERROR_MESSAGE = 'シフトの削除に失敗しました。もう一度お試しください。'
+
 export default function StaffShiftsPage() {
   const sp = useSearchParams()
   const id = sp.get('staff_id') ?? ''
@@ -60,8 +64,8 @@ export default function StaffShiftsPage() {
       ])
       setShifts(r.shifts)
       setStaffMember(sList.staff.find((s) => s.id === id) ?? null)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(BOOKING_SHIFTS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -90,8 +94,8 @@ export default function StaffShiftsPage() {
       setSavedAt(Date.now())
       console.info(`generated ${r.inserted} shifts`)
       await load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(BOOKING_SHIFTS_SAVE_ERROR_MESSAGE)
     } finally {
       setGenerating(false)
     }
@@ -100,8 +104,12 @@ export default function StaffShiftsPage() {
   async function deleteShift(shiftId: string) {
     if (!selectedAccountId) return
     if (!confirm('このシフトを削除しますか？')) return
-    await bookingApi.deleteShift(selectedAccountId, id, shiftId)
-    await load()
+    try {
+      await bookingApi.deleteShift(selectedAccountId, id, shiftId)
+      await load()
+    } catch {
+      setError(BOOKING_SHIFTS_DELETE_ERROR_MESSAGE)
+    }
   }
 
   return (

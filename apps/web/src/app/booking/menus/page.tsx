@@ -17,6 +17,10 @@ const EMPTY: Partial<BookingMenu> = {
   is_active: 1,
 }
 
+const BOOKING_MENUS_LOAD_ERROR_MESSAGE = '予約メニューの読み込みに失敗しました。もう一度お試しください。'
+const BOOKING_MENUS_SAVE_ERROR_MESSAGE = '予約メニューの保存に失敗しました。入力内容を確認して、もう一度お試しください。'
+const BOOKING_MENUS_DELETE_ERROR_MESSAGE = '予約メニューの削除に失敗しました。もう一度お試しください。'
+
 export default function MenusPage() {
   const { selectedAccountId } = useAccount()
   const [items, setItems] = useState<BookingMenu[]>([])
@@ -34,8 +38,8 @@ export default function MenusPage() {
     try {
       const r = await bookingApi.listMenus(selectedAccountId)
       setItems(r.menus)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(BOOKING_MENUS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -59,8 +63,12 @@ export default function MenusPage() {
   async function remove(id: string) {
     if (!selectedAccountId) return
     if (!confirm('このメニューを削除しますか？（既存予約は維持されます）')) return
-    await bookingApi.deleteMenu(selectedAccountId, id)
-    await load()
+    try {
+      await bookingApi.deleteMenu(selectedAccountId, id)
+      await load()
+    } catch {
+      setError(BOOKING_MENUS_DELETE_ERROR_MESSAGE)
+    }
   }
 
   return (
@@ -183,8 +191,8 @@ function Modal({
     setErr(null)
     try {
       await onSave(form)
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+    } catch {
+      setErr(BOOKING_MENUS_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

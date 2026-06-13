@@ -197,6 +197,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] サポート案件から「チャットで返信」を押すと、チャット入力欄に返信案が入る
 - Local draft-handoff browser smokeでは、サポート案件の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、メッセージ入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認済み。
 - [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
+- Local URL-fallback browser smokeでは、sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクで案件紐付けバナーが `に紐づけ中` と表示され、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認済み。
 - [ ] テキスト返信で案件履歴に顧客返信イベントが残る
 - [ ] 画像だけの返信でも案件履歴に顧客返信イベントが残る
 - [ ] 画像とテキストを同時に送っても、不要な「案件更新だけ確認が必要」警告が出ない
@@ -284,7 +285,7 @@ N/A
 - Browser smoke with outside-list mock session confirms hidden selected cases keep the detail panel with an explanatory banner; resolved hidden cases reveal the completed list with `status=resolved`, while unresolved hidden cases reset to `queue=unresolved`.
 - Browser smoke with long-chat mock session confirms the chat screen starts with the latest two messages, calls `/api/chats/:id` with `beforeCreatedAt` and `beforeId` when loading older history, prepends the two older messages in chronological order, and hides the load-older button after `hasMoreMessages=false`.
 - Browser smoke with draft-handoff mock session confirms `チャットで返信` opens `/chats?friend=...&supportCase=...&lineAccount=...`, fills the chat message box with the support reply draft, and keeps the support-case title in the linked-draft banner after the URL fallback reruns.
-- Browser smoke with chat mock session confirms `/chats?friend=friend-visible&supportCase=case-visible` shows the support-case link banner without a sessionStorage draft.
+- Browser smoke with URL-fallback mock session confirms a direct `/chats?friend=...&supportCase=...&lineAccount=...` link without a sessionStorage draft shows the support-case link banner, starts with an empty message box and disabled send button, and sends text with `supportCaseId`/`lineAccountId` in the payload.
 - `corepack pnpm preflight:support-crm:dry-run` success path: strict release env shape passes with secrets redacted.
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.
 - `corepack pnpm preflight:support-crm:summary` converts the full Preflight log into a PR-safe summary that omits URLs, API keys, friend IDs, and case IDs.

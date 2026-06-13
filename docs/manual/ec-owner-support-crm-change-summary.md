@@ -149,6 +149,7 @@ strict Preflight:
 - outside-list mock sessionで `/support` を開き、完了案件が未完了一覧の外にある場合は理由表示と `完了案件を表示` で `status=resolved` の一覧へ戻れること、未完了案件がステータス絞り込みの外にある場合は `絞り込みをリセット` で `queue=unresolved` の一覧へ戻れることを確認
 - long-chat mock sessionで `/chats?friend=...` を開き、初期表示は最新2件だけ、`過去のメッセージを読み込む` で `beforeCreatedAt`/`beforeId` 付きAPIを呼び、古い2件が前に追加され、全4件が古い順に並び、追加後に読み込みボタンが消えることを確認
 - draft-handoff mock sessionで `/support` の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、チャット入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認
+- URL-fallback mock sessionで sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクを開き、案件紐付けバナー、空の入力欄、無効な送信ボタンを確認し、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

@@ -185,6 +185,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker form access route testsでは、`_skipWebhook` を送ってもWebhook gateが呼ばれ、gate拒否時はreward tag/scenario side effectが走らず、Webhook fetch失敗も伏せ字化された結果だけ保存されることを確認済み。
 - [ ] 公開フォームopened、partial、submitの友だち紐付けが、caller supplied `lineUserId` / `friendId` ではなくLINE ID token検証済みのLINE user IDだけを使う
   - Worker form access route testsでは、自己申告 `friendId` / `lineUserId` だけではpartial metadata writeやsubmit side effectが走らず、Bearer ID tokenで検証できた場合だけ友だちに紐付くことを確認済み。
+- [ ] `/api/liff/profile` が、caller supplied `lineUserId` ではなくLINE ID token検証済みのLINE user IDだけで友だちプロフィールを返す
+  - Worker LIFF access route testsでは、自己申告 `lineUserId` だけでは401になり、Bearer ID tokenまたはbody `idToken` の検証済みsubjectだけで友だち情報を返すことを確認済み。
 - [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
   - Webhook/events/broadcast/admin-diagnostics route tests、Worker typecheck、Worker buildで、Webhook/profile refresh/broadcast test-sendの失敗ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない
@@ -249,7 +251,7 @@ corepack pnpm --filter worker test -- src/routes/friends.test.ts
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
 corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts
-corepack pnpm --filter worker test -- src/routes/forms-access.test.ts src/middleware/auth.test.ts
+corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test
 corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
 corepack pnpm build

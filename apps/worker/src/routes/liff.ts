@@ -20,6 +20,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
+import { verifyCallerLineUserId } from '../services/liff-auth.js';
 import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
@@ -1096,15 +1097,17 @@ liffRoutes.get('/api/liff/config', async (c) => {
 
 // ─── Existing LIFF endpoints ────────────────────────────────────
 
-// POST /api/liff/profile - get friend by LINE userId (public, no auth)
+// POST /api/liff/profile - get current LIFF friend profile (public, ID-token verified)
 liffRoutes.post('/api/liff/profile', async (c) => {
   try {
-    const body = await c.req.json<{ lineUserId: string }>();
-    if (!body.lineUserId) {
-      return c.json({ success: false, error: 'lineUserId is required' }, 400);
+    const body = (await c.req.json<{ idToken?: string }>().catch(() => ({}))) as { idToken?: string };
+    const authHeader = c.req.header('Authorization') || (body.idToken ? `Bearer ${body.idToken}` : undefined);
+    const lineUserId = await verifyCallerLineUserId(authHeader, c.env);
+    if (!lineUserId) {
+      return c.json({ success: false, error: 'Valid LINE idToken required' }, 401);
     }
 
-    const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
+    const friend = await getFriendByLineUserId(c.env.DB, lineUserId);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }

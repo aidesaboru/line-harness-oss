@@ -66,6 +66,12 @@ function serializeDuplicatesStats(stats: DuplicatesStats): DuplicatesStatsDTO {
   };
 }
 
+function duplicatesRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export const duplicates = new Hono<Env>();
 
 duplicates.get('/api/duplicates/stats', requireRole('owner', 'admin'), async (c) => {
@@ -74,7 +80,7 @@ duplicates.get('/api/duplicates/stats', requireRole('owner', 'admin'), async (c)
     const stats = await computeDuplicatesStats(c.env.DB, { forceRefresh });
     return c.json({ success: true, data: serializeDuplicatesStats(stats) });
   } catch (err) {
-    console.error('GET /api/duplicates/stats error:', err);
+    console.error(`GET /api/duplicates/stats error: ${duplicatesRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -28,6 +28,16 @@ function setupApp(role: StaffRole = 'staff') {
   return { app, db };
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   statsMocks.computeDuplicatesStats.mockResolvedValue({
@@ -68,5 +78,36 @@ describe('duplicates stats role guard', () => {
         uniquePeople: 8,
       },
     });
+  });
+
+  test('stats failure logs only the error kind', async () => {
+    statsMocks.computeDuplicatesStats.mockRejectedValueOnce(
+      new Error(
+        'duplicates stats secret acc-main friend-visible U-visible token-secret raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const { app } = setupApp('owner');
+
+      const res = await app.request('/api/duplicates/stats?refresh=1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/duplicates/stats error: Error');
+      expectNoLogLeak(logged, [
+        'duplicates stats secret',
+        'acc-main',
+        'friend-visible',
+        'U-visible',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

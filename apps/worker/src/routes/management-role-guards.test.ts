@@ -170,6 +170,7 @@ describe('management role guards', () => {
   test('staff cannot manage traffic pools or pool accounts', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/traffic-pools'],
       ['POST', '/api/traffic-pools', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ slug: 'main', name: 'Main', activeAccountId: 'acc-1' }),
@@ -179,6 +180,7 @@ describe('management role guards', () => {
         body: JSON.stringify({ name: 'Updated' }),
       }],
       ['DELETE', '/api/traffic-pools/pool-1'],
+      ['GET', '/api/traffic-pools/pool-1/accounts'],
       ['POST', '/api/traffic-pools/pool-1/accounts', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lineAccountId: 'acc-2' }),
@@ -195,10 +197,12 @@ describe('management role guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getTrafficPools).not.toHaveBeenCalled();
     expect(dbMocks.createTrafficPool).not.toHaveBeenCalled();
     expect(dbMocks.updateTrafficPool).not.toHaveBeenCalled();
     expect(dbMocks.getTrafficPoolById).not.toHaveBeenCalled();
     expect(dbMocks.deleteTrafficPool).not.toHaveBeenCalled();
+    expect(dbMocks.getPoolAccounts).not.toHaveBeenCalled();
     expect(dbMocks.addPoolAccount).not.toHaveBeenCalled();
     expect(dbMocks.togglePoolAccount).not.toHaveBeenCalled();
     expect(dbMocks.removePoolAccount).not.toHaveBeenCalled();
@@ -207,6 +211,7 @@ describe('management role guards', () => {
   test('staff cannot manage chat operators', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/operators'],
       ['POST', '/api/operators', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Sato', email: 'sato@example.test' }),
@@ -223,6 +228,7 @@ describe('management role guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getOperators).not.toHaveBeenCalled();
     expect(dbMocks.createOperator).not.toHaveBeenCalled();
     expect(dbMocks.updateOperator).not.toHaveBeenCalled();
     expect(dbMocks.getOperatorById).not.toHaveBeenCalled();
@@ -285,6 +291,7 @@ describe('management role guards', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ calendarId: 'primary', authType: 'api_key' }),
       }],
+      ['GET', '/api/integrations/google-calendar'],
       ['DELETE', '/api/integrations/google-calendar/conn-1'],
       ['GET', '/api/accounts/acc-1/health'],
       ['GET', '/api/accounts/migrations'],
@@ -308,6 +315,7 @@ describe('management role guards', () => {
     expect(dbMocks.getEntryRouteFunnel).not.toHaveBeenCalled();
     expect(dbMocks.createConversionPoint).not.toHaveBeenCalled();
     expect(dbMocks.deleteConversionPoint).not.toHaveBeenCalled();
+    expect(dbMocks.getCalendarConnections).not.toHaveBeenCalled();
     expect(dbMocks.createCalendarConnection).not.toHaveBeenCalled();
     expect(dbMocks.deleteCalendarConnection).not.toHaveBeenCalled();
     expect(dbMocks.getLatestRiskLevel).not.toHaveBeenCalled();

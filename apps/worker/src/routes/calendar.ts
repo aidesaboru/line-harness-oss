@@ -71,7 +71,7 @@ async function getScopedCalendarBookings(
 
 // ========== 接続管理 ==========
 
-calendar.get('/api/integrations/google-calendar', async (c) => {
+calendar.get('/api/integrations/google-calendar', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getCalendarConnections(c.env.DB);
     return c.json({

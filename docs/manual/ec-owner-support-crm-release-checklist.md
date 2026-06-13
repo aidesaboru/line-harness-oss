@@ -197,14 +197,14 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker webhooks route testsでは、staffがincoming/outgoing webhook設定の一覧、作成、更新、削除を実行できず、外部システム用の `/api/webhooks/incoming/:id/receive` は403ではなく署名不足の401で止まることを確認済み。
 - [ ] scenario/reminder/scoring/tag/template/message-templateの定義管理APIがowner/adminだけに制限される
   - Worker scenario/support-friend/content-management route testsでは、staffがscenario/step、reminder/step、scoring rule、tag、reusable template、message-templateの作成/更新/削除を実行できず、friend単位の操作は見えるsupport case友だちの範囲に残ることを確認済み。
-- [ ] automation/auto-reply/notification rule/traffic pool/operatorの管理APIがowner/adminだけに制限される
-  - Worker management role guard testsでは、staffがautomation、auto-reply、notification rule、traffic pool、pool-account、operatorの作成/更新/削除を実行できず、DBのmutation helperへ到達しないことを確認済み。
+- [ ] automation/auto-reply/notification ruleの変更APIとtraffic pool/operatorの管理一覧・変更APIがowner/adminだけに制限される
+  - Worker management role guard testsでは、staffがautomation、auto-reply、notification ruleの作成/更新/削除を実行できず、traffic pool、pool-account、operatorの管理一覧取得や作成/更新/削除でもDB helperへ到達しないことを確認済み。
 - [ ] booking/event admin APIがowner/adminだけに制限される
   - Worker management role guard testsでは、staffがbooking/event admin routeへ直接アクセスしても403で止まり、DBへ到達しないことを確認済み。Events route testsではowner文脈の既存admin操作が引き続き通ることを確認済み。
 - [ ] rich menu catalog/group管理APIがowner/adminだけに制限される
   - Worker rich-menu group/support-friend access route testsでは、staffがLINE rich menu catalogやrich menu group管理APIへ直接アクセスしても403で止まり、見えている友だち単位のrich menu参照は引き続き通ることを確認済み。
 - [ ] entry route/conversion point/Google Calendar接続/account health・migration管理APIがowner/adminだけに制限される
-  - Worker management role guard testsでは、staffが流入経路、conversion point、Google Calendar接続、account health/migration管理APIへ直接アクセスしても403で止まり、DB helperやD1へ到達しないことを確認済み。Conversion/calendar access route testsでは、friend単位のconversion/calendar booking操作が引き続き可視範囲内で通ることを確認済み。
+  - Worker management role guard testsでは、staffが流入経路、conversion point、Google Calendar接続一覧/作成/削除、account health/migration管理APIへ直接アクセスしても403で止まり、DB helperやD1へ到達しないことを確認済み。Conversion/calendar access route testsでは、friend単位のconversion/calendar booking操作が引き続き可視範囲内で通ることを確認済み。
 - [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない
   - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く

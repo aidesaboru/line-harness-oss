@@ -55,7 +55,7 @@ trafficPools.get('/pool/:slug', async (c) => {
 // ── Admin API ───────────────────────────────────────────────────────────────
 
 // GET /api/traffic-pools — list all
-trafficPools.get('/api/traffic-pools', async (c) => {
+trafficPools.get('/api/traffic-pools', requireRole('owner', 'admin'), async (c) => {
   try {
     const pools = await getTrafficPools(c.env.DB);
     return c.json({ success: true, data: pools.map(serialize) });
@@ -151,9 +151,9 @@ function serializePoolAccount(pa: PoolAccountWithDetails) {
 }
 
 // GET /api/traffic-pools/:id/accounts — list pool accounts
-trafficPools.get('/api/traffic-pools/:id/accounts', async (c) => {
+trafficPools.get('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin'), async (c) => {
   try {
-    const accounts = await getPoolAccounts(c.env.DB, c.req.param('id'));
+    const accounts = await getPoolAccounts(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: accounts.map(serializePoolAccount) });
   } catch (err) {
     console.error('GET /api/traffic-pools/:id/accounts error:', err);

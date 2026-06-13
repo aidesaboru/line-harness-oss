@@ -307,3 +307,86 @@ describe('friends support visibility', () => {
     expect(calls.some((call) => call.method === 'run')).toBe(false);
   });
 });
+
+describe('friends input validation', () => {
+  test('rejects malformed query, path, metadata, tag, and message payloads before DB side effects', async () => {
+    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'owner');
+    const longSearch = 'x'.repeat(121);
+    const cases: Array<{ method: string; path: string; body?: string; headers?: Record<string, string> }> = [
+      { method: 'GET', path: '/api/friends?lineAccountId=bad%20account&includeTags=false' },
+      { method: 'GET', path: '/api/friends?tagId=bad%20tag&includeTags=false' },
+      { method: 'GET', path: `/api/friends?search=${longSearch}&includeTags=false` },
+      { method: 'GET', path: '/api/friends?metadata.bad%20key=value&includeTags=false' },
+      { method: 'GET', path: '/api/friends/count?lineAccountId=bad%20account' },
+      { method: 'GET', path: '/api/friends/ref-stats?lineAccountId=bad%20account' },
+      { method: 'GET', path: '/api/friends/bad%20id' },
+      {
+        method: 'POST',
+        path: '/api/friends/bad%20id/tags',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagId: 'tag-1' }),
+      },
+      {
+        method: 'POST',
+        path: '/api/friends/friend-visible/tags',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagId: 'bad tag' }),
+      },
+      { method: 'DELETE', path: '/api/friends/friend-visible/tags/bad%20tag' },
+      {
+        method: 'PUT',
+        path: '/api/friends/friend-visible/metadata',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(['bad']),
+      },
+      {
+        method: 'PUT',
+        path: '/api/friends/friend-visible/metadata',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 'bad key': 'value' }),
+      },
+      { method: 'GET', path: '/api/friends/bad%20id/messages' },
+      {
+        method: 'POST',
+        path: '/api/friends/bad%20id/messages',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: 'hello' }),
+      },
+      {
+        method: 'POST',
+        path: '/api/friends/friend-visible/messages',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageType: 'sticker', content: 'hello' }),
+      },
+      {
+        method: 'POST',
+        path: '/api/friends/friend-visible/messages',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messageType: 'image',
+          content: JSON.stringify({
+            originalContentUrl: 'http://example.com/original.jpg',
+            previewImageUrl: 'https://example.com/preview.jpg',
+          }),
+        }),
+      },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request(item.path, {
+        method: item.method,
+        headers: item.headers,
+        body: item.body,
+      });
+      expect(res.status, `${item.method} ${item.path}`).toBe(400);
+    }
+
+    expect(dbMocks.getFriendById).not.toHaveBeenCalled();
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.removeTagFromFriend).not.toHaveBeenCalled();
+    expect(dbMocks.getScenarios).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+});

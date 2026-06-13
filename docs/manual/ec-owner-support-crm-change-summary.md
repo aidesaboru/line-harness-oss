@@ -39,6 +39,7 @@ updated: 2026-06-13
 - account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadは、壊れたJSON、不正なID、過大なfriendIdsをDB read/write前に400で止め、正常値はtrim/dedupeして保存・参照する
 - dedup-preview APIのaccountIds/dedupPriority/targetTagId payloadは、壊れたJSON、空accountIds、不正ID、不正targetTagIdを配信対象計算前に400で止め、正常値はtrim/dedupeし、dedupPriorityはaccountIds内へfilterする
 - broadcast管理APIのlineAccountId query、broadcast path ID、create/update payload、send-segment/segment count条件payloadは、壊れたJSON、不正なmessageType/targetType/Flex/image JSON/HTTPS画像URL/segment条件/IDをDB helper、SQL bind、LINE送信、対象計算前に400で止め、正常値はtrim/dedupeして保存・参照する
+- friends APIのlineAccountId/tagId/search/metadata query、friend/tag path ID、metadata更新payload、direct message payloadは、friend可視範囲check、DB helper、SQL bind、LINE送信前に400で止め、正常値はtrimする
 - reminder/scoring rule定義payloadとfriend score/reminder操作payloadは、壊れたJSON、不正なID、空/過大なname/description/reason/messageContent、不正なmessageType/Flex/image JSON、不正date、不正score/offsetをDB helperやfriend reminder SQL前に400で止め、正常値はtrimする
 - scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
@@ -176,7 +177,7 @@ corepack pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @li
 corepack pnpm --filter web test
 corepack pnpm --filter web test -- src/lib/inbox-pagination.test.ts
 corepack pnpm --filter worker test -- src/routes/support.test.ts
-corepack pnpm --filter worker test -- src/routes/friends.test.ts
+corepack pnpm --filter worker test -- src/routes/friends.test.ts # 10 tests
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
 corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
 corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts
@@ -222,6 +223,7 @@ strict Preflight:
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
+- friends route tests confirm malformed list/count/ref-stats query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion event/report filters reject malformed IDs or date ranges before friend access checks or SQL bind, valid filters are trimmed, conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops, invalid time windows stop before calendar lookup, malformed or nonexistent calendar date filters are rejected, valid calendar slot/booking query values are trimmed, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
 - Booking access route tests confirm malformed admin `account_id` values stop before SQL, malformed admin menu/staff/booking path IDs stop before SQL, malformed LIFF staff-selection path IDs stop before staff lookup SQL, malformed `liffId/menu_id/staff_id/from/to` availability queries stop before LINE account lookup or availability helper calls where applicable, malformed `Idempotency-Key` and booking request payloads stop before LINE verification or idempotency lookup, and valid filters/payload IDs are trimmed before use.
 - conversations route tests confirm malformed or unsafe conversation queue/detail query values stop before friend access checks or SQL bind, while valid IDs/cursors are trimmed and paging values are clamped.
@@ -307,7 +309,7 @@ strict Preflight:
 - `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload/query検証
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
-- `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
+- `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲と、friends query/path/tag/metadata/direct message payload検証
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard
 - `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲とquery/path検証
 - `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限、scenario payload検証、staffのscenario手動登録で使うfriend可視範囲

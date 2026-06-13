@@ -23,6 +23,20 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const friends = new Hono<Env>();
 
+const FRIEND_ID_MAX_LENGTH = 128;
+const FRIEND_SEARCH_MAX_LENGTH = 120;
+const FRIEND_METADATA_KEY_MAX_LENGTH = 80;
+const FRIEND_METADATA_VALUE_MAX_LENGTH = 2000;
+const FRIEND_METADATA_MAX_KEYS = 50;
+const FRIEND_METADATA_MAX_BYTES = 16000;
+const FRIEND_MESSAGE_CONTENT_MAX_LENGTH = 50000;
+const FRIEND_ALT_TEXT_MAX_LENGTH = 400;
+const FRIEND_URL_MAX_LENGTH = 2048;
+const FRIEND_VISIBLE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const FRIEND_MESSAGE_TYPES = new Set(['text', 'image', 'flex']);
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
 function clampLimit(raw: string | undefined, fallback = 50): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -33,6 +47,137 @@ function clampOffset(raw: string | undefined): number {
   const n = Number(raw ?? 0);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.floor(n));
+}
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseSafeId(raw: unknown, label: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > FRIEND_ID_MAX_LENGTH || !FRIEND_VISIBLE_ID_PATTERN.test(value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalSafeId(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  return parseSafeId(raw, label);
+}
+
+function parseOptionalSearch(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_search' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > FRIEND_SEARCH_MAX_LENGTH) return { ok: false, error: 'invalid_search' };
+  return { ok: true, value };
+}
+
+function parseMetadataKey(raw: unknown): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_metadata_key' };
+  const value = raw.trim();
+  if (!value || value.length > FRIEND_METADATA_KEY_MAX_LENGTH || !FRIEND_VISIBLE_ID_PATTERN.test(value)) {
+    return { ok: false, error: 'invalid_metadata_key' };
+  }
+  return { ok: true, value };
+}
+
+function parseMetadataQueryValue(raw: unknown): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_metadata_value' };
+  const value = raw.trim();
+  if (value.length > FRIEND_METADATA_VALUE_MAX_LENGTH) return { ok: false, error: 'invalid_metadata_value' };
+  return { ok: true, value };
+}
+
+function parseMetadataPatch(raw: Record<string, unknown>): ValueResult<Record<string, unknown>> {
+  const entries = Object.entries(raw);
+  if (entries.length === 0 || entries.length > FRIEND_METADATA_MAX_KEYS) {
+    return { ok: false, error: 'invalid_metadata' };
+  }
+  if (JSON.stringify(raw).length > FRIEND_METADATA_MAX_BYTES) {
+    return { ok: false, error: 'invalid_metadata' };
+  }
+  const normalized: Record<string, unknown> = {};
+  for (const [key, value] of entries) {
+    const parsedKey = parseMetadataKey(key);
+    if (!parsedKey.ok) return { ok: false, error: 'invalid_metadata' };
+    if (value !== null && typeof value === 'object') {
+      return { ok: false, error: 'invalid_metadata' };
+    }
+    if (typeof value === 'string' && value.length > FRIEND_METADATA_VALUE_MAX_LENGTH) {
+      return { ok: false, error: 'invalid_metadata' };
+    }
+    normalized[parsedKey.value] = typeof value === 'string' ? value.trim() : value;
+  }
+  return { ok: true, value: normalized };
+}
+
+function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > FRIEND_URL_MAX_LENGTH) return false;
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function parseJsonRecordString(value: string): ValueResult<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'invalid_content' };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_content' };
+  }
+}
+
+function validateMessageContent(messageType: string, content: string): ValueResult<string> {
+  if (messageType === 'image') {
+    const parsed = parseJsonRecordString(content);
+    if (!parsed.ok) return parsed;
+    if (!isHttpsUrl(parsed.value.originalContentUrl) || !isHttpsUrl(parsed.value.previewImageUrl)) {
+      return { ok: false, error: 'invalid_content' };
+    }
+  }
+  if (messageType === 'flex') {
+    const parsed = parseJsonRecordString(content);
+    if (!parsed.ok) return parsed;
+    if (typeof parsed.value.type !== 'string') return { ok: false, error: 'invalid_content' };
+  }
+  return { ok: true, value: content };
+}
+
+function parseDirectMessageBody(raw: Record<string, unknown>): ValueResult<{ messageType: string; content: string; altText?: string }> {
+  const messageTypeRaw = raw.messageType ?? 'text';
+  if (typeof messageTypeRaw !== 'string') return { ok: false, error: 'invalid_message_type' };
+  const messageType = messageTypeRaw.trim();
+  if (!FRIEND_MESSAGE_TYPES.has(messageType)) return { ok: false, error: 'invalid_message_type' };
+  if (typeof raw.content !== 'string') return { ok: false, error: 'invalid_content' };
+  const content = raw.content.trim();
+  if (!content || content.length > FRIEND_MESSAGE_CONTENT_MAX_LENGTH) return { ok: false, error: 'invalid_content' };
+  const validContent = validateMessageContent(messageType, content);
+  if (!validContent.ok) return validContent;
+  const altText = raw.altText;
+  if (altText !== undefined && altText !== null && altText !== '') {
+    if (typeof altText !== 'string') return { ok: false, error: 'invalid_alt_text' };
+    const trimmed = altText.trim();
+    if (!trimmed || trimmed.length > FRIEND_ALT_TEXT_MAX_LENGTH) return { ok: false, error: 'invalid_alt_text' };
+    return { ok: true, value: { messageType, content: validContent.value, altText: trimmed } };
+  }
+  return { ok: true, value: { messageType, content: validContent.value } };
 }
 
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
@@ -122,9 +267,12 @@ friends.get('/api/friends', async (c) => {
   try {
     const limit = clampLimit(c.req.query('limit'), 50);
     const offset = clampOffset(c.req.query('offset'));
-    const tagId = c.req.query('tagId');
-    const lineAccountId = c.req.query('lineAccountId');
-    const search = c.req.query('search');
+    const tagId = parseOptionalSafeId(c.req.query('tagId'), 'tag_id');
+    if (!tagId.ok) return c.json({ success: false, error: tagId.error }, 400);
+    const lineAccountId = parseOptionalSafeId(c.req.query('lineAccountId'), 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const search = parseOptionalSearch(c.req.query('search'));
+    if (!search.ok) return c.json({ success: false, error: search.error }, 400);
     // ?includeTags=false skips per-row tag enrichment (N+1 of getFriendTags
     // → ~50 extra D1 reads on a wide list query). The list view needs tags
     // for filter chips, but autocomplete-style consumers (test-recipient
@@ -153,18 +301,18 @@ friends.get('/api/friends', async (c) => {
     // Build WHERE conditions
     const conditions: string[] = [];
     const binds: unknown[] = [];
-    if (tagId) {
+    if (tagId.value) {
       conditions.push('EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)');
-      binds.push(tagId);
+      binds.push(tagId.value);
     }
-    if (lineAccountId) {
+    if (lineAccountId.value) {
       conditions.push('f.line_account_id = ?');
-      binds.push(lineAccountId);
+      binds.push(lineAccountId.value);
     }
     appendStaffFriendScope(c, conditions, binds, 'f.id');
-    if (search) {
+    if (search.value) {
       conditions.push('f.display_name LIKE ?');
-      binds.push(`%${search}%`);
+      binds.push(`%${search.value}%`);
     }
     // Unhandled filter: chats.status === 'unread'.
     //
@@ -194,9 +342,12 @@ friends.get('/api/friends', async (c) => {
     const url = new URL(c.req.url);
     for (const [key, value] of url.searchParams.entries()) {
       if (key.startsWith('metadata.')) {
-        const metaKey = key.slice('metadata.'.length);
+        const metaKey = parseMetadataKey(key.slice('metadata.'.length));
+        if (!metaKey.ok) return c.json({ success: false, error: metaKey.error }, 400);
+        const metaValue = parseMetadataQueryValue(value);
+        if (!metaValue.ok) return c.json({ success: false, error: metaValue.error }, 400);
         conditions.push(`json_extract(f.metadata, '$.' || ?) = ?`);
-        binds.push(metaKey, value);
+        binds.push(metaKey.value, metaValue.value);
       }
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -246,11 +397,11 @@ friends.get('/api/friends', async (c) => {
     const createdOrder = sort === 'oldest' ? 'ASC' : 'DESC';
     let listStmt;
     let listBinds: unknown[];
-    if (search) {
-      const exactPattern = search;
-      const prefixPattern = `${search}%`;
-      const wordStartAscii = `% ${search}%`;
-      const wordStartFullWidth = `%　${search}%`;
+    if (search.value) {
+      const exactPattern = search.value;
+      const prefixPattern = `${search.value}%`;
+      const wordStartAscii = `% ${search.value}%`;
+      const wordStartFullWidth = `%　${search.value}%`;
       listStmt = db.prepare(
         `SELECT ${baseSelect},
                 CASE
@@ -387,17 +538,18 @@ friends.get('/api/friends', async (c) => {
 // GET /api/friends/count - friend count (must be before /:id)
 friends.get('/api/friends/count', async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
+    const lineAccountId = parseOptionalSafeId(c.req.query('lineAccountId'), 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const conditions = ['f.is_following = 1'];
     const binds: unknown[] = [];
-    if (lineAccountId) {
+    if (lineAccountId.value) {
       conditions.push('f.line_account_id = ?');
-      binds.push(lineAccountId);
+      binds.push(lineAccountId.value);
     }
     appendStaffFriendScope(c, conditions, binds, 'f.id');
-    const visibilityApplied = conditions.length > (lineAccountId ? 2 : 1);
+    const visibilityApplied = conditions.length > (lineAccountId.value ? 2 : 1);
     let count: number;
-    if (!lineAccountId && !visibilityApplied) {
+    if (!lineAccountId.value && !visibilityApplied) {
       count = await getFriendCount(c.env.DB);
     } else {
       const row = await c.env.DB.prepare(`SELECT COUNT(*) as count FROM friends f WHERE ${conditions.join(' AND ')}`)
@@ -414,16 +566,17 @@ friends.get('/api/friends/count', async (c) => {
 // GET /api/friends/ref-stats - ref code attribution stats
 friends.get('/api/friends/ref-stats', requireRole('owner', 'admin'), async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    const where = lineAccountId ? 'WHERE line_account_id = ?' : 'WHERE ref_code IS NOT NULL';
-    const binds = lineAccountId ? [lineAccountId] : [];
+    const lineAccountId = parseOptionalSafeId(c.req.query('lineAccountId'), 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const where = lineAccountId.value ? 'WHERE line_account_id = ?' : 'WHERE ref_code IS NOT NULL';
+    const binds = lineAccountId.value ? [lineAccountId.value] : [];
     const stmt = c.env.DB.prepare(
       `SELECT ref_code, COUNT(*) as count FROM friends ${where} AND ref_code IS NOT NULL GROUP BY ref_code ORDER BY count DESC`,
     );
     const result = await (binds.length > 0 ? stmt.bind(...binds) : stmt).all<{ ref_code: string; count: number }>();
     const total = await c.env.DB.prepare(
-      `SELECT COUNT(*) as count FROM friends ${lineAccountId ? 'WHERE line_account_id = ?' : ''} ${lineAccountId ? 'AND' : 'WHERE'} ref_code IS NOT NULL`,
-    ).bind(...(lineAccountId ? [lineAccountId] : [])).first<{ count: number }>();
+      `SELECT COUNT(*) as count FROM friends ${lineAccountId.value ? 'WHERE line_account_id = ?' : ''} ${lineAccountId.value ? 'AND' : 'WHERE'} ref_code IS NOT NULL`,
+    ).bind(...(lineAccountId.value ? [lineAccountId.value] : [])).first<{ count: number }>();
     return c.json({
       success: true,
       data: {
@@ -440,14 +593,15 @@ friends.get('/api/friends/ref-stats', requireRole('owner', 'admin'), async (c) =
 // GET /api/friends/:id - get single friend with tags
 friends.get('/api/friends/:id', async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const db = c.env.DB;
-    const denied = await ensureFriendAccess(c, id);
+    const denied = await ensureFriendAccess(c, id.value);
     if (denied) return denied;
 
     const [friend, tags] = await Promise.all([
-      getFriendById(db, id),
-      getFriendTags(db, id),
+      getFriendById(db, id.value),
+      getFriendTags(db, id.value),
     ]);
 
     if (!friend) {
@@ -470,34 +624,34 @@ friends.get('/api/friends/:id', async (c) => {
 // POST /api/friends/:id/tags - add tag
 friends.post('/api/friends/:id/tags', async (c) => {
   try {
-    const friendId = c.req.param('id');
-    const denied = await ensureFriendAccess(c, friendId);
+    const friendId = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const body = await readJsonObject(c);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const tagId = parseSafeId(body.value.tagId, 'tag_id');
+    if (!tagId.ok) return c.json({ success: false, error: tagId.error }, 400);
+    const denied = await ensureFriendAccess(c, friendId.value);
     if (denied) return denied;
-    const body = await c.req.json<{ tagId: string }>();
-
-    if (!body.tagId) {
-      return c.json({ success: false, error: 'tagId is required' }, 400);
-    }
 
     const db = c.env.DB;
-    await addTagToFriend(db, friendId, body.tagId);
+    await addTagToFriend(db, friendId.value, tagId.value);
 
     // Enroll in tag_added scenarios that match this tag
     const allScenarios = await getScenarios(db);
     for (const scenario of allScenarios) {
-      if (scenario.trigger_type === 'tag_added' && scenario.is_active && scenario.trigger_tag_id === body.tagId) {
+      if (scenario.trigger_type === 'tag_added' && scenario.is_active && scenario.trigger_tag_id === tagId.value) {
         const existing = await db
           .prepare(`SELECT id FROM friend_scenarios WHERE friend_id = ? AND scenario_id = ?`)
-          .bind(friendId, scenario.id)
+          .bind(friendId.value, scenario.id)
           .first();
         if (!existing) {
-          await enrollFriendInScenario(db, friendId, scenario.id);
+          await enrollFriendInScenario(db, friendId.value, scenario.id);
         }
       }
     }
 
     // イベントバス発火: tag_change
-    await fireEvent(db, 'tag_change', { friendId, eventData: { tagId: body.tagId, action: 'add' } });
+    await fireEvent(db, 'tag_change', { friendId: friendId.value, eventData: { tagId: tagId.value, action: 'add' } });
 
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
@@ -509,15 +663,17 @@ friends.post('/api/friends/:id/tags', async (c) => {
 // DELETE /api/friends/:id/tags/:tagId - remove tag
 friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
   try {
-    const friendId = c.req.param('id');
-    const denied = await ensureFriendAccess(c, friendId);
+    const friendId = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const tagId = parseSafeId(c.req.param('tagId'), 'tag_id');
+    if (!tagId.ok) return c.json({ success: false, error: tagId.error }, 400);
+    const denied = await ensureFriendAccess(c, friendId.value);
     if (denied) return denied;
-    const tagId = c.req.param('tagId');
 
-    await removeTagFromFriend(c.env.DB, friendId, tagId);
+    await removeTagFromFriend(c.env.DB, friendId.value, tagId.value);
 
     // イベントバス発火: tag_change
-    await fireEvent(c.env.DB, 'tag_change', { friendId, eventData: { tagId, action: 'remove' } });
+    await fireEvent(c.env.DB, 'tag_change', { friendId: friendId.value, eventData: { tagId: tagId.value, action: 'remove' } });
 
     return c.json({ success: true, data: null });
   } catch (err) {
@@ -529,28 +685,32 @@ friends.delete('/api/friends/:id/tags/:tagId', async (c) => {
 // PUT /api/friends/:id/metadata - merge metadata fields
 friends.put('/api/friends/:id/metadata', async (c) => {
   try {
-    const friendId = c.req.param('id');
+    const friendId = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const body = await readJsonObject(c);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const metadataPatch = parseMetadataPatch(body.value);
+    if (!metadataPatch.ok) return c.json({ success: false, error: metadataPatch.error }, 400);
     const db = c.env.DB;
-    const denied = await ensureFriendAccess(c, friendId);
+    const denied = await ensureFriendAccess(c, friendId.value);
     if (denied) return denied;
 
-    const friend = await getFriendById(db, friendId);
+    const friend = await getFriendById(db, friendId.value);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
-    const body = await c.req.json<Record<string, unknown>>();
     const existing = JSON.parse(friend.metadata || '{}');
-    const merged = { ...existing, ...body };
+    const merged = { ...existing, ...metadataPatch.value };
     const now = jstNow();
 
     await db
       .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(merged), now, friendId)
+      .bind(JSON.stringify(merged), now, friendId.value)
       .run();
 
-    const updated = await getFriendById(db, friendId);
-    const tags = await getFriendTags(db, friendId);
+    const updated = await getFriendById(db, friendId.value);
+    const tags = await getFriendTags(db, friendId.value);
 
     return c.json({
       success: true,
@@ -568,8 +728,9 @@ friends.put('/api/friends/:id/metadata', async (c) => {
 // GET /api/friends/:id/messages - get message history
 friends.get('/api/friends/:id/messages', async (c) => {
   try {
-    const friendId = c.req.param('id');
-    const denied = await ensureFriendAccess(c, friendId);
+    const friendId = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const denied = await ensureFriendAccess(c, friendId.value);
     if (denied) return denied;
     // Fetch the latest 200 messages (DESC) then reverse to ASC for display.
     // Using ORDER BY ASC LIMIT 200 returns the OLDEST 200 rows, which silently
@@ -583,7 +744,7 @@ friends.get('/api/friends/:id/messages', async (c) => {
            AND (delivery_type IS NULL OR delivery_type != 'test')
          ORDER BY created_at DESC LIMIT 200`,
       )
-      .bind(friendId)
+      .bind(friendId.value)
       .all<{ id: string; direction: string; messageType: string; content: string; createdAt: string }>();
     return c.json({ success: true, data: result.results.reverse() });
   } catch (err) {
@@ -595,21 +756,17 @@ friends.get('/api/friends/:id/messages', async (c) => {
 // POST /api/friends/:id/messages - send message to friend
 friends.post('/api/friends/:id/messages', async (c) => {
   try {
-    const friendId = c.req.param('id');
-    const denied = await ensureFriendAccess(c, friendId);
+    const friendId = parseSafeId(c.req.param('id'), 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const body = await readJsonObject(c);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const messageBody = parseDirectMessageBody(body.value);
+    if (!messageBody.ok) return c.json({ success: false, error: messageBody.error }, 400);
+    const denied = await ensureFriendAccess(c, friendId.value);
     if (denied) return denied;
-    const body = await c.req.json<{
-      messageType?: string;
-      content: string;
-      altText?: string;
-    }>();
-
-    if (!body.content) {
-      return c.json({ success: false, error: 'content is required' }, 400);
-    }
 
     const db = c.env.DB;
-    const friend = await getFriendById(db, friendId);
+    const friend = await getFriendById(db, friendId.value);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
@@ -623,16 +780,16 @@ friends.post('/api/friends/:id/messages', async (c) => {
       if (account) accessToken = account.channel_access_token;
     }
     const lineClient = new LineClient(accessToken);
-    const messageType = body.messageType ?? 'text';
+    const messageType = messageBody.value.messageType;
 
     // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
     const { autoTrackContent } = await import('../services/auto-track.js');
     const tracked = await autoTrackContent(
-      db, messageType, body.content,
+      db, messageType, messageBody.value.content,
       c.env.WORKER_URL || new URL(c.req.url).origin,
     );
 
-    const message = buildMessage(tracked.messageType, tracked.content, body.altText);
+    const message = buildMessage(tracked.messageType, tracked.content, messageBody.value.altText);
     await lineClient.pushMessage(friend.line_user_id, [message]);
 
     // Log outgoing message
@@ -642,7 +799,7 @@ friends.post('/api/friends/:id/messages', async (c) => {
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
          VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'manual', ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, body.content, friend.line_account_id ?? null, jstNow())
+      .bind(logId, friend.id, messageType, messageBody.value.content, friend.line_account_id ?? null, jstNow())
       .run();
 
     return c.json({ success: true, data: { messageId: logId } });

@@ -518,6 +518,98 @@ describe('management role guards', () => {
     expect(dbMocks.deleteOperator).not.toHaveBeenCalled();
   });
 
+  test('owner operator management rejects malformed path IDs and payloads before DB helpers', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['POST', '/api/operators', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/operators', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Sato', email: 'bad email' }),
+      }],
+      ['POST', '/api/operators', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Sato', email: 'sato@example.test', role: 'bad role' }),
+      }],
+      ['PUT', '/api/operators/bad%20operator', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['PUT', '/api/operators/operator-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }],
+      ['PUT', '/api/operators/operator-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: 'false' }),
+      }],
+      ['DELETE', '/api/operators/bad%20operator'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.createOperator).not.toHaveBeenCalled();
+    expect(dbMocks.updateOperator).not.toHaveBeenCalled();
+    expect(dbMocks.getOperatorById).not.toHaveBeenCalled();
+    expect(dbMocks.deleteOperator).not.toHaveBeenCalled();
+  });
+
+  test('owner operator management trims valid IDs and payloads before DB helpers', async () => {
+    dbMocks.createOperator.mockResolvedValue({
+      id: 'operator-created',
+      name: 'Sato',
+      email: 'sato@example.test',
+      role: 'operator',
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.getOperatorById.mockResolvedValue({
+      id: 'operator-1',
+      name: 'Updated',
+      email: 'updated@example.test',
+      role: 'admin',
+      is_active: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const app = setupApp('owner');
+
+    const createRes = await app.request('/api/operators', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Sato ', email: ' sato@example.test ', role: ' operator ' }),
+    });
+    const updateRes = await app.request('/api/operators/%20operator-1%20', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Updated ', email: ' updated@example.test ', role: ' admin ', isActive: false }),
+    });
+    const deleteRes = await app.request('/api/operators/%20operator-1%20', { method: 'DELETE' });
+
+    expect(createRes.status).toBe(201);
+    expect(updateRes.status).toBe(200);
+    expect(deleteRes.status).toBe(200);
+    expect(dbMocks.createOperator).toHaveBeenCalledWith(expect.anything(), {
+      name: 'Sato',
+      email: 'sato@example.test',
+      role: 'operator',
+    });
+    expect(dbMocks.updateOperator).toHaveBeenCalledWith(expect.anything(), 'operator-1', {
+      name: 'Updated',
+      email: 'updated@example.test',
+      role: 'admin',
+      isActive: false,
+    });
+    expect(dbMocks.getOperatorById).toHaveBeenCalledWith(expect.anything(), 'operator-1');
+    expect(dbMocks.deleteOperator).toHaveBeenCalledWith(expect.anything(), 'operator-1');
+  });
+
   test('staff cannot access booking or event admin routes', async () => {
     const db = { prepare: vi.fn() } as unknown as D1Database;
     const app = setupApp('staff', db);

@@ -26,6 +26,13 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const chats = new Hono<Env>();
 
+const OPERATOR_ID_MAX_LENGTH = 128;
+const OPERATOR_NAME_MAX_LENGTH = 120;
+const OPERATOR_EMAIL_MAX_LENGTH = 254;
+const OPERATOR_ROLE_MAX_LENGTH = 64;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
 }
@@ -94,6 +101,10 @@ type ChatSendBody = {
   lineAccountId?: string | null;
 };
 
+type OperatorCreateBody = { name: string; email: string; role?: string };
+type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
 type ChatMessageType = 'text' | 'flex' | 'image';
 
 type NormalizedChatSendPayload =
@@ -115,6 +126,72 @@ type ChatSendFriend = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern?: RegExp,
+): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (pattern && !pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern?: RegExp,
+): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  return parseRequiredString(raw, label, maxLength, pattern);
+}
+
+function parseOperatorPathId(raw: unknown): ValueResult<string> {
+  return parseRequiredString(raw, 'operatorId', OPERATOR_ID_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
+}
+
+function parseOperatorCreateBody(raw: unknown): ValueResult<OperatorCreateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseRequiredString(raw.name, 'name', OPERATOR_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const email = parseRequiredString(raw.email, 'email', OPERATOR_EMAIL_MAX_LENGTH, EMAIL_PATTERN);
+  if (!email.ok) return email;
+  const role = parseOptionalString(raw.role, 'role', OPERATOR_ROLE_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
+  if (!role.ok) return role;
+  return { ok: true, value: { name: name.value, email: email.value, role: role.value } };
+}
+
+function parseOperatorUpdateBody(raw: unknown): ValueResult<OperatorUpdateBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseOptionalString(raw.name, 'name', OPERATOR_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const email = parseOptionalString(raw.email, 'email', OPERATOR_EMAIL_MAX_LENGTH, EMAIL_PATTERN);
+  if (!email.ok) return email;
+  const role = parseOptionalString(raw.role, 'role', OPERATOR_ROLE_MAX_LENGTH, VISIBLE_ASCII_PATTERN);
+  if (!role.ok) return role;
+  if (raw.isActive !== undefined && typeof raw.isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be a boolean' };
+  }
+  const value = {
+    name: name.value,
+    email: email.value,
+    role: role.value,
+    isActive: raw.isActive as boolean | undefined,
+  };
+  if (Object.values(value).every((entry) => entry === undefined)) {
+    return { ok: false, error: 'At least one field is required' };
+  }
+  return { ok: true, value };
 }
 
 function isHttpsUrl(value: string): boolean {
@@ -412,9 +489,9 @@ chats.get('/api/operators', requireRole('owner', 'admin'), async (c) => {
 
 chats.post('/api/operators', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{ name: string; email: string; role?: string }>();
-    if (!body.name || !body.email) return c.json({ success: false, error: 'name and email are required' }, 400);
-    const item = await createOperator(c.env.DB, body);
+    const parsed = parseOperatorCreateBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const item = await createOperator(c.env.DB, parsed.value);
     return c.json({ success: true, data: { id: item.id, name: item.name, email: item.email, role: item.role } }, 201);
   } catch (err) {
     console.error('POST /api/operators error:', err);
@@ -424,10 +501,12 @@ chats.post('/api/operators', requireRole('owner', 'admin'), async (c) => {
 
 chats.put('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const body = await c.req.json();
-    await updateOperator(c.env.DB, id, body);
-    const updated = await getOperatorById(c.env.DB, id);
+    const id = parseOperatorPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsed = parseOperatorUpdateBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    await updateOperator(c.env.DB, id.value, parsed.value);
+    const updated = await getOperatorById(c.env.DB, id.value);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: { id: updated.id, name: updated.name, email: updated.email, role: updated.role, isActive: Boolean(updated.is_active) } });
   } catch (err) {
@@ -438,7 +517,9 @@ chats.put('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
 
 chats.delete('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteOperator(c.env.DB, c.req.param('id')!);
+    const id = parseOperatorPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteOperator(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/operators/:id error:', err);

@@ -239,6 +239,38 @@ describe('operations API role guards', () => {
     );
   });
 
+  test('public affiliate click rejects malformed or oversized payloads before affiliate lookup', async () => {
+    const app = setupApp('staff');
+
+    const malformed = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const oversizedCode = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'p'.repeat(129), url: 'https://example.com/lp' }),
+    });
+    const unsafeUrl = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'partner', url: 'javascript:alert(1)' }),
+    });
+    const oversizedUrl = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'partner', url: `https://example.com/${'a'.repeat(2048)}` }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(oversizedCode.status).toBe(400);
+    expect(unsafeUrl.status).toBe(400);
+    expect(oversizedUrl.status).toBe(400);
+    expect(dbMocks.getAffiliateByCode).not.toHaveBeenCalled();
+    expect(dbMocks.recordAffiliateClick).not.toHaveBeenCalled();
+  });
+
   test('public tracked-link redirect endpoint remains unguarded but ignores self-claimed friend identifiers', async () => {
     dbMocks.getTrackedLinkById.mockResolvedValue({
       id: 'link-1',

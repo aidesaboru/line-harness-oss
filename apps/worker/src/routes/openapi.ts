@@ -617,8 +617,8 @@ const spec = {
       post: {
         tags: ['Affiliates'],
         summary: 'クリック記録',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string' }, url: { type: 'string' } }, required: ['code'] } } } },
-        responses: { '201': { description: 'Recorded' } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string', maxLength: 128 }, url: { type: 'string', format: 'uri', maxLength: 2048, nullable: true } }, required: ['code'] } } } },
+        responses: { '201': { description: 'Recorded' }, '400': { description: 'Invalid click payload' } },
       },
     },
     // ── Webhook ─────────────────────────────────────────────────────────────

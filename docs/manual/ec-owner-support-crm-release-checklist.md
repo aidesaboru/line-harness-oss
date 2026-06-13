@@ -199,6 +199,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker conversations route testsでは、不正なID、NaN、逆転した時間範囲、不正cursorがDBへ到達せず400で止まり、正常query/pathはtrimされ、`limit` / `offset` は安全な範囲へ丸められることを確認済み。
 - [ ] legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDがDB helperやfriend可視範囲check前に検証される
   - Worker users route testsでは、壊れたJSON、空payload、不正email/phone/externalId/displayName/userId/friendIdがDB helperやfriend可視範囲check前に400で止まり、正常payload/path IDはtrim/null正規化されることを確認済み。
+- [ ] account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadがDB read/write前に検証される
+  - Worker account-settings route testsでは、壊れたJSON、不正accountId/friendId、過大friendIdsがDB read/write前に400で止まり、正常payload/queryはtrim/dedupeされることを確認済み。
 - [ ] Google Calendar接続/予約/status payloadが副作用前に検証される
   - Worker conversion/calendar access route testsでは、壊れたJSON、不正な `calendarId/authType/token/connectionId/friendId/title/startAt/endAt/metadata/status` がDB write、friend可視範囲check、Calendar接続lookup前に400で止まり、正常payloadはtrimされることを確認済み。
 - [ ] automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの不正な数値queryがDB helper呼び出しやSQL bind前に安全な値へ戻る

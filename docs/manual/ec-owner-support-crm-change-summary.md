@@ -36,6 +36,7 @@ updated: 2026-06-13
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
 - staff管理APIのcreate/update/detail/delete/regenerate-key payload/path IDは、壊れたJSON、不正なstaff ID/name/email/role/isActiveをDB helperや最後のowner保護check前に400で止め、正常値はtrim/null正規化する
 - legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDは、壊れたJSON、不正なemail/phone/externalId/displayName/friendId/userIdをDB helperやfriend可視範囲check前に400で止め、正常値はtrim/null正規化する
+- account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadは、壊れたJSON、不正なID、過大なfriendIdsをDB read/write前に400で止め、正常値はtrim/dedupeして保存・参照する
 - reminder/scoring rule定義payloadとfriend score/reminder操作payloadは、壊れたJSON、不正なID、空/過大なname/description/reason/messageContent、不正なmessageType/Flex/image JSON、不正date、不正score/offsetをDB helperやfriend reminder SQL前に400で止め、正常値はtrimする
 - scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
@@ -182,6 +183,7 @@ corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/r
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 15 tests
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
+corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build

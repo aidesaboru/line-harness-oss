@@ -102,6 +102,30 @@ describe('account settings test recipients support visibility', () => {
     expect(friendCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
   });
 
+  test('test recipient reads reject unsafe account IDs before DB access', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/account-settings/test-recipients?accountId=bad%20account');
+
+    expect(res.status).toBe(400);
+    expect(db.calls).toHaveLength(0);
+  });
+
+  test('test recipient reads trim account IDs before DB access and ignore unsafe stored IDs', async () => {
+    const db = makeDb({
+      configuredFriendIds: [' friend-visible ', 'bad friend', 'friend-visible'],
+      visibleFriendIds: ['friend-visible'],
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/account-settings/test-recipients?accountId=%20acc-1%20');
+
+    expect(res.status).toBe(200);
+    const settingCall = db.calls.find((call) => call.sql.includes('FROM account_settings'));
+    expect(settingCall?.binds).toEqual(['acc-1']);
+    const friendCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
+    expect(friendCall?.binds).toEqual(['friend-visible', 'staff-1', '%Tajima%', '%Tajima%', '%Tajima%']);
+  });
+
   test('owner keeps the global test recipient scope', async () => {
     const db = makeDb({ visibleFriendIds: [] });
 
@@ -127,16 +151,51 @@ describe('account settings test recipients support visibility', () => {
     expect(db.calls.some((call) => call.method === 'run')).toBe(false);
   });
 
+  test('test recipient updates reject invalid payloads before DB writes', async () => {
+    const requests = [
+      '{',
+      JSON.stringify({}),
+      JSON.stringify({ accountId: 'bad account', friendIds: ['friend-visible'] }),
+      JSON.stringify({ accountId: 'acc-1', friendIds: 'friend-visible' }),
+      JSON.stringify({ accountId: 'acc-1', friendIds: ['bad friend'] }),
+      JSON.stringify({ accountId: 'acc-1', friendIds: Array.from({ length: 101 }, (_, i) => `friend-${i}`) }),
+    ];
+
+    for (const body of requests) {
+      const db = makeDb({ visibleFriendIds: [] });
+      const res = await setupApp(db, 'admin').request('/api/account-settings/test-recipients', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, body).toBe(400);
+      expect(db.calls.some((call) => call.method === 'run')).toBe(false);
+    }
+  });
+
   test('admin can update global test recipients', async () => {
     const db = makeDb({ visibleFriendIds: [] });
 
     const res = await setupApp(db, 'admin').request('/api/account-settings/test-recipients', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accountId: 'acc-1', friendIds: ['friend-visible'] }),
+      body: JSON.stringify({
+        accountId: ' acc-1 ',
+        friendIds: [' friend-visible ', 'friend-visible', ' friend-hidden '],
+      }),
     });
 
     expect(res.status).toBe(200);
-    expect(db.calls.some((call) => call.method === 'run')).toBe(true);
+    const runCall = db.calls.find((call) => call.method === 'run');
+    expect(runCall?.binds).toEqual([
+      expect.any(String),
+      'acc-1',
+      JSON.stringify(['friend-visible', 'friend-hidden']),
+      expect.any(String),
+      expect.any(String),
+      JSON.stringify(['friend-visible', 'friend-hidden']),
+      expect.any(String),
+    ]);
   });
 });

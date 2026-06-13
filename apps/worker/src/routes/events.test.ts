@@ -1494,6 +1494,30 @@ describe('LIFF POST /api/liff/events/:id/bookings', () => {
     expect(res.status).toBe(400);
   });
 
+  test('400 when Idempotency-Key is malformed before LINE verification or reservation', async () => {
+    const state = {
+      events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1 })],
+      accounts: [{ id: 'la1', liff_id: 'L1', is_active: 1 }],
+    };
+    const app = setupApp(state);
+
+    const malformed = await app.request('/api/liff/events/e1/bookings?liffId=L1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Idempotency-Key': 'bad key', 'Authorization': 'Bearer t' },
+      body: JSON.stringify({ slot_id: 's1' }),
+    });
+    const oversized = await app.request('/api/liff/events/e1/bookings?liffId=L1', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'Idempotency-Key': 'k'.repeat(129), 'Authorization': 'Bearer t' },
+      body: JSON.stringify({ slot_id: 's1' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(oversized.status).toBe(400);
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(idempotencyMocks.reserveEventIdempotency).not.toHaveBeenCalled();
+  });
+
   test('409 slot_full when capacity reached', async () => {
     const state = {
       events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1 })],

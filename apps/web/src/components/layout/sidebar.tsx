@@ -7,6 +7,7 @@ import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
 import { clearAuthSessionCache, readStaffIdentityCache } from '@/lib/auth-session'
 import { countryFlag } from '@/lib/country-flag'
+import { canShowSidebarItem } from './sidebar-access'
 
 // ─── メニュー定義（ユーザー目線のカテゴリ） ───
 
@@ -231,6 +232,12 @@ export default function Sidebar() {
   }, [isOpen])
 
   const isActive = (href: string) => href === '/' ? pathname === '/' : pathname.startsWith(href)
+  const visibleMenuSections = menuSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => canShowSidebarItem(item.href, staffRole)),
+    }))
+    .filter((section) => section.items.length > 0)
 
   const sidebarContent = (
     <>
@@ -252,18 +259,14 @@ export default function Sidebar() {
 
       {/* ナビゲーション */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {menuSections.map((section, si) => (
+        {visibleMenuSections.map((section, si) => (
           <div key={si}>
             {section.label && (
               <div className="pt-5 pb-2 px-3">
                 <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">{section.label}</p>
               </div>
             )}
-            {section.items.filter((item) => {
-              if (item.href === '/staff' && staffRole !== 'owner') return false
-              if (item.href === '/accounts' && staffRole === 'staff') return false
-              return true
-            }).map((item) => {
+            {section.items.map((item) => {
               const active = isActive(item.href)
               const isDanger = 'danger' in item && item.danger
               return (

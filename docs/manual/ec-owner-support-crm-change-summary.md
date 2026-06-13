@@ -34,6 +34,7 @@ updated: 2026-06-13
 
 - サポートCRMで現在のログイン権限を `/api/staff/me` から確認し、ローカルキャッシュだけでowner/admin操作を出さない
 - staffでは新規案件、担当/期限/優先度変更、マニュアル作成/更新/無効化などの管理操作を非表示または読み取り専用化
+- staffのサイドバーは、友だち管理、個別チャット、サポートCRM、未対応だけに絞り、配信、分析、設定などの管理メニューを表示しない
 - staff名が空欄の古いアカウントでは、理由を表示して操作を止める
 - 案件一覧に未完了、期限超過、24h滞留、担当者なし、エスカレ、自分宛、顧客返信待ち、完了のキューを整理
 - 選択中の案件が現在の絞り込み外にある場合、理由と復帰ボタンを表示
@@ -85,6 +86,7 @@ updated: 2026-06-13
 - `apps/worker/src/middleware/auth.test.ts`
 - `apps/worker/src/routes/staff.test.ts`
 - `apps/web/src/components/support/support-meta.test.ts`
+- `apps/web/src/components/layout/sidebar-access.test.ts`
 - `apps/web/src/lib/auth-session.test.ts`
 - `apps/web/src/lib/clipboard.test.ts`
 - `apps/web/src/lib/staff-form.test.ts`

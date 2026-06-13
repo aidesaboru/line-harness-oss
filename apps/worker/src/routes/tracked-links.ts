@@ -192,6 +192,12 @@ function parseUpdateTrackedLinkBody(raw: unknown): ParsedUpdateTrackedLinkBody {
   };
 }
 
+function trackedLinkRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // GET /api/tracked-links — list all
 trackedLinks.get('/api/tracked-links', requireRole('owner', 'admin'), async (c) => {
   try {
@@ -199,7 +205,7 @@ trackedLinks.get('/api/tracked-links', requireRole('owner', 'admin'), async (c) 
     const base = getBaseUrl(c);
     return c.json({ success: true, data: items.map((item) => serializeTrackedLink(item, base)) });
   } catch (err) {
-    console.error('GET /api/tracked-links error:', err);
+    console.error(`GET /api/tracked-links error: ${trackedLinkRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -228,7 +234,7 @@ trackedLinks.get('/api/tracked-links/:id', requireRole('owner', 'admin'), async 
       },
     });
   } catch (err) {
-    console.error('GET /api/tracked-links/:id error:', err);
+    console.error(`GET /api/tracked-links/:id error: ${trackedLinkRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -253,7 +259,7 @@ trackedLinks.post('/api/tracked-links', requireRole('owner', 'admin'), async (c)
     const base = getBaseUrl(c);
     return c.json({ success: true, data: serializeTrackedLink(link, base) }, 201);
   } catch (err) {
-    console.error('POST /api/tracked-links error:', err);
+    console.error(`POST /api/tracked-links error: ${trackedLinkRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -274,7 +280,7 @@ trackedLinks.patch('/api/tracked-links/:id', requireRole('owner', 'admin'), asyn
     const base = getBaseUrl(c);
     return c.json({ success: true, data: serializeTrackedLink(link, base) });
   } catch (err) {
-    console.error('PATCH /api/tracked-links/:id error:', err);
+    console.error(`PATCH /api/tracked-links/:id error: ${trackedLinkRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -291,7 +297,7 @@ trackedLinks.delete('/api/tracked-links/:id', requireRole('owner', 'admin'), asy
     await deleteTrackedLink(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/tracked-links/:id error:', err);
+    console.error(`DELETE /api/tracked-links/:id error: ${trackedLinkRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -413,7 +419,7 @@ trackedLinks.get('/t/:linkId', async (c) => {
           await recordLinkClick(c.env.DB, linkId, null);
         }
       } catch (err) {
-        console.error('/t/:linkId async tracking error:', err);
+        console.error(`/t/:linkId async tracking error: ${trackedLinkRouteErrorKind(err)}`);
       }
     })(),
   );

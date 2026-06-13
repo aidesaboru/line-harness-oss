@@ -69,6 +69,16 @@ function setupApp(role: StaffRole = 'staff', envOverrides: Partial<TestEnv['Bind
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 async function stripeSignature(secret: string, rawBody: string, timestamp = 1_812_345_678): Promise<string> {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -250,6 +260,161 @@ describe('operations API role guards', () => {
     expect(dbMocks.createTrackedLink).not.toHaveBeenCalled();
     expect(dbMocks.updateTrackedLink).not.toHaveBeenCalled();
     expect(dbMocks.deleteTrackedLink).not.toHaveBeenCalled();
+  });
+
+  test('Stripe events failure logs only the error kind', async () => {
+    dbMocks.getStripeEvents.mockRejectedValueOnce(
+      new Error('stripe events secret account-token friend-secret charge.succeeded raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner')
+        .request('/api/integrations/stripe/events?friendId=friend-secret&eventType=charge.succeeded');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/integrations/stripe/events error: Error');
+      expectNoLogLeak(logged, ['stripe events secret', 'account-token', 'friend-secret', 'charge.succeeded', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('ad platform failure does not leak config or raw exception into logs or response', async () => {
+    dbMocks.createAdPlatform.mockRejectedValueOnce(
+      new Error('ad secret access-token platform-1 pixel px-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('admin').request('/api/ad-platforms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'meta',
+          displayName: 'Meta Ads',
+          config: { access_token: 'access-token', pixel_id: 'px-secret' },
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/ad-platforms error: Error');
+      expectNoLogLeak(logged, ['ad secret', 'access-token', 'platform-1', 'px-secret', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('public affiliate click failure does not leak code, URL, IP, or raw exception', async () => {
+    dbMocks.recordAffiliateClick.mockRejectedValueOnce(
+      new Error('affiliate secret partner https://example.com/lp 203.0.113.10 raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('staff').request('/api/affiliates/click', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'CF-Connecting-IP': '203.0.113.10',
+        },
+        body: JSON.stringify({ code: 'partner', url: 'https://example.com/lp' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/affiliates/click error: Error');
+      expectNoLogLeak(logged, ['affiliate secret', 'partner', 'https://example.com/lp', '203.0.113.10', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('tracked-link management failure does not leak URLs or raw exception', async () => {
+    dbMocks.createTrackedLink.mockRejectedValueOnce(
+      new Error('tracked secret link-new https://example.com/secret tag-1 scenario-1 raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner').request('/api/tracked-links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Secret LP',
+          originalUrl: 'https://example.com/secret',
+          tagId: 'tag-1',
+          scenarioId: 'scenario-1',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/tracked-links error: Error');
+      expectNoLogLeak(logged, [
+        'tracked secret',
+        'link-new',
+        'https://example.com/secret',
+        'tag-1',
+        'scenario-1',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('tracked-link async click failure logs only the error kind', async () => {
+    dbMocks.getTrackedLinkById.mockResolvedValue({
+      id: 'link-1',
+      name: 'LP',
+      original_url: 'https://example.com/lp',
+      tag_id: 'tag-1',
+      scenario_id: 'scenario-1',
+      intro_template_id: null,
+      reward_template_id: null,
+      is_active: 1,
+      click_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.recordLinkClick.mockRejectedValueOnce(
+      new Error('tracked async secret link-1 https://example.com/lp raw-body'),
+    );
+    const waitUntil = vi.fn((promise: Promise<unknown>) => promise);
+    const executionCtx = {
+      waitUntil,
+      passThroughOnException: vi.fn(),
+      props: {},
+    } as unknown as ExecutionContext;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('staff').request(
+        '/t/link-1',
+        { method: 'GET' },
+        {} as TestEnv['Bindings'],
+        executionCtx,
+      );
+      await waitUntil.mock.calls[0]?.[0];
+
+      expect(res.status).toBe(302);
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('/t/:linkId async tracking error: Error');
+      expectNoLogLeak(logged, ['tracked async secret', 'link-1', 'https://example.com/lp', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('owner can read masked ad platform configuration', async () => {

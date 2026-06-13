@@ -157,6 +157,12 @@ function rawBodyByteLength(rawBody: string): number {
   return new TextEncoder().encode(rawBody).byteLength;
 }
 
+function stripeRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // ========== Stripeイベント一覧 ==========
 
 stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), async (c) => {
@@ -181,7 +187,7 @@ stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), asy
       })),
     });
   } catch (err) {
-    console.error('GET /api/integrations/stripe/events error:', err);
+    console.error(`GET /api/integrations/stripe/events error: ${stripeRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -311,7 +317,7 @@ stripe.post('/api/integrations/stripe/webhook', async (c) => {
       data: { id: event.id, stripeEventId: event.stripe_event_id, eventType: event.event_type, processedAt: event.processed_at },
     });
   } catch (err) {
-    console.error('POST /api/integrations/stripe/webhook error:', err);
+    console.error(`POST /api/integrations/stripe/webhook error: ${stripeRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

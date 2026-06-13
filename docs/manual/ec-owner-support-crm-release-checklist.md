@@ -277,6 +277,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker operations route testsでは、署名付きの正しいbounded payloadだけが記録され、壊れたJSONはDB lookup/記録前に400、1MiB超payloadはDB lookup/記録前に413で止まることを確認済み。
 - [ ] ad-platforms/affiliates/tracked-links管理APIのpath/payloadが、不正な値をDB/外部送信前に拒否する
   - Worker operations route testsでは、不正なadPlatformId/affiliateId/trackedLinkId、壊れたJSON、許可以外の広告platform名、巨大/ネストした広告config、長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveがDB lookup/write、click-detail/logs lookup、削除、広告CV test送信lookup前に400で止まり、正常値はtrim/正規化されることを確認済み。
+- [ ] Stripe events/webhook、ad-platforms、affiliates/click、tracked-links管理、tracked-link公開redirect非同期記録の失敗時に、Stripe event/friend ID、広告config/token、affiliate code、クリックURL、IP、tracked link ID、tag/scenario ID、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker operations route testsでは、失敗ログが例外種別だけになり、API errorは固定文言になり、payload本文、ID、URL、IP、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] 公開QR proxy `/api/qr` が無制限な外部QR生成proxyにならない
   - Worker QR proxy testsでは、`data` がHTTP(S) URLではない、長すぎる、`size` が正方形ではない/大きすぎる/形式不正、外部QR rendererが画像以外を返す場合に拒否することを確認済み。
 - [ ] 公開short-link `/r/:ref` が無制限なDB lookup/LIFF URL生成/HTML反映導線にならない
@@ -398,6 +400,7 @@ corepack pnpm --filter worker test -- src/routes/support.test.ts
 corepack pnpm --filter worker test -- src/routes/friends.test.ts # 10 tests
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
 corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
+corepack pnpm --filter worker test -- src/routes/operations-access.test.ts # 30 tests
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts # webhooks 33 tests
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/scenarios.test.ts # 18 tests
@@ -463,6 +466,7 @@ N/A
 - `corepack pnpm test:scripts`
 - `corepack pnpm --filter worker typecheck`
 - `corepack pnpm --filter worker test -- src/middleware/auth.test.ts src/routes/users.test.ts src/routes/account-settings.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/broadcasts-access.test.ts src/routes/forms-access.test.ts src/routes/operations-access.test.ts`
+- `corepack pnpm --filter worker test -- src/routes/operations-access.test.ts` # 30 tests
 - `corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts` # 21 tests
 - `corepack pnpm --filter worker test -- src/routes/scenarios.test.ts` # 18 tests
 - `corepack pnpm --filter worker test -- src/routes/content-management-access.test.ts` # 19 tests
@@ -496,6 +500,7 @@ N/A
 - Support-friend access route tests verify rich menu catalog/friend operation failure logs and error responses keep only exception kind or fixed internal error, without channel tokens, LINE account IDs, friend IDs, LINE user IDs, richMenu IDs, token-like text, or raw LINE/API error messages.
 - Support-friend access route tests verify scoring rule/friend score/friend reminder failure logs and error responses keep only exception kind or fixed internal error, without rule/reminder names, reasons, target dates, friend IDs, LINE user IDs, reminder IDs, token-like text, or raw exception messages.
 - Scenario/content-management/management role guard tests verify scenario/tag/template/message-template/automation/auto-reply/notification rule failure logs and error responses keep only exception kind or fixed internal error, without scenario/template/tag/rule names, message bodies, automation actions/conditions, notification channels/conditions, friend IDs, LINE user IDs, token-like text, or raw exception messages.
+- Operations route tests verify Stripe events/webhook, ad-platforms, affiliates/click, tracked-links management, and tracked-link async click-recording failure logs and error responses keep only exception kind or fixed internal error, without Stripe/friend IDs, ad config/token values, affiliate codes, URLs, IPs, tracked link IDs, tag/scenario IDs, token-like text, or raw exception messages.
 - Friends route tests verify malformed lineAccountId/tagId/search/metadata query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects while valid values are normalized.
 - Friends route tests verify friend list/direct-message failure logs and direct-message error responses keep only exception kind or fixed internal error, without search text, message bodies, LINE account IDs, friend IDs, LINE user IDs, token-like text, or raw exception messages.
 - Broadcast access tests verify malformed or unsafe broadcast query/path/create/update/send-segment/segment-count payloads stop before DB helpers, SQL bind, LINE send, or recipient/segment computation while valid values are trimmed and normalized. They also verify malformed or unsafe dedup-preview account/tag payloads stop before recipient preview computation while valid IDs are trimmed, deduped, and priority-filtered.

@@ -96,6 +96,7 @@ updated: 2026-06-14
 - 売上・広告・計測運用API（Stripe events、ad-platforms、affiliates管理/レポート、tracked-links管理）はowner/adminだけに制限し、公開Webhook/クリック/リダイレクトは維持
 - ad-platforms/affiliates/tracked-links管理APIのpath IDと作成/更新/test payloadは、壊れたJSON、不正なadPlatformId/affiliateId/trackedLinkId、許可以外の広告platform名、巨大/ネストした広告config、空/長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveをDB lookup/writeや外部CV送信前に400で止める
 - 公開affiliate click `/api/affiliates/click` は壊れたJSON、空/128文字超またはURL-safeではない `code`、HTTP(S)以外または2048文字超の `url` をDB lookupやクリック保存前に400で止める
+- Stripe events/webhook、ad-platforms、affiliates/click、tracked-links管理、tracked-link公開redirect非同期記録の失敗ログとエラー応答は、Stripe event/friend ID、広告config/token、affiliate code、クリックURL、IP、tracked link ID、tag/scenario ID、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
 - チャットloading/send/send-validate失敗ログとエラー応答は、LINE APIレスポンス本文、channel token、LINE user ID、friend ID、raw例外本文を出さず、HTTP statusや例外種別だけにする
@@ -200,6 +201,7 @@ corepack pnpm --filter worker test -- src/routes/support.test.ts
 corepack pnpm --filter worker test -- src/routes/friends.test.ts # 10 tests
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
 corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
+corepack pnpm --filter worker test -- src/routes/operations-access.test.ts # 30 tests
 corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts # webhooks 33 tests
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
@@ -272,6 +274,7 @@ strict Preflight:
 - Operations and LIFF access route tests confirm `/t/:linkId` rejects malformed or oversized link IDs before lookup/click recording, ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management path IDs and payloads reject malformed JSON, unsafe route IDs/codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB lookup, DB writes, click-detail lookup, logs lookup, deletion, or test-send lookup, while valid values are trimmed and normalized before persistence.
+- Operations route tests also confirm Stripe events, ad-platform create, public affiliate click, tracked-link create, and tracked-link async click-recording failures keep only exception kind or fixed internal error and omit Stripe/friend IDs, ad config/token values, affiliate codes, URLs, IPs, tracked link IDs, tag/scenario IDs, token-like text, and raw exception messages.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
 - Events route tests confirm malformed event admin/LIFF `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query and path values stop before DB access, LIFF auth helpers, availability helpers, or booking mutations while valid IDs and filters are trimmed before lookup.
 - Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.

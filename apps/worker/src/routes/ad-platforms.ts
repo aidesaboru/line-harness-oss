@@ -188,6 +188,12 @@ function parseAdPlatformTestBody(raw: unknown): ParsedAdPlatformTestBody {
   return { ok: true, body: { platform: platform.value!, eventName: eventName.value!, friendId: friendId.value } };
 }
 
+function adPlatformRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // GET /api/ad-platforms - list all
 adPlatforms.get('/api/ad-platforms', requireRole('owner', 'admin'), async (c) => {
   try {
@@ -205,7 +211,7 @@ adPlatforms.get('/api/ad-platforms', requireRole('owner', 'admin'), async (c) =>
       })),
     });
   } catch (err) {
-    console.error('GET /api/ad-platforms error:', err);
+    console.error(`GET /api/ad-platforms error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -237,7 +243,7 @@ adPlatforms.post('/api/ad-platforms', requireRole('owner', 'admin'), async (c) =
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/ad-platforms error:', err);
+    console.error(`POST /api/ad-platforms error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -269,7 +275,7 @@ adPlatforms.put('/api/ad-platforms/:id', requireRole('owner', 'admin'), async (c
       },
     });
   } catch (err) {
-    console.error('PUT /api/ad-platforms/:id error:', err);
+    console.error(`PUT /api/ad-platforms/:id error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -299,7 +305,7 @@ adPlatforms.post('/api/ad-platforms/test', requireRole('owner', 'admin'), async 
       },
     });
   } catch (err) {
-    console.error('POST /api/ad-platforms/test error:', err);
+    console.error(`POST /api/ad-platforms/test error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -312,7 +318,7 @@ adPlatforms.delete('/api/ad-platforms/:id', requireRole('owner', 'admin'), async
     await deleteAdPlatform(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/ad-platforms/:id error:', err);
+    console.error(`DELETE /api/ad-platforms/:id error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -340,7 +346,7 @@ adPlatforms.get('/api/ad-platforms/:id/logs', requireRole('owner', 'admin'), asy
       })),
     });
   } catch (err) {
-    console.error('GET /api/ad-platforms/:id/logs error:', err);
+    console.error(`GET /api/ad-platforms/:id/logs error: ${adPlatformRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -179,6 +179,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker calendar route testでは、0分刻みや非数値は既定値に戻り、開始時刻が終了時刻以上の窓はcalendar接続や予約取得の前に400で止まることを確認済み。
 - [ ] automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの不正な数値queryがDB helper呼び出しやSQL bind前に安全な値へ戻る
   - Worker route testsでは、無効値、小数、過大値、`Infinity` が既定値、上限、整数へ正規化されることを確認済み。Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` 検索も0件。
+- [ ] 公開フォーム送信時に、回答データ、送信先、レスポンスステータスがブラウザconsoleへ出ない
+  - `apps/worker/src/client/form.ts` の `console.log` 検索は0件で、Worker typecheck/buildも通過済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている

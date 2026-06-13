@@ -122,6 +122,41 @@ export type Env = {
 };
 
 const app = new Hono<Env>();
+const QR_DATA_MAX_LENGTH = 2048;
+const QR_DEFAULT_SIZE = 240;
+const QR_MIN_SIZE = 120;
+const QR_MAX_SIZE = 512;
+
+function parseQrSize(rawSize: string | undefined): string | null {
+  if (!rawSize) return `${QR_DEFAULT_SIZE}x${QR_DEFAULT_SIZE}`;
+  const match = /^(\d{2,4})x(\d{2,4})$/.exec(rawSize);
+  if (!match) return null;
+
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (
+    !Number.isInteger(width) ||
+    !Number.isInteger(height) ||
+    width !== height ||
+    width < QR_MIN_SIZE ||
+    width > QR_MAX_SIZE
+  ) {
+    return null;
+  }
+
+  return `${width}x${height}`;
+}
+
+function parseQrData(rawData: string | undefined): string | null {
+  if (!rawData || rawData.length > QR_DATA_MAX_LENGTH) return null;
+  try {
+    const url = new URL(rawData);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return rawData;
+  } catch {
+    return null;
+  }
+}
 
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
@@ -194,17 +229,30 @@ app.route('/admin', adminVersion);
 // authMiddleware skips non-/api/ paths so this router owns its own auth gate.
 app.route('/admin/update', adminUpdate);
 
-// Self-hosted QR code proxy — prevents leaking ref tokens to third-party services
+// QR code proxy for desktop landing pages. Keep it tightly bounded because it
+// is public and forwards data to the upstream QR renderer.
 app.get('/api/qr', async (c) => {
-  const data = c.req.query('data');
-  if (!data) return c.text('Missing data param', 400);
-  const size = c.req.query('size') || '240x240';
+  const data = parseQrData(c.req.query('data'));
+  if (!data) return c.text('Invalid data param', 400);
+  const size = parseQrSize(c.req.query('size'));
+  if (!size) return c.text('Invalid size param', 400);
+
   const upstream = `https://api.qrserver.com/v1/create-qr-code/?size=${encodeURIComponent(size)}&data=${encodeURIComponent(data)}`;
-  const res = await fetch(upstream);
+  let res: Response;
+  try {
+    res = await fetch(upstream);
+  } catch {
+    return c.text('QR generation failed', 502);
+  }
   if (!res.ok) return c.text('QR generation failed', 502);
+  const contentType = res.headers.get('Content-Type') || 'image/png';
+  if (!contentType.toLowerCase().startsWith('image/')) {
+    return c.text('QR generation failed', 502);
+  }
+
   return new Response(res.body, {
     headers: {
-      'Content-Type': res.headers.get('Content-Type') || 'image/png',
+      'Content-Type': contentType,
       'Cache-Control': 'public, max-age=86400',
     },
   });

@@ -357,4 +357,99 @@ describe('users support visibility guards', () => {
     expect(dbMocks.updateUser).not.toHaveBeenCalled();
     expect(dbMocks.deleteUser).not.toHaveBeenCalled();
   });
+
+  test('owner user payloads reject invalid input before DB helpers', async () => {
+    const requests: Array<[string, string, string]> = [
+      ['POST', '/api/users', '{'],
+      ['POST', '/api/users', JSON.stringify({})],
+      ['POST', '/api/users', JSON.stringify({ email: 'bad email' })],
+      ['POST', '/api/users', JSON.stringify({ phone: '090-abc' })],
+      ['POST', '/api/users', JSON.stringify({ externalId: 'bad external' })],
+      ['PUT', '/api/users/bad%20user', JSON.stringify({ displayName: 'Updated' })],
+      ['PUT', '/api/users/user-visible', JSON.stringify({})],
+      ['PUT', '/api/users/user-visible', JSON.stringify({ displayName: 'x'.repeat(129) })],
+      ['POST', '/api/users/user-visible/link', JSON.stringify({ friendId: 'bad friend' })],
+      ['POST', '/api/users/match', '{'],
+      ['POST', '/api/users/match', JSON.stringify({})],
+    ];
+
+    for (const [method, path, body] of requests) {
+      vi.clearAllMocks();
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+      const res = await setupApp(db, 'owner').request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, `${method} ${path} ${body}`).toBe(400);
+      expect(dbMocks.createUser).not.toHaveBeenCalled();
+      expect(dbMocks.updateUser).not.toHaveBeenCalled();
+      expect(dbMocks.linkFriendToUser).not.toHaveBeenCalled();
+      expect(dbMocks.getUserByEmail).not.toHaveBeenCalled();
+      expect(dbMocks.getUserByPhone).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner user payloads trim valid values before DB helpers', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'owner');
+
+    const createRes = await app.request('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: ' new@example.com ',
+        phone: ' 090-1111-2222 ',
+        externalId: ' ext-1 ',
+        displayName: ' 山田太郎 ',
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(dbMocks.createUser).toHaveBeenCalledWith(db, {
+      email: 'new@example.com',
+      phone: '090-1111-2222',
+      externalId: 'ext-1',
+      displayName: '山田太郎',
+    });
+
+    const updateRes = await app.request('/api/users/%20user-visible%20', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: ' ',
+        phone: null,
+        externalId: ' ext-2 ',
+        displayName: ' Updated Name ',
+      }),
+    });
+
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.updateUser).toHaveBeenCalledWith(db, 'user-visible', {
+      email: null,
+      phone: null,
+      external_id: 'ext-2',
+      display_name: 'Updated Name',
+    });
+
+    const linkRes = await app.request('/api/users/%20user-hidden%20/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ friendId: ' friend-hidden ' }),
+    });
+
+    expect(linkRes.status).toBe(200);
+    expect(dbMocks.linkFriendToUser).toHaveBeenCalledWith(db, 'friend-hidden', 'user-hidden');
+
+    const matchRes = await app.request('/api/users/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: ' visible@example.com ' }),
+    });
+
+    expect(matchRes.status).toBe(200);
+    expect(dbMocks.getUserByEmail).toHaveBeenCalledWith(db, 'visible@example.com');
+  });
 });

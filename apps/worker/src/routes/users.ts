@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getUsers,
   getUserById,
@@ -20,6 +20,163 @@ import {
 import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend-access.js';
 
 const users = new Hono<Env>();
+
+const USER_VISIBLE_ID_MAX_LENGTH = 128;
+const USER_TEXT_MAX_LENGTH = 128;
+const USER_EMAIL_MAX_LENGTH = 254;
+const USER_PHONE_MAX_LENGTH = 32;
+const USER_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const USER_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USER_PHONE_PATTERN = /^[0-9+()\-\s]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type UserCreateInput = {
+  email?: string | null;
+  phone?: string | null;
+  externalId?: string | null;
+  displayName?: string | null;
+};
+type UserUpdateInput = {
+  email?: string | null;
+  phone?: string | null;
+  external_id?: string | null;
+  display_name?: string | null;
+};
+type UserMatchInput = { email?: string; phone?: string };
+
+function hasOwn(body: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(body, key);
+}
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseVisibleString(raw: unknown, label: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > USER_VISIBLE_ID_MAX_LENGTH || !USER_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleString(raw: unknown, label: string): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  const parsed = parseVisibleString(value, label);
+  if (!parsed.ok) return parsed;
+  return { ok: true, value: parsed.value };
+}
+
+function parseOptionalText(raw: unknown, error: string): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > USER_TEXT_MAX_LENGTH) return { ok: false, error };
+  return { ok: true, value };
+}
+
+function parseOptionalEmail(raw: unknown): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_email' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > USER_EMAIL_MAX_LENGTH || !USER_EMAIL_PATTERN.test(value)) {
+    return { ok: false, error: 'invalid_email' };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalPhone(raw: unknown): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_phone' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > USER_PHONE_MAX_LENGTH || !USER_PHONE_PATTERN.test(value)) {
+    return { ok: false, error: 'invalid_phone' };
+  }
+  return { ok: true, value };
+}
+
+function hasMeaningfulValue(input: Record<string, unknown>): boolean {
+  return Object.values(input).some((value) => value !== undefined && value !== null);
+}
+
+function parseUserCreateInput(body: Record<string, unknown>): ValueResult<UserCreateInput> {
+  const email = parseOptionalEmail(body.email);
+  if (!email.ok) return email;
+  const phone = parseOptionalPhone(body.phone);
+  if (!phone.ok) return phone;
+  const externalId = parseOptionalVisibleString(body.externalId, 'external_id');
+  if (!externalId.ok) return externalId;
+  const displayName = parseOptionalText(body.displayName, 'invalid_display_name');
+  if (!displayName.ok) return displayName;
+  const input: UserCreateInput = {
+    email: email.value,
+    phone: phone.value,
+    externalId: externalId.value,
+    displayName: displayName.value,
+  };
+  if (!hasMeaningfulValue(input)) return { ok: false, error: 'invalid_payload' };
+  return { ok: true, value: input };
+}
+
+function parseUserUpdateInput(body: Record<string, unknown>): ValueResult<UserUpdateInput> {
+  const input: UserUpdateInput = {};
+  if (hasOwn(body, 'email')) {
+    const email = parseOptionalEmail(body.email);
+    if (!email.ok) return email;
+    input.email = email.value ?? null;
+  }
+  if (hasOwn(body, 'phone')) {
+    const phone = parseOptionalPhone(body.phone);
+    if (!phone.ok) return phone;
+    input.phone = phone.value ?? null;
+  }
+  if (hasOwn(body, 'externalId')) {
+    const externalId = parseOptionalVisibleString(body.externalId, 'external_id');
+    if (!externalId.ok) return externalId;
+    input.external_id = externalId.value ?? null;
+  }
+  if (hasOwn(body, 'displayName')) {
+    const displayName = parseOptionalText(body.displayName, 'invalid_display_name');
+    if (!displayName.ok) return displayName;
+    input.display_name = displayName.value ?? null;
+  }
+  if (Object.keys(input).length === 0) return { ok: false, error: 'invalid_payload' };
+  return { ok: true, value: input };
+}
+
+function parseUserMatchInput(body: Record<string, unknown>): ValueResult<UserMatchInput> {
+  const email = parseOptionalEmail(body.email);
+  if (!email.ok) return email;
+  const phone = parseOptionalPhone(body.phone);
+  if (!phone.ok) return phone;
+  if (!email.value && !phone.value) return { ok: false, error: 'invalid_payload' };
+  return {
+    ok: true,
+    value: {
+      ...(email.value ? { email: email.value } : {}),
+      ...(phone.value ? { phone: phone.value } : {}),
+    },
+  };
+}
 
 type LinkedFriend = {
   id: string;
@@ -151,8 +308,9 @@ users.get('/api/users', async (c) => {
 // GET /api/users/:id - get single
 users.get('/api/users/:id', async (c) => {
   try {
-    const id = c.req.param('id');
-    const user = await getScopedUserById(c.env.DB, id, currentSupportStaff(c));
+    const id = parseVisibleString(c.req.param('id'), 'user_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const user = await getScopedUserById(c.env.DB, id.value, currentSupportStaff(c));
     if (!user) {
       return c.json({ success: false, error: 'User not found' }, 404);
     }
@@ -166,14 +324,12 @@ users.get('/api/users/:id', async (c) => {
 // POST /api/users - create
 users.post('/api/users', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      email?: string | null;
-      phone?: string | null;
-      externalId?: string | null;
-      displayName?: string | null;
-    }>();
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const body = parseUserCreateInput(rawBody.value);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
-    const user = await createUser(c.env.DB, body);
+    const user = await createUser(c.env.DB, body.value);
     return c.json({ success: true, data: serializeUser(user) }, 201);
   } catch (err) {
     console.error('POST /api/users error:', err);
@@ -184,23 +340,14 @@ users.post('/api/users', requireRole('owner', 'admin'), async (c) => {
 // PUT /api/users/:id - update
 users.put('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
-    if (!id) {
-      return c.json({ success: false, error: 'User id is required' }, 400);
-    }
-    const body = await c.req.json<{
-      email?: string | null;
-      phone?: string | null;
-      externalId?: string | null;
-      displayName?: string | null;
-    }>();
+    const id = parseVisibleString(c.req.param('id'), 'user_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const body = parseUserUpdateInput(rawBody.value);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
-    const updated = await updateUser(c.env.DB, id, {
-      email: body.email,
-      phone: body.phone,
-      external_id: body.externalId,
-      display_name: body.displayName,
-    });
+    const updated = await updateUser(c.env.DB, id.value, body.value);
 
     if (!updated) {
       return c.json({ success: false, error: 'User not found' }, 404);
@@ -215,11 +362,9 @@ users.put('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
 // DELETE /api/users/:id - delete
 users.delete('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
-    if (!id) {
-      return c.json({ success: false, error: 'User id is required' }, 400);
-    }
-    await deleteUser(c.env.DB, id);
+    const id = parseVisibleString(c.req.param('id'), 'user_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteUser(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/users/:id error:', err);
@@ -231,22 +376,22 @@ users.delete('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
 users.post('/api/users/:id/link', async (c) => {
   try {
     const staff = currentSupportStaff(c);
-    const userId = c.req.param('id');
-    const body = await c.req.json<{ friendId: string }>();
+    const userId = parseVisibleString(c.req.param('id'), 'user_id');
+    if (!userId.ok) return c.json({ success: false, error: userId.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const friendId = parseVisibleString(rawBody.value.friendId, 'friend_id');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
 
-    if (!body.friendId) {
-      return c.json({ success: false, error: 'friendId is required' }, 400);
-    }
-
-    const user = await getScopedUserById(c.env.DB, userId, staff);
+    const user = await getScopedUserById(c.env.DB, userId.value, staff);
     if (!user) {
       return c.json({ success: false, error: 'User not found' }, 404);
     }
 
-    const denied = await ensureSupportFriendAccess(c, body.friendId);
+    const denied = await ensureSupportFriendAccess(c, friendId.value);
     if (denied) return denied;
 
-    await linkFriendToUser(c.env.DB, body.friendId, userId);
+    await linkFriendToUser(c.env.DB, friendId.value, userId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('POST /api/users/:id/link error:', err);
@@ -258,13 +403,14 @@ users.post('/api/users/:id/link', async (c) => {
 users.get('/api/users/:id/accounts', async (c) => {
   try {
     const staff = currentSupportStaff(c);
-    const userId = c.req.param('id');
-    const user = await getScopedUserById(c.env.DB, userId, staff);
+    const userId = parseVisibleString(c.req.param('id'), 'user_id');
+    if (!userId.ok) return c.json({ success: false, error: userId.error }, 400);
+    const user = await getScopedUserById(c.env.DB, userId.value, staff);
     if (!user) {
       return c.json({ success: false, error: 'User not found' }, 404);
     }
 
-    const friends = await getScopedUserFriends(c.env.DB, userId, staff);
+    const friends = await getScopedUserFriends(c.env.DB, userId.value, staff);
     return c.json({
       success: true,
       data: friends.map((f) => ({
@@ -284,14 +430,17 @@ users.get('/api/users/:id/accounts', async (c) => {
 users.post('/api/users/match', async (c) => {
   try {
     const staff = currentSupportStaff(c);
-    const body = await c.req.json<{ email?: string; phone?: string }>();
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const body = parseUserMatchInput(rawBody.value);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
     let user = null;
 
-    if (body.email) {
-      user = await getScopedUserByEmail(c.env.DB, body.email, staff);
+    if (body.value.email) {
+      user = await getScopedUserByEmail(c.env.DB, body.value.email, staff);
     }
-    if (!user && body.phone) {
-      user = await getScopedUserByPhone(c.env.DB, body.phone, staff);
+    if (!user && body.value.phone) {
+      user = await getScopedUserByPhone(c.env.DB, body.value.phone, staff);
     }
 
     if (!user) {

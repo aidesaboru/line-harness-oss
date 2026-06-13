@@ -12,6 +12,7 @@ import {
   deleteOutgoingWebhook,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const webhooks = new Hono<Env>();
 
@@ -67,7 +68,7 @@ async function computeHmacSha256Hex(secret: string, body: string): Promise<strin
 
 // ========== 受信Webhook ==========
 
-webhooks.get('/api/webhooks/incoming', async (c) => {
+webhooks.get('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getIncomingWebhooks(c.env.DB);
     return c.json({
@@ -88,7 +89,7 @@ webhooks.get('/api/webhooks/incoming', async (c) => {
   }
 });
 
-webhooks.post('/api/webhooks/incoming', async (c) => {
+webhooks.post('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ name: string; sourceType?: string; secret?: string }>();
     if (!body.name) {
@@ -125,9 +126,9 @@ webhooks.post('/api/webhooks/incoming', async (c) => {
   }
 });
 
-webhooks.put('/api/webhooks/incoming/:id', async (c) => {
+webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{ name?: string; sourceType?: string; secret?: string; isActive?: boolean }>();
     if (body.isActive !== undefined && typeof body.isActive !== 'boolean') {
       return c.json({ success: false, error: 'isActive must be a boolean' }, 400);
@@ -174,9 +175,9 @@ webhooks.put('/api/webhooks/incoming/:id', async (c) => {
   }
 });
 
-webhooks.delete('/api/webhooks/incoming/:id', async (c) => {
+webhooks.delete('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteIncomingWebhook(c.env.DB, c.req.param('id'));
+    await deleteIncomingWebhook(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/webhooks/incoming/:id error:', err);
@@ -186,7 +187,7 @@ webhooks.delete('/api/webhooks/incoming/:id', async (c) => {
 
 // ========== 送信Webhook ==========
 
-webhooks.get('/api/webhooks/outgoing', async (c) => {
+webhooks.get('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getOutgoingWebhooks(c.env.DB);
     return c.json({
@@ -208,7 +209,7 @@ webhooks.get('/api/webhooks/outgoing', async (c) => {
   }
 });
 
-webhooks.post('/api/webhooks/outgoing', async (c) => {
+webhooks.post('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -255,9 +256,9 @@ webhooks.post('/api/webhooks/outgoing', async (c) => {
   }
 });
 
-webhooks.put('/api/webhooks/outgoing/:id', async (c) => {
+webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{
       name?: string;
       url?: string;
@@ -326,9 +327,9 @@ webhooks.put('/api/webhooks/outgoing/:id', async (c) => {
   }
 });
 
-webhooks.delete('/api/webhooks/outgoing/:id', async (c) => {
+webhooks.delete('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteOutgoingWebhook(c.env.DB, c.req.param('id'));
+    await deleteOutgoingWebhook(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/webhooks/outgoing/:id error:', err);

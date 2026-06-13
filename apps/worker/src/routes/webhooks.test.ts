@@ -35,16 +35,92 @@ import { webhooks } from './webhooks.js';
 const VALID_SECRET = 'a'.repeat(32);
 const SHORT_SECRET = 'a'.repeat(31);
 
-function setupApp() {
-  const app = new Hono();
+type StaffRole = 'owner' | 'admin' | 'staff';
+
+type TestEnv = {
+  Bindings: { DB: D1Database };
+  Variables: { staff: { id: string; name: string; role: StaffRole } };
+};
+
+function setupApp(role: StaffRole = 'owner') {
+  const app = new Hono<TestEnv>();
+  app.use('*', async (c, next) => {
+    c.set('staff', { id: 'staff-1', name: 'Tajima', role });
+    await next();
+  });
   app.route('/', webhooks);
   return app;
 }
 
-const baseEnv = { DB: {} as D1Database } as Record<string, unknown>;
+const baseEnv = { DB: {} as D1Database } as TestEnv['Bindings'];
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe('webhook management role guards', () => {
+  test('staff cannot manage webhook settings', async () => {
+    const app = setupApp('staff');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/webhooks/incoming'],
+      ['POST', '/api/webhooks/incoming', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'incoming', secret: VALID_SECRET }),
+      }],
+      ['PUT', '/api/webhooks/incoming/iwh-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'renamed' }),
+      }],
+      ['DELETE', '/api/webhooks/incoming/iwh-1'],
+      ['GET', '/api/webhooks/outgoing'],
+      ['POST', '/api/webhooks/outgoing', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'outgoing', url: 'https://example.com/hook', secret: VALID_SECRET }),
+      }],
+      ['PUT', '/api/webhooks/outgoing/wh-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'renamed' }),
+      }],
+      ['DELETE', '/api/webhooks/outgoing/wh-1'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method }, baseEnv);
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(getIncomingWebhooks).not.toHaveBeenCalled();
+    expect(createIncomingWebhook).not.toHaveBeenCalled();
+    expect(updateIncomingWebhook).not.toHaveBeenCalled();
+    expect(getOutgoingWebhooks).not.toHaveBeenCalled();
+    expect(createOutgoingWebhook).not.toHaveBeenCalled();
+    expect(updateOutgoingWebhook).not.toHaveBeenCalled();
+  });
+
+  test('incoming receive endpoint stays public and signature-gated', async () => {
+    vi.mocked(getIncomingWebhookById).mockResolvedValue({
+      id: 'iwh-1',
+      name: 'test',
+      source_type: 'custom',
+      secret: VALID_SECRET,
+      is_active: 1,
+      created_at: '2026-05-08T00:00:00.000+09:00',
+      updated_at: '2026-05-08T00:00:00.000+09:00',
+    });
+
+    const res = await setupApp('staff').request(
+      '/api/webhooks/incoming/iwh-1/receive',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ping: true }),
+      },
+      baseEnv,
+    );
+
+    expect(res.status).toBe(401);
+    expect(getIncomingWebhookById).toHaveBeenCalledWith({} as D1Database, 'iwh-1');
+  });
 });
 
 // =====================================================

@@ -193,6 +193,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker operations/LIFF access route testsでは、`?f=` / `?lu=` 自己申告では匿名クリック扱いになり、LINEアプリ内クリックは `ref` 付きLIFFへ回り、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionが起きることを確認済み。LIFFから戻った `/t/:linkId?lh_liff=1` では二重の匿名クリック記録も起きない。
 - [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
   - Webhook/events/broadcast/admin-diagnostics route tests、Worker typecheck、Worker buildで、Webhook/profile refresh/broadcast test-sendの失敗ログ匿名化後も動作が壊れていないことを確認済み。
+- [ ] Webhook管理APIがowner/adminだけに制限され、incoming receive公開エンドポイントは署名検証付きで維持される
+  - Worker webhooks route testsでは、staffがincoming/outgoing webhook設定の一覧、作成、更新、削除を実行できず、外部システム用の `/api/webhooks/incoming/:id/receive` は403ではなく署名不足の401で止まることを確認済み。
 - [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない
   - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く

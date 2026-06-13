@@ -170,6 +170,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] `SUPPORT_CRM_CHECK_STAFF_MUTATION_GUARD=0` を付けていない
 - [ ] staff APIキーのログイン情報にスタッフ名が入っている
 - [ ] staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が403で止まる
+- [ ] staff管理APIのcreate/update/detail/delete/regenerate-key payload/path IDがDB helperや最後のowner保護check前に検証される
+  - Worker staff route testsでは、壊れたJSON、空payload、不正staff ID/name/email/role/isActiveがDB helperや最後のowner保護check前に400で止まり、正常payload/path IDはtrim/null正規化されることを確認済み。
 - [ ] 未完了案件を再オープンにできない
 - [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
 - [ ] 未対応のチャット `messageType` がLINE送信前、DB記録前に止まる

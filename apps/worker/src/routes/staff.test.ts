@@ -44,11 +44,77 @@ function setupApp(role: StaffRole = 'owner') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
 });
 
 describe('staff routes', () => {
+  test('list failure logs only the error kind', async () => {
+    dbMocks.getStaffMembers.mockRejectedValueOnce(
+      new Error('staff list secret staff-new tajima@example.com lh_testapikey raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request('/api/staff');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/staff error: Error');
+      expectNoLogLeak(logged, [
+        'staff list secret',
+        'staff-new',
+        'tajima@example.com',
+        'lh_testapikey',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('create failure logs only the error kind', async () => {
+    dbMocks.createStaffMember.mockRejectedValueOnce(
+      new Error('staff create secret staff-new tajima@example.com lh_testapikey raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request('/api/staff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '田島', email: 'tajima@example.com', role: 'staff' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/staff error: Error');
+      expectNoLogLeak(logged, [
+        'staff create secret',
+        'staff-new',
+        'tajima@example.com',
+        'lh_testapikey',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects blank staff names when creating members', async () => {
     const res = await setupApp().request('/api/staff', {
       method: 'POST',
@@ -159,6 +225,37 @@ describe('staff routes', () => {
     });
   });
 
+  test('update failure logs only the error kind', async () => {
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    dbMocks.updateStaffMember.mockRejectedValueOnce(
+      new Error('staff update secret staff-1 tajima@example.com lh_testapikey raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request('/api/staff/staff-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '田島', email: 'tajima@example.com' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('PATCH /api/staff/:id error: Error');
+      expectNoLogLeak(logged, [
+        'staff update secret',
+        'staff-1',
+        'tajima@example.com',
+        'lh_testapikey',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects unsafe staff path ids before DB helpers', async () => {
     const requests: Array<[string, string, string | undefined]> = [
       ['GET', '/api/staff/bad%20staff', undefined],
@@ -198,5 +295,32 @@ describe('staff routes', () => {
     const regenerateRes = await setupApp().request('/api/staff/%20staff-1%20/regenerate-key', { method: 'POST' });
     expect(regenerateRes.status).toBe(200);
     expect(dbMocks.regenerateStaffApiKey).toHaveBeenCalledWith(expect.anything(), 'staff-1');
+  });
+
+  test('regenerate-key failure logs only the error kind', async () => {
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    dbMocks.regenerateStaffApiKey.mockRejectedValueOnce(
+      new Error('staff key secret staff-1 tajima@example.com lh_newapikey raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request('/api/staff/staff-1/regenerate-key', { method: 'POST' });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/staff/:id/regenerate-key error: Error');
+      expectNoLogLeak(logged, [
+        'staff key secret',
+        'staff-1',
+        'tajima@example.com',
+        'lh_newapikey',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

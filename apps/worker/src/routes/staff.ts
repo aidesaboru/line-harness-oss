@@ -155,6 +155,12 @@ function parseStaffUpdateInput(body: Record<string, unknown>): ValueResult<Staff
   return { ok: true, value: input };
 }
 
+function staffRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // GET /api/staff/me — any authenticated user (MUST be before /:id)
 staff.get('/api/staff/me', async (c) => {
   try {
@@ -188,7 +194,7 @@ staff.get('/api/staff/me', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/staff/me error:', err);
+    console.error(`GET /api/staff/me error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -199,7 +205,7 @@ staff.get('/api/staff', requireRole('owner'), async (c) => {
     const members = await getStaffMembers(c.env.DB);
     return c.json({ success: true, data: members.map((m) => serializeStaff(m, true)) });
   } catch (err) {
-    console.error('GET /api/staff error:', err);
+    console.error(`GET /api/staff error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -215,7 +221,7 @@ staff.get('/api/staff/:id', requireRole('owner'), async (c) => {
     }
     return c.json({ success: true, data: serializeStaff(member, true) });
   } catch (err) {
-    console.error('GET /api/staff/:id error:', err);
+    console.error(`GET /api/staff/:id error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -237,7 +243,7 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
     // Return full (unmasked) API key one-time
     return c.json({ success: true, data: serializeStaff(member, false) }, 201);
   } catch (err) {
-    console.error('POST /api/staff error:', err);
+    console.error(`POST /api/staff error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -282,7 +288,7 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
 
     return c.json({ success: true, data: serializeStaff(updated, true) });
   } catch (err) {
-    console.error('PATCH /api/staff/:id error:', err);
+    console.error(`PATCH /api/staff/:id error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -313,7 +319,7 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
     await deleteStaffMember(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/staff/:id error:', err);
+    console.error(`DELETE /api/staff/:id error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -330,7 +336,7 @@ staff.post('/api/staff/:id/regenerate-key', requireRole('owner'), async (c) => {
     const newKey = await regenerateStaffApiKey(c.env.DB, id.value);
     return c.json({ success: true, data: { apiKey: newKey } });
   } catch (err) {
-    console.error('POST /api/staff/:id/regenerate-key error:', err);
+    console.error(`POST /api/staff/:id/regenerate-key error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

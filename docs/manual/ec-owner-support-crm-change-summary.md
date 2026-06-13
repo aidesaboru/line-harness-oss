@@ -41,6 +41,7 @@ updated: 2026-06-14
 - 未対応インボックス一覧/件数の失敗ログは、検索語、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文をconsoleへ出さず、例外種別だけにする
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
 - staff管理APIのcreate/update/detail/delete/regenerate-key payload/path IDは、壊れたJSON、不正なstaff ID/name/email/role/isActiveをDB helperや最後のowner保護check前に400で止め、正常値はtrim/null正規化する
+- staff一覧/作成/更新/APIキー再生成失敗ログとエラー応答は、staff ID、staff email、APIキー、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDは、壊れたJSON、不正なemail/phone/externalId/displayName/friendId/userIdをDB helperやfriend可視範囲check前に400で止め、正常値はtrim/null正規化する
 - account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadは、壊れたJSON、不正なID、過大なfriendIdsをDB read/write前に400で止め、正常値はtrim/dedupeして保存・参照する
 - dedup-preview APIのaccountIds/dedupPriority/targetTagId payloadは、壊れたJSON、空accountIds、不正ID、不正targetTagIdを配信対象計算前に400で止め、正常値はtrim/dedupeし、dedupPriorityはaccountIds内へfilterする
@@ -217,7 +218,7 @@ corepack pnpm --filter worker test -- src/routes/scenarios.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/content-management-access.test.ts # 19 tests
 corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts # 29 tests
 corepack pnpm --filter worker test -- src/routes/line-accounts.test.ts # 28 tests
-corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
+corepack pnpm --filter worker test -- src/routes/staff.test.ts # 12 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/broadcasts-access.test.ts # 6 tests
@@ -287,6 +288,7 @@ strict Preflight:
 - Line account route tests also confirm create, main-pool auto-enroll, metadata update, and credential update failures keep only exception kind or fixed internal error and omit LINE account IDs, channel IDs, channel tokens/secrets, Login Channel IDs/secrets, LIFF IDs, token-like text, and raw exception messages.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management path IDs and payloads stop before DB lookup/writes, and the public incoming receive endpoint remains signature-gated.
 - Webhooks route tests also confirm incoming/outgoing management and public incoming receive failures keep only exception kind or fixed internal error and omit webhook IDs, sourceType, URLs, eventTypes, secrets, signatures, payload text, token-like text, and raw exception messages.
+- Staff route tests confirm staff list, create, update, and regenerate-key failures keep only exception kind or fixed internal error and omit staff IDs, staff emails, API keys, token-like text, and raw exception messages.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.

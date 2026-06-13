@@ -99,8 +99,6 @@ async function verifyCallerLineUserId(c: Context<Env>): Promise<string | null> {
     /* decode 失敗は無視: 候補 URL のみで verify を試す */
   }
 
-  console.log('[verifyCallerLineUserId] candidates:', candidates.length, candidates.join(','));
-
   for (const channelId of candidates) {
     const res = await fetch('https://api.line.me/oauth2/v2.1/verify', {
       method: 'POST',
@@ -111,10 +109,7 @@ async function verifyCallerLineUserId(c: Context<Env>): Promise<string | null> {
       const verified = await res.json<{ sub?: string }>();
       if (verified.sub) return verified.sub;
     } else {
-      const errBody = await res.text().catch(() => '');
-      console.log(
-        `[verifyCallerLineUserId] verify fail channel=${channelId} status=${res.status} body=${errBody.slice(0, 200)}`,
-      );
+      console.warn(`[verifyCallerLineUserId] verify failed status=${res.status}`);
     }
   }
   return null;

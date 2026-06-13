@@ -151,8 +151,6 @@ async function handleEvent(
       event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
 
-    console.log(`[follow] userId=${userId} lineAccountId=${lineAccountId}`);
-
     // プロフィール取得 & 友だち登録/更新
     let profile;
     try {
@@ -161,8 +159,6 @@ async function handleEvent(
       console.error('Failed to get profile for', userId, err);
     }
 
-    console.log(`[follow] profile=${profile?.displayName ?? 'null'}`);
-
     const friend = await upsertFriend(db, {
       lineUserId: userId,
       displayName: profile?.displayName ?? null,
@@ -170,13 +166,10 @@ async function handleEvent(
       statusMessage: profile?.statusMessage ?? null,
     });
 
-    console.log(`[follow] friend.id=${friend.id} friend.line_account_id=${(friend as any).line_account_id}`);
-
     // Set line_account_id for multi-account tracking (always update on follow)
     if (lineAccountId) {
       await db.prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ?')
         .bind(lineAccountId, jstNow(), friend.id).run();
-      console.log(`[follow] line_account_id set to ${lineAccountId} for friend ${friend.id}`);
     }
 
     // Resolve referral link (entry_route) for this friend.
@@ -246,7 +239,6 @@ async function handleEvent(
                 const expandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
                 const message = buildMessage(resolved.messageType, expandedContent);
                 await lineClient.replyMessage(event.replyToken, [message]);
-                console.log(`Immediate delivery: sent step ${firstStep.id} to ${userId}`);
 
                 // Log what was actually delivered (post buildMessage normalization)
                 // so the dashboard chat view mirrors LINE 1:1.

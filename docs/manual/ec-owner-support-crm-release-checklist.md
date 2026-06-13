@@ -181,6 +181,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker route testsでは、無効値、小数、過大値、`Infinity` が既定値、上限、整数へ正規化されることを確認済み。Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` 検索も0件。
 - [ ] 公開フォーム送信/返信時に、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDがconsoleへ出ない
   - `apps/worker/src/client/form.ts` と `apps/worker/src/routes/forms.ts` の `Form reply|console.log` 検索は0件で、Worker typecheck/buildも通過済み。
+- [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
+  - Webhook/events route tests、Worker typecheck、Worker buildで、識別子デバッグログ削除後も動作が壊れていないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている

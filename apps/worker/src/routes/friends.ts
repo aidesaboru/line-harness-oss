@@ -19,6 +19,7 @@ import {
   supportFriendVisibilitySql,
   type SupportAccessStaff,
 } from '../services/support-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const friends = new Hono<Env>();
 
@@ -411,7 +412,7 @@ friends.get('/api/friends/count', async (c) => {
 });
 
 // GET /api/friends/ref-stats - ref code attribution stats
-friends.get('/api/friends/ref-stats', async (c) => {
+friends.get('/api/friends/ref-stats', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     const where = lineAccountId ? 'WHERE line_account_id = ?' : 'WHERE ref_code IS NOT NULL';

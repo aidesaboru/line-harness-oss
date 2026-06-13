@@ -264,6 +264,15 @@ describe('friends support visibility', () => {
     expect(countCall?.sql).toContain('support_cases sc_friend_scope');
   });
 
+  test('staff cannot read ref attribution stats', async () => {
+    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/friends/ref-stats');
+
+    expect(res.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
   test('staff cannot read hidden friend message history', async () => {
     const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 

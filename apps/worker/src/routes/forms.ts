@@ -22,6 +22,10 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const forms = new Hono<Env>();
 
+function errorKind(err: unknown): string {
+  return err instanceof Error && err.name ? err.name : typeof err;
+}
+
 function serializeForm(
   row: DbForm,
   extra?: { lastSubmittedAt?: string | null; usedByAccounts?: FormUsedByAccount[] },
@@ -294,7 +298,6 @@ forms.post('/api/forms/:id/submit', async (c) => {
       lineUserId?: string;
       friendId?: string;
       data?: Record<string, unknown>;
-      _skipWebhook?: boolean;
       trackedLinkId?: string;
     }>();
 
@@ -329,12 +332,12 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
-    // Webhook gate — skip if client pre-verified via repliers endpoint
+    // Webhook gate is always rechecked server-side. The LIFF client may do a
+    // preflight check for UX, but public form submissions cannot self-attest.
     delete submissionData._webhookVerified;
-    const skipWebhook = Boolean(body._skipWebhook);
     delete submissionData._skipWebhook;
     let webhookData: Record<string, unknown> | null = null;
-    if (form.on_submit_webhook_url && !skipWebhook) {
+    if (form.on_submit_webhook_url) {
       const webhookResult = await callFormWebhook(form, submissionData);
       webhookData = webhookResult.data as Record<string, unknown> | null;
       if (!webhookResult.passed) {
@@ -639,13 +642,18 @@ async function callFormWebhook(
     const isGet = form.on_submit_webhook_url.includes('{');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10000);
-    const res = await fetch(url, {
-      method: isGet ? 'GET' : 'POST',
-      headers,
-      signal: controller.signal,
-      ...(isGet ? {} : { body: JSON.stringify(submissionData) }),
-    });
-    clearTimeout(timeout);
+    const res = await (async () => {
+      try {
+        return await fetch(url, {
+          method: isGet ? 'GET' : 'POST',
+          headers,
+          signal: controller.signal,
+          ...(isGet ? {} : { body: JSON.stringify(submissionData) }),
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
 
     if (!res.ok) {
       return { passed: false, data: { error: `HTTP ${res.status}` } };
@@ -657,8 +665,8 @@ async function callFormWebhook(
     const eligible = data.eligible ?? (data.data as Record<string, unknown> | undefined)?.eligible ?? data.success;
     return { passed: Boolean(eligible), data };
   } catch (err) {
-    console.error('Form webhook error:', err);
-    return { passed: false, data: { error: String(err) } };
+    console.error('Form webhook error:', errorKind(err));
+    return { passed: false, data: { error: 'webhook_error' } };
   }
 }
 

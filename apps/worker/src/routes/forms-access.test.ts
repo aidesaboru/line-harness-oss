@@ -43,7 +43,19 @@ function setupApp(role: StaffRole = 'staff') {
 }
 
 beforeEach(() => {
+  vi.unstubAllGlobals();
   vi.clearAllMocks();
+  dbMocks.createFormSubmission.mockImplementation(async (_db, input: {
+    formId: string;
+    friendId: string | null;
+    data: string;
+  }) => ({
+    id: 'submission-1',
+    form_id: input.formId,
+    friend_id: input.friendId,
+    data: input.data,
+    created_at: '2026-06-13T10:01:00.000',
+  }));
   dbMocks.getFormById.mockResolvedValue({
     id: 'form-1',
     name: 'Survey',
@@ -99,5 +111,103 @@ describe('form management role guards', () => {
 
     expect(res.status).toBe(200);
     expect(dbMocks.getFormById).toHaveBeenCalledWith({} as D1Database, 'form-1');
+  });
+
+  test('public form submit ignores _skipWebhook and rechecks webhook gate server-side', async () => {
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: JSON.stringify([{ name: 'x_username', label: 'X ID', type: 'text', required: true }]),
+      on_submit_tag_id: 'tag-reward',
+      on_submit_scenario_id: 'scenario-reward',
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: 'https://x-harness.test/api/engagement-gates/gate-1/verify?username={x_username}',
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ success: true, data: { eligible: false } }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        _skipWebhook: true,
+        data: { x_username: 'alice', _skipWebhook: true },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const json = await res.json() as { data: { webhookPassed?: boolean; webhookData?: unknown } };
+    expect(json.data.webhookPassed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://x-harness.test/api/engagement-gates/gate-1/verify?username=alice',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+
+    const [, input] = dbMocks.createFormSubmission.mock.calls[0] as [
+      D1Database,
+      { data: string },
+    ];
+    const saved = JSON.parse(input.data) as Record<string, unknown>;
+    expect(saved).not.toHaveProperty('_skipWebhook');
+    expect(saved).toMatchObject({
+      x_username: 'alice',
+      _webhookResult: { success: true, data: { eligible: false } },
+    });
+  });
+
+  test('public form submit stores a redacted webhook error when webhook fetch fails', async () => {
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: JSON.stringify([{ name: 'x_username', label: 'X ID', type: 'text', required: true }]),
+      on_submit_tag_id: null,
+      on_submit_scenario_id: null,
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: 'https://x-harness.test/api/engagement-gates/gate-1/verify?username={x_username}',
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('secret response body')));
+
+    const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: { x_username: 'alice' } }),
+    });
+
+    expect(res.status).toBe(201);
+    const json = await res.json() as { data: { webhookPassed?: boolean; webhookData?: { error?: string } } };
+    expect(json.data.webhookPassed).toBe(false);
+    expect(json.data.webhookData?.error).toBe('webhook_error');
+
+    const [, input] = dbMocks.createFormSubmission.mock.calls[0] as [
+      D1Database,
+      { data: string },
+    ];
+    const saved = JSON.parse(input.data) as { _webhookResult?: { error?: string } };
+    expect(saved._webhookResult?.error).toBe('webhook_error');
   });
 });

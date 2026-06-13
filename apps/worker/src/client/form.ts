@@ -739,9 +739,9 @@ async function submitForm(): Promise<void> {
   try {
     const data = collectFormData();
 
-    // Webhook gate — pre-verified by /repliers endpoint
+    // Webhook gate — client-side checks are UX only; Worker rechecks on submit.
     if (state.formDef.onSubmitWebhookUrl) {
-      // Check that user was selected from pre-verified repliers list
+      // Check that user was selected from the suggested repliers list
       const xField = ((data.x_username as string) ?? '').trim().replace(/^@/, '');
       if (!xField || xField !== state.verifiedXUsername) {
         state.submitting = false;
@@ -769,12 +769,13 @@ async function submitForm(): Promise<void> {
       await showSubmitConditions(allPassConditions, true);
       await new Promise(r => setTimeout(r, 500));
 
-      // Webhook passed — submit data to server, then show success
+      // Client-side verification is UX only; the Worker rechecks the webhook
+      // gate before saving or sending rewards.
       // If message is Flex JSON, show generic success (Flex is sent via LINE push)
       const rawMsg = state.formDef.onSubmitMessageContent || '条件をクリアしました！';
       const successMsg = rawMsg.trimStart().startsWith('{') ? '特典をLINEでお送りしました！' : rawMsg;
       // Fall through to submit below, then show webhook success
-      const webhookBody: Record<string, unknown> = { data: { ...data }, _skipWebhook: true };
+      const webhookBody: Record<string, unknown> = { data: { ...data } };
       if (state.profile?.userId) webhookBody.lineUserId = state.profile.userId;
       if (state.refTrackedLinkId) webhookBody.trackedLinkId = state.refTrackedLinkId;
 

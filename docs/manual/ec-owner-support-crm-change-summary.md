@@ -52,7 +52,7 @@ updated: 2026-06-13
 - account health/migration APIのaccount/migration path IDとmigration作成payloadは、壊れたJSON、不正なfromAccountId/toAccountId/migrationIdをDB helperやD1 count前に400で止め、正常値はtrimする
 - conversion point作成payloadは、壊れたJSON、不正なname/eventType/valueをDB書き込み前に400で止め、正常payloadはtrim/value null正規化して保存する
 - conversion記録payloadは、壊れたJSON、不正なconversionPointId/friendId/userId/affiliateCode/metadataをfriend可視範囲checkやDB書き込み前に400で止め、正常payloadはtrim/null正規化/metadata文字列化して保存する
-- LINEアカウント管理API（登録、metadata更新、credential更新、表示順更新）は壊れたJSON、不正なchannelId/name/credential/Login/LIFF/isActive/displayOrderをDB書き込みや重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
+- LINEアカウント管理API（詳細、登録、metadata更新、credential更新、削除、表示順更新）は壊れたJSON、不正なpath ID/channelId/name/credential/Login/LIFF/isActive/displayOrderをDB lookup、DB書き込み、重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - 画像upload/公開表示/削除APIは、壊れたJSON、不正なbase64/mimeType/filename、空/過大な画像、不正なR2 keyをR2 put/get/delete前に止め、正常key/filenameはtrimする
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限し、管理payload/query/path IDは副作用前に検証する
@@ -186,6 +186,7 @@ corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 16 tests
+corepack pnpm --filter worker test -- src/routes/line-accounts.test.ts # 24 tests
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
@@ -239,7 +240,7 @@ strict Preflight:
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management payloads reject malformed JSON, unsafe codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB writes or test-send lookup, while valid payloads are trimmed and normalized before persistence.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
-- Line account route tests confirm malformed or unsafe LINE account create/update/order payloads stop before DB writes or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
+- Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management payloads stop before DB writes, and the public incoming receive endpoint remains signature-gated.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.

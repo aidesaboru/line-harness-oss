@@ -251,6 +251,34 @@ describe('PATCH /api/line-accounts/order', () => {
   });
 });
 
+describe('line account path ID validation', () => {
+  test('rejects malformed account path IDs before DB lookup or mutation helpers', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/line-accounts/bad%20account'],
+      ['PATCH', '/api/line-accounts/bad%20account', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ country: '日本' }),
+      }],
+      ['PUT', '/api/line-accounts/bad%20account', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'メイン' }),
+      }],
+      ['DELETE', '/api/line-accounts/bad%20account'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
+    expect(dbMocks.deleteLineAccount).not.toHaveBeenCalled();
+  });
+});
+
 describe('PATCH /api/line-accounts/:id', () => {
   test('rejects malformed JSON before lookup or update', async () => {
     const app = setupApp('admin');

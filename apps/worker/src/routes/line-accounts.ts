@@ -133,6 +133,10 @@ function parseOptionalNonEmptyString(
   return { ok: true, value };
 }
 
+function parseLineAccountPathId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  return parseRequiredString(raw, 'lineAccountId', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+}
+
 function parseOptionalBoolean(raw: unknown, label: string): { ok: true; value?: boolean } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true };
   if (typeof raw !== 'boolean') return { ok: false, error: `${label} must be a boolean` };
@@ -363,7 +367,9 @@ lineAccounts.get('/api/line-accounts', async (c) => {
 // GET /api/line-accounts/:id - get single (secrets only for owner/admin)
 lineAccounts.get('/api/line-accounts/:id', async (c) => {
   try {
-    const account = await getLineAccountById(c.env.DB, c.req.param('id'));
+    const id = parseLineAccountPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const account = await getLineAccountById(c.env.DB, id.value);
     if (!account) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
@@ -565,7 +571,8 @@ lineAccounts.patch(
   requireRole('owner', 'admin'),
   async (c) => {
     try {
-      const id = c.req.param('id')!;
+      const id = parseLineAccountPathId(c.req.param('id'));
+      if (!id.ok) return c.json({ success: false, error: id.error }, 400);
       const rawBody = await readJsonBody(c);
       const parsed = parseLineAccountPatchBody(rawBody);
       if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -592,7 +599,7 @@ lineAccounts.patch(
         loginChannelId !== undefined || loginChannelSecret !== undefined;
       const touchesLoginOrLiff = touchesLogin || liffId !== undefined;
       if (touchesLoginOrLiff) {
-        const current = await getLineAccountById(c.env.DB, id);
+        const current = await getLineAccountById(c.env.DB, id.value);
         if (!current) return c.json({ success: false, error: 'not found' }, 404);
         if (touchesLogin) {
           const pairError = validateLoginChannelPair(
@@ -604,7 +611,7 @@ lineAccounts.patch(
         const dupError = await checkUniqueLoginAndLiff(
           c.env.DB,
           { loginChannelId, liffId },
-          id,
+          id.value,
         );
         if (dupError) return c.json({ success: false, error: dupError }, 409);
       }
@@ -622,7 +629,7 @@ lineAccounts.patch(
 
       // Route to the fields helper when name is not being changed.
       if (body.name === undefined && fieldsTouched) {
-        const updated = await updateLineAccountFields(c.env.DB, id, {
+        const updated = await updateLineAccountFields(c.env.DB, id.value, {
           country,
           role,
           isActive: body.isActive,
@@ -635,7 +642,7 @@ lineAccounts.patch(
       }
 
       // name is present — use the full updateLineAccount path
-      const updated = await updateLineAccount(c.env.DB, id, {
+      const updated = await updateLineAccount(c.env.DB, id.value, {
         name: body.name,
         is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
         login_channel_id: loginChannelId,
@@ -661,7 +668,8 @@ lineAccounts.patch(
 // and role were silently dropped because PUT used to ignore them.
 lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseLineAccountPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseLineAccountPutBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -679,7 +687,7 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
     const putTouchesLogin =
       loginChannelId !== undefined || loginChannelSecret !== undefined;
     if (putTouchesLogin || liffId !== undefined) {
-      const current = await getLineAccountById(c.env.DB, id);
+      const current = await getLineAccountById(c.env.DB, id.value);
       if (!current) return c.json({ success: false, error: 'LINE account not found' }, 404);
       if (putTouchesLogin) {
         const pairError = validateLoginChannelPair(
@@ -691,7 +699,7 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
       const dupError = await checkUniqueLoginAndLiff(
         c.env.DB,
         { loginChannelId, liffId },
-        id,
+        id.value,
       );
       if (dupError) return c.json({ success: false, error: dupError }, 409);
     }
@@ -709,7 +717,7 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
       body.isActive !== undefined;
 
     let updated = credentialsTouched
-      ? await updateLineAccount(c.env.DB, id, {
+      ? await updateLineAccount(c.env.DB, id.value, {
           name: body.name,
           channel_access_token: body.channelAccessToken,
           channel_secret: body.channelSecret,
@@ -718,14 +726,14 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
           liff_id: liffId,
           is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
         })
-      : await getLineAccountById(c.env.DB, id);
+      : await getLineAccountById(c.env.DB, id.value);
 
     if (!updated) {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
 
     if (country !== undefined || role !== undefined) {
-      updated = await updateLineAccountFields(c.env.DB, id, {
+      updated = await updateLineAccountFields(c.env.DB, id.value, {
         country,
         role,
       });
@@ -744,7 +752,9 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
 // DELETE /api/line-accounts/:id - delete
 lineAccounts.delete('/api/line-accounts/:id', requireRole('owner'), async (c) => {
   try {
-    await deleteLineAccount(c.env.DB, c.req.param('id')!);
+    const id = parseLineAccountPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteLineAccount(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/line-accounts/:id error:', err);

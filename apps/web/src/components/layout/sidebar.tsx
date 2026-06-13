@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
-import { clearAuthSessionCache, readStaffIdentityCache } from '@/lib/auth-session'
+import { clearAuthSessionCache, isUsableStaffIdentity, readStaffIdentityCache } from '@/lib/auth-session'
 import { countryFlag } from '@/lib/country-flag'
 import { canShowSidebarItem } from './sidebar-access'
 
@@ -197,16 +197,23 @@ export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false)
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
+  const [staffIdentityReady, setStaffIdentityReady] = useState(false)
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
     setStaffName(cached.name || null)
     setStaffRole(cached.role || null)
+    setStaffIdentityReady(true)
   }, [])
 
   // 未対応件数 polling — メニュー項目にバッジを出す。5 分間隔。
   const [unansweredCount, setUnansweredCount] = useState<number>(0)
   useEffect(() => {
+    if (!staffIdentityReady) return
+    if (!isUsableStaffIdentity({ name: staffName, role: staffRole })) {
+      setUnansweredCount(0)
+      return
+    }
     let cancelled = false
     const fetchCount = async () => {
       try {
@@ -223,7 +230,7 @@ export default function Sidebar() {
       cancelled = true
       clearInterval(id)
     }
-  }, [])
+  }, [staffIdentityReady, staffName, staffRole])
 
   useEffect(() => { setIsOpen(false) }, [pathname])
   useEffect(() => {

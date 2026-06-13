@@ -360,6 +360,10 @@ export default function SupportPage() {
   }, [selectedAccountId, supportDataReady])
 
   useEffect(() => {
+    if (!supportDataReady) {
+      setStaffNames([])
+      return
+    }
     let active = true
     api.staff.list()
       .then((res) => {
@@ -369,7 +373,7 @@ export default function SupportPage() {
       })
       .catch(() => { /* staff権限では取得できない場合がある。サジェストなしで動作 */ })
     return () => { active = false }
-  }, [])
+  }, [supportDataReady])
 
   useEffect(() => {
     if (!supportDataReady || !selectedAccountId) return

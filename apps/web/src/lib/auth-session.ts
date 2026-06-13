@@ -29,6 +29,16 @@ function setOrRemove(storage: StorageLike, key: string, value: string | null | u
   else storage.removeItem(key)
 }
 
+export function isUsableStaffIdentity(input: {
+  name?: string | null
+  role?: string | null
+}): boolean {
+  const role = normalizeStorageValue(input.role)
+  if (!role) return false
+  if (role === 'staff') return Boolean(normalizeStorageValue(input.name))
+  return true
+}
+
 export function readStaffIdentityCache(storage: StorageLike | null = getBrowserStorage()): StaffIdentityCache {
   if (!storage) return { name: '', role: '' }
   return {

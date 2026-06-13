@@ -37,6 +37,7 @@ updated: 2026-06-13
 - サポートCRMで現在のログイン権限を `/api/staff/me` から確認し、ローカルキャッシュだけでowner/admin操作を出さない
 - staffでは新規案件、担当/期限/優先度変更、マニュアル作成/更新/無効化などの管理操作を非表示または読み取り専用化
 - staffのサイドバーは、友だち管理、個別チャット、サポートCRM、未対応だけに絞り、配信、分析、設定などの管理メニューを表示しない。管理URLを直接開いた場合も `/support` へ戻す
+- 未対応インボックスは、検索、LINEアカウント、1時間以上、ページ番号をAPIへ渡すサーバ側ページネーションにし、2000件一括取得の表示上限に頼らず古い未対応まで追えるようにした
 - スタッフ管理画面はowner専用として、adminが `/staff` を直接開いた場合も `/support` へ戻す
 - staff名が空欄の古いアカウントでは、理由を表示し、案件/マニュアル/チャット候補/スタッフ候補/未対応件数の読み込みと操作を止める
 - 未認証で `/support` を開くと `/login` へ戻り、APIキーでログイン後はスタッフ名/role/CSRFをキャッシュしてダッシュボードへ進む
@@ -100,6 +101,7 @@ updated: 2026-06-13
 - `apps/web/src/lib/auth-session.test.ts`
 - `apps/web/src/lib/clipboard.test.ts`
 - `apps/web/src/lib/staff-form.test.ts`
+- `apps/web/src/lib/inbox-pagination.test.ts`
 - `apps/web/src/lib/support-chat-draft.test.ts`
 - `scripts/support-crm-preflight.test.ts`
 - `scripts/support-crm-fixture-candidates.test.ts`
@@ -110,6 +112,7 @@ updated: 2026-06-13
 ```bash
 corepack pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 corepack pnpm --filter web test
+corepack pnpm --filter web test -- src/lib/inbox-pagination.test.ts
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker test -- src/middleware/auth.test.ts src/routes/users.test.ts src/routes/account-settings.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/broadcasts-access.test.ts src/routes/forms-access.test.ts src/routes/operations-access.test.ts

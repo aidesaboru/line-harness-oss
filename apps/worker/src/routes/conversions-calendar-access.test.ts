@@ -431,6 +431,94 @@ describe('conversion friend visibility guards', () => {
     expect(listCall?.sql).not.toContain('sc_friend_scope');
     expect(listCall?.binds).toEqual([10, 0]);
   });
+
+  test('conversion failures log only the error kind', async () => {
+    const fail = () => new Error(
+      'conversion secret point-1 friend-visible user-visible aff_2026 metadata-secret token-secret raw-body',
+    );
+    const makeFailingQueryDb = () => {
+      const db = {
+        prepare: vi.fn(() => {
+          const stmt = {
+            bind: vi.fn(() => stmt),
+            first: vi.fn().mockRejectedValue(fail()),
+            all: vi.fn().mockRejectedValue(fail()),
+            run: vi.fn().mockRejectedValue(fail()),
+          };
+          return stmt;
+        }),
+      };
+      return db as unknown as D1Database;
+    };
+    const expectInternalError = async (res: Response) => {
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+    };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      dbMocks.getConversionPoints.mockRejectedValueOnce(fail());
+      await expectInternalError(await setupApp(makeDb(), 'owner').request('/api/conversions/points'));
+
+      dbMocks.createConversionPoint.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await setupApp(makeDb(), 'owner').request('/api/conversions/points', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Purchase point', eventType: 'purchase', value: 9800 }),
+        }),
+      );
+
+      dbMocks.deleteConversionPoint.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await setupApp(makeDb(), 'owner').request('/api/conversions/points/point-1', { method: 'DELETE' }),
+      );
+
+      dbMocks.trackConversion.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await setupApp(makeDb(), 'owner').request('/api/conversions/track', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversionPointId: 'point-1',
+            friendId: 'friend-visible',
+            userId: 'user-visible',
+            affiliateCode: 'aff_2026',
+            metadata: { note: 'metadata-secret' },
+          }),
+        }),
+      );
+
+      await expectInternalError(
+        await setupApp(makeFailingQueryDb(), 'owner').request('/api/conversions/events'),
+      );
+
+      await expectInternalError(
+        await setupApp(makeFailingQueryDb(), 'owner').request('/api/conversions/report'),
+      );
+
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/conversions/points error: Error');
+      expect(logged).toContain('POST /api/conversions/points error: Error');
+      expect(logged).toContain('DELETE /api/conversions/points/:id error: Error');
+      expect(logged).toContain('POST /api/conversions/track error: Error');
+      expect(logged).toContain('GET /api/conversions/events error: Error');
+      expect(logged).toContain('GET /api/conversions/report error: Error');
+      expectNoLogLeak(logged, [
+        'conversion secret',
+        'point-1',
+        'friend-visible',
+        'user-visible',
+        'aff_2026',
+        'metadata-secret',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe('calendar booking friend visibility guards', () => {

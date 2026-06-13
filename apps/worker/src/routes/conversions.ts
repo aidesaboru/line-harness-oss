@@ -294,6 +294,12 @@ function clampOffset(raw: string | undefined): number {
   return Math.max(0, Math.floor(n));
 }
 
+function conversionRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function conversionFriendScope(c: Context<Env>, friendIdExpression: string) {
   return supportFriendVisibilitySql(currentSupportStaff(c), friendIdExpression);
 }
@@ -411,7 +417,7 @@ conversions.get('/api/conversions/points', requireRole('owner', 'admin'), async 
       })),
     });
   } catch (err) {
-    console.error('GET /api/conversions/points error:', err);
+    console.error(`GET /api/conversions/points error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -435,7 +441,7 @@ conversions.post('/api/conversions/points', requireRole('owner', 'admin'), async
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/conversions/points error:', err);
+    console.error(`POST /api/conversions/points error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -448,7 +454,7 @@ conversions.delete('/api/conversions/points/:id', requireRole('owner', 'admin'),
     await deleteConversionPoint(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/conversions/points/:id error:', err);
+    console.error(`DELETE /api/conversions/points/:id error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -487,7 +493,7 @@ conversions.post('/api/conversions/track', async (c) => {
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/conversions/track error:', err);
+    console.error(`POST /api/conversions/track error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -518,7 +524,7 @@ conversions.get('/api/conversions/events', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/conversions/events error:', err);
+    console.error(`GET /api/conversions/events error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -533,7 +539,7 @@ conversions.get('/api/conversions/report', async (c) => {
 
     return c.json({ success: true, data: report });
   } catch (err) {
-    console.error('GET /api/conversions/report error:', err);
+    console.error(`GET /api/conversions/report error: ${conversionRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

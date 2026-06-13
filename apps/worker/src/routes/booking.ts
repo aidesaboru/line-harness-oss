@@ -34,19 +34,53 @@ booking.use('/api/booking/admin/*', requireRole('owner', 'admin'));
 // ----------------------------------------------------------------
 // Helpers
 
+const BOOKING_VISIBLE_ID_MAX_LENGTH = 128;
+const BOOKING_DATE_QUERY_MAX_LENGTH = 32;
+const BOOKING_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const BOOKING_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 const JST_OFFSET_MS = 9 * 3600_000;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function startsAtJst(utcIso: string): string {
   const jst = new Date(new Date(utcIso).getTime() + JST_OFFSET_MS).toISOString();
   return `${jst.slice(0, 10)} ${jst.slice(11, 16)}`;
 }
 
+function parseVisibleString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!BOOKING_VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleString(raw: string | undefined, label: string): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  return parseVisibleString(value, label, BOOKING_VISIBLE_ID_MAX_LENGTH);
+}
+
+function parseBookingDateQuery(raw: string | undefined, label: string): ValueResult<string> {
+  const parsed = parseVisibleString(raw, label, BOOKING_DATE_QUERY_MAX_LENGTH);
+  if (!parsed.ok) return parsed;
+  if (!BOOKING_DATE_PATTERN.test(parsed.value)) return { ok: false, error: `${label} is invalid` };
+  const date = new Date(`${parsed.value}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== parsed.value) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return parsed;
+}
+
 async function resolveAccountIdFromLiff(c: Context<Env>): Promise<string | null> {
-  const liffId = c.req.query('liffId');
-  if (!liffId) return null;
+  const liffId = parseVisibleString(c.req.query('liffId'), 'liffId', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!liffId.ok) return null;
   const acc = await c.env.DB
     .prepare(`SELECT id FROM line_accounts WHERE liff_id = ? AND is_active = 1`)
-    .bind(liffId)
+    .bind(liffId.value)
     .first<{ id: string }>();
   return acc?.id ?? null;
 }
@@ -240,24 +274,28 @@ booking.get('/api/liff/booking/menus/:id/staff', async (c) => {
 booking.get('/api/liff/booking/availability', async (c) => {
   const accountId = await resolveAccountIdFromLiff(c);
   if (!accountId) return c.json({ error: 'unknown_liff' }, 404);
-  const menuId = c.req.query('menu_id');
-  const staffId = c.req.query('staff_id') || undefined;
-  const from = c.req.query('from');
-  const to = c.req.query('to');
-  if (!menuId || !from || !to) {
-    return c.json({ error: 'missing_params' }, 400);
+  const menuId = parseVisibleString(c.req.query('menu_id'), 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  const staffId = parseOptionalVisibleString(c.req.query('staff_id'), 'staff_id');
+  const from = parseBookingDateQuery(c.req.query('from'), 'from');
+  const to = parseBookingDateQuery(c.req.query('to'), 'to');
+  if (!menuId.ok) return c.json({ error: menuId.error }, 400);
+  if (!staffId.ok) return c.json({ error: staffId.error }, 400);
+  if (!from.ok) return c.json({ error: from.error }, 400);
+  if (!to.ok) return c.json({ error: to.error }, 400);
+  const fromD = new Date(`${from.value}T00:00:00Z`);
+  const toD = new Date(`${to.value}T00:00:00Z`);
+  if (fromD > toD) {
+    return c.json({ error: 'invalid_date_range' }, 400);
   }
-  const fromD = new Date(`${from}T00:00:00Z`);
-  const toD = new Date(`${to}T00:00:00Z`);
   if ((toD.getTime() - fromD.getTime()) / 86400_000 > 28) {
     return c.json({ error: 'range_too_wide' }, 400);
   }
   const result = await getAvailability(c.env.DB, {
     lineAccountId: accountId,
-    menuId,
-    staffId,
-    from,
-    to,
+    menuId: menuId.value,
+    staffId: staffId.value,
+    from: from.value,
+    to: to.value,
     now: new Date(),
     minLeadTimeMinutes: DEFAULT_ACCOUNT_SETTINGS.min_lead_time_minutes,
   });

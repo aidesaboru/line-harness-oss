@@ -181,6 +181,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker calendar route testでは、0分刻みや非数値は既定値に戻り、開始時刻が終了時刻以上の窓はcalendar接続や予約取得の前に400で止まることを確認済み。
 - [ ] calendar空き枠/予約一覧の `connectionId` / `date` / `friendId` queryがCalendar接続lookup、予約範囲lookup、friend可視範囲check、SQL bind前に検証される
   - Worker conversion/calendar access route testsでは、不正な `connectionId/date/friendId` が副作用前に400で止まり、存在しない日付も拒否され、正常queryはtrimされることを確認済み。
+- [ ] booking LIFF availabilityの `liffId` / `menu_id` / `staff_id` / `from` / `to` queryがLINE account lookupやavailability helper呼び出し前に検証される
+  - Worker booking LIFF access route testsでは、不正な `liffId` はLINE account lookup前に404で止まり、不正な `menu_id/staff_id/from/to` はavailability helper前に400で止まり、正常queryはtrimされることを確認済み。
 - [ ] conversation一覧/詳細の `lineAccountId` / `minHoursSince` / `maxHoursSince` / `before` / `friendId` query/pathがfriend可視範囲checkやSQL bind前に検証される
   - Worker conversations route testsでは、不正なID、NaN、逆転した時間範囲、不正cursorがDBへ到達せず400で止まり、正常query/pathはtrimされ、`limit` / `offset` は安全な範囲へ丸められることを確認済み。
 - [ ] Google Calendar接続/予約/status payloadが副作用前に検証される

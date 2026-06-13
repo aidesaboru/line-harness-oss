@@ -18,6 +18,7 @@ updated: 2026-06-13
 - support案件一覧、友だち一覧、conversionイベント一覧の `limit` / `offset` queryは、SQL bind前に既定値、整数、有限値へ丸める
 - calendar空き枠取得の `slotMinutes` / `startHour` / `endHour` queryは、0以下、範囲外、非数値を既定値へ戻し、開始時刻が終了時刻以上なら400で止める
 - calendar空き枠/予約一覧の `connectionId` / `date` / `friendId` queryは、Calendar接続lookup、予約範囲lookup、friend可視範囲check、SQL bind前に検証し、正常値はtrimする
+- booking LIFF availabilityの `liffId` / `menu_id` / `staff_id` / `from` / `to` queryは、LINE account lookupやavailability helper呼び出し前に検証し、正常値はtrimする
 - conversation一覧/詳細の `lineAccountId` / `minHoursSince` / `maxHoursSince` / `before` / `friendId` query/pathは、friend可視範囲checkやSQL bind前に検証し、`limit` / `offset` は安全な範囲へ丸める
 - Stripe eventsの `friendId` / `eventType` queryは、DB helper呼び出し前に検証し、正常値はtrimする
 - affiliate reportの `id` / `startDate` / `endDate` path/queryは、DB helper呼び出し前に検証し、正常値はtrimする
@@ -136,6 +137,7 @@ updated: 2026-06-13
 - `apps/worker/src/routes/admin-diagnostics-access.test.ts`
 - `apps/worker/src/routes/broadcasts-access.test.ts`
 - `apps/worker/src/routes/forms-access.test.ts`
+- `apps/worker/src/routes/booking-liff-access.test.ts`
 - `apps/worker/src/routes/operations-access.test.ts`
 - `apps/worker/src/routes/meet-callback.test.ts`
 - `apps/worker/src/qr-proxy.test.ts`
@@ -168,6 +170,7 @@ corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
+corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build
@@ -198,6 +201,7 @@ strict Preflight:
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion event/report filters reject malformed IDs or date ranges before friend access checks or SQL bind, valid filters are trimmed, conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops, invalid time windows stop before calendar lookup, malformed or nonexistent calendar date filters are rejected, valid calendar slot/booking query values are trimmed, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
+- Booking LIFF access route tests confirm malformed `liffId/menu_id/staff_id/from/to` availability queries stop before LINE account lookup or availability helper calls where applicable, and valid filters are trimmed before use.
 - conversations route tests confirm malformed or unsafe conversation queue/detail query values stop before friend access checks or SQL bind, while valid IDs/cursors are trimmed and paging values are clamped.
 - Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind. Admin diagnostics tests also confirm unsafe `accountId`, broadcast/friend path IDs, and malformed/oversized tag/content diagnostic payloads stop before DB or LINE helper calls while valid values are trimmed. Operations route tests also confirm malformed Stripe events `friendId/eventType` and affiliate report `id/startDate/endDate` filters stop before DB helper calls while valid filters are trimmed.
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.

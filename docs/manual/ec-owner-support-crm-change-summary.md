@@ -37,6 +37,7 @@ updated: 2026-06-13
 - staff管理APIのcreate/update/detail/delete/regenerate-key payload/path IDは、壊れたJSON、不正なstaff ID/name/email/role/isActiveをDB helperや最後のowner保護check前に400で止め、正常値はtrim/null正規化する
 - legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDは、壊れたJSON、不正なemail/phone/externalId/displayName/friendId/userIdをDB helperやfriend可視範囲check前に400で止め、正常値はtrim/null正規化する
 - account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadは、壊れたJSON、不正なID、過大なfriendIdsをDB read/write前に400で止め、正常値はtrim/dedupeして保存・参照する
+- dedup-preview APIのaccountIds/dedupPriority/targetTagId payloadは、壊れたJSON、空accountIds、不正ID、不正targetTagIdを配信対象計算前に400で止め、正常値はtrim/dedupeし、dedupPriorityはaccountIds内へfilterする
 - reminder/scoring rule定義payloadとfriend score/reminder操作payloadは、壊れたJSON、不正なID、空/過大なname/description/reason/messageContent、不正なmessageType/Flex/image JSON、不正date、不正score/offsetをDB helperやfriend reminder SQL前に400で止め、正常値はtrimする
 - scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
@@ -186,6 +187,7 @@ corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.te
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
+corepack pnpm --filter worker test -- src/routes/broadcasts-access.test.ts # 4 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build
@@ -292,7 +294,7 @@ strict Preflight:
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限とLIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限とfriend単位操作の維持
 - `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route/conversion point payload検証、calendar query/payload検証
-- `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限
+- `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限とdedup-preview payload検証
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限とincoming receive署名検証の維持
 - `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証

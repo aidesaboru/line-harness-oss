@@ -222,3 +222,105 @@ describe('broadcast support role guards', () => {
     expect(recipientsCall?.sql).not.toContain('sc_friend_scope');
   });
 });
+
+describe('dedup preview payload validation', () => {
+  test('rejects malformed or unsafe payloads before computing preview', async () => {
+    const app = setupApp(makeDb(), 'owner');
+    const cases: Array<{ name: string; body: string; error: string }> = [
+      { name: 'malformed json', body: '{', error: 'invalid_json' },
+      { name: 'non-object payload', body: JSON.stringify(['acc-1']), error: 'invalid_payload' },
+      {
+        name: 'empty accountIds',
+        body: JSON.stringify({ accountIds: [], dedupPriority: [] }),
+        error: 'invalid_account_ids',
+      },
+      {
+        name: 'unsafe accountId',
+        body: JSON.stringify({ accountIds: ['acc 1'], dedupPriority: [] }),
+        error: 'invalid_account_ids',
+      },
+      {
+        name: 'unsafe dedupPriority',
+        body: JSON.stringify({ accountIds: ['acc-1'], dedupPriority: ['acc 1'] }),
+        error: 'invalid_dedup_priority',
+      },
+      {
+        name: 'unsafe targetTagId',
+        body: JSON.stringify({ accountIds: ['acc-1'], dedupPriority: [], targetTagId: 'tag 1' }),
+        error: 'invalid_target_tag_id',
+      },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request('/api/broadcasts/dedup-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: item.body,
+      });
+
+      expect(res.status, item.name).toBe(400);
+      await expect(res.json(), item.name).resolves.toMatchObject({
+        success: false,
+        error: item.error,
+      });
+    }
+
+    expect(computeDedupBroadcastPreview).not.toHaveBeenCalled();
+  });
+
+  test('trims and dedupes ids before computing preview', async () => {
+    const db = makeDb();
+    vi.mocked(computeDedupBroadcastPreview).mockResolvedValue({
+      totalSelected: 3,
+      uniqueRecipients: 2,
+      reduction: 1,
+      reductionRate: 1 / 3,
+      perAccount: [
+        {
+          accountId: 'acc-1',
+          accountName: 'Account 1',
+          accountCountry: null,
+          selectedCount: 2,
+          sendCount: 1,
+          excludedToHigherPriority: 1,
+          recipients: [{ friendId: 'friend-1', lineUserId: 'U1', identKey: 'uid:user-1' }],
+        },
+      ],
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/broadcasts/dedup-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountIds: [' acc-1 ', 'acc-1', 'acc-2'],
+        dedupPriority: ['acc-3', ' acc-2 ', 'acc-2', 'acc-1'],
+        targetTagId: ' tag-1 ',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(computeDedupBroadcastPreview).toHaveBeenCalledWith(
+      db,
+      ['acc-1', 'acc-2'],
+      ['acc-2', 'acc-1'],
+      'tag-1',
+    );
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        totalSelected: 3,
+        uniqueRecipients: 2,
+        reduction: 1,
+        perAccount: [
+          {
+            accountId: 'acc-1',
+            accountName: 'Account 1',
+            selectedCount: 2,
+            sendCount: 1,
+            excludedToHigherPriority: 1,
+          },
+        ],
+      },
+    });
+  });
+});

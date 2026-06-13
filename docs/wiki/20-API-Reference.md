@@ -251,6 +251,19 @@ fields の type: `text`, `email`, `tel`, `number`, `textarea`, `select`, `radio`
 | GET | `/api/conversions/events` | CV イベント一覧 | query: `conversionPointId`, `friendId`, `affiliateCode`, `startDate`, `endDate`, `limit`, `offset` |
 | GET | `/api/conversions/report` | CV レポート | query: `startDate`, `endDate` |
 
+### /api/ad-platforms/*
+
+| メソッド | パス | 説明 | リクエストボディ |
+|---------|------|------|----------------|
+| GET | `/api/ad-platforms` | 広告プラットフォーム一覧 | - |
+| POST | `/api/ad-platforms` | 広告プラットフォーム作成 | `{ name, displayName?, config }` |
+| PUT | `/api/ad-platforms/:id` | 広告プラットフォーム更新 | `{ name?, displayName?, config?, isActive? }` |
+| DELETE | `/api/ad-platforms/:id` | 広告プラットフォーム削除 | - |
+| GET | `/api/ad-platforms/:id/logs` | 広告CV送信ログ | query: `limit` |
+| POST | `/api/ad-platforms/test` | 広告CV送信テスト | `{ platform, eventName, friendId? }` |
+
+入力制約: `name` / `platform` は `meta`, `x`, `google`, `tiktok` のいずれか。`displayName` は120文字以内、`config` は16KB以内・50 keys以内のprimitive値だけで、keyは英数字/`_`/`.`/`-` のみ。`eventName` / `friendId` は128文字以内の可視ASCII。
+
 ### /api/affiliates/*
 
 | メソッド | パス | 説明 | リクエストボディ |

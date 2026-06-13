@@ -110,6 +110,24 @@ beforeEach(() => {
       updated_at: '2026-06-13T10:00:00.000',
     },
   ]);
+  dbMocks.createAdPlatform.mockResolvedValue({
+    id: 'platform-new',
+    name: 'meta',
+    display_name: 'Meta Ads',
+    config: JSON.stringify({ access_token: 'secret', priority: 1, enabled: true }),
+    is_active: 1,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.updateAdPlatform.mockResolvedValue({
+    id: 'platform-1',
+    name: 'meta',
+    display_name: null,
+    config: JSON.stringify({ pixel_id: 'px-1' }),
+    is_active: 0,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
   dbMocks.getAffiliateByCode.mockResolvedValue({
     id: 'affiliate-1',
     name: 'Partner',
@@ -355,6 +373,114 @@ describe('operations API role guards', () => {
     expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(1, {} as D1Database, 'platform-1', 50);
     expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(2, {} as D1Database, 'platform-1', 1);
     expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(3, {} as D1Database, 'platform-1', 500);
+  });
+
+  test('owner ad platform management rejects malformed or invalid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const invalidName = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'linkedin', config: { access_token: 'secret' } }),
+    });
+    const invalidConfigShape = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'meta', config: ['secret'] }),
+    });
+    const invalidConfigKey = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'meta', config: { 'bad key': 'secret' } }),
+    });
+    const invalidConfigValue = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'meta', config: { access_token: { nested: 'secret' } } }),
+    });
+    const invalidUpdate = await app.request('/api/ad-platforms/platform-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 'false' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(invalidName.status).toBe(400);
+    expect(invalidConfigShape.status).toBe(400);
+    expect(invalidConfigKey.status).toBe(400);
+    expect(invalidConfigValue.status).toBe(400);
+    expect(invalidUpdate.status).toBe(400);
+    expect(dbMocks.createAdPlatform).not.toHaveBeenCalled();
+    expect(dbMocks.updateAdPlatform).not.toHaveBeenCalled();
+  });
+
+  test('owner ad platform management trims and normalizes valid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const created = await app.request('/api/ad-platforms', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' meta ',
+        displayName: ' Meta Ads ',
+        config: { access_token: 'secret', priority: 1, enabled: true },
+      }),
+    });
+    const updated = await app.request('/api/ad-platforms/platform-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayName: ' ', config: { pixel_id: 'px-1' }, isActive: false }),
+    });
+
+    expect(created.status).toBe(201);
+    expect(updated.status).toBe(200);
+    expect(dbMocks.createAdPlatform).toHaveBeenCalledWith({} as D1Database, {
+      name: 'meta',
+      displayName: 'Meta Ads',
+      config: { access_token: 'secret', priority: 1, enabled: true },
+    });
+    expect(dbMocks.updateAdPlatform).toHaveBeenCalledWith({} as D1Database, 'platform-1', {
+      name: undefined,
+      displayName: null,
+      config: { pixel_id: 'px-1' },
+      isActive: false,
+    });
+  });
+
+  test('owner ad platform test send rejects invalid payloads before lookup', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/ad-platforms/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const invalidPlatform = await app.request('/api/ad-platforms/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'linkedin', eventName: 'Purchase' }),
+    });
+    const invalidEventName = await app.request('/api/ad-platforms/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'meta', eventName: 'bad event' }),
+    });
+    const invalidFriendId = await app.request('/api/ad-platforms/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'meta', eventName: 'Purchase', friendId: 'f'.repeat(129) }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(invalidPlatform.status).toBe(400);
+    expect(invalidEventName.status).toBe(400);
+    expect(invalidFriendId.status).toBe(400);
+    expect(dbMocks.getAdPlatformByName).not.toHaveBeenCalled();
   });
 
   test('owner affiliate management rejects malformed or invalid payloads before writes', async () => {

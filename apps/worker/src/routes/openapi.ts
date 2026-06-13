@@ -561,18 +561,94 @@ const spec = {
       post: {
         tags: ['Operations'],
         summary: '広告プラットフォーム作成（owner/admin）',
-        responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } },
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', enum: ['meta', 'x', 'google', 'tiktok'] },
+                  displayName: { type: 'string', maxLength: 120, nullable: true },
+                  config: {
+                    type: 'object',
+                    maxProperties: 50,
+                    additionalProperties: {
+                      oneOf: [
+                        { type: 'string', maxLength: 4096 },
+                        { type: 'number' },
+                        { type: 'boolean' },
+                        { type: 'null' },
+                      ],
+                    },
+                  },
+                },
+                required: ['name', 'config'],
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Created' }, '400': { description: 'Invalid ad platform payload' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/ad-platforms/{id}': {
-      put: { tags: ['Operations'], summary: '広告プラットフォーム更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      put: {
+        tags: ['Operations'],
+        summary: '広告プラットフォーム更新（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', enum: ['meta', 'x', 'google', 'tiktok'] },
+                  displayName: { type: 'string', maxLength: 120, nullable: true },
+                  config: {
+                    type: 'object',
+                    maxProperties: 50,
+                    additionalProperties: {
+                      oneOf: [
+                        { type: 'string', maxLength: 4096 },
+                        { type: 'number' },
+                        { type: 'boolean' },
+                        { type: 'null' },
+                      ],
+                    },
+                  },
+                  isActive: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid ad platform payload' }, '403': { description: 'Requires owner/admin' } },
+      },
       delete: { tags: ['Operations'], summary: '広告プラットフォーム削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/ad-platforms/{id}/logs': {
       get: { tags: ['Operations'], summary: '広告CV送信ログ（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Logs' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/ad-platforms/test': {
-      post: { tags: ['Operations'], summary: '広告CV送信テスト（owner/admin）', responses: { '200': { description: 'Test result' }, '403': { description: 'Requires owner/admin' } } },
+      post: {
+        tags: ['Operations'],
+        summary: '広告CV送信テスト（owner/admin）',
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  platform: { type: 'string', enum: ['meta', 'x', 'google', 'tiktok'] },
+                  eventName: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' },
+                  friendId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$' },
+                },
+                required: ['platform', 'eventName'],
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Test result' }, '400': { description: 'Invalid ad platform test payload' }, '403': { description: 'Requires owner/admin' } },
+      },
     },
     '/api/tracked-links': {
       get: { tags: ['Operations'], summary: 'トラッキングリンク一覧（owner/admin）', responses: { '200': { description: 'Tracked links' }, '403': { description: 'Requires owner/admin' } } },

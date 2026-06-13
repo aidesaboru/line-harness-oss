@@ -7,7 +7,9 @@ import { requireRole } from '../middleware/role-guard.js';
 const tags = new Hono<Env>();
 
 const TAG_NAME_MAX_LENGTH = 80;
+const TAG_ID_MAX_LENGTH = 128;
 const TAG_COLOR_PATTERN = /^#[0-9A-Fa-f]{6}$/;
+const TAG_ID_PATTERN = /^[!-~]+$/;
 
 type ParsedTagCreateBody =
   | { ok: true; body: { name: string; color?: string } }
@@ -28,6 +30,13 @@ function parseRequiredString(raw: unknown, label: string, maxLength: number): Va
   if (!value) return { ok: false, error: `${label} is required` };
   if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
   return { ok: true, value };
+}
+
+function parseTagPathId(raw: unknown): ValueResult<string> {
+  const id = parseRequiredString(raw, 'tagId', TAG_ID_MAX_LENGTH);
+  if (!id.ok) return id;
+  if (!TAG_ID_PATTERN.test(id.value)) return { ok: false, error: 'tagId is invalid' };
+  return id;
 }
 
 function parseTagColor(raw: unknown): ValueResult<string | undefined> {
@@ -91,8 +100,9 @@ tags.post('/api/tags', requireRole('owner', 'admin'), async (c) => {
 // DELETE /api/tags/:id - delete tag
 tags.delete('/api/tags/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    await deleteTag(c.env.DB, id);
+    const id = parseTagPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteTag(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/tags/:id error:', err);

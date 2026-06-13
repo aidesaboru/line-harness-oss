@@ -237,6 +237,24 @@ describe('content management payload validation', () => {
     });
   });
 
+  test('tag delete rejects malformed path IDs before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/tags/bad%20id', { method: 'DELETE' });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.deleteTag).not.toHaveBeenCalled();
+  });
+
+  test('tag delete trims valid path IDs before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/tags/%20tag-1%20', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.deleteTag).toHaveBeenCalledWith({} as D1Database, 'tag-1');
+  });
+
   test('reusable template create rejects malformed or invalid payloads before DB writes', async () => {
     const app = setupApp('owner');
 

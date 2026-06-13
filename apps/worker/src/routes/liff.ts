@@ -21,6 +21,7 @@ import {
   jstNow,
 } from '@line-crm/db';
 import { buildIntroMessage } from '../services/intro-message.js';
+import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
@@ -1066,9 +1067,12 @@ liffRoutes.get('/auth/callback', async (c) => {
       console.error('OAuth scenario enrollment error:', err);
     }
 
-    // Redirect or show completion
-    if (redirect) {
-      return c.redirect(redirect);
+    // Redirect or show completion. Guard against open-redirect abuse: external
+    // marketing/LP and app/deep-link redirects stay allowed (intentional
+    // feature); javascript:/data:/protocol-relative targets are rejected.
+    const safeRedirect = safeRedirectTarget(redirect);
+    if (safeRedirect) {
+      return c.redirect(safeRedirect);
     }
 
     // Send form link as LINE message if form param was passed

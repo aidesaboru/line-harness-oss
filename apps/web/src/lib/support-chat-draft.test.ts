@@ -8,6 +8,7 @@ import {
   buildSupportChatSendCasePayload,
   consumeSupportChatDraft,
   createSupportChatDraftContext,
+  planSupportChatSendAttachments,
   storeSupportChatDraft,
   tryStoreSupportChatDraft,
 } from './support-chat-draft'
@@ -154,6 +155,44 @@ describe('support chat draft handoff', () => {
     })
     expect(buildSupportChatSendCasePayload(context, false)).toEqual({})
     expect(buildSupportChatSendCasePayload(null, true)).toEqual({})
+  })
+
+  it('attaches a support case to only one message when image and text are sent together', () => {
+    const context = createSupportChatDraftContext({
+      friendId: 'friend-visible',
+      caseId: 'case-visible',
+      lineAccountId: 'acc-smoke',
+      draft: '確認して折り返します。',
+    })
+
+    expect(planSupportChatSendAttachments(context, {
+      hasLineImage: false,
+      hasText: true,
+    })).toEqual({
+      attachSupportToImage: false,
+      attachSupportToText: true,
+    })
+    expect(planSupportChatSendAttachments(context, {
+      hasLineImage: true,
+      hasText: false,
+    })).toEqual({
+      attachSupportToImage: true,
+      attachSupportToText: false,
+    })
+    expect(planSupportChatSendAttachments(context, {
+      hasLineImage: true,
+      hasText: true,
+    })).toEqual({
+      attachSupportToImage: true,
+      attachSupportToText: false,
+    })
+    expect(planSupportChatSendAttachments(null, {
+      hasLineImage: true,
+      hasText: true,
+    })).toEqual({
+      attachSupportToImage: false,
+      attachSupportToText: false,
+    })
   })
 
   it('does not show recovery guidance when the support case status was updated', () => {

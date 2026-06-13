@@ -261,6 +261,7 @@ N/A
 
 - `corepack pnpm --filter web test`
 - `corepack pnpm --filter web test -- src/components/layout/sidebar-access.test.ts`
+- `corepack pnpm --filter web test -- src/lib/support-chat-draft.test.ts`
 - `corepack pnpm test:scripts`
 - `corepack pnpm --filter worker typecheck`
 - `corepack pnpm --filter worker test -- src/middleware/auth.test.ts src/routes/users.test.ts src/routes/account-settings.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/broadcasts-access.test.ts src/routes/forms-access.test.ts src/routes/operations-access.test.ts`
@@ -272,11 +273,12 @@ N/A
 - `NEXT_PUBLIC_API_URL=http://127.0.0.1:8787 corepack pnpm --filter web build`
 - `git diff --check`
 - Browser smoke with staff mock session confirms the sidebar only shows 友だち管理, 個別チャット, サポートCRM, and 未対応 while hiding management menus; direct staff access to `/broadcasts` returns to `/support`.
+- Browser smoke with chat mock session confirms `/chats?friend=friend-visible&supportCase=case-visible` shows the support-case link banner without a sessionStorage draft.
 - `corepack pnpm preflight:support-crm:dry-run` success path: strict release env shape passes with secrets redacted.
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.
 - `corepack pnpm preflight:support-crm:summary` converts the full Preflight log into a PR-safe summary that omits URLs, API keys, friend IDs, and case IDs.
 - Script test verifies the release checklist includes every strict dry-run env and the mutation-guard warning, so docs cannot silently drift from the command.
-- Worker/script tests verify staff cannot use `/api/friends`, unanswered inbox list/count, users-grouped customer aggregation, legacy users customer identity, account-settings test recipients, broadcast management/send/count/insight/dedup-preview APIs, admin diagnostics/repair APIs, form management/submission-list APIs, Stripe events, ad-platforms, affiliate management/reporting, tracked-link management, conversion history/report, calendar bookings, direct message history/send, conversation queue/detail, scenario manual enrollment, score, reminder, or rich-menu friend endpoints to bypass support-case friend visibility or role boundaries.
+- Worker/script tests verify staff cannot use `/api/friends`, unanswered inbox list/count, users-grouped customer aggregation, legacy users customer identity, account-settings test recipients, broadcast management/send/count/insight/dedup-preview APIs, admin diagnostics/repair APIs, form management/submission-list APIs, Stripe events, ad-platforms, affiliate management/reporting, tracked-link management, conversion history/report, calendar bookings, direct message history/send, conversation queue/detail, scenario manual enrollment, score, reminder, or rich-menu friend endpoints to bypass support-case friend visibility or role boundaries. Chat reply tests verify support-case history survives URL fallback without `lineAccountId`, and web helper tests verify image+text sends attach the support case to only one send step.
 - `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.

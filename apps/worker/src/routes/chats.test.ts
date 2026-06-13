@@ -524,6 +524,67 @@ describe('chat support visibility', () => {
     });
   });
 
+  test('support reply keeps the case link when the URL fallback omits lineAccountId', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      supportCases: [
+        {
+          id: 'case-visible',
+          line_account_id: 'acc-1',
+          friend_id: 'friend-visible',
+          title: 'URL fallback',
+          status: 'in_progress',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: 'sessionStorageなしでも紐付けます。',
+        supportCaseId: 'case-visible',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.supportCases.at(-1)).toMatchObject({
+      id: 'case-visible',
+      status: 'customer_reply',
+    });
+    expect(state.supportEvents.at(-1)).toMatchObject({
+      case_id: 'case-visible',
+      event_type: 'customer_reply_sent',
+    });
+    const metadata = JSON.parse(state.supportEvents.at(-1)!.metadata) as {
+      lineAccountId: string;
+      contentPreview: string;
+      statusUpdateApplied: boolean;
+    };
+    expect(metadata).toMatchObject({
+      lineAccountId: 'acc-1',
+      contentPreview: 'sessionStorageなしでも紐付けます。',
+      statusUpdateApplied: true,
+    });
+  });
+
   test('sending a support image reply records the chat message and support case event', async () => {
     const { db, state } = makeChatDb({
       rows,

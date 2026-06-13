@@ -39,6 +39,11 @@ export type SupportChatSendCasePayload = {
   lineAccountId?: string
 }
 
+export type SupportChatSendAttachmentPlan = {
+  attachSupportToImage: boolean
+  attachSupportToText: boolean
+}
+
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
 const SUPPORT_STATUS_LABELS: Record<string, string> = {
@@ -87,6 +92,17 @@ export function buildSupportChatSendCasePayload(
   return {
     supportCaseId: context.caseId,
     lineAccountId: context.lineAccountId,
+  }
+}
+
+export function planSupportChatSendAttachments(
+  context: SupportChatDraftContext | null | undefined,
+  input: { hasLineImage: boolean; hasText: boolean },
+): SupportChatSendAttachmentPlan {
+  const attachSupportToImage = Boolean(context && input.hasLineImage)
+  return {
+    attachSupportToImage,
+    attachSupportToText: Boolean(context && !attachSupportToImage && input.hasText),
   }
 }
 

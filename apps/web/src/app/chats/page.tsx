@@ -8,6 +8,7 @@ import {
   buildSupportChatSendCasePayload,
   buildSupportChatFallbackContext,
   consumeSupportChatDraft,
+  planSupportChatSendAttachments,
   type SupportChatRecoveryNotice,
   type SupportChatDraftContext,
 } from '@/lib/support-chat-draft'
@@ -714,9 +715,10 @@ export default function ChatsPage() {
     const sendingChatId = selectedChatId  // capture the chat id for this send
     const supportContext = supportDraftContext
     const textContent = messageContent.trim()
-    const hasLineImage = pendingImage?.mode === 'line-image'
-    const attachSupportToImage = Boolean(supportContext && hasLineImage)
-    const attachSupportToText = Boolean(supportContext && !attachSupportToImage && textContent)
+    const { attachSupportToImage, attachSupportToText } = planSupportChatSendAttachments(supportContext, {
+      hasLineImage: pendingImage?.mode === 'line-image',
+      hasText: Boolean(textContent),
+    })
     sendLockRef.current = true
     setSending(true)
     if (supportContext) setSupportRecoveryNotice(null)

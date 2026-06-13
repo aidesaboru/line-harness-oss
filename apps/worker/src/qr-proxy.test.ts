@@ -8,7 +8,7 @@ type WorkerModule = {
 
 const workerApp = worker as WorkerModule;
 
-function env(): Env['Bindings'] {
+function env(overrides: Partial<Env['Bindings']> = {}): Env['Bindings'] {
   return {
     DB: {} as D1Database,
     IMAGES: {} as R2Bucket,
@@ -21,6 +21,7 @@ function env(): Env['Bindings'] {
     LINE_LOGIN_CHANNEL_ID: 'login-channel',
     LINE_LOGIN_CHANNEL_SECRET: 'login-secret',
     WORKER_URL: 'https://worker.example.com',
+    ...overrides,
   };
 }
 
@@ -31,12 +32,12 @@ function executionContext(): ExecutionContext {
   } as unknown as ExecutionContext;
 }
 
-function request(path: string) {
+function request(path: string, overrides?: Partial<Env['Bindings']>) {
   return workerApp.fetch(
     new Request(`https://worker.example.com${path}`, {
       headers: { 'CF-Connecting-IP': '203.0.113.10' },
     }),
-    env(),
+    env(overrides),
     executionContext(),
   );
 }
@@ -107,5 +108,63 @@ describe('public QR proxy guard', () => {
     const res = await request(`/api/qr?data=${data}`);
 
     expect(res.status).toBe(502);
+  });
+});
+
+describe('public short link guard', () => {
+  test('rejects unsafe short-link path and query values before DB lookup or QR fetch', async () => {
+    const prepare = vi.fn(() => {
+      throw new Error('DB should not be called');
+    });
+    const db = { prepare } as unknown as D1Database;
+    const paths = [
+      '/r/bad%20ref',
+      `/r/${'a'.repeat(513)}`,
+      '/r/launch?form=bad%20form',
+      '/r/launch?pool=Bad',
+      '/r/launch?gate=bad%20gate',
+      '/r/launch?xh=bad%20xh',
+      '/r/launch?ig=bad%20ig',
+      '/r/bad%20ref/help',
+      `/r/launch/help?t=${encodeURIComponent(`https://liff.line.me/${'a'.repeat(2050)}`)}`,
+    ];
+
+    for (const path of paths) {
+      const res = await request(path, { DB: db });
+      expect(res.status, path).toBe(400);
+      expect(prepare, path).not.toHaveBeenCalled();
+      expect(vi.mocked(fetch), path).not.toHaveBeenCalled();
+    }
+  });
+
+  test('trims valid short-link values before DB lookup and LIFF URL rendering', async () => {
+    const first = vi.fn().mockResolvedValue(null);
+    const bind = vi.fn(() => ({ first }));
+    const prepare = vi.fn(() => ({ bind }));
+    const db = { prepare } as unknown as D1Database;
+
+    const res = await request(
+      '/r/%20launch%20?pool=%20main%20&form=%20form-1%20&gate=%20gate-1%20&xh=%20xh-1%20&ig=%20ig-1%20',
+      { DB: db },
+    );
+
+    expect(res.status).toBe(200);
+    expect(bind.mock.calls).toEqual([['launch'], ['main']]);
+    const body = await res.text();
+    expect(body).toContain('ref%3Dlaunch');
+    expect(body).toContain('form%3Dform-1');
+    expect(body).toContain('gate%3Dgate-1');
+    expect(body).toContain('xh%3Dxh-1');
+    expect(body).toContain('ig%3Dig-1');
+  });
+
+  test('short-link help ignores unsafe t fallback and only preserves validated retry params', async () => {
+    const res = await request('/r/%20launch%20/help?t=https%3A%2F%2Fevil.example%2Fopen&form=%20form-1%20&pool=%20main%20&extra=bad');
+
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain('evil.example');
+    expect(body).not.toContain('extra=bad');
+    expect(body).toContain('/r/launch?form=form-1&amp;pool=main');
   });
 });

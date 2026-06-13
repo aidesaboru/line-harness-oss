@@ -63,6 +63,7 @@ updated: 2026-06-13
 - Meet Harness完了callback `/api/meet-callback` は `MEET_CALLBACK_SECRET` と `X-Meet-Callback-Signature` のHMAC-SHA256署名検証を必須にし、未設定/未署名/不正署名ではDB lookupやLINE push前に止める
 - Stripe webhook `/api/integrations/stripe/webhook` は署名検証を維持しつつ、1MiB超body、壊れたJSON、必須ID/type/object欠落、巨大metadataをDB記録や自動化副作用前に400/413で止める
 - 公開QR proxy `/api/qr` はQR化する `data` をHTTP(S) URLかつ2048文字以内、`size` を120-512pxの正方形だけに制限し、外部QR rendererの非画像レスポンスを中継しない
+- 公開short-link `/r/:ref` と `/r/:ref/help` は `ref/form/pool/gate/xh/ig/t` をDB lookupやLIFF URL/HTML生成前に検証し、正常値はtrimしたうえでLIFF URLやhelp fallbackに使う
 - フォーム管理API（一覧、作成、更新、削除、回答一覧）はowner/adminだけに制限し、LIFF用のフォーム定義GET、opened、partial、submit公開エンドポイントは維持
 - `/api/forms/:id` の公開認証skipはGET/HEADだけに限定し、同じパスのPUT/DELETEが未認証で通らないようにした
 - フォーム定義GET、opened、partial、submit、管理更新/削除/回答一覧のpath `formId` は、DB lookup/write、D1 prepare、LINE ID token検証、Webhook、submission保存、reward side effect前に検証し、正常値はtrimする
@@ -254,6 +255,7 @@ strict Preflight:
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.
+- QR proxy tests confirm public short links reject unsafe `ref/form/pool/gate/xh/ig/t` values before DB lookup, QR fetch, or HTML rendering, trim valid values before DB lookup and LIFF URL rendering, and strip unsafe help fallback query values.
 - Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends. Scenario route tests also confirm malformed or unsafe scenario list query values, scenario/step/enroll path IDs, preview startAt cursors, and scenario/step/reorder payloads stop before DB lookup, stats computation, friend visibility checks, batch updates, or writes, valid values are trimmed, and step update/delete/reorder mutations stay scoped to the path scenario. Content management tests also confirm malformed or unsafe tag/template/message-template path IDs and tag/template/message-template payloads stop before DB helpers, D1 prepare, DB writes, or lookup, oversized template category query filters stop before DB helper calls, and valid values are trimmed.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs, and malformed traffic pool/operator management path IDs and payloads stop before DB helpers or writes.
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
@@ -314,7 +316,7 @@ strict Preflight:
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限、broadcast query/path/payload/segment条件検証、dedup-preview payload検証
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限、path/payload検証、incoming receive署名検証の維持
-- `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証
+- `apps/worker/src/index.ts`: 公開QR proxyの入力制限、公開short-link入力制限、外部QR rendererレスポンス検証
 - `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限、フォームpath/payload境界
 - `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、ad-platform/affiliate/tracked-link管理path/payload検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload/query検証

@@ -126,6 +126,21 @@ const QR_DATA_MAX_LENGTH = 2048;
 const QR_DEFAULT_SIZE = 240;
 const QR_MIN_SIZE = 120;
 const QR_MAX_SIZE = 512;
+const SHORT_LINK_REF_MAX_LENGTH = 512;
+const SHORT_LINK_ID_MAX_LENGTH = 128;
+const SHORT_LINK_POOL_SLUG_MAX_LENGTH = 64;
+const SHORT_LINK_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const SHORT_LINK_POOL_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type ShortLinkParams = {
+  ref: string;
+  formId?: string;
+  poolSlug?: string;
+  gate?: string;
+  xh?: string;
+  ig?: string;
+};
 
 function parseQrSize(rawSize: string | undefined): string | null {
   if (!rawSize) return `${QR_DEFAULT_SIZE}x${QR_DEFAULT_SIZE}`;
@@ -156,6 +171,85 @@ function parseQrData(rawData: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+function parseRequiredShortLinkValue(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern = SHORT_LINK_VISIBLE_ASCII_PATTERN,
+): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} is required` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalShortLinkValue(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern = SHORT_LINK_VISIBLE_ASCII_PATTERN,
+): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseShortLinkParams(
+  req: { param(key: string): string | undefined; query(key: string): string | undefined },
+): ValueResult<ShortLinkParams> {
+  const ref = parseRequiredShortLinkValue(req.param('ref'), 'ref', SHORT_LINK_REF_MAX_LENGTH);
+  if (!ref.ok) return ref;
+  const formId = parseOptionalShortLinkValue(req.query('form'), 'form', SHORT_LINK_ID_MAX_LENGTH);
+  if (!formId.ok) return formId;
+  const poolSlug = parseOptionalShortLinkValue(
+    req.query('pool'),
+    'pool',
+    SHORT_LINK_POOL_SLUG_MAX_LENGTH,
+    SHORT_LINK_POOL_SLUG_PATTERN,
+  );
+  if (!poolSlug.ok) return poolSlug;
+  const gate = parseOptionalShortLinkValue(req.query('gate'), 'gate', SHORT_LINK_REF_MAX_LENGTH);
+  if (!gate.ok) return gate;
+  const xh = parseOptionalShortLinkValue(req.query('xh'), 'xh', SHORT_LINK_REF_MAX_LENGTH);
+  if (!xh.ok) return xh;
+  const ig = parseOptionalShortLinkValue(req.query('ig'), 'ig', SHORT_LINK_REF_MAX_LENGTH);
+  if (!ig.ok) return ig;
+  return {
+    ok: true,
+    value: {
+      ref: ref.value,
+      formId: formId.value,
+      poolSlug: poolSlug.value,
+      gate: gate.value,
+      xh: xh.value,
+      ig: ig.value,
+    },
+  };
+}
+
+function parseOptionalShortLinkLiffTarget(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 't must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > QR_DATA_MAX_LENGTH) return { ok: false, error: 't is too long' };
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'https:' && url.hostname === 'liff.line.me') {
+      return { ok: true, value };
+    }
+  } catch {
+    // Fall back to the sanitized /r/:ref URL below.
+  }
+  return { ok: true, value: undefined };
 }
 
 // CORS — credentialed cookie auth cannot use a wildcard origin. Reflect only
@@ -264,8 +358,9 @@ app.get('/api/qr', async (c) => {
 // Desktop: QR code encodes LIFF URL.
 // Stuck users opt into /r/:ref/help for Safari escape instructions.
 app.get('/r/:ref', async (c) => {
-  const ref = c.req.param('ref');
-  const formId = c.req.query('form') || '';
+  const parsed = parseShortLinkParams(c.req);
+  if (!parsed.ok) return c.text(parsed.error, 400);
+  const { ref, formId, poolSlug, gate, xh, ig } = parsed.value;
 
   // Resolve LIFF URL — priority:
   //   1. entry_route.pool_id (if ref maps to a referral link)
@@ -292,8 +387,7 @@ app.get('/r/:ref', async (c) => {
 
   // 2 / 3. fallback to URL query or 'main'
   if (!pool) {
-    const poolSlug = c.req.query('pool') || 'main';
-    pool = await getTrafficPoolBySlug(c.env.DB, poolSlug);
+    pool = await getTrafficPoolBySlug(c.env.DB, poolSlug ?? 'main');
   }
 
   if (pool) {
@@ -314,11 +408,8 @@ app.get('/r/:ref', async (c) => {
   if (liffIdMatch) liffParams.set('liffId', liffIdMatch[1]);
   if (ref) liffParams.set('ref', ref);
   if (formId) liffParams.set('form', formId);
-  const gate = c.req.query('gate');
   if (gate) liffParams.set('gate', gate);
-  const xh = c.req.query('xh');
   if (xh) liffParams.set('xh', xh);
-  const ig = c.req.query('ig');
   if (ig) liffParams.set('ig', ig);
   const liffTarget = liffParams.toString() ? `${liffUrl}?${liffParams.toString()}` : liffUrl;
 
@@ -439,22 +530,29 @@ body{font-family:'Hiragino Sans','Helvetica Neue',system-ui,sans-serif;backgroun
 // Method 2 (URL copy → external browser) is the universal fallback.
 // No LINE-Login-web fallback exposed — friction kills conversion.
 app.get('/r/:ref/help', (c) => {
-  const ref = c.req.param('ref');
+  const parsed = parseShortLinkParams(c.req);
+  if (!parsed.ok) return c.text(parsed.error, 400);
+  const { ref, formId, poolSlug, gate, xh, ig } = parsed.value;
   const reqUrl = new URL(c.req.url);
   // Prefer the resolved liff target passed by /r/:ref via ?t= so pooled refs
   // do not re-roll on retry. Fall back to the short /r/:ref URL only when
   // ?t= is missing (e.g. direct navigation to /help without coming from /r/).
   // Reject anything that is not an https://liff.line.me/* URL — never trust
   // user-supplied open redirects.
-  const tParam = c.req.query('t') || '';
+  const tParam = parseOptionalShortLinkLiffTarget(c.req.query('t'));
+  if (!tParam.ok) return c.text(tParam.error, 400);
   let displayUrl: string;
-  if (tParam && /^https:\/\/liff\.line\.me\//.test(tParam)) {
-    displayUrl = tParam;
+  if (tParam.value) {
+    displayUrl = tParam.value;
   } else {
     // Strip ?t= if it sneaks in unvalidated, but keep other query params
     // (form, gate, xh, ig, pool) for the /r/:ref re-entry.
-    const safeParams = new URLSearchParams(reqUrl.search);
-    safeParams.delete('t');
+    const safeParams = new URLSearchParams();
+    if (formId) safeParams.set('form', formId);
+    if (gate) safeParams.set('gate', gate);
+    if (xh) safeParams.set('xh', xh);
+    if (ig) safeParams.set('ig', ig);
+    if (poolSlug) safeParams.set('pool', poolSlug);
     const qs = safeParams.toString();
     displayUrl = `${reqUrl.origin}/r/${encodeURIComponent(ref)}${qs ? '?' + qs : ''}`;
   }

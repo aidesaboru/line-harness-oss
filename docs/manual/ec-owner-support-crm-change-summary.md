@@ -28,6 +28,7 @@ updated: 2026-06-13
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
 - 画像だけの返信でも、サポート案件への履歴連携を行う
 - `lineAccountId` を持たないURL fallback経由でも、友だちのLINEアカウントから案件履歴を残す
+- 完了済み案件への `/send` と `/send/validate` はLINE送信、チャット記録、案件履歴記録の前に400で止める
 - staff名の空欄保存を防ぎ、staff名がないAPIキーをPreflightと画面で検知できるようにした
 - credentialed CORSをまとめ、ブラウザログインで必要な `Access-Control-Allow-Credentials` を確認できるようにした
 
@@ -150,6 +151,7 @@ strict Preflight:
 - long-chat mock sessionで `/chats?friend=...` を開き、初期表示は最新2件だけ、`過去のメッセージを読み込む` で `beforeCreatedAt`/`beforeId` 付きAPIを呼び、古い2件が前に追加され、全4件が古い順に並び、追加後に読み込みボタンが消えることを確認
 - draft-handoff mock sessionで `/support` の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、チャット入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認
 - URL-fallback mock sessionで sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクを開き、案件紐付けバナー、空の入力欄、無効な送信ボタンを確認し、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認
+- worker chat route testsで、テキスト返信と画像返信が `customer_reply_sent` 案件履歴イベントを残し、案件を `customer_reply` へ更新すること、完了済み案件への `/send` と `/send/validate` はLINE送信/DB記録前に拒否されることを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

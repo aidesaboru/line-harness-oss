@@ -199,9 +199,13 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
 - Local URL-fallback browser smokeでは、sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクで案件紐付けバナーが `に紐づけ中` と表示され、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認済み。
 - [ ] テキスト返信で案件履歴に顧客返信イベントが残る
+- Worker chat route testでは、テキスト返信後にLINE送信、`chat_messages` 記録、`support_case_events.customer_reply_sent` 記録、案件ステータスの `customer_reply` 更新、metadataの `messageId`/`contentPreview`/前後ステータスが揃うことを確認済み。
 - [ ] 画像だけの返信でも案件履歴に顧客返信イベントが残る
+- Worker chat route testでは、画像返信後にLINE画像送信、`chat_messages` 記録、`support_case_events.customer_reply_sent` 記録、案件ステータスの `customer_reply` 更新が揃うことを確認済み。
 - [ ] 画像とテキストを同時に送っても、不要な「案件更新だけ確認が必要」警告が出ない
+- Web helper testでは、画像+テキスト同時送信時にサポート案件紐付けを画像側だけへ付け、テキスト側で二重更新しない送信計画になることを確認済み。復旧通知helper testでは、案件が既に `customer_reply` の場合は不要な警告を出さないことを確認済み。
 - [ ] 完了済み案件では、再オープンしてから返信する運用になっている
+- Worker chat route testでは、完了済み案件への `/send` と `/send/validate` がどちらも `再オープン` エラーで400になり、LINE送信、チャット記録、案件履歴記録、案件更新が起きないことを確認済み。
 - [ ] マニュアル作成/編集でタイトル、本文、URL形式の保存前チェックが効く
 - [ ] マニュアル無効化、スタッフ削除、APIキー再生成は画面内確認ダイアログで止まる
 - [ ] クリップボードAPIが使えない環境でも、コピー失敗時の案内が表示される
@@ -290,7 +294,7 @@ N/A
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.
 - `corepack pnpm preflight:support-crm:summary` converts the full Preflight log into a PR-safe summary that omits URLs, API keys, friend IDs, and case IDs.
 - Script test verifies the release checklist includes every strict dry-run env and the mutation-guard warning, so docs cannot silently drift from the command.
-- Worker/script tests verify staff cannot use `/api/friends`, unanswered inbox list/count, users-grouped customer aggregation, legacy users customer identity, account-settings test recipients, broadcast management/send/count/insight/dedup-preview APIs, admin diagnostics/repair APIs, form management/submission-list APIs, Stripe events, ad-platforms, affiliate management/reporting, tracked-link management, conversion history/report, calendar bookings, direct message history/send, conversation queue/detail, scenario manual enrollment, score, reminder, or rich-menu friend endpoints to bypass support-case friend visibility or role boundaries. Chat reply tests verify support-case history survives URL fallback without `lineAccountId`, and web helper tests verify image+text sends attach the support case to only one send step.
+- Worker/script tests verify staff cannot use `/api/friends`, unanswered inbox list/count, users-grouped customer aggregation, legacy users customer identity, account-settings test recipients, broadcast management/send/count/insight/dedup-preview APIs, admin diagnostics/repair APIs, form management/submission-list APIs, Stripe events, ad-platforms, affiliate management/reporting, tracked-link management, conversion history/report, calendar bookings, direct message history/send, conversation queue/detail, scenario manual enrollment, score, reminder, or rich-menu friend endpoints to bypass support-case friend visibility or role boundaries. Chat reply tests verify text/image support replies record `customer_reply_sent` support-case events, update cases to `customer_reply`, survive URL fallback without `lineAccountId`, reject resolved-case sends before LINE push or DB writes, and web helper tests verify image+text sends attach the support case to only one send step.
 - `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.
 - If this is a fork PR, GitHub Actions may stay `action_required` until a repository maintainer approves the run.

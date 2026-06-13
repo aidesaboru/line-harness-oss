@@ -175,6 +175,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] 未対応のチャット `messageType` がLINE送信前、DB記録前に止まる
 - [ ] サポート案件一覧、友だち一覧、conversionイベント一覧の不正な `limit` / `offset` queryがSQL bind前に安全な値へ戻る
   - Worker support/friends/conversion route testでは、無効な `limit` は既定値に戻り、小数の `offset` は整数化され、`Infinity` のような有限でない値は0へ戻ることを確認済み。
+- [ ] calendar空き枠取得の不正な `slotMinutes` / `startHour` / `endHour` queryが安全に処理される
+  - Worker calendar route testでは、0分刻みや非数値は既定値に戻り、開始時刻が終了時刻以上の窓はcalendar接続や予約取得の前に400で止まることを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている

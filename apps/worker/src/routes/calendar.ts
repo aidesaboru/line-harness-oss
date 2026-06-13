@@ -31,6 +31,13 @@ interface CalendarBookingRow {
   created_at: string;
 }
 
+function clampInteger(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  if (n < min || n > max) return fallback;
+  return Math.floor(n);
+}
+
 async function getScopedCalendarBookings(
   c: Context<Env>,
   opts: { connectionId?: string; friendId?: string } = {},
@@ -114,12 +121,15 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
   try {
     const connectionId = c.req.query('connectionId');
     const date = c.req.query('date'); // YYYY-MM-DD
-    const slotMinutes = Number(c.req.query('slotMinutes') ?? '60');
-    const startHour = Number(c.req.query('startHour') ?? '9');
-    const endHour = Number(c.req.query('endHour') ?? '18');
+    const slotMinutes = clampInteger(c.req.query('slotMinutes'), 60, 5, 480);
+    const startHour = clampInteger(c.req.query('startHour'), 9, 0, 23);
+    const endHour = clampInteger(c.req.query('endHour'), 18, 1, 24);
 
     if (!connectionId || !date) {
       return c.json({ success: false, error: 'connectionId and date are required' }, 400);
+    }
+    if (startHour >= endHour) {
+      return c.json({ success: false, error: 'startHour must be before endHour' }, 400);
     }
 
     const conn = await getCalendarConnectionById(c.env.DB, connectionId);

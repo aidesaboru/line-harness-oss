@@ -280,6 +280,44 @@ describe('conversion friend visibility guards', () => {
 });
 
 describe('calendar booking friend visibility guards', () => {
+  test('calendar slots clamp invalid numeric query values before generating slots', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarConnectionById.mockResolvedValue({
+      id: 'conn-1',
+      calendar_id: 'calendar-1',
+      auth_type: 'api_key',
+      access_token: null,
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.getBookingsInRange.mockResolvedValue([]);
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/integrations/google-calendar/slots?connectionId=conn-1&date=2026-06-14&slotMinutes=0&startHour=abc&endHour=10');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ startAt: string; endAt: string; available: boolean }> };
+    expect(body.data).toHaveLength(1);
+    expect(dbMocks.getBookingsInRange).toHaveBeenCalledWith(
+      db,
+      'conn-1',
+      '2026-06-14T09:00:00',
+      '2026-06-14T10:00:00',
+    );
+  });
+
+  test('calendar slots reject windows where startHour is not before endHour', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/integrations/google-calendar/slots?connectionId=conn-1&date=2026-06-14&startHour=18&endHour=9');
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getCalendarConnectionById).not.toHaveBeenCalled();
+    expect(dbMocks.getBookingsInRange).not.toHaveBeenCalled();
+  });
+
   test('staff calendar bookings list is scoped to support-visible friends', async () => {
     const db = makeDb({
       visibleFriendIds: ['friend-visible'],

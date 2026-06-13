@@ -557,6 +557,32 @@ const spec = {
         responses: { '200': { description: 'Aggregated report' } },
       },
     },
+    // ── Calendar ───────────────────────────────────────────────────────────
+    '/api/integrations/google-calendar/slots': {
+      get: {
+        tags: ['Calendar'],
+        summary: 'Google Calendar空き枠取得',
+        parameters: [
+          { name: 'connectionId', in: 'query', required: true, schema: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'date', in: 'query', required: true, schema: { type: 'string', minLength: 10, maxLength: 10, pattern: '^\\d{4}-\\d{2}-\\d{2}$' } },
+          { name: 'slotMinutes', in: 'query', schema: { type: 'integer', minimum: 5, maximum: 480, default: 60 } },
+          { name: 'startHour', in: 'query', schema: { type: 'integer', minimum: 0, maximum: 23, default: 9 } },
+          { name: 'endHour', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 24, default: 18 } },
+        ],
+        responses: { '200': { description: 'Available slots' }, '400': { description: 'Invalid calendar slot query' }, '404': { description: 'Calendar connection not found' } },
+      },
+    },
+    '/api/integrations/google-calendar/bookings': {
+      get: {
+        tags: ['Calendar'],
+        summary: 'Google Calendar予約一覧',
+        parameters: [
+          { name: 'connectionId', in: 'query', schema: { type: 'string', maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'friendId', in: 'query', schema: { type: 'string', maxLength: 128, pattern: '^[!-~]+$' } },
+        ],
+        responses: { '200': { description: 'Calendar bookings' }, '400': { description: 'Invalid calendar booking query' } },
+      },
+    },
     // ── Operations / Measurement ───────────────────────────────────────────
     '/api/integrations/stripe/events': {
       get: {
@@ -822,6 +848,7 @@ const spec = {
     { name: 'Users', description: 'UUID Cross-Account ユーザー管理' },
     { name: 'LINE Accounts', description: 'マルチLINEアカウント管理' },
     { name: 'Conversions', description: 'コンバージョン計測' },
+    { name: 'Calendar', description: 'Google Calendar連携' },
     { name: 'Operations', description: '売上・広告・計測運用管理' },
     { name: 'Affiliates', description: 'アフィリエイト管理' },
     { name: 'Webhook', description: 'LINE Webhook' },

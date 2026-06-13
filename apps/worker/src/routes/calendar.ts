@@ -68,6 +68,17 @@ type CalendarBookingInput = {
   description?: string;
   metadata?: Record<string, unknown>;
 };
+type CalendarSlotsQuery = {
+  connectionId: string;
+  date: string;
+  slotMinutes: number;
+  startHour: number;
+  endHour: number;
+};
+type CalendarBookingsQuery = {
+  connectionId?: string;
+  friendId?: string;
+};
 
 type ParseResult<T> = { ok: true; body: T } | { ok: false; error: string };
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -133,6 +144,46 @@ function parseMetadata(raw: unknown): ValueResult<Record<string, unknown> | unde
     return { ok: false, error: 'metadata is too large' };
   }
   return { ok: true, value: raw };
+}
+
+function parseCalendarDateQuery(raw: unknown): ValueResult<string> {
+  const parsed = parseRequiredString(raw, 'date', 10, true);
+  if (!parsed.ok) return parsed;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(parsed.value)) {
+    return { ok: false, error: 'date must be YYYY-MM-DD' };
+  }
+  const [year, month, day] = parsed.value.split('-').map(Number);
+  const exactDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    exactDate.getUTCFullYear() !== year ||
+    exactDate.getUTCMonth() !== month - 1 ||
+    exactDate.getUTCDate() !== day
+  ) {
+    return { ok: false, error: 'date is invalid' };
+  }
+  return parsed;
+}
+
+function parseCalendarSlotsQuery(c: Context<Env>): ParseResult<CalendarSlotsQuery> {
+  const connectionId = parseRequiredString(c.req.query('connectionId'), 'connectionId', CALENDAR_TEXT_ID_MAX_LENGTH, true);
+  if (!connectionId.ok) return connectionId;
+  const date = parseCalendarDateQuery(c.req.query('date'));
+  if (!date.ok) return date;
+  const slotMinutes = clampInteger(c.req.query('slotMinutes'), 60, 5, 480);
+  const startHour = clampInteger(c.req.query('startHour'), 9, 0, 23);
+  const endHour = clampInteger(c.req.query('endHour'), 18, 1, 24);
+  if (startHour >= endHour) {
+    return { ok: false, error: 'startHour must be before endHour' };
+  }
+  return { ok: true, body: { connectionId: connectionId.value, date: date.value, slotMinutes, startHour, endHour } };
+}
+
+function parseCalendarBookingsQuery(c: Context<Env>): ParseResult<CalendarBookingsQuery> {
+  const connectionId = parseOptionalString(c.req.query('connectionId'), 'connectionId', CALENDAR_TEXT_ID_MAX_LENGTH, true);
+  if (!connectionId.ok) return connectionId;
+  const friendId = parseOptionalString(c.req.query('friendId'), 'friendId', CALENDAR_TEXT_ID_MAX_LENGTH, true);
+  if (!friendId.ok) return friendId;
+  return { ok: true, body: { connectionId: connectionId.value, friendId: friendId.value } };
 }
 
 function parseCalendarConnectionBody(raw: unknown): ParseResult<CalendarConnectionInput> {
@@ -284,18 +335,9 @@ calendar.delete('/api/integrations/google-calendar/:id', requireRole('owner', 'a
 
 calendar.get('/api/integrations/google-calendar/slots', async (c) => {
   try {
-    const connectionId = c.req.query('connectionId');
-    const date = c.req.query('date'); // YYYY-MM-DD
-    const slotMinutes = clampInteger(c.req.query('slotMinutes'), 60, 5, 480);
-    const startHour = clampInteger(c.req.query('startHour'), 9, 0, 23);
-    const endHour = clampInteger(c.req.query('endHour'), 18, 1, 24);
-
-    if (!connectionId || !date) {
-      return c.json({ success: false, error: 'connectionId and date are required' }, 400);
-    }
-    if (startHour >= endHour) {
-      return c.json({ success: false, error: 'startHour must be before endHour' }, 400);
-    }
+    const parsed = parseCalendarSlotsQuery(c);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const { connectionId, date, slotMinutes, startHour, endHour } = parsed.body;
 
     const conn = await getCalendarConnectionById(c.env.DB, connectionId);
     if (!conn) {
@@ -367,16 +409,17 @@ calendar.get('/api/integrations/google-calendar/slots', async (c) => {
 
 calendar.get('/api/integrations/google-calendar/bookings', async (c) => {
   try {
-    const connectionId = c.req.query('connectionId');
-    const friendId = c.req.query('friendId');
+    const parsed = parseCalendarBookingsQuery(c);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const { connectionId, friendId } = parsed.body;
     if (friendId) {
       const denied = await ensureSupportFriendAccess(c, friendId);
       if (denied) return denied;
     }
 
     const items = await getScopedCalendarBookings(c, {
-      connectionId: connectionId ?? undefined,
-      friendId: friendId ?? undefined,
+      connectionId,
+      friendId,
     });
     return c.json({
       success: true,

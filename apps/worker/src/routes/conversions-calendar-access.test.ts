@@ -505,6 +505,50 @@ describe('calendar booking friend visibility guards', () => {
     expect(dbMocks.getBookingsInRange).not.toHaveBeenCalled();
   });
 
+  test('calendar slots reject unsafe connection or date query values before lookups', async () => {
+    const queries = [
+      'connectionId=bad%20conn&date=2026-06-14',
+      'connectionId=conn-1&date=not-a-date',
+      'connectionId=conn-1&date=2026-99-99',
+      'connectionId=conn-1&date=2026-02-31',
+    ];
+
+    for (const query of queries) {
+      const db = makeDb();
+      const res = await setupApp(db, 'staff').request(`/api/integrations/google-calendar/slots?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(dbMocks.getCalendarConnectionById, query).not.toHaveBeenCalled();
+      expect(dbMocks.getBookingsInRange, query).not.toHaveBeenCalled();
+    }
+  });
+
+  test('calendar slots trim valid connection and date query values before lookups', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarConnectionById.mockResolvedValue({
+      id: 'conn-1',
+      calendar_id: 'calendar-1',
+      auth_type: 'api_key',
+      access_token: null,
+      is_active: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    dbMocks.getBookingsInRange.mockResolvedValue([]);
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/integrations/google-calendar/slots?connectionId=%20conn-1%20&date=%202026-06-14%20&startHour=9&endHour=10');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getCalendarConnectionById).toHaveBeenCalledWith(db, 'conn-1');
+    expect(dbMocks.getBookingsInRange).toHaveBeenCalledWith(
+      db,
+      'conn-1',
+      '2026-06-14T09:00:00',
+      '2026-06-14T10:00:00',
+    );
+  });
+
   test('staff calendar bookings list is scoped to support-visible friends', async () => {
     const db = makeDb({
       visibleFriendIds: ['friend-visible'],
@@ -544,6 +588,33 @@ describe('calendar booking friend visibility guards', () => {
     const listCall = db.calls.find((call) => call.sql.includes('FROM calendar_bookings cb'));
     expect(listCall?.sql).toContain('sc_friend_scope.friend_id = cb.friend_id');
     expect(listCall?.binds).toEqual(['conn-1', 'staff-1', '%田島%', '%田島%', '%田島%']);
+  });
+
+  test('calendar bookings reject unsafe query values before friend access checks or SQL bind', async () => {
+    const queries = [
+      'connectionId=bad%20conn',
+      'friendId=bad%20friend',
+    ];
+
+    for (const query of queries) {
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request(`/api/integrations/google-calendar/bookings?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(db.calls, query).toEqual([]);
+    }
+  });
+
+  test('calendar bookings trim valid query values before friend access checks and SQL bind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/integrations/google-calendar/bookings?connectionId=%20conn-1%20&friendId=%20friend-visible%20');
+
+    expect(res.status).toBe(200);
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '%田島%', '%田島%', '%田島%'] });
+    const listCall = db.calls.find((call) => call.sql.includes('FROM calendar_bookings cb'));
+    expect(listCall?.binds).toEqual(['friend-visible', 'conn-1', 'staff-1', '%田島%', '%田島%', '%田島%']);
   });
 
   test('staff cannot create a calendar booking for a hidden friend', async () => {

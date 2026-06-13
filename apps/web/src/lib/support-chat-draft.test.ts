@@ -8,6 +8,7 @@ import {
   buildSupportChatSendCasePayload,
   consumeSupportChatDraft,
   createSupportChatDraftContext,
+  mergeSupportChatDraftContext,
   planSupportChatSendAttachments,
   storeSupportChatDraft,
   tryStoreSupportChatDraft,
@@ -130,6 +131,35 @@ describe('support chat draft handoff', () => {
       lineAccountId: 'acc-smoke',
       draft: '',
     })
+  })
+
+  it('keeps the richer stored context when the URL fallback reruns for the same case', () => {
+    const stored = createSupportChatDraftContext({
+      friendId: 'friend-visible',
+      caseId: 'case-visible',
+      lineAccountId: 'acc-smoke',
+      caseTitle: '報酬反映の確認',
+      draft: '確認して折り返します。',
+      createdAt: '2026-06-13T03:10:00.000',
+    })
+    const fallback = buildSupportChatFallbackContext('?friend=friend-visible&supportCase=case-visible&lineAccount=acc-smoke')
+
+    expect(fallback).not.toBeNull()
+    expect(mergeSupportChatDraftContext(stored, fallback!)).toEqual(stored)
+  })
+
+  it('replaces the stored context when the deep link targets another case', () => {
+    const stored = createSupportChatDraftContext({
+      friendId: 'friend-visible',
+      caseId: 'case-visible',
+      lineAccountId: 'acc-smoke',
+      caseTitle: '報酬反映の確認',
+      draft: '確認して折り返します。',
+    })
+    const fallback = buildSupportChatFallbackContext('?friend=friend-visible&supportCase=case-other&lineAccount=acc-smoke')
+
+    expect(fallback).not.toBeNull()
+    expect(mergeSupportChatDraftContext(stored, fallback!)).toEqual(fallback)
   })
 
   it('does not build a fallback context without a friend and case id', () => {

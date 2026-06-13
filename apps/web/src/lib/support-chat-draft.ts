@@ -204,3 +204,19 @@ export function buildSupportChatFallbackContext(search: string): SupportChatDraf
     draft: '',
   }
 }
+
+export function mergeSupportChatDraftContext(
+  previous: SupportChatDraftContext | null,
+  next: SupportChatDraftContext,
+): SupportChatDraftContext {
+  if (!previous) return next
+  if (previous.friendId !== next.friendId || previous.caseId !== next.caseId) return next
+
+  return {
+    ...next,
+    lineAccountId: next.lineAccountId || previous.lineAccountId,
+    caseTitle: next.caseTitle || previous.caseTitle,
+    draft: next.draft || previous.draft,
+    createdAt: next.createdAt || previous.createdAt,
+  }
+}

@@ -8,6 +8,7 @@ import {
   buildSupportChatSendCasePayload,
   buildSupportChatFallbackContext,
   consumeSupportChatDraft,
+  mergeSupportChatDraftContext,
   planSupportChatSendAttachments,
   type SupportChatRecoveryNotice,
   type SupportChatDraftContext,
@@ -590,8 +591,8 @@ export default function ChatsPage() {
     }
     context ??= buildSupportChatFallbackContext(window.location.search)
     if (context) {
-      if (context.draft) setMessageContent(context.draft)
-      setSupportDraftContext(context)
+      if (context.draft) setMessageContent((prev) => prev.trim() ? prev : context.draft)
+      setSupportDraftContext((prev) => mergeSupportChatDraftContext(prev, context))
       setSupportRecoveryNotice(null)
     }
   }, [])

@@ -149,6 +149,17 @@ beforeEach(() => {
     metadata: null,
     created_at: '2026-06-13T10:00:00.000',
   });
+  dbMocks.createCalendarConnection.mockResolvedValue({
+    id: 'conn-created',
+    calendar_id: 'primary',
+    access_token: null,
+    refresh_token: null,
+    api_key: 'calendar-key',
+    auth_type: 'api_key',
+    is_active: 1,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
   dbMocks.createCalendarBooking.mockResolvedValue({
     id: 'booking-created',
     connection_id: 'conn-1',
@@ -280,6 +291,51 @@ describe('conversion friend visibility guards', () => {
 });
 
 describe('calendar booking friend visibility guards', () => {
+  test('calendar connection create rejects malformed JSON before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createCalendarConnection).not.toHaveBeenCalled();
+  });
+
+  test('calendar connection create rejects unsafe payloads before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendarId: 'primary\nunsafe', authType: 'service_account' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createCalendarConnection).not.toHaveBeenCalled();
+  });
+
+  test('calendar connection create trims valid payloads before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ calendarId: ' primary ', authType: ' api_key ', apiKey: ' calendar-key ' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createCalendarConnection).toHaveBeenCalledWith(db, {
+      calendarId: 'primary',
+      authType: 'api_key',
+      accessToken: undefined,
+      refreshToken: undefined,
+      apiKey: 'calendar-key',
+    });
+  });
+
   test('calendar slots clamp invalid numeric query values before generating slots', async () => {
     const db = makeDb();
     dbMocks.getCalendarConnectionById.mockResolvedValue({
@@ -378,6 +434,89 @@ describe('calendar booking friend visibility guards', () => {
     expect(dbMocks.createCalendarBooking).not.toHaveBeenCalled();
   });
 
+  test('calendar booking create rejects malformed JSON before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'staff').request('/api/integrations/google-calendar/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.calls).toEqual([]);
+    expect(dbMocks.createCalendarBooking).not.toHaveBeenCalled();
+    expect(dbMocks.getCalendarConnectionById).not.toHaveBeenCalled();
+  });
+
+  test('calendar booking create rejects invalid windows before friend access checks', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/integrations/google-calendar/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: 'conn-1',
+        friendId: 'friend-hidden',
+        title: '相談予約',
+        startAt: '2026-06-14T11:00:00.000+09:00',
+        endAt: '2026-06-14T10:00:00.000+09:00',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(db.calls).toEqual([]);
+    expect(dbMocks.createCalendarBooking).not.toHaveBeenCalled();
+  });
+
+  test('calendar booking create rejects oversized metadata before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: 'conn-1',
+        title: '相談予約',
+        startAt: '2026-06-14T10:00:00.000+09:00',
+        endAt: '2026-06-14T11:00:00.000+09:00',
+        metadata: { note: 'x'.repeat(16 * 1024 + 1) },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createCalendarBooking).not.toHaveBeenCalled();
+    expect(dbMocks.getCalendarConnectionById).not.toHaveBeenCalled();
+  });
+
+  test('calendar booking create trims valid payloads before DB writes', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/integrations/google-calendar/book', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        connectionId: ' conn-1 ',
+        title: ' 相談予約 ',
+        startAt: ' 2026-06-14T10:00:00.000+09:00 ',
+        endAt: ' 2026-06-14T11:00:00.000+09:00 ',
+        description: ' 初回相談 ',
+        metadata: { source: 'liff' },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createCalendarBooking).toHaveBeenCalledWith(db, expect.objectContaining({
+      connectionId: 'conn-1',
+      title: '相談予約',
+      startAt: '2026-06-14T10:00:00.000+09:00',
+      endAt: '2026-06-14T11:00:00.000+09:00',
+      description: '初回相談',
+      metadata: JSON.stringify({ source: 'liff' }),
+    }));
+    expect(dbMocks.getCalendarConnectionById).toHaveBeenCalledWith(db, 'conn-1');
+  });
+
   test('staff cannot update a hidden friend calendar booking by booking id', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
     dbMocks.getCalendarBookingById.mockResolvedValue({
@@ -400,6 +539,26 @@ describe('calendar booking friend visibility guards', () => {
     });
 
     expect(res.status).toBe(404);
+    expect(dbMocks.updateCalendarBookingStatus).not.toHaveBeenCalled();
+  });
+
+  test('calendar booking status rejects malformed or invalid payloads before booking lookup', async () => {
+    const db = makeDb();
+
+    const malformed = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bookings/booking-1/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const invalid = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bookings/booking-1/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'deleted' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(invalid.status).toBe(400);
+    expect(dbMocks.getCalendarBookingById).not.toHaveBeenCalled();
     expect(dbMocks.updateCalendarBookingStatus).not.toHaveBeenCalled();
   });
 });

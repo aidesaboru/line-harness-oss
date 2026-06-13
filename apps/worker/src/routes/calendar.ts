@@ -19,6 +19,18 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const calendar = new Hono<Env>();
 
+const CALENDAR_ID_MAX_LENGTH = 256;
+const CALENDAR_TOKEN_MAX_LENGTH = 4096;
+const CALENDAR_TEXT_ID_MAX_LENGTH = 128;
+const CALENDAR_TITLE_MAX_LENGTH = 160;
+const CALENDAR_DESCRIPTION_MAX_LENGTH = 2048;
+const CALENDAR_TIMESTAMP_MAX_LENGTH = 64;
+const CALENDAR_METADATA_MAX_KEYS = 50;
+const CALENDAR_METADATA_MAX_JSON_LENGTH = 16 * 1024;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const CALENDAR_AUTH_TYPES = new Set(['api_key', 'oauth']);
+const CALENDAR_BOOKING_STATUSES = new Set(['confirmed', 'cancelled', 'completed']);
+
 interface CalendarBookingRow {
   id: string;
   connection_id: string;
@@ -37,6 +49,156 @@ function clampInteger(raw: string | undefined, fallback: number, min: number, ma
   if (!Number.isFinite(n)) return fallback;
   if (n < min || n > max) return fallback;
   return Math.floor(n);
+}
+
+type CalendarConnectionInput = {
+  calendarId: string;
+  authType: string;
+  accessToken?: string;
+  refreshToken?: string;
+  apiKey?: string;
+};
+
+type CalendarBookingInput = {
+  connectionId: string;
+  friendId?: string;
+  title: string;
+  startAt: string;
+  endAt: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type ParseResult<T> = { ok: true; body: T } | { ok: false; error: string };
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  asciiOnly = false,
+): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (asciiOnly && !VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  asciiOnly = false,
+): ValueResult<string | undefined> {
+  if (raw == null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (asciiOnly && !VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseTimestamp(raw: unknown, label: string): ValueResult<string> {
+  const parsed = parseRequiredString(raw, label, CALENDAR_TIMESTAMP_MAX_LENGTH);
+  if (!parsed.ok) return parsed;
+  if (!parsed.value.includes('T')) return { ok: false, error: `${label} must be a date-time string` };
+  if (!Number.isFinite(new Date(parsed.value).getTime())) return { ok: false, error: `${label} is invalid` };
+  return parsed;
+}
+
+function parseMetadata(raw: unknown): ValueResult<Record<string, unknown> | undefined> {
+  if (raw == null) return { ok: true, value: undefined };
+  if (!isRecord(raw)) return { ok: false, error: 'metadata must be an object' };
+  if (Object.keys(raw).length > CALENDAR_METADATA_MAX_KEYS) {
+    return { ok: false, error: 'metadata has too many keys' };
+  }
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw);
+  } catch {
+    return { ok: false, error: 'metadata is invalid' };
+  }
+  if (serialized.length > CALENDAR_METADATA_MAX_JSON_LENGTH) {
+    return { ok: false, error: 'metadata is too large' };
+  }
+  return { ok: true, value: raw };
+}
+
+function parseCalendarConnectionBody(raw: unknown): ParseResult<CalendarConnectionInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const calendarId = parseRequiredString(raw.calendarId, 'calendarId', CALENDAR_ID_MAX_LENGTH, true);
+  if (!calendarId.ok) return calendarId;
+  const authType = parseRequiredString(raw.authType, 'authType', 32, true);
+  if (!authType.ok) return authType;
+  if (!CALENDAR_AUTH_TYPES.has(authType.value)) return { ok: false, error: 'authType is invalid' };
+  const accessToken = parseOptionalString(raw.accessToken, 'accessToken', CALENDAR_TOKEN_MAX_LENGTH, true);
+  if (!accessToken.ok) return accessToken;
+  const refreshToken = parseOptionalString(raw.refreshToken, 'refreshToken', CALENDAR_TOKEN_MAX_LENGTH, true);
+  if (!refreshToken.ok) return refreshToken;
+  const apiKey = parseOptionalString(raw.apiKey, 'apiKey', CALENDAR_TOKEN_MAX_LENGTH, true);
+  if (!apiKey.ok) return apiKey;
+  return {
+    ok: true,
+    body: {
+      calendarId: calendarId.value,
+      authType: authType.value,
+      accessToken: accessToken.value,
+      refreshToken: refreshToken.value,
+      apiKey: apiKey.value,
+    },
+  };
+}
+
+function parseCalendarBookingBody(raw: unknown): ParseResult<CalendarBookingInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const connectionId = parseRequiredString(raw.connectionId, 'connectionId', CALENDAR_TEXT_ID_MAX_LENGTH, true);
+  if (!connectionId.ok) return connectionId;
+  const friendId = parseOptionalString(raw.friendId, 'friendId', CALENDAR_TEXT_ID_MAX_LENGTH, true);
+  if (!friendId.ok) return friendId;
+  const title = parseRequiredString(raw.title, 'title', CALENDAR_TITLE_MAX_LENGTH);
+  if (!title.ok) return title;
+  const startAt = parseTimestamp(raw.startAt, 'startAt');
+  if (!startAt.ok) return startAt;
+  const endAt = parseTimestamp(raw.endAt, 'endAt');
+  if (!endAt.ok) return endAt;
+  if (new Date(startAt.value).getTime() >= new Date(endAt.value).getTime()) {
+    return { ok: false, error: 'startAt must be before endAt' };
+  }
+  const description = parseOptionalString(raw.description, 'description', CALENDAR_DESCRIPTION_MAX_LENGTH);
+  if (!description.ok) return description;
+  const metadata = parseMetadata(raw.metadata);
+  if (!metadata.ok) return metadata;
+  return {
+    ok: true,
+    body: {
+      connectionId: connectionId.value,
+      friendId: friendId.value,
+      title: title.value,
+      startAt: startAt.value,
+      endAt: endAt.value,
+      description: description.value,
+      metadata: metadata.value,
+    },
+  };
+}
+
+function parseCalendarStatusBody(raw: unknown): ParseResult<{ status: string }> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const status = parseRequiredString(raw.status, 'status', 32, true);
+  if (!status.ok) return status;
+  if (!CALENDAR_BOOKING_STATUSES.has(status.value)) return { ok: false, error: 'status is invalid' };
+  return { ok: true, body: { status: status.value } };
 }
 
 async function getScopedCalendarBookings(
@@ -93,8 +255,10 @@ calendar.get('/api/integrations/google-calendar', requireRole('owner', 'admin'),
 
 calendar.post('/api/integrations/google-calendar/connect', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{ calendarId: string; authType: string; accessToken?: string; refreshToken?: string; apiKey?: string }>();
-    if (!body.calendarId) return c.json({ success: false, error: 'calendarId is required' }, 400);
+    const rawBody = await readJsonBody(c);
+    const parsed = parseCalendarConnectionBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     const conn = await createCalendarConnection(c.env.DB, body);
     return c.json({
       success: true,
@@ -237,10 +401,10 @@ calendar.get('/api/integrations/google-calendar/bookings', async (c) => {
 
 calendar.post('/api/integrations/google-calendar/book', async (c) => {
   try {
-    const body = await c.req.json<{ connectionId: string; friendId?: string; title: string; startAt: string; endAt: string; description?: string; metadata?: Record<string, unknown> }>();
-    if (!body.connectionId || !body.title || !body.startAt || !body.endAt) {
-      return c.json({ success: false, error: 'connectionId, title, startAt, endAt are required' }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseCalendarBookingBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     if (body.friendId) {
       const denied = await ensureSupportFriendAccess(c, body.friendId);
@@ -299,7 +463,10 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
 calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) => {
   try {
     const id = c.req.param('id');
-    const { status } = await c.req.json<{ status: string }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseCalendarStatusBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const { status } = parsed.body;
     const booking = await getCalendarBookingById(c.env.DB, id);
     if (!booking) {
       return c.json({ success: false, error: 'Calendar booking not found' }, 404);

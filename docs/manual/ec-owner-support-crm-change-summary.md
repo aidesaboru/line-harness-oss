@@ -17,6 +17,7 @@ updated: 2026-06-13
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
 - support案件一覧、友だち一覧、conversionイベント一覧の `limit` / `offset` queryは、SQL bind前に既定値、整数、有限値へ丸める
 - calendar空き枠取得の `slotMinutes` / `startHour` / `endHour` queryは、0以下、範囲外、非数値を既定値へ戻し、開始時刻が終了時刻以上なら400で止める
+- Google Calendar接続作成、予約作成、予約status更新payloadは、壊れたJSON、不正な `calendarId/authType/token/connectionId/friendId/title/startAt/endAt/metadata/status` をDB書き込み、friend可視範囲check、Google Calendar API呼び出し前に400で止める
 - automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの `limit` / `offset` / `days` queryも既定値、上限、整数へ正規化し、Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` を残さない
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
@@ -185,7 +186,7 @@ strict Preflight:
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
-- conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm calendar slot query values cannot create zero-minute/negative loops and invalid time windows stop before calendar lookup.
+- conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm calendar slot query values cannot create zero-minute/negative loops and invalid time windows stop before calendar lookup, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
 - Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind.
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.

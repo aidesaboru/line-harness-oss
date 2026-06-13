@@ -196,3 +196,34 @@ describe('public LIFF link endpoint', () => {
     expect(dbMocks.recordLinkClick).toHaveBeenCalledWith(db, 'link-1', 'friend-verified');
   });
 });
+
+describe('public LIFF send-form-link endpoint', () => {
+  test('rejects missing idToken before trusting the caller-supplied lineUserId', async () => {
+    const res = await setupApp().request('/api/liff/send-form-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineUserId: 'U-victim', formId: 'form-1' }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(dbMocks.getLineAccounts).not.toHaveBeenCalled();
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+
+  test('rejects an idToken whose subject does not match the supplied lineUserId', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ sub: 'U-verified' }),
+    }));
+
+    const res = await setupApp().request('/api/liff/send-form-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineUserId: 'U-victim', formId: 'form-1', idToken: 'verified-token' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(dbMocks.getLineAccounts).toHaveBeenCalledWith({} as D1Database);
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+});

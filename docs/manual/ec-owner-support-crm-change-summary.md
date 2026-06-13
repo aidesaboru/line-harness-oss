@@ -28,6 +28,7 @@ updated: 2026-06-13
 - 公開フォームsubmitのWebhook gateは、LIFFクライアントの事前確認や `_skipWebhook` 自己申告を信じず、Worker側で毎回再判定する
 - 公開フォームのopened、partial、submitで友だちへ紐付ける処理は、caller supplied `lineUserId` / `friendId` ではなくLINE ID token検証済みのLINE user IDだけを使う
 - `/api/liff/profile` はcaller supplied `lineUserId` で友だち情報を返さず、LINE ID token検証済みのLINE user IDだけでプロフィールを解決する
+- `/api/liff/send-form-link` はフォームURL push前にLINE ID tokenのsubjectとcaller supplied `lineUserId` の一致を必須にする
 - tracked-link公開リダイレクト `/t/:linkId` はcaller supplied `f` / `lu` を友だち本人として扱わず、LINEアプリ内では `ref` 付きLIFFへ回し、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionを行う
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
@@ -167,6 +168,7 @@ strict Preflight:
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
 - Form access route tests confirm public submit ignores `_skipWebhook`, rechecks the webhook gate server-side, does not run reward tag/scenario side effects when the gate rejects, stores redacted webhook fetch errors, and never trusts caller-supplied `lineUserId` / `friendId` for partial metadata writes or submit side effects.
 - LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token and resolves the friend only from the verified token subject.
+- LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - Operations and LIFF access route tests confirm `/t/:linkId` ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
 - LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.

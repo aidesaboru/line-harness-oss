@@ -779,9 +779,14 @@ const priorityRank: Record<SupportPriority, number> = {
 }
 
 export function sortCases(cases: SupportCase[], mode: CaseSortMode): SupportCase[] {
-  if (mode === 'updated') return cases
   const sorted = [...cases]
-  if (mode === 'due') {
+  if (mode === 'updated') {
+    sorted.sort((a, b) => {
+      const at = getTime(a.updatedAt) || 0
+      const bt = getTime(b.updatedAt) || 0
+      return bt - at
+    })
+  } else if (mode === 'due') {
     sorted.sort((a, b) => {
       const aResolved = a.status === 'resolved' ? 1 : 0
       const bResolved = b.status === 'resolved' ? 1 : 0
@@ -815,6 +820,13 @@ export function getDisplayCases(
     })
   }
   return sortCases(filtered, options.sortMode)
+}
+
+export function getInitialSupportCaseId(
+  cases: SupportCase[],
+  options: { caseFocus: CaseFocus; sortMode: CaseSortMode },
+): string | null {
+  return getDisplayCases(cases, options)[0]?.id ?? null
 }
 
 export function isSelectedCaseOutsideCurrentList(input: {

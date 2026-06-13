@@ -15,6 +15,7 @@ import {
   getOutsideCurrentListAction,
   getSupportCaseListEmptyState,
   getSupportIdentityIssue,
+  getInitialSupportCaseId,
   getSupportRolePermissions,
   getVisibleStatusOptions,
   isOverdueCase,
@@ -65,6 +66,28 @@ afterEach(() => {
 })
 
 describe('support case list ordering', () => {
+  it('sorts by latest update even when the API returns another order', () => {
+    const cases = [
+      supportCase({ id: 'older-high-priority', priority: 'urgent', updatedAt: '2026-06-12T09:00:00.000Z' }),
+      supportCase({ id: 'newer-low-priority', priority: 'low', updatedAt: '2026-06-13T09:00:00.000Z' }),
+    ]
+
+    expect(sortCases(cases, 'updated').map((item) => item.id)).toEqual([
+      'newer-low-priority',
+      'older-high-priority',
+    ])
+  })
+
+  it('selects the first case from the current display order on initial load', () => {
+    const cases = [
+      supportCase({ id: 'older-high-priority', priority: 'urgent', updatedAt: '2026-06-12T09:00:00.000Z' }),
+      supportCase({ id: 'newer-low-priority', priority: 'low', updatedAt: '2026-06-13T09:00:00.000Z' }),
+    ]
+
+    expect(getInitialSupportCaseId(cases, { caseFocus: 'all', sortMode: 'updated' })).toBe('newer-low-priority')
+    expect(getInitialSupportCaseId(cases, { caseFocus: 'all', sortMode: 'priority' })).toBe('older-high-priority')
+  })
+
   it('shows stale cases oldest-first when the 24h queue is selected', () => {
     vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-06-13T12:00:00.000Z').getTime())
     const cases = [

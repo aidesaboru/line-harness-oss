@@ -41,6 +41,7 @@ import {
   getDisplayCases,
   getEscalationDraftValidationIssues,
   getManualEditorValidationIssues,
+  getInitialSupportCaseId,
   getOutsideCurrentListAction,
   getSupportCaseListEmptyState,
   getSupportIdentityIssue,
@@ -263,9 +264,9 @@ export default function SupportPage() {
     if (!casesRes.success) throw new Error(supportApiErrorMessage(casesRes, '案件一覧の読み込みに失敗しました'))
     setSummary(summaryRes.data)
     setCases(casesRes.data)
-    // 初回のみ先頭を自動選択。絞り込みで一覧から消えても選択中の案件は維持する
-    setSelectedCaseId((prev) => prev ?? casesRes.data[0]?.id ?? null)
-  }, [selectedAccountId, statusFilter, queueFilter, appliedSearch, supportDataReady])
+    // 初回のみ表示順の先頭を自動選択。絞り込みで一覧から消えても選択中の案件は維持する
+    setSelectedCaseId((prev) => prev ?? getInitialSupportCaseId(casesRes.data, { caseFocus, sortMode }))
+  }, [selectedAccountId, statusFilter, queueFilter, appliedSearch, supportDataReady, caseFocus, sortMode])
 
   const loadDetail = useCallback(async (id: string | null) => {
     const requestId = ++detailRequestRef.current
@@ -1009,6 +1010,7 @@ export default function SupportPage() {
           onSelect={selectCase}
           onStatusFilterChange={(value) => {
             setStatusFilter(value)
+            setQueueFilter('all')
             setCaseFocus('all')
           }}
           onSortChange={setSortMode}

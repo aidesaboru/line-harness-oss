@@ -64,6 +64,14 @@ const messageTypeLabels: Record<string, string> = {
   flex: 'Flex',
 }
 
+const REMINDERS_LIST_ERROR_MESSAGE = 'リマインダーの読み込みに失敗しました。もう一度お試しください。'
+const REMINDER_DETAIL_ERROR_MESSAGE = 'リマインダー詳細の読み込みに失敗しました。もう一度お試しください。'
+const REMINDER_CREATE_ERROR_MESSAGE = 'リマインダーの作成に失敗しました。もう一度お試しください。'
+const REMINDER_STATUS_ERROR_MESSAGE = 'リマインダーのステータス変更に失敗しました。もう一度お試しください。'
+const REMINDER_DELETE_ERROR_MESSAGE = 'リマインダーの削除に失敗しました。もう一度お試しください。'
+const REMINDER_STEP_CREATE_ERROR_MESSAGE = 'リマインダーステップの追加に失敗しました。もう一度お試しください。'
+const REMINDER_STEP_DELETE_ERROR_MESSAGE = 'リマインダーステップの削除に失敗しました。もう一度お試しください。'
+
 const ccPrompts = [
   {
     title: 'リマインダー作成',
@@ -116,10 +124,12 @@ export default function RemindersPage() {
       if (res.success) {
         setReminders(res.data)
       } else {
-        setError(res.error)
+        setReminders([])
+        setError(REMINDERS_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('リマインダーの読み込みに失敗しました。もう一度お試しください。')
+      setReminders([])
+      setError(REMINDERS_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -136,10 +146,12 @@ export default function RemindersPage() {
       if (res.success) {
         setExpandedData(res.data)
       } else {
-        setError(res.error)
+        setExpandedData(null)
+        setError(REMINDER_DETAIL_ERROR_MESSAGE)
       }
     } catch {
-      setError('詳細の読み込みに失敗しました')
+      setExpandedData(null)
+      setError(REMINDER_DETAIL_ERROR_MESSAGE)
     } finally {
       setExpandLoading(false)
     }
@@ -176,10 +188,10 @@ export default function RemindersPage() {
         setForm({ name: '', description: '' })
         loadReminders()
       } else {
-        setFormError(res.error)
+        setFormError(REMINDER_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(REMINDER_CREATE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -187,27 +199,35 @@ export default function RemindersPage() {
 
   const handleToggleActive = async (id: string, current: boolean) => {
     try {
-      await api.reminders.update(id, { isActive: !current })
+      const res = await api.reminders.update(id, { isActive: !current })
+      if (!res.success) {
+        setError(REMINDER_STATUS_ERROR_MESSAGE)
+        return
+      }
       loadReminders()
       if (expandedId === id && expandedData) {
         setExpandedData({ ...expandedData, isActive: !current })
       }
     } catch {
-      setError('ステータスの変更に失敗しました')
+      setError(REMINDER_STATUS_ERROR_MESSAGE)
     }
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('このリマインダーを削除してもよいですか？')) return
     try {
-      await api.reminders.delete(id)
+      const res = await api.reminders.delete(id)
+      if (!res.success) {
+        setError(REMINDER_DELETE_ERROR_MESSAGE)
+        return
+      }
       if (expandedId === id) {
         setExpandedId(null)
         setExpandedData(null)
       }
       loadReminders()
     } catch {
-      setError('削除に失敗しました')
+      setError(REMINDER_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -230,10 +250,10 @@ export default function RemindersPage() {
         setStepForm({ offsetMinutes: -60, messageType: 'text', messageContent: '' })
         loadDetail(expandedId)
       } else {
-        setStepFormError(res.error)
+        setStepFormError(REMINDER_STEP_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setStepFormError('ステップの追加に失敗しました')
+      setStepFormError(REMINDER_STEP_CREATE_ERROR_MESSAGE)
     } finally {
       setStepSaving(false)
     }
@@ -243,10 +263,14 @@ export default function RemindersPage() {
     if (!expandedId) return
     if (!confirm('このステップを削除してもよいですか？')) return
     try {
-      await api.reminders.deleteStep(expandedId, stepId)
+      const res = await api.reminders.deleteStep(expandedId, stepId)
+      if (!res.success) {
+        setError(REMINDER_STEP_DELETE_ERROR_MESSAGE)
+        return
+      }
       loadDetail(expandedId)
     } catch {
-      setError('ステップの削除に失敗しました')
+      setError(REMINDER_STEP_DELETE_ERROR_MESSAGE)
     }
   }
 

@@ -21,6 +21,11 @@ interface CreateFormState {
   scoreValue: string
 }
 
+const SCORING_LIST_ERROR_MESSAGE = 'スコアリングルールの読み込みに失敗しました。もう一度お試しください。'
+const SCORING_CREATE_ERROR_MESSAGE = 'スコアリングルールの作成に失敗しました。もう一度お試しください。'
+const SCORING_STATUS_ERROR_MESSAGE = 'スコアリングルールのステータス変更に失敗しました。もう一度お試しください。'
+const SCORING_DELETE_ERROR_MESSAGE = 'スコアリングルールの削除に失敗しました。もう一度お試しください。'
+
 const ccPrompts = [
   {
     title: 'スコアリングルール設計',
@@ -61,10 +66,12 @@ export default function ScoringPage() {
       if (res.success) {
         setRules(res.data)
       } else {
-        setError(res.error)
+        setRules([])
+        setError(SCORING_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('スコアリングルールの読み込みに失敗しました。もう一度お試しください。')
+      setRules([])
+      setError(SCORING_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -100,10 +107,10 @@ export default function ScoringPage() {
         setForm({ name: '', eventType: '', scoreValue: '' })
         loadRules()
       } else {
-        setFormError(res.error)
+        setFormError(SCORING_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(SCORING_CREATE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -111,20 +118,28 @@ export default function ScoringPage() {
 
   const handleToggleActive = async (id: string, current: boolean) => {
     try {
-      await api.scoring.updateRule(id, { isActive: !current })
+      const res = await api.scoring.updateRule(id, { isActive: !current })
+      if (!res.success) {
+        setError(SCORING_STATUS_ERROR_MESSAGE)
+        return
+      }
       loadRules()
     } catch {
-      setError('ステータスの変更に失敗しました')
+      setError(SCORING_STATUS_ERROR_MESSAGE)
     }
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('このスコアリングルールを削除しますか？')) return
     try {
-      await api.scoring.deleteRule(id)
+      const res = await api.scoring.deleteRule(id)
+      if (!res.success) {
+        setError(SCORING_DELETE_ERROR_MESSAGE)
+        return
+      }
       loadRules()
     } catch {
-      setError('削除に失敗しました')
+      setError(SCORING_DELETE_ERROR_MESSAGE)
     }
   }
 

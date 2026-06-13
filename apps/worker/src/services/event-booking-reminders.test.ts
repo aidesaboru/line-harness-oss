@@ -310,7 +310,33 @@ describe('processDueEventReminders', () => {
     });
     expect(state.rows[0].status).toBe('failed');
     expect(state.rows[0].retry_count).toBe(1);
-    expect(state.rows[0].last_error).toBe('temp');
+    expect(state.rows[0].last_error).toBe('Error');
+  });
+
+  test('stores only error kind in last_error on sender failure', async () => {
+    const state = {
+      rows: [
+        dueRow({
+          id: 'r1',
+          retry_count: 0,
+          channel_access_token: 'event-token-secret',
+          line_user_id: 'U-event-secret',
+        }),
+      ],
+    };
+    const db = dueDB(state);
+    const sender = vi.fn(async () => {
+      throw new Error('LINE API error: 429 Too Many Requests — event-token-secret U-event-secret body-secret');
+    });
+    await processDueEventReminders(db, {
+      now: new Date('2026-05-09T01:00:00Z'),
+      sender,
+    });
+    expect(state.rows[0].status).toBe('failed');
+    expect(state.rows[0].last_error).toBe('line_http_status_429');
+    expect(state.rows[0].last_error).not.toContain('event-token-secret');
+    expect(state.rows[0].last_error).not.toContain('U-event-secret');
+    expect(state.rows[0].last_error).not.toContain('body-secret');
   });
 
   test('hours_before kind passes hoursBefore from event setting', async () => {

@@ -120,6 +120,36 @@ describe('processDueReminders', () => {
     expect(failedUpdate!.bound[1]).toBe(1); // retry_count
   });
 
+  test('送信失敗時の last_error は生の例外文を保存しない', async () => {
+    const due: DueRow[] = [
+      {
+        id: 'R1',
+        booking_id: 'B1',
+        kind: 'day_before',
+        retry_count: 0,
+        starts_at: '2026-05-10T05:00:00Z',
+        menu_name: 'カット',
+        staff_name: '山田',
+        channel_access_token: 'tok-secret',
+        line_user_id: 'U-secret',
+      },
+    ];
+    const { db, updates } = stubDB(due);
+    const sender = vi.fn().mockRejectedValue(
+      new Error('LINE API error: 500 Internal Server Error — token-secret U-secret body-secret'),
+    );
+    await processDueReminders(db, {
+      now: NOW,
+      sender,
+      reminderHoursBefore: REMINDER_HOURS_BEFORE,
+    });
+    const failedUpdate = updates.find((u) => u.sql.includes('UPDATE booking_reminders SET status'));
+    expect(failedUpdate!.bound[2]).toBe('line_http_status_500');
+    expect(String(failedUpdate!.bound[2])).not.toContain('token-secret');
+    expect(String(failedUpdate!.bound[2])).not.toContain('U-secret');
+    expect(String(failedUpdate!.bound[2])).not.toContain('body-secret');
+  });
+
   test('送信失敗 3 回目: failed_permanent', async () => {
     const due: DueRow[] = [
       {

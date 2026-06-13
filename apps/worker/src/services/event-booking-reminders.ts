@@ -117,6 +117,20 @@ function notificationKindFor(reminderKind: EventReminderKind): EventNotification
   return reminderKind === 'day_before' ? 'reminder_day_before' : 'reminder_hours_before';
 }
 
+function eventBookingReminderLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function eventBookingReminderErrorKind(err: unknown): string {
+  const status = eventBookingReminderLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export interface ProcessDueEventRemindersParams {
   now: Date;
   sender: EventBookingNotificationSender;
@@ -196,7 +210,7 @@ export async function processDueEventReminders(
         .prepare(
           `UPDATE event_booking_reminders SET status = ?, last_error = ? WHERE id = ?`,
         )
-        .bind(newStatus, e instanceof Error ? e.message : String(e), row.id)
+        .bind(newStatus, eventBookingReminderErrorKind(e), row.id)
         .run();
       failed++;
     }

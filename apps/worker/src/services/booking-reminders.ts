@@ -30,6 +30,20 @@ function startsAtJst(utcIso: string): string {
   return `${jst.slice(0, 10)} ${jst.slice(11, 16)}`;
 }
 
+function bookingReminderLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function bookingReminderErrorKind(err: unknown): string {
+  const status = bookingReminderLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 export async function processDueReminders(
   db: D1Database,
   params: ProcessRemindersParams,
@@ -89,7 +103,7 @@ export async function processDueReminders(
         .prepare(
           `UPDATE booking_reminders SET status = ?, retry_count = ?, last_error = ? WHERE id = ?`,
         )
-        .bind(newStatus, newRetry, e instanceof Error ? e.message : String(e), row.id)
+        .bind(newStatus, newRetry, bookingReminderErrorKind(e), row.id)
         .run();
       failed++;
     }

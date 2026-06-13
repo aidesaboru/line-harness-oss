@@ -13,6 +13,23 @@ import {
   type RefTracking,
 } from '@line-crm/db';
 
+function adConversionErrorKind(error: unknown): string {
+  if (error instanceof TypeError) return 'network_error';
+  if (error instanceof Error) {
+    const match = error.message.match(/^(Meta CAPI|X Conversion API|Google Ads API|TikTok Events API) error:\s+(\d{3})\b/);
+    if (match) {
+      const provider = match[1]
+        .toLowerCase()
+        .replace(/\s+(capi|conversion api|ads api|events api)$/u, '')
+        .replace(/[^a-z0-9]+/gu, '_')
+        .replace(/^_+|_+$/gu, '');
+      return `${provider || 'ad_platform'}_http_status_${match[2]}`;
+    }
+    return error.name || 'error';
+  }
+  return typeof error;
+}
+
 export async function sendAdConversions(
   db: D1Database,
   friendId: string,
@@ -74,7 +91,7 @@ export async function sendAdConversions(
         clickId: ref.fbclid || ref.twclid || ref.gclid || ref.ttclid || '',
         clickIdType: platform.name,
         status: 'failed',
-        errorMessage: String(error),
+        errorMessage: adConversionErrorKind(error),
       });
     }
   }

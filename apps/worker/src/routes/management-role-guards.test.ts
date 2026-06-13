@@ -224,6 +224,120 @@ describe('management role guards', () => {
     expect(dbMocks.removePoolAccount).not.toHaveBeenCalled();
   });
 
+  test('traffic pool management rejects malformed payloads before DB writes', async () => {
+    const app = setupApp('admin');
+    const malformedCreate = await app.request('/api/traffic-pools', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const unsafeSlug = await app.request('/api/traffic-pools', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: 'Main Pool', name: 'Main', activeAccountId: 'acc-1' }),
+    });
+    const malformedUpdate = await app.request('/api/traffic-pools/pool-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 'false' }),
+    });
+    const emptyUpdate = await app.request('/api/traffic-pools/pool-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const malformedAccount = await app.request('/api/traffic-pools/pool-1/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'bad account' }),
+    });
+    const malformedToggle = await app.request('/api/traffic-pools/pool-1/accounts/pool-account-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 1 }),
+    });
+
+    expect(malformedCreate.status).toBe(400);
+    expect(unsafeSlug.status).toBe(400);
+    expect(malformedUpdate.status).toBe(400);
+    expect(emptyUpdate.status).toBe(400);
+    expect(malformedAccount.status).toBe(400);
+    expect(malformedToggle.status).toBe(400);
+    expect(dbMocks.createTrafficPool).not.toHaveBeenCalled();
+    expect(dbMocks.updateTrafficPool).not.toHaveBeenCalled();
+    expect(dbMocks.addPoolAccount).not.toHaveBeenCalled();
+    expect(dbMocks.togglePoolAccount).not.toHaveBeenCalled();
+  });
+
+  test('traffic pool management trims valid payloads before DB writes', async () => {
+    const pool = {
+      id: 'pool-1',
+      slug: 'main-pool',
+      name: 'Main',
+      active_account_id: 'acc-1',
+      account_name: 'Account',
+      liff_id: null,
+      login_channel_id: null,
+      login_channel_secret: null,
+      channel_access_token: null,
+      channel_id: null,
+      is_active: 1,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+      updated_at: '2026-06-13T00:00:00.000+09:00',
+    };
+    dbMocks.createTrafficPool.mockResolvedValue(pool);
+    dbMocks.updateTrafficPool.mockResolvedValue({ ...pool, name: 'Renamed' });
+    dbMocks.addPoolAccount.mockResolvedValue({
+      id: 'pool-account-1',
+      pool_id: 'pool-1',
+      line_account_id: 'acc-2',
+      is_active: 1,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+    });
+    dbMocks.togglePoolAccount.mockResolvedValue({
+      id: 'pool-account-1',
+      pool_id: 'pool-1',
+      line_account_id: 'acc-2',
+      is_active: 0,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+    });
+
+    const app = setupApp('admin');
+    await app.request('/api/traffic-pools', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: ' main-pool ', name: ' Main ', activeAccountId: ' acc-1 ' }),
+    });
+    await app.request('/api/traffic-pools/pool-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Renamed ', activeAccountId: ' acc-2 ', isActive: true }),
+    });
+    await app.request('/api/traffic-pools/pool-1/accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: ' acc-2 ' }),
+    });
+    await app.request('/api/traffic-pools/pool-1/accounts/pool-account-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
+    });
+
+    expect(dbMocks.createTrafficPool).toHaveBeenCalledWith({} as D1Database, {
+      slug: 'main-pool',
+      name: 'Main',
+      activeAccountId: 'acc-1',
+    });
+    expect(dbMocks.updateTrafficPool).toHaveBeenCalledWith({} as D1Database, 'pool-1', {
+      name: 'Renamed',
+      activeAccountId: 'acc-2',
+      isActive: true,
+    });
+    expect(dbMocks.addPoolAccount).toHaveBeenCalledWith({} as D1Database, 'pool-1', 'acc-2');
+    expect(dbMocks.togglePoolAccount).toHaveBeenCalledWith({} as D1Database, 'pool-account-1', false);
+  });
+
   test('staff cannot manage chat operators', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [

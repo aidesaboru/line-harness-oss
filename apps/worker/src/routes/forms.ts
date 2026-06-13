@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getForms,
   getFormsWithStats,
@@ -19,11 +19,21 @@ import type {
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { verifyCallerLineUserId } from '../services/liff-auth.js';
 
 const forms = new Hono<Env>();
 
 function errorKind(err: unknown): string {
   return err instanceof Error && err.name ? err.name : typeof err;
+}
+
+async function resolveVerifiedFormFriend(
+  c: Context<Env>,
+  bodyIdToken?: string | null,
+) {
+  const header = c.req.header('Authorization') || (bodyIdToken ? `Bearer ${bodyIdToken}` : undefined);
+  const lineUserId = await verifyCallerLineUserId(header, c.env).catch(() => null);
+  return lineUserId ? getFriendByLineUserId(c.env.DB, lineUserId) : null;
 }
 
 function serializeForm(
@@ -222,16 +232,8 @@ forms.get('/api/forms/:id/submissions', requireRole('owner', 'admin'), async (c)
 forms.post('/api/forms/:id/opened', async (c) => {
   try {
     const formId = c.req.param('id');
-    const body = await c.req.json<{ lineUserId?: string; friendId?: string }>();
-    const lineUserId = body.lineUserId;
-    const friendId = body.friendId;
-
-    // Resolve friend
-    let friend = friendId
-      ? await getFriendById(c.env.DB, friendId)
-      : lineUserId
-        ? await getFriendByLineUserId(c.env.DB, lineUserId)
-        : null;
+    const body = (await c.req.json<{ idToken?: string }>().catch(() => ({}))) as { idToken?: string };
+    const friend = await resolveVerifiedFormFriend(c, body.idToken);
 
     const now = jstNow();
     await c.env.DB.prepare(
@@ -255,17 +257,12 @@ forms.post('/api/forms/:id/opened', async (c) => {
 forms.post('/api/forms/:id/partial', async (c) => {
   try {
     const formId = c.req.param('id');
-    const body = await c.req.json<{ lineUserId?: string; friendId?: string; data?: Record<string, unknown> }>();
+    const body = await c.req.json<{ idToken?: string; data?: Record<string, unknown> }>();
 
-    // Resolve friend
-    let friend = body.friendId
-      ? await getFriendById(c.env.DB, body.friendId)
-      : body.lineUserId
-        ? await getFriendByLineUserId(c.env.DB, body.lineUserId)
-        : null;
+    const friend = await resolveVerifiedFormFriend(c, body.idToken);
 
     if (!friend) {
-      return c.json({ success: false, error: 'Friend not found' }, 404);
+      return c.json({ success: false, error: 'Valid LINE idToken required' }, 401);
     }
 
     // Save survey data to friend metadata (merge with existing)
@@ -297,6 +294,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
     const body = await c.req.json<{
       lineUserId?: string;
       friendId?: string;
+      idToken?: string;
       data?: Record<string, unknown>;
       trackedLinkId?: string;
     }>();
@@ -323,14 +321,11 @@ forms.post('/api/forms/:id/submit', async (c) => {
       }
     }
 
-    // Resolve friend by lineUserId or friendId
-    let friendId: string | null = body.friendId ?? null;
-    if (!friendId && body.lineUserId) {
-      const friend = await getFriendByLineUserId(c.env.DB, body.lineUserId);
-      if (friend) {
-        friendId = friend.id;
-      }
-    }
+    // Resolve friend only from a verified LINE ID token. Public form requests
+    // may still be saved anonymously, but friend-linked side effects never
+    // trust caller-supplied lineUserId/friendId.
+    const verifiedFriend = await resolveVerifiedFormFriend(c, body.idToken);
+    const friendId: string | null = verifiedFriend?.id ?? null;
 
     // Webhook gate is always rechecked server-side. The LIFF client may do a
     // preflight check for UX, but public form submissions cannot self-attest.

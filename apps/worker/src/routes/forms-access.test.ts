@@ -12,12 +12,19 @@ const dbMocks = {
   createFormSubmission: vi.fn(),
   getFriendByLineUserId: vi.fn(),
   getFriendById: vi.fn(),
+  getTrackedLinkById: vi.fn(),
+  getMessageTemplateById: vi.fn(),
   addTagToFriend: vi.fn(),
   enrollFriendInScenario: vi.fn(),
   jstNow: vi.fn(() => '2026-06-13T10:00:00.000+09:00'),
 };
 
+const liffAuthMocks = {
+  verifyCallerLineUserId: vi.fn(),
+};
+
 vi.mock('@line-crm/db', () => dbMocks);
+vi.mock('../services/liff-auth.js', () => liffAuthMocks);
 
 const { forms } = await import('./forms.js');
 
@@ -45,6 +52,7 @@ function setupApp(role: StaffRole = 'staff') {
 beforeEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
+  liffAuthMocks.verifyCallerLineUserId.mockResolvedValue(null);
   dbMocks.createFormSubmission.mockImplementation(async (_db, input: {
     formId: string;
     friendId: string | null;
@@ -113,6 +121,23 @@ describe('form management role guards', () => {
     expect(dbMocks.getFormById).toHaveBeenCalledWith({} as D1Database, 'form-1');
   });
 
+  test('public form partial submit requires verified LINE idToken before metadata write', async () => {
+    const res = await setupApp('staff').request('/api/forms/form-1/partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        friendId: 'friend-victim',
+        lineUserId: 'U-victim',
+        data: { answer: 'draft' },
+      }),
+    });
+
+    expect(res.status).toBe(401);
+    expect(liffAuthMocks.verifyCallerLineUserId).toHaveBeenCalledWith(undefined, expect.anything());
+    expect(dbMocks.getFriendById).not.toHaveBeenCalledWith({} as D1Database, 'friend-victim');
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalledWith({} as D1Database, 'U-victim');
+  });
+
   test('public form submit ignores _skipWebhook and rechecks webhook gate server-side', async () => {
     dbMocks.getFormById.mockResolvedValue({
       id: 'form-1',
@@ -169,6 +194,101 @@ describe('form management role guards', () => {
       x_username: 'alice',
       _webhookResult: { success: true, data: { eligible: false } },
     });
+  });
+
+  test('public form submit does not trust caller-supplied friend identifiers for side effects', async () => {
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: '[]',
+      on_submit_tag_id: 'tag-reward',
+      on_submit_scenario_id: 'scenario-reward',
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: null,
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+
+    const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        friendId: 'friend-victim',
+        lineUserId: 'U-victim',
+        data: { answer: 'hello' },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(liffAuthMocks.verifyCallerLineUserId).toHaveBeenCalledWith(undefined, expect.anything());
+    expect(dbMocks.getFriendById).not.toHaveBeenCalledWith({} as D1Database, 'friend-victim');
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalledWith({} as D1Database, 'U-victim');
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+
+    const [, input] = dbMocks.createFormSubmission.mock.calls[0] as [
+      D1Database,
+      { friendId: string | null; data: string },
+    ];
+    expect(input.friendId).toBeNull();
+    expect(JSON.parse(input.data)).toEqual({ answer: 'hello' });
+  });
+
+  test('public form submit uses verified LINE idToken for friend-linked side effects', async () => {
+    liffAuthMocks.verifyCallerLineUserId.mockResolvedValue('U-verified');
+    dbMocks.getFriendByLineUserId.mockResolvedValue({
+      id: 'friend-verified',
+      display_name: 'Verified User',
+      metadata: '{}',
+      line_user_id: 'U-verified',
+    });
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: '[]',
+      on_submit_tag_id: 'tag-reward',
+      on_submit_scenario_id: 'scenario-reward',
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: null,
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+
+    const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer id-token',
+      },
+      body: JSON.stringify({ data: { answer: 'hello' } }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(liffAuthMocks.verifyCallerLineUserId).toHaveBeenCalledWith('Bearer id-token', expect.anything());
+    expect(dbMocks.getFriendByLineUserId).toHaveBeenCalledWith({} as D1Database, 'U-verified');
+    expect(dbMocks.addTagToFriend).toHaveBeenCalledWith({} as D1Database, 'friend-verified', 'tag-reward');
+    expect(dbMocks.enrollFriendInScenario).toHaveBeenCalledWith({} as D1Database, 'friend-verified', 'scenario-reward');
+
+    const [, input] = dbMocks.createFormSubmission.mock.calls[0] as [
+      D1Database,
+      { friendId: string | null; data: string },
+    ];
+    expect(input.friendId).toBe('friend-verified');
+    expect(JSON.parse(input.data)).toEqual({ answer: 'hello' });
   });
 
   test('public form submit stores a redacted webhook error when webhook fetch fails', async () => {

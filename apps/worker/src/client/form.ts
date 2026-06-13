@@ -4,7 +4,7 @@
  * Flow:
  * 1. Fetch form definition from API using form ID from query params
  * 2. Render form fields dynamically (text, email, select, radio, etc.)
- * 3. On submit: POST to /api/forms/:id/submit with user's lineUserId
+ * 3. On submit: POST to /api/forms/:id/submit with LIFF ID token auth
  * 4. Show success message (auto-close in LINE app)
  *
  * URL format: https://liff.line.me/{LIFF_ID}?page=form&id={FORM_ID}
@@ -56,6 +56,7 @@ interface FormState {
   xHarnessBaseUrl: string | null;
   profile: { userId: string; displayName: string; pictureUrl?: string } | null;
   friendId: string | null;
+  idToken: string | null;
   submitting: boolean;
   verifiedXUsername: string;
   /**
@@ -72,6 +73,7 @@ const state: FormState = {
   xHarnessBaseUrl: null,
   profile: null,
   friendId: null,
+  idToken: null,
   submitting: false,
   verifiedXUsername: '',
   refTrackedLinkId: null,
@@ -87,12 +89,16 @@ function escapeHtml(str: string): string {
 }
 
 function apiCall(path: string, options?: RequestInit): Promise<Response> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(options?.headers as Record<string, string> | undefined),
+  };
+  if (state.idToken && !headers.Authorization) {
+    headers.Authorization = `Bearer ${state.idToken}`;
+  }
   return fetch(path, {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options?.headers,
-    },
+    headers,
   });
 }
 
@@ -466,8 +472,6 @@ function render(): void {
         await apiCall(`/api/forms/${formDef.id}/partial`, {
           method: 'POST',
           body: JSON.stringify({
-            lineUserId: state.profile?.userId,
-            friendId: state.friendId,
             data: surveyData,
           }),
         });
@@ -776,7 +780,6 @@ async function submitForm(): Promise<void> {
       const successMsg = rawMsg.trimStart().startsWith('{') ? '特典をLINEでお送りしました！' : rawMsg;
       // Fall through to submit below, then show webhook success
       const webhookBody: Record<string, unknown> = { data: { ...data } };
-      if (state.profile?.userId) webhookBody.lineUserId = state.profile.userId;
       if (state.refTrackedLinkId) webhookBody.trackedLinkId = state.refTrackedLinkId;
 
       const webhookSubmitRes = await apiCall(`/api/forms/${state.formDef.id}/submit`, {
@@ -799,7 +802,6 @@ async function submitForm(): Promise<void> {
     }
 
     const body: Record<string, unknown> = { data };
-    if (state.profile?.userId) body.lineUserId = state.profile.userId;
     if (state.refTrackedLinkId) body.trackedLinkId = state.refTrackedLinkId;
     // Note: state.friendId is users.id (UUID), not friends.id — don't send as friendId
 
@@ -1182,6 +1184,7 @@ export async function initForm(formId: string | null): Promise<void> {
 
     // Silent UUID linking (best-effort, so friend metadata saves correctly)
     const rawIdToken = liff.getIDToken();
+    state.idToken = rawIdToken || null;
     if (rawIdToken) {
       apiCall('/api/liff/link', {
         method: 'POST',
@@ -1248,10 +1251,7 @@ export async function initForm(formId: string | null): Promise<void> {
     // Record form open event (fire-and-forget)
     apiCall(`/api/forms/${state.formDef!.id}/opened`, {
       method: 'POST',
-      body: JSON.stringify({
-        lineUserId: state.profile?.userId,
-        friendId: state.friendId,
-      }),
+      body: JSON.stringify({}),
     }).catch(() => { /* silent */ });
   } catch (err) {
     renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');

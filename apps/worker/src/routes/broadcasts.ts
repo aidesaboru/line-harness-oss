@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getBroadcasts,
   getBroadcastById,
@@ -19,6 +19,341 @@ import { supportFriendVisibilitySql } from '../services/support-access.js';
 import { currentSupportStaff } from './support-friend-access.js';
 
 const broadcasts = new Hono<Env>();
+
+const BROADCAST_ID_MAX_LENGTH = 128;
+const BROADCAST_TITLE_MAX_LENGTH = 160;
+const BROADCAST_MESSAGE_CONTENT_MAX_LENGTH = 50000;
+const BROADCAST_ALT_TEXT_MAX_LENGTH = 400;
+const BROADCAST_URL_MAX_LENGTH = 2048;
+const BROADCAST_MAX_ACCOUNT_IDS = 100;
+const BROADCAST_SEGMENT_MAX_BYTES = 20000;
+const BROADCAST_SEGMENT_MAX_RULES = 50;
+const BROADCAST_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const BROADCAST_VISIBLE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
+const BROADCAST_MESSAGE_TYPES = new Set<BroadcastMessageType>(['text', 'image', 'flex']);
+const BROADCAST_TARGET_TYPES = new Set<BroadcastTargetType>(['all', 'tag', 'multi-account-dedup']);
+const BROADCAST_SEGMENT_RULE_TYPES = new Set([
+  'tag_exists',
+  'tag_not_exists',
+  'metadata_equals',
+  'metadata_not_equals',
+  'ref_code',
+  'is_following',
+]);
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type BroadcastCreatePayload = {
+  title: string;
+  messageType: BroadcastMessageType;
+  messageContent: string;
+  targetType: BroadcastTargetType;
+  targetTagId: string | null;
+  scheduledAt?: string | null;
+  lineAccountId?: string | null;
+  altText?: string | null;
+  accountIds?: string[];
+  dedupPriority?: string[];
+};
+type BroadcastUpdatePayload = {
+  title?: string;
+  message_type?: BroadcastMessageType;
+  message_content?: string;
+  target_type?: BroadcastTargetType;
+  target_tag_id?: string | null;
+  scheduled_at?: string | null;
+  status?: 'draft' | 'scheduled';
+};
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseVisibleId(raw: unknown, label: string, maxLength = BROADCAST_ID_MAX_LENGTH): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > maxLength || !BROADCAST_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return { ok: true, value };
+}
+
+function parseSafeSqlId(raw: unknown, label: string, maxLength = BROADCAST_ID_MAX_LENGTH): ValueResult<string> {
+  const parsed = parseVisibleId(raw, label, maxLength);
+  if (!parsed.ok) return parsed;
+  if (!BROADCAST_VISIBLE_ID_PATTERN.test(parsed.value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return parsed;
+}
+
+function parseOptionalSafeSqlId(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  return parseSafeSqlId(raw, label);
+}
+
+function parseOptionalNullableSafeSqlId(raw: unknown, label: string): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null || raw === '') return { ok: true, value: null };
+  return parseSafeSqlId(raw, label);
+}
+
+function parseRequiredString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > maxLength) return { ok: false, error: `invalid_${label}` };
+  return { ok: true, value };
+}
+
+function parseOptionalNullableString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null || raw === '') return { ok: true, value: null };
+  return parseRequiredString(raw, label, maxLength);
+}
+
+function parseMessageType(raw: unknown, required: boolean): ValueResult<BroadcastMessageType | undefined> {
+  if (raw === undefined) {
+    return required ? { ok: false, error: 'invalid_message_type' } : { ok: true, value: undefined };
+  }
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_message_type' };
+  const value = raw.trim() as BroadcastMessageType;
+  if (!BROADCAST_MESSAGE_TYPES.has(value)) return { ok: false, error: 'invalid_message_type' };
+  return { ok: true, value };
+}
+
+function parseTargetType(raw: unknown, required: boolean): ValueResult<BroadcastTargetType | undefined> {
+  if (raw === undefined) {
+    return required ? { ok: false, error: 'invalid_target_type' } : { ok: true, value: undefined };
+  }
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_target_type' };
+  const value = raw.trim() as BroadcastTargetType;
+  if (!BROADCAST_TARGET_TYPES.has(value)) return { ok: false, error: 'invalid_target_type' };
+  return { ok: true, value };
+}
+
+function parseScheduledAt(raw: unknown): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null || raw === '') return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_scheduled_at' };
+  const value = raw.trim();
+  if (!value || value.length > 64 || Number.isNaN(Date.parse(value))) {
+    return { ok: false, error: 'invalid_scheduled_at' };
+  }
+  return { ok: true, value };
+}
+
+function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > BROADCAST_URL_MAX_LENGTH) return false;
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function parseJsonRecordString(value: string): ValueResult<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { ok: false, error: 'invalid_message_content' };
+    }
+    return { ok: true, value: parsed as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_message_content' };
+  }
+}
+
+function validateMessageContent(messageType: BroadcastMessageType, messageContent: string): ValueResult<string> {
+  if (messageType === 'image') {
+    const parsed = parseJsonRecordString(messageContent);
+    if (!parsed.ok) return parsed;
+    if (!isHttpsUrl(parsed.value.originalContentUrl) || !isHttpsUrl(parsed.value.previewImageUrl)) {
+      return { ok: false, error: 'invalid_message_content' };
+    }
+  }
+  if (messageType === 'flex') {
+    const parsed = parseJsonRecordString(messageContent);
+    if (!parsed.ok) return parsed;
+    if (typeof parsed.value.type !== 'string') return { ok: false, error: 'invalid_message_content' };
+  }
+  return { ok: true, value: messageContent };
+}
+
+function parseMessageContent(
+  raw: unknown,
+  messageType: BroadcastMessageType,
+  required: boolean,
+): ValueResult<string | undefined> {
+  if (raw === undefined) {
+    return required ? { ok: false, error: 'invalid_message_content' } : { ok: true, value: undefined };
+  }
+  const parsed = parseRequiredString(raw, 'message_content', BROADCAST_MESSAGE_CONTENT_MAX_LENGTH);
+  if (!parsed.ok) return parsed;
+  const valid = validateMessageContent(messageType, parsed.value);
+  if (!valid.ok) return valid;
+  return { ok: true, value: valid.value };
+}
+
+function parseIdArray(raw: unknown, label: string, minLength: number): ValueResult<string[]> {
+  if (!Array.isArray(raw) || raw.length < minLength || raw.length > BROADCAST_MAX_ACCOUNT_IDS) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const parsed = parseSafeSqlId(item, `${label}_item`);
+    if (!parsed.ok) return { ok: false, error: `invalid_${label}` };
+    if (!seen.has(parsed.value)) {
+      seen.add(parsed.value);
+      ids.push(parsed.value);
+    }
+  }
+  return { ok: true, value: ids };
+}
+
+function parseBroadcastCreate(body: Record<string, unknown>): ValueResult<BroadcastCreatePayload> {
+  const title = parseRequiredString(body.title, 'title', BROADCAST_TITLE_MAX_LENGTH);
+  if (!title.ok) return title;
+  const messageType = parseMessageType(body.messageType, true);
+  if (!messageType.ok || messageType.value === undefined) return { ok: false, error: 'invalid_message_type' };
+  const messageContent = parseMessageContent(body.messageContent, messageType.value, true);
+  if (!messageContent.ok || messageContent.value === undefined) return { ok: false, error: messageContent.ok ? 'invalid_message_content' : messageContent.error };
+  const targetType = parseTargetType(body.targetType, true);
+  if (!targetType.ok || targetType.value === undefined) return { ok: false, error: 'invalid_target_type' };
+  const targetTagId = parseOptionalNullableSafeSqlId(body.targetTagId, 'target_tag_id');
+  if (!targetTagId.ok) return targetTagId;
+  const scheduledAt = parseScheduledAt(body.scheduledAt);
+  if (!scheduledAt.ok) return scheduledAt;
+  const lineAccountId = parseOptionalNullableSafeSqlId(body.lineAccountId, 'line_account_id');
+  if (!lineAccountId.ok) return lineAccountId;
+  const altText = parseOptionalNullableString(body.altText, 'alt_text', BROADCAST_ALT_TEXT_MAX_LENGTH);
+  if (!altText.ok) return altText;
+
+  if (targetType.value === 'tag' && !targetTagId.value) {
+    return { ok: false, error: 'invalid_target_tag_id' };
+  }
+
+  const payload: BroadcastCreatePayload = {
+    title: title.value,
+    messageType: messageType.value,
+    messageContent: messageContent.value,
+    targetType: targetType.value,
+    targetTagId: targetType.value === 'tag' || targetType.value === 'multi-account-dedup' ? (targetTagId.value ?? null) : null,
+    ...(scheduledAt.value !== undefined ? { scheduledAt: scheduledAt.value } : {}),
+    ...(lineAccountId.value !== undefined ? { lineAccountId: lineAccountId.value } : {}),
+    ...(altText.value !== undefined ? { altText: altText.value } : {}),
+  };
+
+  if (targetType.value === 'multi-account-dedup') {
+    const accountIds = parseIdArray(body.accountIds, 'account_ids', 1);
+    if (!accountIds.ok) return accountIds;
+    const dedupPriority = parseIdArray(body.dedupPriority, 'dedup_priority', 0);
+    if (!dedupPriority.ok) return dedupPriority;
+    const accountIdSet = new Set(accountIds.value);
+    payload.accountIds = accountIds.value;
+    payload.dedupPriority = dedupPriority.value.filter((id) => accountIdSet.has(id));
+  }
+
+  return { ok: true, value: payload };
+}
+
+function parseBroadcastUpdate(body: Record<string, unknown>, existing: DbBroadcast): ValueResult<BroadcastUpdatePayload> {
+  const input: BroadcastUpdatePayload = {};
+  const messageType = parseMessageType(body.messageType, false);
+  if (!messageType.ok) return messageType;
+  const effectiveMessageType = messageType.value ?? existing.message_type;
+  if (messageType.value !== undefined) input.message_type = messageType.value;
+
+  if ('title' in body) {
+    const title = parseRequiredString(body.title, 'title', BROADCAST_TITLE_MAX_LENGTH);
+    if (!title.ok) return title;
+    input.title = title.value;
+  }
+  if ('messageContent' in body || messageType.value !== undefined) {
+    const rawContent = 'messageContent' in body ? body.messageContent : existing.message_content;
+    const content = parseMessageContent(rawContent, effectiveMessageType, true);
+    if (!content.ok || content.value === undefined) return { ok: false, error: content.ok ? 'invalid_message_content' : content.error };
+    if ('messageContent' in body) input.message_content = content.value;
+  }
+
+  const targetType = parseTargetType(body.targetType, false);
+  if (!targetType.ok) return targetType;
+  const effectiveTargetType = targetType.value ?? existing.target_type;
+  if (targetType.value !== undefined) input.target_type = targetType.value;
+
+  if ('targetTagId' in body) {
+    const targetTagId = parseOptionalNullableSafeSqlId(body.targetTagId, 'target_tag_id');
+    if (!targetTagId.ok) return targetTagId;
+    input.target_tag_id = targetTagId.value ?? null;
+  }
+  const effectiveTargetTagId = 'target_tag_id' in input ? input.target_tag_id : existing.target_tag_id;
+  if (effectiveTargetType === 'tag' && !effectiveTargetTagId) {
+    return { ok: false, error: 'invalid_target_tag_id' };
+  }
+  if (targetType.value !== undefined && targetType.value !== 'tag' && !('targetTagId' in body)) {
+    input.target_tag_id = null;
+  }
+
+  if ('scheduledAt' in body) {
+    const scheduledAt = parseScheduledAt(body.scheduledAt);
+    if (!scheduledAt.ok) return scheduledAt;
+    input.scheduled_at = scheduledAt.value ?? null;
+    input.status = scheduledAt.value ? 'scheduled' : 'draft';
+  }
+
+  if (Object.keys(input).length === 0) return { ok: false, error: 'empty_update' };
+  return { ok: true, value: input };
+}
+
+function parseSegmentCondition(raw: unknown): ValueResult<SegmentCondition> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'invalid_conditions' };
+  if (JSON.stringify(raw).length > BROADCAST_SEGMENT_MAX_BYTES) return { ok: false, error: 'invalid_conditions' };
+  const condition = raw as Record<string, unknown>;
+  if (condition.operator !== 'AND' && condition.operator !== 'OR') return { ok: false, error: 'invalid_conditions' };
+  if (!Array.isArray(condition.rules) || condition.rules.length > BROADCAST_SEGMENT_MAX_RULES) {
+    return { ok: false, error: 'invalid_conditions' };
+  }
+  const rules: SegmentCondition['rules'] = [];
+  for (const item of condition.rules) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return { ok: false, error: 'invalid_conditions' };
+    const rule = item as Record<string, unknown>;
+    if (typeof rule.type !== 'string' || !BROADCAST_SEGMENT_RULE_TYPES.has(rule.type)) {
+      return { ok: false, error: 'invalid_conditions' };
+    }
+    if (rule.type === 'is_following') {
+      if (typeof rule.value !== 'boolean') return { ok: false, error: 'invalid_conditions' };
+      rules.push({ type: rule.type, value: rule.value });
+      continue;
+    }
+    if (rule.type === 'metadata_equals' || rule.type === 'metadata_not_equals') {
+      if (!rule.value || typeof rule.value !== 'object' || Array.isArray(rule.value)) {
+        return { ok: false, error: 'invalid_conditions' };
+      }
+      const value = rule.value as Record<string, unknown>;
+      const key = parseSafeSqlId(value.key, 'metadata_key');
+      if (!key.ok) return { ok: false, error: 'invalid_conditions' };
+      const stringValue = parseRequiredString(value.value, 'metadata_value', BROADCAST_ID_MAX_LENGTH);
+      if (!stringValue.ok) return { ok: false, error: 'invalid_conditions' };
+      rules.push({ type: rule.type, value: { key: key.value, value: stringValue.value } });
+      continue;
+    }
+    const value = parseSafeSqlId(rule.value, 'segment_rule_value');
+    if (!value.ok) return { ok: false, error: 'invalid_conditions' };
+    rules.push({ type: rule.type as 'tag_exists' | 'tag_not_exists' | 'ref_code', value: value.value });
+  }
+  return { ok: true, value: { operator: condition.operator, rules } };
+}
 
 /**
  * Parse a D1 JSON-array column. Returns:
@@ -66,8 +401,9 @@ function serializeBroadcast(row: DbBroadcast) {
 // GET /api/broadcasts - list all
 broadcasts.get('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
-    const items = await getBroadcasts(c.env.DB, lineAccountId || undefined);
+    const lineAccountId = parseOptionalSafeSqlId(c.req.query('lineAccountId'), 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const items = await getBroadcasts(c.env.DB, lineAccountId.value);
     return c.json({ success: true, data: items.map(serializeBroadcast) });
   } catch (err) {
     console.error('GET /api/broadcasts error:', err);
@@ -78,8 +414,9 @@ broadcasts.get('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
 // GET /api/broadcasts/:id - get single
 broadcasts.get('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const broadcast = await getBroadcastById(c.env.DB, id.value);
 
     if (!broadcast) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -98,8 +435,9 @@ broadcasts.get('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
 // このエンドポイントが「送ったらこの人数」を返す唯一の手段。
 broadcasts.get('/api/broadcasts/:id/preview-count', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const broadcast = await getBroadcastById(c.env.DB, id.value);
     if (!broadcast) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
@@ -173,8 +511,9 @@ broadcasts.get('/api/broadcasts/:id/preview-count', requireRole('owner', 'admin'
 // キャッシュしない (broadcast_insights は集計値しか持たない設計のため)。
 broadcasts.get('/api/broadcasts/:id/per-account-stats', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const broadcast = await getBroadcastById(c.env.DB, id.value);
     if (!broadcast) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
@@ -206,7 +545,7 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', requireRole('owner', 'ad
        WHERE ml.broadcast_id = ? AND ml.direction = 'outgoing'
          AND COALESCE(ml.line_account_id, f.line_account_id) IN (${placeholders})
        GROUP BY COALESCE(ml.line_account_id, f.line_account_id)`,
-    ).bind(id, ...accountIds).all<{ account_id: string; sent: number }>();
+    ).bind(id.value, ...accountIds).all<{ account_id: string; sent: number }>();
     const sentMap = new Map<string, number>();
     for (const r of sentRes.results ?? []) sentMap.set(r.account_id, r.sent);
 
@@ -262,61 +601,27 @@ broadcasts.get('/api/broadcasts/:id/per-account-stats', requireRole('owner', 'ad
 // POST /api/broadcasts - create
 broadcasts.post('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      title: string;
-      messageType: BroadcastMessageType;
-      messageContent: string;
-      targetType: BroadcastTargetType;
-      targetTagId?: string | null;
-      scheduledAt?: string | null;
-      lineAccountId?: string | null;
-      altText?: string | null;
-      accountIds?: string[];
-      dedupPriority?: string[];
-    }>();
-
-    if (!body.title || !body.messageType || !body.messageContent || !body.targetType) {
-      return c.json(
-        { success: false, error: 'title, messageType, messageContent, and targetType are required' },
-        400,
-      );
-    }
-
-    if (body.targetType === 'tag' && !body.targetTagId) {
-      return c.json(
-        { success: false, error: 'targetTagId is required when targetType is "tag"' },
-        400,
-      );
-    }
-
-    if (body.targetType === 'multi-account-dedup') {
-      if (!Array.isArray(body.accountIds) || body.accountIds.length < 1) {
-        return c.json({ success: false, error: 'accountIds (length >= 1) required for multi-account-dedup' }, 400);
-      }
-      if (!Array.isArray(body.dedupPriority)) {
-        return c.json({ success: false, error: 'dedupPriority (array, may be empty) required for multi-account-dedup' }, 400);
-      }
-      // Defense in depth: drop priority entries not in accountIds before persisting.
-      body.dedupPriority = body.dedupPriority.filter((id: unknown) =>
-        typeof id === 'string' && body.accountIds!.includes(id));
-    }
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const body = parseBroadcastCreate(rawBody.value);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
     const broadcast = await createBroadcast(c.env.DB, {
-      title: body.title,
-      messageType: body.messageType,
-      messageContent: body.messageContent,
-      targetType: body.targetType,
-      targetTagId: body.targetTagId ?? null,
-      scheduledAt: body.scheduledAt ?? null,
-      accountIds: body.accountIds,
-      dedupPriority: body.dedupPriority,
+      title: body.value.title,
+      messageType: body.value.messageType,
+      messageContent: body.value.messageContent,
+      targetType: body.value.targetType,
+      targetTagId: body.value.targetTagId,
+      scheduledAt: body.value.scheduledAt ?? null,
+      accountIds: body.value.accountIds,
+      dedupPriority: body.value.dedupPriority,
     });
 
     // Save line_account_id and alt_text if provided
     const updates: string[] = [];
     const binds: unknown[] = [];
-    if (body.lineAccountId) { updates.push('line_account_id = ?'); binds.push(body.lineAccountId); }
-    if (body.altText) { updates.push('alt_text = ?'); binds.push(body.altText); }
+    if (body.value.lineAccountId) { updates.push('line_account_id = ?'); binds.push(body.value.lineAccountId); }
+    if (body.value.altText) { updates.push('alt_text = ?'); binds.push(body.value.altText); }
     if (updates.length > 0) {
       binds.push(broadcast.id);
       await c.env.DB.prepare(`UPDATE broadcasts SET ${updates.join(', ')} WHERE id = ?`)
@@ -333,8 +638,11 @@ broadcasts.post('/api/broadcasts', requireRole('owner', 'admin'), async (c) => {
 // PUT /api/broadcasts/:id - update draft
 broadcasts.put('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const existing = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const existing = await getBroadcastById(c.env.DB, id.value);
 
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -344,30 +652,10 @@ broadcasts.put('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
       return c.json({ success: false, error: 'Only draft or scheduled broadcasts can be updated' }, 400);
     }
 
-    const body = await c.req.json<{
-      title?: string;
-      messageType?: BroadcastMessageType;
-      messageContent?: string;
-      targetType?: BroadcastTargetType;
-      targetTagId?: string | null;
-      scheduledAt?: string | null;
-    }>();
+    const body = parseBroadcastUpdate(rawBody.value, existing);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
-    // Keep status in sync with scheduledAt changes
-    let statusUpdate: 'draft' | 'scheduled' | undefined;
-    if (body.scheduledAt !== undefined) {
-      statusUpdate = body.scheduledAt ? 'scheduled' : 'draft';
-    }
-
-    const updated = await updateBroadcast(c.env.DB, id, {
-      title: body.title,
-      message_type: body.messageType,
-      message_content: body.messageContent,
-      target_type: body.targetType,
-      target_tag_id: body.targetTagId,
-      scheduled_at: body.scheduledAt,
-      ...(statusUpdate !== undefined ? { status: statusUpdate } : {}),
-    });
+    const updated = await updateBroadcast(c.env.DB, id.value, body.value);
 
     // 失敗 partial dedup broadcast を draft に戻して編集 → 再送するケースで、
     // 残っていた resume 用 state を全部クリアして fresh campaign として送り直せる
@@ -390,14 +678,14 @@ broadcasts.put('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
          aggregation_unit = NULL,
          line_request_id = NULL
        WHERE id = ?`,
-    ).bind(id).run();
+    ).bind(id.value).run();
 
     // 過去 send の insight 行を削除する。createBroadcastInsight は idempotent で
     // 既存行があれば skip する設計のため、削除しないと再送時に新しい pending
     // insight が作られず getPendingInsights / GET /insight が古い metrics を返し続ける。
     await c.env.DB.prepare(
       `DELETE FROM broadcast_insights WHERE broadcast_id = ?`,
-    ).bind(id).run();
+    ).bind(id.value).run();
 
     return c.json({ success: true, data: updated ? serializeBroadcast(updated) : null });
   } catch (err) {
@@ -409,8 +697,9 @@ broadcasts.put('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) =
 // DELETE /api/broadcasts/:id - delete
 broadcasts.delete('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    await deleteBroadcast(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteBroadcast(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/broadcasts/:id error:', err);
@@ -427,8 +716,9 @@ broadcasts.delete('/api/broadcasts/:id', requireRole('owner', 'admin'), async (c
 // 守ったが、API direct 経路は未対応のままだった。
 broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const existing = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const existing = await getBroadcastById(c.env.DB, id.value);
 
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
@@ -466,7 +756,7 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
 
       const lockResult = await c.env.DB.prepare(
         `UPDATE broadcasts SET status = 'sending', batch_offset = 0, total_count = ? WHERE id = ? AND status IN ('draft','scheduled')`
-      ).bind(projectedTotal, id).run();
+      ).bind(projectedTotal, id.value).run();
       if (!lockResult.meta.changes) {
         return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
       }
@@ -490,7 +780,7 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
 
       return c.json({
         success: true,
-        data: { id, status: 'sending', totalCount: projectedTotal },
+        data: { id: id.value, status: 'sending', totalCount: projectedTotal },
         queued: true,
         message: 'Broadcast queued for immediate background processing',
       }, 202);
@@ -507,11 +797,11 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
         const tagMarker = JSON.stringify({ operator: 'AND', rules: [{ type: 'tag_exists', value: existing.target_tag_id }] });
         const lockResult = await c.env.DB.prepare(
           `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
-        ).bind(tagMarker, id).run();
+        ).bind(tagMarker, id.value).run();
         if (!lockResult.meta.changes) {
           return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
         }
-        const result = await getBroadcastById(c.env.DB, id);
+        const result = await getBroadcastById(c.env.DB, id.value);
         return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
       }
     }
@@ -535,13 +825,13 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
     let claimedStatus: 'draft' | 'scheduled' | null = null;
     const draftClaim = await c.env.DB.prepare(
       `UPDATE broadcasts SET status = 'sending' WHERE id = ? AND status = 'draft'`
-    ).bind(id).run();
+    ).bind(id.value).run();
     if (draftClaim.meta.changes) {
       claimedStatus = 'draft';
     } else {
       const schedClaim = await c.env.DB.prepare(
         `UPDATE broadcasts SET status = 'sending' WHERE id = ? AND status = 'scheduled'`
-      ).bind(id).run();
+      ).bind(id.value).run();
       if (schedClaim.meta.changes) {
         claimedStatus = 'scheduled';
       }
@@ -554,15 +844,15 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
     // 冒頭 (updateBroadcastStatus / getBroadcastById / autoTrackContent / buildMessage) で
     // 失敗した場合は内部 catch の対象外。lock を外側で必ず rollback する。
     try {
-      await processBroadcastSend(c.env.DB, lineClient, id, c.env.WORKER_URL);
+      await processBroadcastSend(c.env.DB, lineClient, id.value, c.env.WORKER_URL);
     } catch (err) {
       await c.env.DB.prepare(
         `UPDATE broadcasts SET status = ? WHERE id = ? AND status = 'sending'`
-      ).bind(claimedStatus, id).run();
+      ).bind(claimedStatus, id.value).run();
       throw err;
     }
 
-    const result = await getBroadcastById(c.env.DB, id);
+    const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send error:', err);
@@ -573,31 +863,27 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
 // POST /api/broadcasts/:id/send-segment - send to a filtered segment (常にキュー方式)
 broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const existing = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const conditions = parseSegmentCondition(rawBody.value.conditions);
+    if (!conditions.ok) return c.json({ success: false, error: conditions.error }, 400);
+    const existing = await getBroadcastById(c.env.DB, id.value);
 
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
 
-    const body = await c.req.json<{ conditions: SegmentCondition }>();
-
-    if (!body.conditions || !body.conditions.operator || !Array.isArray(body.conditions.rules)) {
-      return c.json(
-        { success: false, error: 'conditions with operator and rules array is required' },
-        400,
-      );
-    }
-
     // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
     const lockResult = await c.env.DB.prepare(
       `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
-    ).bind(JSON.stringify(body.conditions), id).run();
+    ).bind(JSON.stringify(conditions.value), id.value).run();
     if (!lockResult.meta.changes) {
       return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
     }
 
-    const result = await getBroadcastById(c.env.DB, id);
+    const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
   } catch (err) {
     console.error('POST /api/broadcasts/:id/send-segment error:', err);
@@ -608,10 +894,11 @@ broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'
 // GET /api/broadcasts/:id/insight — インサイト（開封率・クリック率）取得
 broadcasts.get('/api/broadcasts/:id/insight', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const insight = await c.env.DB.prepare(
       'SELECT * FROM broadcast_insights WHERE broadcast_id = ? ORDER BY created_at DESC LIMIT 1'
-    ).bind(id).first<Record<string, unknown>>();
+    ).bind(id.value).first<Record<string, unknown>>();
 
     if (!insight) {
       return c.json({ success: true, data: null, message: 'Insight not yet available' });
@@ -640,8 +927,9 @@ broadcasts.get('/api/broadcasts/:id/insight', requireRole('owner', 'admin'), asy
 // POST /api/broadcasts/:id/fetch-insight — LINE APIからインサイトを即時取得
 broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const broadcast = await getBroadcastById(c.env.DB, id.value);
     if (!broadcast) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
@@ -652,7 +940,7 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
     // DBから直接取得してline_request_id/aggregation_unit/account_ids/failed_account_idsを確実に読む
     const rawBroadcast = await c.env.DB.prepare(
       'SELECT line_request_id, aggregation_unit, line_account_id, target_type, account_ids, failed_account_ids FROM broadcasts WHERE id = ?',
-    ).bind(id).first<Record<string, string | null>>();
+    ).bind(id.value).first<Record<string, string | null>>();
     const lineRequestId = rawBroadcast?.line_request_id || null;
     const aggregationUnit = rawBroadcast?.aggregation_unit || null;
     const targetType = rawBroadcast?.target_type || null;
@@ -775,7 +1063,7 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
     const now = jstNow();
     const existing = await c.env.DB.prepare(
       'SELECT id FROM broadcast_insights WHERE broadcast_id = ? ORDER BY created_at DESC LIMIT 1',
-    ).bind(id).first<{ id: string }>();
+    ).bind(id.value).first<{ id: string }>();
 
     if (existing) {
       await c.env.DB.prepare(
@@ -789,7 +1077,7 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
       await c.env.DB.prepare(
         `INSERT INTO broadcast_insights (id, broadcast_id, delivered, unique_impression, unique_click, unique_media_played, open_rate, click_rate, raw_response, status, fetched_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', ?, ?)`,
-      ).bind(insightId, id, delivered, uniqueImpression, uniqueClick, uniqueMediaPlayed, openRate, clickRate, rawResponse, now, now).run();
+      ).bind(insightId, id.value, delivered, uniqueImpression, uniqueClick, uniqueMediaPlayed, openRate, clickRate, rawResponse, now, now).run();
     }
 
     return c.json({
@@ -804,9 +1092,10 @@ broadcasts.post('/api/broadcasts/:id/fetch-insight', requireRole('owner', 'admin
 
 // POST /api/broadcasts/:id/test-send — send to test recipients with 【テスト配信】 label
 broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), async (c) => {
-  const id = c.req.param('id')!;
+  const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+  if (!id.ok) return c.json({ success: false, error: id.error }, 400);
   try {
-    const broadcast = await getBroadcastById(c.env.DB, id);
+    const broadcast = await getBroadcastById(c.env.DB, id.value);
     if (!broadcast) return c.json({ success: false, error: 'Broadcast not found' }, 404);
     if (broadcast.status !== 'draft') {
       return c.json({ success: false, error: 'Only draft broadcasts can be test-sent' }, 400);
@@ -881,8 +1170,9 @@ broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), 
 
 // GET /api/broadcasts/:id/progress — batch send progress
 broadcasts.get('/api/broadcasts/:id/progress', requireRole('owner', 'admin'), async (c) => {
-  const id = c.req.param('id')!;
-  const broadcast = await getBroadcastById(c.env.DB, id);
+  const id = parseSafeSqlId(c.req.param('id'), 'broadcast_id');
+  if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+  const broadcast = await getBroadcastById(c.env.DB, id.value);
   if (!broadcast) return c.json({ success: false, error: 'Not found' }, 404);
 
   const raw = broadcast as unknown as Record<string, unknown>;
@@ -899,16 +1189,21 @@ broadcasts.get('/api/broadcasts/:id/progress', requireRole('owner', 'admin'), as
 
 // POST /api/segments/count — count friends matching segment conditions
 broadcasts.post('/api/segments/count', requireRole('owner', 'admin'), async (c) => {
-  const body = await c.req.json<{ conditions: unknown; accountId?: string }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+  const conditions = parseSegmentCondition(rawBody.value.conditions);
+  if (!conditions.ok) return c.json({ success: false, error: conditions.error }, 400);
+  const accountId = parseOptionalSafeSqlId(rawBody.value.accountId, 'account_id');
+  if (!accountId.ok) return c.json({ success: false, error: accountId.error }, 400);
   try {
     const { buildSegmentQuery } = await import('../services/segment-query.js');
-    const { sql, bindings } = buildSegmentQuery(body.conditions as SegmentCondition);
+    const { sql, bindings } = buildSegmentQuery(conditions.value);
 
     let accountSql = sql;
     const accountBindings = [...bindings];
-    if (body.accountId) {
+    if (accountId.value) {
       accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
-      accountBindings.unshift(body.accountId);
+      accountBindings.unshift(accountId.value);
     }
 
     const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');

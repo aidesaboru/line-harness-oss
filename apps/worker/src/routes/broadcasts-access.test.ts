@@ -324,3 +324,223 @@ describe('dedup preview payload validation', () => {
     });
   });
 });
+
+describe('broadcast management payload validation', () => {
+  test('rejects malformed query, path, and payload values before DB helpers, SQL, or LINE side effects', async () => {
+    const db = makeDb();
+    const app = setupApp(db, 'owner');
+    const cases: Array<{ method: string; path: string; body?: string; headers?: Record<string, string> }> = [
+      { method: 'GET', path: '/api/broadcasts?lineAccountId=bad%20account' },
+      { method: 'GET', path: '/api/broadcasts/bad%20id' },
+      { method: 'GET', path: '/api/broadcasts/bad%20id/preview-count' },
+      { method: 'GET', path: '/api/broadcasts/bad%20id/per-account-stats' },
+      { method: 'POST', path: '/api/broadcasts', headers: { 'Content-Type': 'application/json' }, body: '{' },
+      {
+        method: 'POST',
+        path: '/api/broadcasts',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Sale', messageType: 'video', messageContent: 'hello', targetType: 'all' }),
+      },
+      {
+        method: 'POST',
+        path: '/api/broadcasts',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Sale',
+          messageType: 'image',
+          messageContent: JSON.stringify({
+            originalContentUrl: 'http://example.com/image.jpg',
+            previewImageUrl: 'https://example.com/preview.jpg',
+          }),
+          targetType: 'all',
+        }),
+      },
+      {
+        method: 'POST',
+        path: '/api/broadcasts',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Sale',
+          messageType: 'text',
+          messageContent: 'hello',
+          targetType: 'multi-account-dedup',
+          accountIds: ['acc 1'],
+          dedupPriority: [],
+        }),
+      },
+      {
+        method: 'PUT',
+        path: '/api/broadcasts/bad%20id',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'Updated' }),
+      },
+      {
+        method: 'PUT',
+        path: '/api/broadcasts/broadcast-1',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(['bad']),
+      },
+      { method: 'DELETE', path: '/api/broadcasts/bad%20id' },
+      { method: 'POST', path: '/api/broadcasts/bad%20id/send' },
+      {
+        method: 'POST',
+        path: '/api/broadcasts/bad%20id/send-segment',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'AND', rules: [] } }),
+      },
+      {
+        method: 'POST',
+        path: '/api/broadcasts/broadcast-1/send-segment',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'AND', rules: [{ type: 'tag_exists', value: 'bad tag' }] } }),
+      },
+      { method: 'GET', path: '/api/broadcasts/bad%20id/insight' },
+      { method: 'POST', path: '/api/broadcasts/bad%20id/fetch-insight' },
+      { method: 'POST', path: '/api/broadcasts/bad%20id/test-send' },
+      { method: 'GET', path: '/api/broadcasts/bad%20id/progress' },
+      {
+        method: 'POST',
+        path: '/api/segments/count',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'X', rules: [] } }),
+      },
+      {
+        method: 'POST',
+        path: '/api/segments/count',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conditions: { operator: 'AND', rules: [] }, accountId: 'bad account' }),
+      },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request(item.path, {
+        method: item.method,
+        headers: item.headers,
+        body: item.body,
+      });
+      expect(res.status, `${item.method} ${item.path}`).toBe(400);
+    }
+
+    expect(dbMocks.getBroadcasts).not.toHaveBeenCalled();
+    expect(dbMocks.getBroadcastById).not.toHaveBeenCalled();
+    expect(dbMocks.createBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.updateBroadcast).not.toHaveBeenCalled();
+    expect(dbMocks.deleteBroadcast).not.toHaveBeenCalled();
+    expect(lineClientConstructor).not.toHaveBeenCalled();
+    expect(computeDedupBroadcastPreview).not.toHaveBeenCalled();
+    expect(db.calls).toEqual([]);
+  });
+
+  test('trims and normalizes valid create, update, and segment count payloads', async () => {
+    const db = makeDb();
+    dbMocks.createBroadcast.mockResolvedValue({
+      id: 'broadcast-created',
+      title: 'Sale',
+      message_type: 'text',
+      message_content: 'hello',
+      target_type: 'multi-account-dedup',
+      target_tag_id: 'tag-1',
+      status: 'scheduled',
+      scheduled_at: '2026-06-14T10:00:00.000Z',
+      sent_at: null,
+      total_count: 0,
+      success_count: 0,
+      created_at: '2026-06-14T00:00:00.000',
+      account_ids: JSON.stringify(['acc-1', 'acc-2']),
+      dedup_priority: JSON.stringify(['acc-2', 'acc-1']),
+      failed_account_ids: null,
+      dedup_progress: null,
+      batch_lock_at: null,
+      line_account_id: 'acc-1',
+      alt_text: 'Alt',
+    });
+    dbMocks.updateBroadcast.mockResolvedValue({
+      id: 'broadcast-1',
+      title: 'Updated',
+      message_type: 'text',
+      message_content: 'hi',
+      target_type: 'tag',
+      target_tag_id: 'tag-1',
+      status: 'draft',
+      scheduled_at: null,
+      sent_at: null,
+      total_count: 0,
+      success_count: 0,
+      created_at: '2026-06-14T00:00:00.000',
+      account_ids: null,
+      dedup_priority: null,
+      failed_account_ids: null,
+      dedup_progress: null,
+      batch_lock_at: null,
+    });
+
+    const app = setupApp(db, 'owner');
+    const createRes = await app.request('/api/broadcasts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: ' Sale ',
+        messageType: ' text ',
+        messageContent: ' hello ',
+        targetType: ' multi-account-dedup ',
+        targetTagId: ' tag-1 ',
+        scheduledAt: ' 2026-06-14T10:00:00.000Z ',
+        lineAccountId: ' acc-1 ',
+        altText: ' Alt ',
+        accountIds: [' acc-1 ', 'acc-1', 'acc-2'],
+        dedupPriority: ['acc-3', ' acc-2 ', 'acc-2', 'acc-1'],
+      }),
+    });
+    const updateRes = await app.request('/api/broadcasts/broadcast-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: ' Updated ',
+        messageContent: ' hi ',
+        targetType: ' tag ',
+        targetTagId: ' tag-1 ',
+        scheduledAt: '',
+      }),
+    });
+    const countRes = await app.request('/api/segments/count', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: ' acc-1 ',
+        conditions: {
+          operator: 'AND',
+          rules: [
+            { type: 'tag_exists', value: ' tag-1 ' },
+            { type: 'metadata_equals', value: { key: ' plan ', value: ' vip ' } },
+          ],
+        },
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(updateRes.status).toBe(200);
+    expect(countRes.status).toBe(200);
+    expect(dbMocks.createBroadcast).toHaveBeenCalledWith(db, {
+      title: 'Sale',
+      messageType: 'text',
+      messageContent: 'hello',
+      targetType: 'multi-account-dedup',
+      targetTagId: 'tag-1',
+      scheduledAt: '2026-06-14T10:00:00.000Z',
+      accountIds: ['acc-1', 'acc-2'],
+      dedupPriority: ['acc-2', 'acc-1'],
+    });
+    expect(dbMocks.updateBroadcast).toHaveBeenCalledWith(db, 'broadcast-1', {
+      title: 'Updated',
+      message_content: 'hi',
+      target_type: 'tag',
+      target_tag_id: 'tag-1',
+      scheduled_at: null,
+      status: 'draft',
+    });
+    const createSqlUpdate = db.calls.find((call) => call.sql.includes('UPDATE broadcasts SET line_account_id = ?'));
+    expect(createSqlUpdate?.binds).toEqual(['acc-1', 'Alt', 'broadcast-created']);
+    const countCall = db.calls.find((call) => call.sql.includes('SELECT COUNT(*) as count FROM'));
+    expect(countCall?.binds).toEqual(['acc-1', 'tag-1', '$.plan', 'vip']);
+  });
+});

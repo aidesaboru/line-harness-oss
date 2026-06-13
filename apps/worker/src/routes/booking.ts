@@ -52,6 +52,16 @@ const BOOKING_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const BOOKING_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const BOOKING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
+function bookingRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) {
+    const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+    if (match) return `line_http_status_${match[1]}`;
+    return err.name || 'error';
+  }
+  return typeof err;
+}
+
 const JST_OFFSET_MS = 9 * 3600_000;
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 const BOOKING_ADMIN_STATUSES = new Set<BookingStatus>([
@@ -910,7 +920,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
   // Fire-and-forget notification — failures must not roll back the booking.
   c.executionCtx.waitUntil(
     notifyForBooking(c.env.DB, bookingId, 'requested').catch((err) =>
-      console.error('booking notify (requested) failed:', err),
+      console.error(`booking notify (requested) failed: ${bookingRouteErrorKind(err)}`),
     ),
   );
 
@@ -1463,13 +1473,13 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
     }
     c.executionCtx.waitUntil(
       notifyForBooking(c.env.DB, id.value, 'approved').catch((err) =>
-        console.error('booking notify (approved) failed:', err),
+        console.error(`booking notify (approved) failed: ${bookingRouteErrorKind(err)}`),
       ),
     );
   } else if (next === 'rejected') {
     c.executionCtx.waitUntil(
       notifyForBooking(c.env.DB, id.value, 'rejected').catch((err) =>
-        console.error('booking notify (rejected) failed:', err),
+        console.error(`booking notify (rejected) failed: ${bookingRouteErrorKind(err)}`),
       ),
     );
   } else if (next === 'cancelled' || next === 'expired') {

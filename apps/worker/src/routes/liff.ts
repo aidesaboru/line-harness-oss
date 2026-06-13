@@ -57,6 +57,11 @@ type LiffSendFormLinkBody = {
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function errorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) {
+    const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+    if (match) return `line_http_status_${match[1]}`;
+  }
   return err instanceof Error && err.name ? err.name : typeof err;
 }
 
@@ -181,7 +186,7 @@ async function linkIgIgsid(
       linked = row?.ig_igsid === igParam;
     }
   } catch (err) {
-    console.error('Failed to write friends.ig_igsid:', err);
+    console.error(`Failed to write friends.ig_igsid: ${errorKind(err)}`);
     return;
   }
 
@@ -407,12 +412,12 @@ async function applyRefAttribution(
           try {
             await addTagToFriend(db, friend.id, firstStep.on_reach_tag_id);
           } catch (err) {
-            console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
+            console.error(`[scenario] tag attach failed: ${errorKind(err)}`);
           }
         }
       }
     } catch (err) {
-      console.error('Ref scenario enrollment error:', err);
+      console.error(`Ref scenario enrollment error: ${errorKind(err)}`);
     }
   }
 }
@@ -1055,7 +1060,7 @@ liffRoutes.get('/auth/callback', async (c) => {
                   try {
                     await addTagLiff(db, friend.id, firstStep.on_reach_tag_id);
                   } catch (err) {
-                    console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
+                    console.error(`[scenario] tag attach failed: ${errorKind(err)}`);
                   }
                 }
               }
@@ -1064,7 +1069,7 @@ liffRoutes.get('/auth/callback', async (c) => {
         }
       }
     } catch (err) {
-      console.error('OAuth scenario enrollment error:', err);
+      console.error(`OAuth scenario enrollment error: ${errorKind(err)}`);
     }
 
     // Redirect or show completion. Guard against open-redirect abuse: external
@@ -1124,7 +1129,7 @@ liffRoutes.get('/auth/callback', async (c) => {
               const { setFriendFirstTrackedLinkIfNull } = await import('@line-crm/db');
               await setFriendFirstTrackedLinkIfNull(db, friend.id, trackedLink.id);
             } catch (e) {
-              console.error('setFriendFirstTrackedLinkIfNull failed (non-blocking):', e);
+              console.error(`setFriendFirstTrackedLinkIfNull failed (non-blocking): ${errorKind(e)}`);
             }
             if (trackedLink.intro_template_id) {
               introTemplate = await getMessageTemplateById(db, trackedLink.intro_template_id);
@@ -1136,7 +1141,7 @@ liffRoutes.get('/auth/callback', async (c) => {
         const lineClient = new LineClient(accessToken);
         await lineClient.pushMessage(friend.line_user_id, [introMessage as any]);
       } catch (err) {
-        console.error('Form link push error (non-blocking):', err);
+        console.error(`Form link push error (non-blocking): ${errorKind(err)}`);
       }
     }
 
@@ -1178,7 +1183,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     return c.html(completionPage(displayName, pictureUrl, ref));
 
   } catch (err) {
-    console.error('Auth callback error:', err);
+    console.error(`Auth callback error: ${errorKind(err)}`);
     return c.html(errorPage('Internal error'));
   }
 });
@@ -1220,7 +1225,7 @@ liffRoutes.get('/api/liff/config', async (c) => {
       data: { botBasicId, accountName, accountId },
     });
   } catch (err) {
-    console.error('GET /api/liff/config error:', err);
+    console.error(`GET /api/liff/config error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1256,7 +1261,7 @@ liffRoutes.post('/api/liff/profile', async (c) => {
       },
     });
   } catch (err) {
-    console.error('POST /api/liff/profile error:', err);
+    console.error(`POST /api/liff/profile error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1434,7 +1439,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
       data: { userId, alreadyLinked: false },
     });
   } catch (err) {
-    console.error('POST /api/liff/link error:', err);
+    console.error(`POST /api/liff/link error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1510,7 +1515,7 @@ liffRoutes.get('/api/analytics/ref-summary', requireRole('owner', 'admin'), asyn
       },
     });
   } catch (err) {
-    console.error('GET /api/analytics/ref-summary error:', err);
+    console.error(`GET /api/analytics/ref-summary error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1574,7 +1579,7 @@ liffRoutes.get('/api/analytics/ref/:refCode', requireRole('owner', 'admin'), asy
       },
     });
   } catch (err) {
-    console.error('GET /api/analytics/ref/:refCode error:', err);
+    console.error(`GET /api/analytics/ref/:refCode error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1600,7 +1605,7 @@ liffRoutes.post('/api/links/wrap', requireRole('owner', 'admin'), async (c) => {
     const wrappedUrl = `${liffUrl}?${params.toString()}`;
     return c.json({ success: true, data: { url: wrappedUrl } });
   } catch (err) {
-    console.error('POST /api/links/wrap error:', err);
+    console.error(`POST /api/links/wrap error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1928,7 +1933,7 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
           const { setFriendFirstTrackedLinkIfNull } = await import('@line-crm/db');
           await setFriendFirstTrackedLinkIfNull(c.env.DB, friend.id, trackedLink.id);
         } catch (e) {
-          console.error('setFriendFirstTrackedLinkIfNull failed (non-blocking):', e);
+          console.error(`setFriendFirstTrackedLinkIfNull failed (non-blocking): ${errorKind(e)}`);
         }
       }
       if (trackedLink?.intro_template_id) {
@@ -1942,7 +1947,7 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('POST /api/liff/send-form-link error:', err);
+    console.error(`POST /api/liff/send-form-link error: ${errorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

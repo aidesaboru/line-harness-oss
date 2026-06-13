@@ -33,6 +33,20 @@ const webhook = new Hono<Env>();
 // 128 MB Cloudflare Workers memory ceiling.
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 
+function webhookLineErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function webhookErrorKind(err: unknown): string {
+  const status = webhookLineErrorStatus(err);
+  if (status != null) return `line_http_status_${status}`;
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 webhook.post('/webhook', async (c) => {
   // Pre-read size guard: reject before reading the body if Content-Length is oversized.
   const contentLengthHeader = c.req.header('Content-Length');
@@ -126,7 +140,7 @@ webhook.post('/webhook', async (c) => {
       try {
         await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
       } catch (err) {
-        console.error('Error handling webhook event:', err);
+        console.error(`Error handling webhook event: ${webhookErrorKind(err)}`);
       }
     }
   })();
@@ -156,7 +170,7 @@ async function handleEvent(
     try {
       profile = await lineClient.getProfile(userId);
     } catch (err) {
-      console.error('Failed to get profile for follow event', err);
+      console.error(`Failed to get profile for follow event: ${webhookErrorKind(err)}`);
     }
 
     const friend = await upsertFriend(db, {
@@ -272,15 +286,15 @@ async function handleEvent(
                   try {
                     await addTagToFriend(db, friend.id, firstStep.on_reach_tag_id);
                   } catch (err) {
-                    console.error(`[scenario] tag attach failed step=${firstStep.id}:`, err);
+                    console.error(`[scenario] tag attach failed: ${webhookErrorKind(err)}`);
                   }
                 }
               } catch (err) {
-                console.error('Failed immediate delivery for scenario', scenario.id, err);
+                console.error(`Failed immediate delivery for scenario: ${webhookErrorKind(err)}`);
               }
             }
         } catch (err) {
-          console.error('Failed to enroll friend in scenario', scenario.id, err);
+          console.error(`Failed to enroll friend in scenario: ${webhookErrorKind(err)}`);
         }
       }
     }
@@ -297,7 +311,7 @@ async function handleEvent(
             console.log(`[follow] referral intro push sent route=${referralRoute.id}`);
           }
         } catch (err) {
-          console.error('[follow] referral intro push failed', err);
+          console.error(`[follow] referral intro push failed: ${webhookErrorKind(err)}`);
         }
       }
 
@@ -307,7 +321,7 @@ async function handleEvent(
           await enrollFriendInScenario(db, friend.id, referralRoute.scenario_id);
           console.log(`[follow] referral scenario enrolled scenario=${referralRoute.scenario_id}`);
         } catch (err) {
-          console.error('[follow] referral scenario enrollment failed', err);
+          console.error(`[follow] referral scenario enrollment failed: ${webhookErrorKind(err)}`);
         }
       }
     }
@@ -364,7 +378,7 @@ async function handleEvent(
         .bind(crypto.randomUUID(), friend.id, postbackData, lineAccountId ?? null, jstNow())
         .run();
     } catch (err) {
-      console.error('Failed to log incoming postback', err);
+      console.error(`Failed to log incoming postback: ${webhookErrorKind(err)}`);
     }
 
     for (const rule of autoReplies.results) {
@@ -397,7 +411,7 @@ async function handleEvent(
             .bind(crypto.randomUUID(), friend.id, replyPayload.messageType, replyPayload.content, lineAccountId ?? null, jstNow())
             .run();
         } catch (err) {
-          console.error('Failed to send postback reply', err);
+          console.error(`Failed to send postback reply: ${webhookErrorKind(err)}`);
         }
         break;
       }
@@ -538,7 +552,7 @@ async function handleEvent(
           return;
         }
       } catch (err) {
-        console.error('Cross-account trigger error:', err);
+        console.error(`Cross-account trigger error: ${webhookErrorKind(err)}`);
       }
     }
 
@@ -603,7 +617,7 @@ async function handleEvent(
             .bind(outLogId, friend.id, wbAutoReplyPayload.messageType, wbAutoReplyPayload.content, lineAccountId ?? null, jstNow())
             .run();
         } catch (err) {
-          console.error('Failed to send auto-reply', err);
+          console.error(`Failed to send auto-reply: ${webhookErrorKind(err)}`);
         }
 
         matched = true;
@@ -642,7 +656,7 @@ async function getOrCreateFriendForUser(
   try {
     profile = await lineClient.getProfile(userId);
   } catch (err) {
-    console.error(`Failed to get profile for first ${eventContext}`, err);
+    console.error(`Failed to get profile for first ${eventContext}: ${webhookErrorKind(err)}`);
   }
 
   const friend = await upsertFriend(db, {

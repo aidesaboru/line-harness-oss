@@ -5,7 +5,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createSnapshot,
+  createRollbackSnapshot,
   getSnapshot,
+  markSnapshotRolledBack,
   updateStatus,
   appendEvent,
   setError,
@@ -119,6 +121,45 @@ describe('snapshot CRUD', () => {
     it('returns null for nonexistent ID', async () => {
       const row = await getSnapshot(d1, 'NONEXISTENT');
       expect(row).toBeNull();
+    });
+  });
+
+  describe('createRollbackSnapshot', () => {
+    it('persists a running rollback row linked to the source update', async () => {
+      const sourceId = await createSnapshot(d1, { from: '0.7.0', to: '0.8.0' });
+      const rollbackId = await createRollbackSnapshot(d1, {
+        rollbackOf: sourceId,
+        from: '0.8.0',
+        to: '0.7.0',
+        snapshotWorkerUrl: 'https://r2.example.com/worker-0.7.0.js',
+        snapshotAdminDeployment: 'dep-admin-old',
+        snapshotLiffDeployment: 'dep-liff-old',
+      });
+
+      const row = await getSnapshot(d1, rollbackId);
+      expect(row).not.toBeNull();
+      expect(row!.status).toBe('running');
+      expect(row!.from_version).toBe('0.8.0');
+      expect(row!.to_version).toBe('0.7.0');
+      expect(row!.rollback_of).toBe(sourceId);
+      expect(row!.rollback_expires_at).toBeNull();
+      expect(row!.snapshot_worker_url).toBe('https://r2.example.com/worker-0.7.0.js');
+      expect(row!.snapshot_admin_deployment).toBe('dep-admin-old');
+      expect(row!.snapshot_liff_deployment).toBe('dep-liff-old');
+    });
+  });
+
+  describe('markSnapshotRolledBack', () => {
+    it('marks the source row rolled_back without changing completed_at', async () => {
+      const id = await createSnapshot(d1, { from: '0.7.0', to: '0.8.0' });
+      await updateStatus(d1, id, 'success');
+      const before = await getSnapshot(d1, id);
+
+      await markSnapshotRolledBack(d1, id);
+
+      const after = await getSnapshot(d1, id);
+      expect(after!.status).toBe('rolled_back');
+      expect(after!.completed_at).toBe(before!.completed_at);
     });
   });
 

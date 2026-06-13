@@ -89,6 +89,41 @@ export async function createSnapshot(
   return id;
 }
 
+export async function createRollbackSnapshot(
+  d1: D1Like,
+  v: {
+    rollbackOf: string;
+    from: string;
+    to: string;
+    snapshotWorkerUrl: string;
+    snapshotAdminDeployment: string;
+    snapshotLiffDeployment: string;
+  },
+): Promise<string> {
+  const id = ulid();
+  const now = Date.now();
+  await d1
+    .prepare(
+      `INSERT INTO update_history (
+         id, started_at, completed_at, from_version, to_version, status,
+         snapshot_worker_url, snapshot_admin_deployment, snapshot_liff_deployment,
+         events_jsonl, error, rollback_of, rollback_expires_at
+       ) VALUES (?, ?, NULL, ?, ?, 'running', ?, ?, ?, '', NULL, ?, NULL)`,
+    )
+    .bind(
+      id,
+      now,
+      v.from,
+      v.to,
+      v.snapshotWorkerUrl,
+      v.snapshotAdminDeployment,
+      v.snapshotLiffDeployment,
+      v.rollbackOf,
+    )
+    .run();
+  return id;
+}
+
 export async function getSnapshot(
   d1: D1Like,
   id: string,
@@ -98,6 +133,16 @@ export async function getSnapshot(
     .bind(id)
     .first<SnapshotRow>();
   return row ?? null;
+}
+
+export async function markSnapshotRolledBack(
+  d1: D1Like,
+  id: string,
+): Promise<void> {
+  await d1
+    .prepare("UPDATE update_history SET status = 'rolled_back' WHERE id = ?")
+    .bind(id)
+    .run();
 }
 
 export async function updateStatus(

@@ -35,14 +35,22 @@
 import { Hono } from 'hono';
 import {
   runUpdate,
+  runRollback,
   fetchManifest,
   detectFork,
   findRelease,
+  createRollbackSnapshot,
+  createEventEmitter,
   getSnapshot,
+  updateStatus,
+  appendEvent,
+  setError,
+  markSnapshotRolledBack,
   listRecent,
   type D1Like,
   type ReleaseEntry,
   type CurrentVersion,
+  type UpdateContext,
 } from '@line-harness/update-engine';
 import {
   BUNDLE_VERSION,
@@ -74,6 +82,7 @@ type UpdateEnv = {
 };
 
 const app = new Hono<UpdateEnv>();
+const UPDATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 /**
  * Adapter from Cloudflare's `D1Database` to the engine's local `D1Like`
@@ -107,6 +116,50 @@ function adminUpdateErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function isSafeUpdateId(id: string): boolean {
+  return UPDATE_ID_PATTERN.test(id);
+}
+
+function rollbackContext(
+  env: UpdateEnv['Bindings'],
+  fromVersion: string,
+  toVersion: string,
+): UpdateContext {
+  const current: CurrentVersion = {
+    version: fromVersion,
+    worker_hash: WORKER_HASH,
+    admin_hash: ADMIN_HASH,
+    liff_hash: LIFF_HASH,
+  };
+  const target: ReleaseEntry = {
+    version: toVersion,
+    released_at: '',
+    worker_hash: '',
+    admin_hash: '',
+    liff_hash: '',
+    bundle_url: '',
+    bundle_size_bytes: 0,
+    required_secrets: [],
+    new_required_secrets: [],
+    migrations: [],
+    changelog_url: '',
+    min_from_version: '',
+  };
+  return {
+    creds: {
+      accountId: env.CF_ACCOUNT_ID,
+      apiToken: env.CF_API_TOKEN,
+    },
+    workerName: env.WORKER_NAME,
+    adminPagesProject: env.ADMIN_PAGES_PROJECT,
+    liffPagesProject: env.LIFF_PAGES_PROJECT,
+    d1DatabaseId: env.D1_DATABASE_ID,
+    current,
+    target,
+    manifestUrl: env.MANIFEST_URL,
+  };
 }
 
 /** Auth gate — single source of truth for every endpoint in this router. */
@@ -227,6 +280,107 @@ app.post('/start', async (c) => {
   c.executionCtx.waitUntil(handle.done.catch(() => undefined));
 
   return c.json({ updateId: handle.updateId }, 202);
+});
+
+/**
+ * POST /admin/update/rollback/:id — manually roll back a successful update.
+ *
+ * Creates a new update_history row for the rollback operation (`rollback_of`
+ * points at the original successful update), then runs the existing rollback
+ * phase in the background. The original row is marked `rolled_back` only after
+ * the rollback operation succeeds so the UI no longer offers repeated rollback
+ * for the same update.
+ */
+app.post('/rollback/:id', async (c) => {
+  const sourceId = c.req.param('id');
+  if (!isSafeUpdateId(sourceId)) {
+    return c.json({ error: 'bad_update_id' }, 400);
+  }
+
+  const d1 = adaptD1(c.env.DB);
+  let source;
+  try {
+    source = await getSnapshot(d1, sourceId);
+  } catch (err) {
+    return c.json({
+      error: 'rollback_failed',
+      message: 'Rollback setup failed',
+      errorKind: adminUpdateErrorKind(err),
+    }, 500);
+  }
+
+  if (!source) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  if (
+    source.status !== 'success' ||
+    source.rollback_of ||
+    !source.rollback_expires_at ||
+    Date.now() >= source.rollback_expires_at
+  ) {
+    return c.json({ error: 'rollback_unavailable' }, 409);
+  }
+  const snapshotWorkerUrl = source.snapshot_worker_url;
+  const snapshotAdminDeployment = source.snapshot_admin_deployment;
+  const snapshotLiffDeployment = source.snapshot_liff_deployment;
+  if (!snapshotWorkerUrl || !snapshotAdminDeployment || !snapshotLiffDeployment) {
+    return c.json({ error: 'rollback_snapshot_missing' }, 409);
+  }
+
+  let rollbackId;
+  try {
+    rollbackId = await createRollbackSnapshot(d1, {
+      rollbackOf: source.id,
+      from: source.to_version,
+      to: source.from_version,
+      snapshotWorkerUrl,
+      snapshotAdminDeployment,
+      snapshotLiffDeployment,
+    });
+  } catch (err) {
+    return c.json({
+      error: 'rollback_failed',
+      message: 'Rollback setup failed',
+      errorKind: adminUpdateErrorKind(err),
+    }, 500);
+  }
+
+  const rollbackDone = (async () => {
+    const ev = createEventEmitter({
+      persist: async (event) => {
+        await appendEvent(d1, rollbackId, event);
+      },
+    });
+    try {
+      await runRollback(
+        rollbackContext(c.env, source.to_version, source.from_version),
+        {
+          snapshotWorkerBundleUrl: snapshotWorkerUrl,
+          snapshotAdminDeployment,
+          snapshotLiffDeployment,
+        },
+        ev,
+      );
+      await ev.emit({
+        step: 'complete',
+        status: 'done',
+        reverted_to: source.from_version,
+      });
+      await updateStatus(d1, rollbackId, 'success');
+      await markSnapshotRolledBack(d1, source.id);
+    } catch (err) {
+      await setError(
+        d1,
+        rollbackId,
+        `manual rollback failed: ${adminUpdateErrorKind(err)}`,
+      );
+      await updateStatus(d1, rollbackId, 'failed');
+    }
+  })();
+
+  c.executionCtx.waitUntil(rollbackDone.catch(() => undefined));
+
+  return c.json({ updateId: rollbackId, rollbackOf: source.id }, 202);
 });
 
 /**

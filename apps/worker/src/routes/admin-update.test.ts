@@ -7,18 +7,32 @@ import { Hono } from 'hono';
 // reads. Mocks deliberately model both vanilla + fork outcomes so the route
 // can choose between 202 / 200 (already_latest) / 409 (fork) branches.
 const runUpdate = vi.fn();
+const runRollback = vi.fn();
 const fetchManifest = vi.fn();
 const detectFork = vi.fn();
 const findRelease = vi.fn();
+const createRollbackSnapshot = vi.fn();
+const createEventEmitter = vi.fn();
 const getSnapshot = vi.fn();
+const updateStatus = vi.fn();
+const appendEvent = vi.fn();
+const setError = vi.fn();
+const markSnapshotRolledBack = vi.fn();
 const listRecent = vi.fn();
 
 vi.mock('@line-harness/update-engine', () => ({
   runUpdate: (...args: any[]) => runUpdate(...args),
+  runRollback: (...args: any[]) => runRollback(...args),
   fetchManifest: (...args: any[]) => fetchManifest(...args),
   detectFork: (...args: any[]) => detectFork(...args),
   findRelease: (...args: any[]) => findRelease(...args),
+  createRollbackSnapshot: (...args: any[]) => createRollbackSnapshot(...args),
+  createEventEmitter: (...args: any[]) => createEventEmitter(...args),
   getSnapshot: (...args: any[]) => getSnapshot(...args),
+  updateStatus: (...args: any[]) => updateStatus(...args),
+  appendEvent: (...args: any[]) => appendEvent(...args),
+  setError: (...args: any[]) => setError(...args),
+  markSnapshotRolledBack: (...args: any[]) => markSnapshotRolledBack(...args),
   listRecent: (...args: any[]) => listRecent(...args),
 }));
 
@@ -104,6 +118,15 @@ beforeEach(() => {
     updateId: 'UPDATE_ID_123',
     done: Promise.resolve('UPDATE_ID_123'),
   });
+  runRollback.mockResolvedValue(undefined);
+  createRollbackSnapshot.mockResolvedValue('ROLLBACK_ID_123');
+  createEventEmitter.mockImplementation(({ persist }: { persist: (event: unknown) => Promise<void> }) => ({
+    emit: vi.fn((event: unknown) => persist(event)),
+  }));
+  appendEvent.mockResolvedValue(undefined);
+  updateStatus.mockResolvedValue(undefined);
+  setError.mockResolvedValue(undefined);
+  markSnapshotRolledBack.mockResolvedValue(undefined);
   getSnapshot.mockResolvedValue(null);
   listRecent.mockResolvedValue([]);
 });
@@ -193,6 +216,141 @@ describe('POST /admin/update/start', () => {
     expect(body.error).toBe('update_failed');
     expect(body.message).toBe('Update setup failed');
     expect(body.errorKind).toBe('Error');
+  });
+});
+
+describe('POST /admin/update/rollback/:id', () => {
+  function rollbackSource(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'UPDATE_SOURCE',
+      started_at: Date.now() - 1000,
+      completed_at: Date.now() - 500,
+      from_version: '0.7.0',
+      to_version: '0.8.0',
+      status: 'success',
+      snapshot_worker_url: 'https://r2.example.com/worker-0.7.0.js',
+      snapshot_admin_deployment: 'dep-admin-old',
+      snapshot_liff_deployment: 'dep-liff-old',
+      events_jsonl: '',
+      error: null,
+      rollback_of: null,
+      rollback_expires_at: Date.now() + 60_000,
+      ...overrides,
+    };
+  }
+
+  it('rejects requests without ADMIN_API_KEY header → 401', async () => {
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', { method: 'POST' });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects malformed update ids before snapshot lookup', async () => {
+    const res = await request('/admin/update/rollback/bad%20id', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(400);
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 when the source snapshot does not exist', async () => {
+    getSnapshot.mockResolvedValueOnce(null);
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(404);
+    expect(createRollbackSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when rollback is unavailable for the row', async () => {
+    getSnapshot.mockResolvedValueOnce(rollbackSource({ status: 'failed' }));
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(createRollbackSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when rollback is expired', async () => {
+    getSnapshot.mockResolvedValueOnce(rollbackSource({ rollback_expires_at: Date.now() - 1 }));
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(createRollbackSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when rollback snapshot coordinates are missing', async () => {
+    getSnapshot.mockResolvedValueOnce(rollbackSource({ snapshot_worker_url: null }));
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(409);
+    expect(createRollbackSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('starts rollback in the background and marks rows on success', async () => {
+    getSnapshot.mockResolvedValueOnce(rollbackSource());
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+    await Promise.resolve();
+
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { updateId: string; rollbackOf: string };
+    expect(body).toEqual({ updateId: 'ROLLBACK_ID_123', rollbackOf: 'UPDATE_SOURCE' });
+    expect(createRollbackSnapshot).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      rollbackOf: 'UPDATE_SOURCE',
+      from: '0.8.0',
+      to: '0.7.0',
+    }));
+    expect(runRollback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workerName: 'line-harness',
+        adminPagesProject: 'line-harness-admin',
+        liffPagesProject: 'line-harness-liff',
+      }),
+      {
+        snapshotWorkerBundleUrl: 'https://r2.example.com/worker-0.7.0.js',
+        snapshotAdminDeployment: 'dep-admin-old',
+        snapshotLiffDeployment: 'dep-liff-old',
+      },
+      expect.anything(),
+    );
+    expect(updateStatus).toHaveBeenCalledWith(expect.anything(), 'ROLLBACK_ID_123', 'success');
+    expect(markSnapshotRolledBack).toHaveBeenCalledWith(expect.anything(), 'UPDATE_SOURCE');
+  });
+
+  it('redacts snapshot lookup failures before responding', async () => {
+    getSnapshot.mockRejectedValueOnce(
+      new Error('snapshot failed CF_API_TOKEN project=line-harness-admin'),
+    );
+
+    const res = await request('/admin/update/rollback/UPDATE_SOURCE', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key' },
+    });
+
+    expect(res.status).toBe(500);
+    const bodyText = await res.text();
+    expect(bodyText).toContain('Rollback setup failed');
+    expect(bodyText).not.toContain('CF_API_TOKEN');
+    expect(bodyText).not.toContain('line-harness-admin');
   });
 });
 

@@ -39,4 +39,26 @@ describe('update-client manifest URL', () => {
       { cache: 'no-store' },
     )
   })
+
+  it('starts rollback through the Worker API with the admin key', async () => {
+    vi.stubEnv('NEXT_PUBLIC_API_URL', 'https://example-worker.workers.dev')
+    vi.stubEnv('NEXT_PUBLIC_ADMIN_API_KEY', 'admin-key')
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ updateId: 'ROLLBACK_ID', rollbackOf: 'UPDATE_ID' })))
+
+    const { startRollback } = await loadUpdateClient()
+
+    await expect(startRollback('UPDATE_ID')).resolves.toEqual({
+      updateId: 'ROLLBACK_ID',
+      rollbackOf: 'UPDATE_ID',
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://example-worker.workers.dev/admin/update/rollback/UPDATE_ID',
+      {
+        method: 'POST',
+        headers: { 'x-admin-api-key': 'admin-key' },
+      },
+    )
+  })
 })

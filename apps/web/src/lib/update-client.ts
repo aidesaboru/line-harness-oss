@@ -80,6 +80,17 @@ export async function startUpdate(): Promise<{ updateId: string }> {
   return r.json() as Promise<{ updateId: string }>
 }
 
+export async function startRollback(
+  id: string,
+): Promise<{ updateId: string; rollbackOf: string }> {
+  const r = await fetch(`${API_URL}/admin/update/rollback/${encodeURIComponent(id)}`, {
+    method: 'POST',
+    headers: { 'x-admin-api-key': adminKey() },
+  })
+  if (!r.ok) throw new Error(`rollback failed ${r.status}`)
+  return r.json() as Promise<{ updateId: string; rollbackOf: string }>
+}
+
 export async function getUpdateStatus(id: string): Promise<{
   id: string
   status: string

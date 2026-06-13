@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { ProgressModal } from '@/components/update/progress-modal'
+import { startRollback } from '@/lib/update-client'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL!
 const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY!
@@ -14,13 +16,14 @@ interface Row {
   status: string
   error: string | null
   rollback_expires_at: number | null
+  rollback_of: string | null
 }
 
 async function fetchHistory(): Promise<Row[]> {
   const r = await fetch(`${API_URL}/admin/update/history`, {
     headers: { 'x-admin-api-key': ADMIN_KEY },
   })
-  if (!r.ok) throw new Error(`history fetch ${r.status}`)
+  if (!r.ok) throw new Error(`history_fetch_${r.status}`)
   const j = (await r.json()) as { history: Row[] }
   return j.history
 }
@@ -28,19 +31,50 @@ async function fetchHistory(): Promise<Row[]> {
 export default function UpdatesPage() {
   const [rows, setRows] = useState<Row[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [rollbackUpdateId, setRollbackUpdateId] = useState<string | null>(null)
+  const [rollingBackId, setRollingBackId] = useState<string | null>(null)
+
+  async function loadHistory() {
+    try {
+      setError(null)
+      setRows(await fetchHistory())
+    } catch {
+      setError('履歴取得に失敗しました')
+    }
+  }
 
   useEffect(() => {
-    fetchHistory()
-      .then(setRows)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    void loadHistory()
   }, [])
+
+  async function onRollback(row: Row) {
+    if (!confirm(`v${row.to_version} から v${row.from_version} へ戻しますか？`)) {
+      return
+    }
+    setActionError(null)
+    setRollingBackId(row.id)
+    try {
+      const result = await startRollback(row.id)
+      setRollbackUpdateId(result.updateId)
+    } catch {
+      setActionError('Rollbackを開始できませんでした。時間をおいて再試行してください。')
+    } finally {
+      setRollingBackId(null)
+    }
+  }
 
   return (
     <div className="max-w-3xl mx-auto p-6">
       <h1 className="text-xl font-semibold mb-4">アップデート履歴</h1>
       {error && (
         <div className="text-red-700 bg-red-50 p-3 rounded mb-4 text-sm">
-          履歴取得に失敗: {error}
+          {error}
+        </div>
+      )}
+      {actionError && (
+        <div className="text-red-700 bg-red-50 p-3 rounded mb-4 text-sm">
+          {actionError}
         </div>
       )}
       {!error && rows.length === 0 && (
@@ -81,15 +115,16 @@ export default function UpdatesPage() {
                   </td>
                   <td className="py-2">
                     {r.status === 'success' &&
+                    !r.rollback_of &&
                     r.rollback_expires_at &&
                     Date.now() < r.rollback_expires_at ? (
                       <button
-                        onClick={() =>
-                          alert('rollback not implemented in MVP — use CLI')
-                        }
-                        className="underline text-blue-600 text-xs"
+                        type="button"
+                        onClick={() => void onRollback(r)}
+                        disabled={rollingBackId === r.id}
+                        className="underline text-blue-600 text-xs disabled:text-gray-400 disabled:no-underline"
                       >
-                        Rollback
+                        {rollingBackId === r.id ? 'Starting...' : 'Rollback'}
                       </button>
                     ) : (
                       <span className="text-gray-400 text-xs">—</span>
@@ -100,6 +135,15 @@ export default function UpdatesPage() {
             </tbody>
           </table>
         </div>
+      )}
+      {rollbackUpdateId && (
+        <ProgressModal
+          updateId={rollbackUpdateId}
+          onClose={() => {
+            setRollbackUpdateId(null)
+            void loadHistory()
+          }}
+        />
       )}
     </div>
   )

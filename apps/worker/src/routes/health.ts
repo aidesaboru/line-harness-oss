@@ -38,6 +38,12 @@ function parseVisibleId(raw: unknown, label: string): ValueResult<string> {
   return { ok: true, value };
 }
 
+function healthRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 health.use('/api/accounts/*', requireRole('owner', 'admin'));
 
 // ========== アカウントヘルス ==========
@@ -66,7 +72,7 @@ health.get('/api/accounts/:id/health', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/accounts/:id/health error:', err);
+    console.error(`GET /api/accounts/:id/health error: ${healthRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -90,7 +96,7 @@ health.get('/api/accounts/migrations', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/accounts/migrations error:', err);
+    console.error(`GET /api/accounts/migrations error: ${healthRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -136,7 +142,7 @@ health.post('/api/accounts/:id/migrate', async (c) => {
       },
     }, 201);
   } catch (err) {
-    console.error('POST /api/accounts/:id/migrate error:', err);
+    console.error(`POST /api/accounts/:id/migrate error: ${healthRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -161,7 +167,7 @@ health.get('/api/accounts/migrations/:migrationId', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/accounts/migrations/:migrationId error:', err);
+    console.error(`GET /api/accounts/migrations/:migrationId error: ${healthRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

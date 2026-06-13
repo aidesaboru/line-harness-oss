@@ -118,6 +118,12 @@ function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
   return spy.mock.calls.flat().map(String).join(' ');
 }
 
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -948,6 +954,129 @@ describe('account health and migration payload validation', () => {
     const migrationRes = await app.request('/api/accounts/migrations/%20migration-1%20');
     expect(migrationRes.status).toBe(200);
     expect(dbMocks.getAccountMigrationById).toHaveBeenCalledWith(db, 'migration-1');
+  });
+
+  test('account health failure logs only the error kind', async () => {
+    dbMocks.getLatestRiskLevel.mockRejectedValueOnce(
+      new Error('account health secret acc-1 migration-1 token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+
+      const res = await app.request('/api/accounts/acc-1/health');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/accounts/:id/health error: Error');
+      expectNoLogLeak(logged, [
+        'account health secret',
+        'acc-1',
+        'migration-1',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('account migration failure logs only the error kind', async () => {
+    const countFirst = vi.fn().mockResolvedValue({ count: 7 });
+    const db = {
+      prepare: vi.fn(() => ({ first: countFirst })),
+    } as unknown as D1Database;
+    dbMocks.createAccountMigration.mockRejectedValueOnce(
+      new Error('account migrate secret acc-1 acc-2 migration-1 token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner', db);
+
+      const res = await app.request('/api/accounts/acc-1/migrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ toAccountId: 'acc-2' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/accounts/:id/migrate error: Error');
+      expectNoLogLeak(logged, [
+        'account migrate secret',
+        'acc-1',
+        'acc-2',
+        'migration-1',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('account migrations list failure logs only the error kind', async () => {
+    dbMocks.getAccountMigrations.mockRejectedValueOnce(
+      new Error('migrations list secret acc-1 acc-2 migration-1 token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+
+      const res = await app.request('/api/accounts/migrations');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/accounts/migrations error: Error');
+      expectNoLogLeak(logged, [
+        'migrations list secret',
+        'acc-1',
+        'acc-2',
+        'migration-1',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('account migration detail failure logs only the error kind', async () => {
+    dbMocks.getAccountMigrationById.mockRejectedValueOnce(
+      new Error('migration detail secret acc-1 acc-2 migration-1 token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+
+      const res = await app.request('/api/accounts/migrations/migration-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/accounts/migrations/:migrationId error: Error');
+      expectNoLogLeak(logged, [
+        'migration detail secret',
+        'acc-1',
+        'acc-2',
+        'migration-1',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

@@ -4,7 +4,7 @@ import Header from '@/components/layout/header'
 import { useConfirmDialog } from '@/components/support/support-ui'
 import { fetchApi } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
-import { buildStaffCreatePayload } from '@/lib/staff-form'
+import { buildStaffCreatePayload, staffOperationFailureMessage } from '@/lib/staff-form'
 import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
 
@@ -57,10 +57,10 @@ export default function StaffPage() {
       if (res.success) {
         setMembers(res.data)
       } else {
-        setError(res.error ?? 'スタッフの読み込みに失敗しました')
+        setError(staffOperationFailureMessage('load'))
       }
     } catch {
-      setError('スタッフの読み込みに失敗しました')
+      setError(staffOperationFailureMessage('load'))
     } finally {
       setLoading(false)
     }
@@ -98,10 +98,10 @@ export default function StaffPage() {
         setShowForm(false)
         await loadMembers()
       } else {
-        setFormError(res.error ?? '作成に失敗しました')
+        setFormError(staffOperationFailureMessage('create'))
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(staffOperationFailureMessage('create'))
     } finally {
       setFormLoading(false)
     }
@@ -114,13 +114,13 @@ export default function StaffPage() {
         body: JSON.stringify({ isActive: !member.isActive }),
       })
       if (!res.success) {
-        setError(res.error ?? '更新に失敗しました')
+        setError(staffOperationFailureMessage('update'))
         return
       }
       setError('')
       await loadMembers()
     } catch {
-      setError('更新に失敗しました')
+      setError(staffOperationFailureMessage('update'))
     }
   }
 
@@ -140,10 +140,10 @@ export default function StaffPage() {
         setError('')
         setNewKey({ apiKey: res.data.apiKey, staffId: member.id })
       } else {
-        setError(res.error ?? 'キー再生成に失敗しました')
+        setError(staffOperationFailureMessage('regenerate-key'))
       }
     } catch {
-      setError('キー再生成に失敗しました')
+      setError(staffOperationFailureMessage('regenerate-key'))
     }
   }
 
@@ -158,13 +158,13 @@ export default function StaffPage() {
     try {
       const res = await fetchApi<ApiResponse<null>>(`/api/staff/${member.id}`, { method: 'DELETE' })
       if (!res.success) {
-        setError(res.error ?? '削除に失敗しました')
+        setError(staffOperationFailureMessage('delete'))
         return
       }
       setError('')
       await loadMembers()
     } catch {
-      setError('削除に失敗しました')
+      setError(staffOperationFailureMessage('delete'))
     }
   }
 

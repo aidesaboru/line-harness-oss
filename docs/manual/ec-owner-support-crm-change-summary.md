@@ -352,7 +352,7 @@ strict Preflight:
 - new-chat fallback mock sessionで `/api/chats/:friendId` が404の `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクを開き、友だち詳細から空チャット、案件紐付けバナー、友だち詳細が表示され、初回返信payloadに `supportCaseId` と `lineAccountId` が入ることを確認
 - image+text mock sessionでLINE画像のHTTPS URL直接入力とテキストを同時に入れて送信し、画像payloadだけに `supportCaseId`/`lineAccountId` が入り、続くテキストpayloadには案件紐付けが二重に入らないことを確認
 - worker chat route testsで、テキスト返信と画像返信が `customer_reply_sent` 案件履歴イベントを残し、案件を `customer_reply` へ更新すること、完了済み案件への `/send` と `/send/validate` はLINE送信/DB記録前に拒否されることを確認
-- support-meta/clipboard/staff-form testsで、マニュアル保存前検証、コピーfallback、スタッフ作成payload検証を確認
+- support-meta/clipboard/staff-form testsで、マニュアル保存前検証、コピーfallback、スタッフ作成payload検証、スタッフ管理の固定エラー文を確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

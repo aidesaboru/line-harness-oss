@@ -16,6 +16,21 @@ export type StaffCreateValidationResult =
   | { ok: true; payload: StaffCreatePayload }
   | { ok: false; error: string }
 
+export type StaffOperationFailure =
+  | 'load'
+  | 'create'
+  | 'update'
+  | 'regenerate-key'
+  | 'delete'
+
+const STAFF_OPERATION_FAILURE_MESSAGES: Record<StaffOperationFailure, string> = {
+  load: 'スタッフの読み込みに失敗しました。もう一度お試しください。',
+  create: 'スタッフの作成に失敗しました。入力内容を確認して、もう一度お試しください。',
+  update: 'スタッフ情報の更新に失敗しました。もう一度お試しください。',
+  'regenerate-key': 'APIキーの再生成に失敗しました。もう一度お試しください。',
+  delete: 'スタッフの削除に失敗しました。もう一度お試しください。',
+}
+
 export function buildStaffCreatePayload(input: StaffCreateFormInput): StaffCreateValidationResult {
   const name = input.name.trim()
   if (!name) return { ok: false, error: 'スタッフ名を入力してください' }
@@ -29,4 +44,8 @@ export function buildStaffCreatePayload(input: StaffCreateFormInput): StaffCreat
       ...(email ? { email } : {}),
     },
   }
+}
+
+export function staffOperationFailureMessage(operation: StaffOperationFailure): string {
+  return STAFF_OPERATION_FAILURE_MESSAGES[operation]
 }

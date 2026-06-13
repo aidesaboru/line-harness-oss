@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildStaffCreatePayload } from './staff-form'
+import { buildStaffCreatePayload, staffOperationFailureMessage } from './staff-form'
 
 describe('staff create form', () => {
   it('trims the staff name and email before sending to the API', () => {
@@ -40,5 +40,15 @@ describe('staff create form', () => {
       ok: false,
       error: 'スタッフ名を入力してください',
     })
+  })
+})
+
+describe('staff operation failure messages', () => {
+  it('uses stable user-facing messages instead of API error details', () => {
+    expect(staffOperationFailureMessage('load')).toBe('スタッフの読み込みに失敗しました。もう一度お試しください。')
+    expect(staffOperationFailureMessage('create')).toBe('スタッフの作成に失敗しました。入力内容を確認して、もう一度お試しください。')
+    expect(staffOperationFailureMessage('update')).toBe('スタッフ情報の更新に失敗しました。もう一度お試しください。')
+    expect(staffOperationFailureMessage('regenerate-key')).toBe('APIキーの再生成に失敗しました。もう一度お試しください。')
+    expect(staffOperationFailureMessage('delete')).toBe('スタッフの削除に失敗しました。もう一度お試しください。')
   })
 })

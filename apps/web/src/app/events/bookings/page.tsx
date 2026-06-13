@@ -28,6 +28,9 @@ const statusBadge: Record<string, string> = {
   no_show: 'bg-red-100 text-red-800',
 }
 
+const EVENT_BOOKINGS_LOAD_ERROR_MESSAGE = 'イベント予約の読み込みに失敗しました。もう一度お試しください。'
+const EVENT_BOOKINGS_ACTION_ERROR_MESSAGE = 'イベント予約の更新に失敗しました。もう一度お試しください。'
+
 function formatJp(iso: string): string {
   return new Date(iso).toLocaleString('ja-JP', {
     year: 'numeric',
@@ -61,8 +64,8 @@ function BookingsInner() {
       ])
       setEvent(evRes)
       setItems(listRes.items)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(EVENT_BOOKINGS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -89,8 +92,8 @@ function BookingsInner() {
     try {
       await eventsApi.decideBooking(selectedAccountId, eventId, id, action, reason)
       await refresh()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(EVENT_BOOKINGS_ACTION_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }
@@ -103,8 +106,8 @@ function BookingsInner() {
     try {
       await eventsApi.adminCancelBooking(selectedAccountId, eventId, id)
       await refresh()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(EVENT_BOOKINGS_ACTION_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }
@@ -116,8 +119,8 @@ function BookingsInner() {
     try {
       await eventsApi.updateBooking(selectedAccountId, eventId, id, { status })
       await refresh()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(EVENT_BOOKINGS_ACTION_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }

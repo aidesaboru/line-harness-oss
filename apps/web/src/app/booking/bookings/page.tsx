@@ -42,6 +42,9 @@ const actionLabel: Record<string, string> = {
   complete: '完了',
 }
 
+const BOOKINGS_LOAD_ERROR_MESSAGE = '予約の読み込みに失敗しました。もう一度お試しください。'
+const BOOKINGS_ACTION_ERROR_MESSAGE = '予約の更新に失敗しました。もう一度お試しください。'
+
 function formatJpDateTime(iso: string): string {
   return new Date(iso).toLocaleString('ja-JP', {
     year: 'numeric',
@@ -70,8 +73,8 @@ export default function BookingsPage() {
     try {
       const r = await bookingApi.listRequests(selectedAccountId, tab)
       setItems(r.requests)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(BOOKINGS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -87,8 +90,8 @@ export default function BookingsPage() {
     try {
       await bookingApi.decideRequest(selectedAccountId, id, action)
       await load()
-    } catch (e) {
-      alert(`操作に失敗しました: ${e instanceof Error ? e.message : String(e)}`)
+    } catch {
+      setError(BOOKINGS_ACTION_ERROR_MESSAGE)
     }
   }
 

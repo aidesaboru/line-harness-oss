@@ -48,6 +48,7 @@ updated: 2026-06-13
 - チャット返信のURL fallbackが再実行されても、sessionStorageから取れた案件タイトル、返信案、LINEアカウントIDを保持し、紐付けバナーをIDだけの表示に戻さない
 - 画像+テキストを同時に送る場合は、サポート案件の紐付けを画像側だけに付け、二重更新や不要な警告を避ける
 - sessionStorageが使えない場合でも、URLの `supportCase` で案件紐付けを維持
+- まだチャット行がない友だちへの `/chats?friend=...&supportCase=...` 直リンクでも、友だち詳細から空チャットを表示して初回返信できる
 - 画像とテキストを同時に送っても、案件がすでに「顧客返信待ち」なら不要な復旧警告を出さない
 - コピー、スタッフフォーム、認証キャッシュ、確認ダイアログをhelper化し、失敗時の案内を画面に出す
 - マニュアル編集はタイトル、本文、URL形式を保存前に検査し、マニュアル無効化、スタッフ削除、APIキー再生成は画面内確認ダイアログを通してから実行する
@@ -154,6 +155,7 @@ strict Preflight:
 - long-chat mock sessionで `/chats?friend=...` を開き、初期表示は最新2件だけ、`過去のメッセージを読み込む` で `beforeCreatedAt`/`beforeId` 付きAPIを呼び、古い2件が前に追加され、全4件が古い順に並び、追加後に読み込みボタンが消えることを確認
 - draft-handoff mock sessionで `/support` の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、チャット入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認
 - URL-fallback mock sessionで sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクを開き、案件紐付けバナー、空の入力欄、無効な送信ボタンを確認し、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認
+- new-chat fallback mock sessionで `/api/chats/:friendId` が404の `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクを開き、友だち詳細から空チャット、案件紐付けバナー、友だち詳細が表示され、初回返信payloadに `supportCaseId` と `lineAccountId` が入ることを確認
 - worker chat route testsで、テキスト返信と画像返信が `customer_reply_sent` 案件履歴イベントを残し、案件を `customer_reply` へ更新すること、完了済み案件への `/send` と `/send/validate` はLINE送信/DB記録前に拒否されることを確認
 - support-meta/clipboard/staff-form testsで、マニュアル保存前検証、コピーfallback、スタッフ作成payload検証を確認
 - コンソールエラーは0件

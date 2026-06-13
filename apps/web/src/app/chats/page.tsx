@@ -122,6 +122,34 @@ function isStaleChat(chat: Pick<Chat, 'lastMessageAt' | 'status'>): boolean {
   return t > 0 && Date.now() - t >= CHAT_STALE_MS
 }
 
+function buildEmptyChatDetailFromFriend(friend: {
+  id: string
+  displayName?: string | null
+  pictureUrl?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}): ChatDetail {
+  const now = new Date().toISOString()
+  return {
+    id: friend.id,
+    friendId: friend.id,
+    friendName: friend.displayName || '名前なし',
+    friendPictureUrl: friend.pictureUrl ?? null,
+    operatorId: null,
+    status: 'in_progress',
+    notes: null,
+    lastMessageAt: null,
+    lastMessageContent: null,
+    lastMessageDirection: null,
+    lastMessageType: null,
+    createdAt: friend.createdAt ?? now,
+    updatedAt: friend.updatedAt ?? now,
+    messages: [],
+    hasMoreMessages: false,
+    nextMessagesBefore: null,
+  }
+}
+
 function formatElapsed(iso: string | null): string {
   const t = getTime(iso)
   if (!t) return ''
@@ -504,12 +532,24 @@ export default function ChatsPage() {
     setDetailLoading(true)
     setLoadingOlderMessages(false)
     setError('')
+    const loadFriendFallback = async (): Promise<boolean> => {
+      try {
+        const friendRes = await api.friends.get(chatId)
+        if (!friendRes.success || !friendRes.data) return false
+        setChatDetail(buildEmptyChatDetailFromFriend(friendRes.data))
+        setNotes('')
+        return true
+      } catch {
+        return false
+      }
+    }
     try {
       const res = await api.chats.get(chatId)
       if (res.success) {
         setChatDetail(res.data as unknown as ChatDetail)
         setNotes((res.data as unknown as ChatDetail).notes || '')
       } else {
+        if (await loadFriendFallback()) return
         // API は 200 で success:false を返す可能性 (例: 404 lookup)。詳細を画面に出す。
         const errMsg = (res as { error?: string }).error ?? '不明なエラー'
         setError(`チャット詳細の読み込みに失敗しました: ${errMsg}`)
@@ -517,6 +557,7 @@ export default function ChatsPage() {
     } catch (err) {
       // ネットワーク / parse / auth fail などの例外。empty catch だと原因不明だったので詳細を出す。
       const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('API error: 404') && await loadFriendFallback()) return
       setError(`チャット詳細の読み込みに失敗しました: ${msg}`)
     } finally {
       setDetailLoading(false)
@@ -572,10 +613,10 @@ export default function ChatsPage() {
     loadChats()
   }, [loadChats])
 
-  // Deep-link from other pages (e.g. /form-submissions): ?friend=<friendId>
-  // chat list returns id = friend_id, so selectedChatId === friendId is correct.
-  // If no chat exists yet, loadChatDetail will fail and the user can fall back to
-  // the friend list — acceptable for now.
+  // Deep-link from other pages (e.g. /form-submissions): ?friend=<friendId>.
+  // Chat list returns id = friend_id, and the send API can lazily create a chat
+  // from that friend id, so selectedChatId === friendId is correct even before
+  // the first manual reply.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)

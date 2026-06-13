@@ -200,6 +200,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - Local draft-handoff browser smokeでは、サポート案件の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、メッセージ入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認済み。
 - [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
 - Local URL-fallback browser smokeでは、sessionStorage draftなしの `/chats?friend=...&supportCase=...&lineAccount=...` 直リンクで案件紐付けバナーが `に紐づけ中` と表示され、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認済み。
+- [ ] まだチャット行がない友だちでも、サポート案件から初回返信できる
+- Local new-chat fallback browser smokeでは、`/api/chats/:friendId` が404でも `/api/friends/:friendId` から空チャットを表示し、`メッセージはまだありません。`、案件紐付けバナー、友だち詳細を確認したうえで、テキスト送信payloadに `supportCaseId` と `lineAccountId` が入ることを確認済み。
 - [ ] テキスト返信で案件履歴に顧客返信イベントが残る
 - Worker chat route testでは、テキスト返信後にLINE送信、`chat_messages` 記録、`support_case_events.customer_reply_sent` 記録、案件ステータスの `customer_reply` 更新、metadataの `messageId`/`contentPreview`/前後ステータスが揃うことを確認済み。
 - [ ] 画像だけの返信でも案件履歴に顧客返信イベントが残る

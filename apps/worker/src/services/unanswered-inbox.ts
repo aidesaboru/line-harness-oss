@@ -6,6 +6,16 @@ import {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
 
+function normalizePositiveInteger(value: number | undefined, fallback: number, max = Number.POSITIVE_INFINITY): number {
+  if (!Number.isInteger(value) || value === undefined || value < 1) return fallback;
+  return Math.min(value, max);
+}
+
+function normalizeOptionalPositiveInteger(value: number | undefined): number | undefined {
+  if (!Number.isInteger(value) || value === undefined || value < 1) return undefined;
+  return value;
+}
+
 // auto_reply にマッチした incoming は「人間対応不要」として未対応から除外する。
 // 判定戦略は 2 系統:
 //
@@ -222,8 +232,9 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
   if (opts.account) {
     filtered = filtered.filter((r) => r.accountId === opts.account);
   }
-  if (opts.minWaitMinutes && opts.minWaitMinutes > 0) {
-    const cutoff = Date.now() - opts.minWaitMinutes * 60_000;
+  const minWaitMinutes = normalizeOptionalPositiveInteger(opts.minWaitMinutes);
+  if (minWaitMinutes) {
+    const cutoff = Date.now() - minWaitMinutes * 60_000;
     filtered = filtered.filter((r) => new Date(r.lastIncomingAt).getTime() <= cutoff);
   }
   if (opts.q) {
@@ -328,8 +339,8 @@ export async function computeUnansweredInbox(
   db: D1Database,
   opts: UnansweredInboxOptions = {},
 ): Promise<UnansweredInboxResult> {
-  const page = Math.max(1, opts.page ?? 1);
-  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, opts.pageSize ?? DEFAULT_PAGE_SIZE));
+  const page = normalizePositiveInteger(opts.page, 1);
+  const pageSize = normalizePositiveInteger(opts.pageSize, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE);
   const offset = (page - 1) * pageSize;
 
   const allRows = await getAllUnansweredRows(db, opts.staff);

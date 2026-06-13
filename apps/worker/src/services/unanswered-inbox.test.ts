@@ -183,6 +183,30 @@ describe('computeUnansweredInbox', () => {
     expect(p1.rows[0].friendId).not.toBe(p2.rows[0].friendId);
   });
 
+  test('不正なpage/pageSizeは既定値に戻す', async () => {
+    const db = stubDB({
+      rows: [
+        {
+          friend_id: 'f1', display_name: 'A', picture_url: null,
+          line_account_id: 'a1', account_name: 'L ①',
+          last_incoming: '2026-05-08T09:00:00+09:00',
+          last_manual: null, last_machine: null,
+          last_incoming_type: 'text', last_incoming_content: 'msg1',
+        },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db, {
+      page: Number.NaN,
+      pageSize: Number.NaN,
+    });
+
+    expect(result.page).toBe(1);
+    expect(result.pageSize).toBe(50);
+    expect(result.total).toBe(1);
+    expect(result.rows).toHaveLength(1);
+  });
+
   test('機械応答済 (last_machine) でもリストに残る — 人間の返事と見なさない', async () => {
     const db = stubDB({
       rows: [

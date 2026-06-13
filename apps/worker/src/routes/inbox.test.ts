@@ -49,6 +49,22 @@ describe('inbox routes support visibility', () => {
     });
   });
 
+  test('unanswered list ignores invalid numeric query values before calling the service', async () => {
+    const db = {} as D1Database;
+
+    const res = await setupApp(db).request('/api/inbox/unanswered?q=%20&page=abc&pageSize=-10&minWaitMinutes=1.5');
+
+    expect(res.status).toBe(200);
+    expect(inboxMocks.computeUnansweredInbox).toHaveBeenCalledWith(db, {
+      q: undefined,
+      account: undefined,
+      minWaitMinutes: undefined,
+      page: undefined,
+      pageSize: undefined,
+      staff: { id: 'staff-1', name: '田島', role: 'staff' },
+    });
+  });
+
   test('unanswered count passes filters and current staff into the service scope', async () => {
     const db = {} as D1Database;
 
@@ -59,6 +75,24 @@ describe('inbox routes support visibility', () => {
       q: '相談',
       account: 'acc-1',
       minWaitMinutes: 60,
+      staff: {
+        id: 'staff-1',
+        name: '田島',
+        role: 'staff',
+      },
+    });
+  });
+
+  test('unanswered count ignores invalid minWaitMinutes before calling the service', async () => {
+    const db = {} as D1Database;
+
+    const res = await setupApp(db).request('/api/inbox/unanswered/count?minWaitMinutes=NaN');
+
+    expect(res.status).toBe(200);
+    expect(inboxMocks.countUnanswered).toHaveBeenCalledWith(db, {
+      q: undefined,
+      account: undefined,
+      minWaitMinutes: undefined,
       staff: {
         id: 'staff-1',
         name: '田島',

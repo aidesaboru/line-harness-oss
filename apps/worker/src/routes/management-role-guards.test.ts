@@ -457,6 +457,84 @@ describe('management role guards', () => {
   });
 });
 
+describe('conversion point payload validation', () => {
+  const conversionPointRow = {
+    id: 'point-1',
+    name: 'Purchase',
+    event_type: 'purchase',
+    value: 9800.5,
+    created_at: '2026-06-13T10:00:00.000',
+  };
+
+  test('owner conversion point create rejects malformed or invalid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+    const requests: BodyInit[] = [
+      '{',
+      JSON.stringify([]),
+      JSON.stringify({ name: 123, eventType: 'purchase' }),
+      JSON.stringify({ name: 'x'.repeat(121), eventType: 'purchase' }),
+      JSON.stringify({ name: 'Purchase', eventType: 'bad event' }),
+      JSON.stringify({ name: 'Purchase', eventType: 'purchase', value: '9800' }),
+      JSON.stringify({ name: 'Purchase', eventType: 'purchase', value: -1 }),
+      JSON.stringify({ name: 'Purchase', eventType: 'purchase', value: 1_000_000_000_001 }),
+    ];
+
+    for (const body of requests) {
+      const res = await app.request('/api/conversions/points', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status).toBe(400);
+    }
+
+    expect(dbMocks.createConversionPoint).not.toHaveBeenCalled();
+  });
+
+  test('owner conversion point create trims valid payloads before DB writes', async () => {
+    dbMocks.createConversionPoint.mockResolvedValue(conversionPointRow);
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/conversions/points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Purchase ',
+        eventType: ' purchase ',
+        value: 9800.5,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createConversionPoint).toHaveBeenCalledWith(expect.anything(), {
+      name: 'Purchase',
+      eventType: 'purchase',
+      value: 9800.5,
+    });
+  });
+
+  test('owner conversion point create normalizes missing value before DB writes', async () => {
+    dbMocks.createConversionPoint.mockResolvedValue({ ...conversionPointRow, value: null });
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/conversions/points', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Form submit',
+        eventType: 'form_submit',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createConversionPoint).toHaveBeenCalledWith(expect.anything(), {
+      name: 'Form submit',
+      eventType: 'form_submit',
+      value: null,
+    });
+  });
+});
+
 describe('entry route payload validation', () => {
   const entryRouteRow = {
     id: 'route-1',

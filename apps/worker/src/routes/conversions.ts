@@ -13,6 +13,19 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const conversions = new Hono<Env>();
 
+const CONVERSION_POINT_NAME_MAX_LENGTH = 120;
+const CONVERSION_POINT_EVENT_TYPE_MAX_LENGTH = 128;
+const CONVERSION_POINT_VALUE_MAX = 1_000_000_000_000;
+const CONVERSION_POINT_EVENT_TYPE_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+type ParsedConversionPointCreateBody = ValueResult<{
+  name: string;
+  eventType: string;
+  value: number | null;
+}>;
+
 interface ConversionEventRow {
   id: string;
   conversion_point_id: string;
@@ -31,6 +44,67 @@ interface ConversionEventFilters {
   endDate?: string;
   limit?: number;
   offset?: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern?: RegExp,
+): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (pattern && !pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalNullableValue(raw: unknown): ValueResult<number | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+    return { ok: false, error: 'value must be a finite number' };
+  }
+  if (raw < 0 || raw > CONVERSION_POINT_VALUE_MAX) {
+    return { ok: false, error: 'value is out of range' };
+  }
+  return { ok: true, value: raw };
+}
+
+function parseConversionPointCreateBody(raw: unknown): ParsedConversionPointCreateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const name = parseRequiredString(raw.name, 'name', CONVERSION_POINT_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+
+  const eventType = parseRequiredString(
+    raw.eventType,
+    'eventType',
+    CONVERSION_POINT_EVENT_TYPE_MAX_LENGTH,
+    CONVERSION_POINT_EVENT_TYPE_PATTERN,
+  );
+  if (!eventType.ok) return eventType;
+
+  const value = parseOptionalNullableValue(raw.value);
+  if (!value.ok) return value;
+
+  return {
+    ok: true,
+    value: {
+      name: name.value,
+      eventType: eventType.value,
+      value: value.value ?? null,
+    },
+  };
 }
 
 function clampLimit(raw: string | undefined, fallback = 100): number {
@@ -170,17 +244,11 @@ conversions.get('/api/conversions/points', requireRole('owner', 'admin'), async 
 // POST /api/conversions/points - create
 conversions.post('/api/conversions/points', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      name: string;
-      eventType: string;
-      value?: number | null;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseConversionPointCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    if (!body.name || !body.eventType) {
-      return c.json({ success: false, error: 'name and eventType are required' }, 400);
-    }
-
-    const point = await createConversionPoint(c.env.DB, body);
+    const point = await createConversionPoint(c.env.DB, parsed.value);
     return c.json({
       success: true,
       data: {

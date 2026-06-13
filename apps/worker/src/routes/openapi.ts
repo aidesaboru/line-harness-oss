@@ -512,7 +512,7 @@ const spec = {
       post: {
         tags: ['Conversions'],
         summary: 'CV ポイント作成',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' }, eventType: { type: 'string' }, value: { type: 'number' } }, required: ['name', 'eventType'] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, eventType: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }, value: { type: 'number', minimum: 0, maximum: 1000000000000, nullable: true } }, required: ['name', 'eventType'] } } } },
         responses: { '201': { description: 'Created' } },
       },
     },

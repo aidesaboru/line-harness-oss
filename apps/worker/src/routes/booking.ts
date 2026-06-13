@@ -653,7 +653,8 @@ booking.post('/api/booking/admin/menus', async (c) => {
 booking.put('/api/booking/admin/menus/:id', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const id = c.req.param('id');
+  const id = parseVisibleString(c.req.param('id'), 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!id.ok) return c.json({ error: 'invalid_menu_id' }, 400);
   const b = await c.req.json<{
     name: string;
     category_label?: string | null;
@@ -682,7 +683,7 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
       b.base_price,
       b.sort_order ?? 0,
       b.is_active === false ? 0 : 1,
-      id,
+      id.value,
       accountId,
     )
     .run();
@@ -692,14 +693,15 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
 booking.delete('/api/booking/admin/menus/:id', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const id = c.req.param('id');
+  const id = parseVisibleString(c.req.param('id'), 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!id.ok) return c.json({ error: 'invalid_menu_id' }, 400);
   await c.env.DB
     .prepare(
       `UPDATE menus
           SET deleted_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
         WHERE id = ? AND line_account_id = ?`,
     )
-    .bind(id, accountId)
+    .bind(id.value, accountId)
     .run();
   return c.json({ ok: true });
 });
@@ -760,7 +762,8 @@ booking.post('/api/booking/admin/staff', async (c) => {
 booking.put('/api/booking/admin/staff/:id', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const id = c.req.param('id');
+  const id = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!id.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   const b = await c.req.json<{
     name: string;
     display_name: string;
@@ -788,7 +791,7 @@ booking.put('/api/booking/admin/staff/:id', async (c) => {
       b.sort_order ?? 0,
       b.is_designation_optional ? 1 : 0,
       b.is_active === false ? 0 : 1,
-      id,
+      id.value,
       accountId,
     )
     .run();
@@ -798,14 +801,15 @@ booking.put('/api/booking/admin/staff/:id', async (c) => {
 booking.delete('/api/booking/admin/staff/:id', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const id = c.req.param('id');
+  const id = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!id.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   await c.env.DB
     .prepare(
       `UPDATE staff
           SET deleted_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
         WHERE id = ? AND line_account_id = ?`,
     )
-    .bind(id, accountId)
+    .bind(id.value, accountId)
     .run();
   return c.json({ ok: true });
 });
@@ -815,8 +819,10 @@ booking.delete('/api/booking/admin/staff/:id', async (c) => {
 booking.get('/api/booking/admin/staff/:id/menus', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
   const rows = await c.env.DB
@@ -830,7 +836,7 @@ booking.get('/api/booking/admin/staff/:id/menus', async (c) => {
         WHERE m.line_account_id = ?1 AND m.deleted_at IS NULL
         ORDER BY m.sort_order ASC`,
     )
-    .bind(accountId, staffId)
+    .bind(accountId, staffIdValue)
     .all();
   return c.json({ matrix: rows.results });
 });
@@ -838,8 +844,10 @@ booking.get('/api/booking/admin/staff/:id/menus', async (c) => {
 booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
   const b = await c.req.json<{
@@ -859,7 +867,7 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
         .all<{ id: string }>()
     ).results.map((r) => r.id),
   );
-  await c.env.DB.prepare(`DELETE FROM staff_menus WHERE staff_id = ?`).bind(staffId).run();
+  await c.env.DB.prepare(`DELETE FROM staff_menus WHERE staff_id = ?`).bind(staffIdValue).run();
   const filtered = b.menus.filter((m) => validMenuIds.has(m.menu_id));
   if (filtered.length > 0) {
     const stmts = filtered.map((m) =>
@@ -870,7 +878,7 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
            VALUES (?,?,?,?,?)`,
         )
         .bind(
-          staffId,
+          staffIdValue,
           m.menu_id,
           m.is_offered ? 1 : 0,
           m.override_duration_minutes ?? null,
@@ -887,8 +895,10 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
 booking.get('/api/booking/admin/staff/:id/shifts', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
   const from = c.req.query('from');
@@ -903,15 +913,17 @@ booking.get('/api/booking/admin/staff/:id/shifts', async (c) => {
         WHERE staff_id = ?
         ORDER BY work_date ASC`;
   const stmt = c.env.DB.prepare(sql);
-  const rows = await (from && to ? stmt.bind(staffId, from, to) : stmt.bind(staffId)).all();
+  const rows = await (from && to ? stmt.bind(staffIdValue, from, to) : stmt.bind(staffIdValue)).all();
   return c.json({ shifts: rows.results });
 });
 
 booking.put('/api/booking/admin/staff/:id/shifts', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
   const b = await c.req.json<{
@@ -928,7 +940,7 @@ booking.put('/api/booking/admin/staff/:id/shifts', async (c) => {
                 end_time = excluded.end_time,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
       )
-      .bind(crypto.randomUUID(), staffId, s.work_date, s.start_time, s.end_time)
+      .bind(crypto.randomUUID(), staffIdValue, s.work_date, s.start_time, s.end_time)
       .run();
   }
   return c.json({ ok: true, count: b.shifts.length });
@@ -937,14 +949,17 @@ booking.put('/api/booking/admin/staff/:id/shifts', async (c) => {
 booking.delete('/api/booking/admin/staff/:id/shifts/:shiftId', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
-  const shiftId = c.req.param('shiftId');
+  const shiftId = parseVisibleString(c.req.param('shiftId'), 'shift_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!shiftId.ok) return c.json({ error: 'invalid_shift_id' }, 400);
   await c.env.DB
     .prepare(`DELETE FROM staff_shifts WHERE id = ? AND staff_id = ?`)
-    .bind(shiftId, staffId)
+    .bind(shiftId.value, staffIdValue)
     .run();
   return c.json({ ok: true });
 });
@@ -952,8 +967,10 @@ booking.delete('/api/booking/admin/staff/:id/shifts/:shiftId', async (c) => {
 booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const staffId = c.req.param('id');
-  if (!(await assertStaffInAccount(c.env.DB, staffId, accountId))) {
+  const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
+  const staffIdValue = staffId.value;
+  if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
   const b = await c.req.json<{
@@ -982,7 +999,7 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
            VALUES (?, ?, ?, ?, ?)
            ON CONFLICT(staff_id, work_date) DO NOTHING`,
         )
-        .bind(crypto.randomUUID(), staffId, d.toISOString().slice(0, 10), tpl.start, tpl.end),
+        .bind(crypto.randomUUID(), staffIdValue, d.toISOString().slice(0, 10), tpl.start, tpl.end),
     );
   }
   if (stmts.length === 0) return c.json({ inserted: 0 });
@@ -1029,11 +1046,12 @@ booking.get('/api/booking/admin/requests', async (c) => {
 booking.patch('/api/booking/admin/requests/:id', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const id = c.req.param('id');
+  const id = parseVisibleString(c.req.param('id'), 'booking_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!id.ok) return c.json({ error: 'invalid_booking_id' }, 400);
   const b = await c.req.json<{ action: BookingAction }>();
   const row = await c.env.DB
     .prepare(`SELECT id, status, starts_at FROM bookings WHERE id = ? AND line_account_id = ?`)
-    .bind(id, accountId)
+    .bind(id.value, accountId)
     .first<{ id: string; status: BookingStatus; starts_at: string }>();
   if (!row) return c.json({ error: 'not_found' }, 404);
   if (!canTransition(row.status, b.action)) {
@@ -1048,7 +1066,7 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
                             updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
         WHERE id = ? AND status = ?`,
     )
-    .bind(next, new Date().toISOString(), id, row.status)
+    .bind(next, new Date().toISOString(), id.value, row.status)
     .run();
   if ((updateResult.meta?.changes ?? 0) === 0) {
     return c.json({ error: 'concurrent_update' }, 409);
@@ -1069,7 +1087,7 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
           .prepare(
             `INSERT INTO booking_reminders (id, booking_id, kind, scheduled_at) VALUES (?,?,?,?)`,
           )
-          .bind(crypto.randomUUID(), id, 'day_before', dayBefore.toISOString()),
+          .bind(crypto.randomUUID(), id.value, 'day_before', dayBefore.toISOString()),
       );
     }
     if (hoursBefore > now) {
@@ -1078,20 +1096,20 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
           .prepare(
             `INSERT INTO booking_reminders (id, booking_id, kind, scheduled_at) VALUES (?,?,?,?)`,
           )
-          .bind(crypto.randomUUID(), id, 'hours_before', hoursBefore.toISOString()),
+          .bind(crypto.randomUUID(), id.value, 'hours_before', hoursBefore.toISOString()),
       );
     }
     if (reminderInserts.length > 0) {
       await c.env.DB.batch(reminderInserts);
     }
     c.executionCtx.waitUntil(
-      notifyForBooking(c.env.DB, id, 'approved').catch((err) =>
+      notifyForBooking(c.env.DB, id.value, 'approved').catch((err) =>
         console.error('booking notify (approved) failed:', err),
       ),
     );
   } else if (next === 'rejected') {
     c.executionCtx.waitUntil(
-      notifyForBooking(c.env.DB, id, 'rejected').catch((err) =>
+      notifyForBooking(c.env.DB, id.value, 'rejected').catch((err) =>
         console.error('booking notify (rejected) failed:', err),
       ),
     );
@@ -1100,7 +1118,7 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
       .prepare(
         `UPDATE booking_reminders SET status='cancelled' WHERE booking_id = ? AND status = 'pending'`,
       )
-      .bind(id)
+      .bind(id.value)
       .run();
   }
 

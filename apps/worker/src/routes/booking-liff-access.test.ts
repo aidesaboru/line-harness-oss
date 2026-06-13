@@ -46,6 +46,9 @@ function makeDb() {
           if (sql.includes('FROM line_accounts')) {
             return (bound[0] === 'liff-1' ? { id: 'acc-1' } : null) as T | null;
           }
+          if (sql.includes('SELECT 1 AS ok FROM staff')) {
+            return (bound[0] === 'staff-1' && bound[1] === 'acc-1' ? { ok: 1 } : null) as T | null;
+          }
           if (sql.includes('FROM friends') && sql.includes('line_user_id')) {
             return (bound[0] === 'U-verified' && bound[1] === 'acc-1' ? { id: 'friend-1' } : null) as T | null;
           }
@@ -106,6 +109,74 @@ describe('booking admin account access', () => {
 
     expect(res.status).toBe(200);
     expect(db.calls.find((call) => call.sql.includes('FROM menus'))?.binds).toEqual(['acc-1']);
+  });
+});
+
+describe('booking admin path id access', () => {
+  test('rejects unsafe admin path ids before DB lookup', async () => {
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['PUT', '/api/booking/admin/menus/bad%20menu?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      }],
+      ['DELETE', '/api/booking/admin/staff/bad%20staff?account_id=acc-1'],
+      ['GET', '/api/booking/admin/staff/bad%20staff/menus?account_id=acc-1'],
+      ['PATCH', '/api/booking/admin/requests/bad%20booking?account_id=acc-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const { app, db } = setupApp(makeDb(), 'owner');
+
+      const res = await app.request(path, { ...init, method });
+
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(db.prepare, `${method} ${path}`).not.toHaveBeenCalled();
+    }
+  });
+
+  test('trims valid admin path ids before SQL bind', async () => {
+    const menuDb = makeDb();
+    const menuRes = await setupApp(menuDb, 'owner').app.request(
+      '/api/booking/admin/menus/%20menu-1%20?account_id=%20acc-1%20',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Menu',
+          duration_minutes: 30,
+          base_price: 1000,
+        }),
+      },
+    );
+    expect(menuRes.status).toBe(200);
+    expect(menuDb.calls.find((call) => call.sql.includes('UPDATE menus'))?.binds.slice(-2))
+      .toEqual(['menu-1', 'acc-1']);
+
+    const staffMenuDb = makeDb();
+    const staffMenuRes = await setupApp(staffMenuDb, 'owner').app.request(
+      '/api/booking/admin/staff/%20staff-1%20/menus?account_id=%20acc-1%20',
+    );
+    expect(staffMenuRes.status).toBe(200);
+    expect(staffMenuDb.calls.find((call) => call.sql.includes('SELECT 1 AS ok FROM staff'))?.binds)
+      .toEqual(['staff-1', 'acc-1']);
+    expect(staffMenuDb.calls.find((call) => call.sql.includes('FROM menus m'))?.binds)
+      .toEqual(['acc-1', 'staff-1']);
+
+    const requestDb = makeDb();
+    const requestRes = await setupApp(requestDb, 'owner').app.request(
+      '/api/booking/admin/requests/%20booking-1%20?account_id=%20acc-1%20',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' }),
+      },
+    );
+    expect(requestRes.status).toBe(404);
+    expect(requestDb.calls.find((call) => call.sql.includes('FROM bookings'))?.binds)
+      .toEqual(['booking-1', 'acc-1']);
   });
 });
 

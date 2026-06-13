@@ -294,6 +294,33 @@ describe('operations API role guards', () => {
     });
   });
 
+  test('owner Stripe events reject unsafe filter query values before DB helper calls', async () => {
+    const app = setupApp('owner');
+    const queries = [
+      'friendId=bad%20friend',
+      'eventType=charge%20succeeded',
+    ];
+
+    for (const query of queries) {
+      const res = await app.request(`/api/integrations/stripe/events?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(dbMocks.getStripeEvents, query).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner Stripe events trim valid filter query values before DB helper calls', async () => {
+    const res = await setupApp('owner')
+      .request('/api/integrations/stripe/events?friendId=%20friend-1%20&eventType=%20charge.succeeded%20&limit=2.9');
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getStripeEvents).toHaveBeenCalledWith({} as D1Database, {
+      friendId: 'friend-1',
+      eventType: 'charge.succeeded',
+      limit: 2,
+    });
+  });
+
   test('public Stripe webhook accepts valid signed bounded payloads', async () => {
     const secret = 'whsec_test_secret';
     const rawBody = JSON.stringify({

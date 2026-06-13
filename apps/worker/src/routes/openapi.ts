@@ -615,6 +615,11 @@ const spec = {
       get: {
         tags: ['Operations'],
         summary: 'Stripeイベント一覧（owner/admin）',
+        parameters: [
+          { name: 'friendId', in: 'query', schema: { type: 'string', maxLength: 255, pattern: '^[!-~]+$' } },
+          { name: 'eventType', in: 'query', schema: { type: 'string', maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
+        ],
         responses: { '200': { description: 'Stripe events' }, '403': { description: 'Requires owner/admin' } },
       },
     },

@@ -17,11 +17,23 @@ const STRIPE_CURRENCY_MAX_LENGTH = 16;
 const STRIPE_METADATA_MAX_KEYS = 50;
 const STRIPE_METADATA_KEY_MAX_LENGTH = 64;
 const STRIPE_METADATA_VALUE_MAX_LENGTH = 500;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function clampLimit(raw: string | undefined, fallback = 100): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
+function parseOptionalQueryString(raw: string | undefined, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw == null) return { ok: true, value: undefined };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -149,10 +161,12 @@ function rawBodyByteLength(rawBody: string): number {
 
 stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), async (c) => {
   try {
-    const friendId = c.req.query('friendId') ?? undefined;
-    const eventType = c.req.query('eventType') ?? undefined;
+    const friendId = parseOptionalQueryString(c.req.query('friendId'), 'friendId', STRIPE_ID_MAX_LENGTH);
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
+    const eventType = parseOptionalQueryString(c.req.query('eventType'), 'eventType', STRIPE_EVENT_TYPE_MAX_LENGTH);
+    if (!eventType.ok) return c.json({ success: false, error: eventType.error }, 400);
     const limit = clampLimit(c.req.query('limit'), 100);
-    const items = await getStripeEvents(c.env.DB, { friendId, eventType, limit });
+    const items = await getStripeEvents(c.env.DB, { friendId: friendId.value, eventType: eventType.value, limit });
     return c.json({
       success: true,
       data: items.map((e) => ({

@@ -251,6 +251,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker form access route testsでは、壊れたJSON、オブジェクト以外の `data`、16KB超の `data` がLINE ID token検証、Webhook、submission保存、reward side effect前に400で止まることを確認済み。
 - [ ] フォーム定義/公開送信/管理APIのpath `formId` が副作用前に検証される
   - Worker form access route testsでは、不正なform path IDがDB lookup/write、D1 prepare、LINE ID token検証、Webhook、submission保存、reward side effect前に400で止まり、正常IDはtrimされることを確認済み。
+- [ ] フォーム管理、公開opened/partial/submit、Webhook失敗通知、submit後side-effect失敗時に、form ID、回答データ、friend ID、LINE user ID、idToken、tag/scenario ID、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker form access route testsでは、失敗ログが例外種別だけになり、API errorは固定文言になり、回答本文、ID、idToken、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] `/api/liff/profile` が、caller supplied `lineUserId` ではなくLINE ID token検証済みのLINE user IDだけで友だちプロフィールを返す
   - Worker LIFF access route testsでは、自己申告 `lineUserId` だけでは401になり、巨大/非文字列のbody `idToken` はLINE verify前に400で止まり、Bearer ID tokenまたはbody `idToken` の検証済みsubjectだけで友だち情報を返すことを確認済み。
 - [ ] `/api/liff/send-form-link` が、フォームURL push前にLINE ID tokenのsubjectとcaller supplied `lineUserId` の一致を必須にする
@@ -403,6 +405,7 @@ corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts # 30 tests
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts # webhooks 33 tests
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
+corepack pnpm --filter worker test -- src/routes/forms-access.test.ts # 14 tests
 corepack pnpm --filter worker test -- src/routes/scenarios.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/content-management-access.test.ts # 19 tests
 corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts # 29 tests
@@ -466,6 +469,7 @@ N/A
 - `corepack pnpm test:scripts`
 - `corepack pnpm --filter worker typecheck`
 - `corepack pnpm --filter worker test -- src/middleware/auth.test.ts src/routes/users.test.ts src/routes/account-settings.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/broadcasts-access.test.ts src/routes/forms-access.test.ts src/routes/operations-access.test.ts`
+- `corepack pnpm --filter worker test -- src/routes/forms-access.test.ts` # 14 tests
 - `corepack pnpm --filter worker test -- src/routes/operations-access.test.ts` # 30 tests
 - `corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts` # 21 tests
 - `corepack pnpm --filter worker test -- src/routes/scenarios.test.ts` # 18 tests
@@ -501,6 +505,7 @@ N/A
 - Support-friend access route tests verify scoring rule/friend score/friend reminder failure logs and error responses keep only exception kind or fixed internal error, without rule/reminder names, reasons, target dates, friend IDs, LINE user IDs, reminder IDs, token-like text, or raw exception messages.
 - Scenario/content-management/management role guard tests verify scenario/tag/template/message-template/automation/auto-reply/notification rule failure logs and error responses keep only exception kind or fixed internal error, without scenario/template/tag/rule names, message bodies, automation actions/conditions, notification channels/conditions, friend IDs, LINE user IDs, token-like text, or raw exception messages.
 - Operations route tests verify Stripe events/webhook, ad-platforms, affiliates/click, tracked-links management, and tracked-link async click-recording failure logs and error responses keep only exception kind or fixed internal error, without Stripe/friend IDs, ad config/token values, affiliate codes, URLs, IPs, tracked link IDs, tag/scenario IDs, token-like text, or raw exception messages.
+- Form access route tests verify form management, public opened, public submit, and submit side-effect failure logs and error responses keep only exception kind or fixed internal error, without form IDs, answer data, friend IDs, LINE user IDs, idTokens, tag/scenario IDs, token-like text, or raw exception messages.
 - Friends route tests verify malformed lineAccountId/tagId/search/metadata query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects while valid values are normalized.
 - Friends route tests verify friend list/direct-message failure logs and direct-message error responses keep only exception kind or fixed internal error, without search text, message bodies, LINE account IDs, friend IDs, LINE user IDs, token-like text, or raw exception messages.
 - Broadcast access tests verify malformed or unsafe broadcast query/path/create/update/send-segment/segment-count payloads stop before DB helpers, SQL bind, LINE send, or recipient/segment computation while valid values are trimmed and normalized. They also verify malformed or unsafe dedup-preview account/tag payloads stop before recipient preview computation while valid IDs are trimmed, deduped, and priority-filtered.

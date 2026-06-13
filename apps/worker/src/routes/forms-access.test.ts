@@ -49,6 +49,16 @@ function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) 
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -164,6 +174,60 @@ describe('form management role guards', () => {
     expect(dbMocks.createFormSubmission).not.toHaveBeenCalled();
     expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
     expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
+  test('form management failure logs only the error kind', async () => {
+    dbMocks.createForm.mockRejectedValueOnce(
+      new Error('form secret account-token form-1 Survey private-answer raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('owner').request('/api/forms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Survey',
+          fields: [{ name: 'answer', label: 'Private Answer', type: 'text' }],
+          onSubmitWebhookUrl: 'https://example.com/webhook',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/forms error: Error');
+      expectNoLogLeak(logged, ['form secret', 'account-token', 'form-1', 'Survey', 'private-answer', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('public form opened failure is non-blocking and logs only the error kind', async () => {
+    const db = {
+      prepare: vi.fn(() => {
+        throw new Error('opened secret account-token form-1 friend-1 U-secret raw-body');
+      }),
+    } as unknown as D1Database;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('staff', db).request('/api/forms/form-1/opened', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken: 'secret-id-token' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { success: boolean };
+      expect(body).toEqual({ success: true });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/forms/:id/opened error: Error');
+      expectNoLogLeak(logged, ['opened secret', 'account-token', 'form-1', 'friend-1', 'U-secret', 'secret-id-token', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('public form partial submit requires verified LINE idToken before metadata write', async () => {
@@ -296,6 +360,34 @@ describe('form management role guards', () => {
     });
   });
 
+  test('public form submit failure does not leak answer data or friend identifiers', async () => {
+    dbMocks.createFormSubmission.mockRejectedValueOnce(
+      new Error('submit secret account-token form-1 friend-secret U-secret private-answer raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          friendId: 'friend-secret',
+          lineUserId: 'U-secret',
+          data: { answer: 'private-answer' },
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/forms/:id/submit error: Error');
+      expectNoLogLeak(logged, ['submit secret', 'account-token', 'form-1', 'friend-secret', 'U-secret', 'private-answer', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('public form submit does not trust caller-supplied friend identifiers for side effects', async () => {
     dbMocks.getFormById.mockResolvedValue({
       id: 'form-1',
@@ -389,6 +481,56 @@ describe('form management role guards', () => {
     ];
     expect(input.friendId).toBe('friend-verified');
     expect(JSON.parse(input.data)).toEqual({ answer: 'hello' });
+  });
+
+  test('public form submit side-effect failure logs only the error kind', async () => {
+    liffAuthMocks.verifyCallerLineUserId.mockResolvedValue('U-verified');
+    dbMocks.getFriendByLineUserId.mockResolvedValue({
+      id: 'friend-verified',
+      display_name: 'Verified User',
+      metadata: '{}',
+      line_user_id: 'U-verified',
+    });
+    dbMocks.addTagToFriend.mockRejectedValueOnce(
+      new Error('side effect secret tag-reward friend-verified private-answer raw-body'),
+    );
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: '[]',
+      on_submit_tag_id: 'tag-reward',
+      on_submit_scenario_id: null,
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: null,
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer id-token',
+        },
+        body: JSON.stringify({ data: { answer: 'private-answer' } }),
+      });
+
+      expect(res.status).toBe(201);
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('Form side-effect failed: Error');
+      expectNoLogLeak(logged, ['side effect secret', 'tag-reward', 'friend-verified', 'private-answer', 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('public form submit stores a redacted webhook error when webhook fetch fails', async () => {

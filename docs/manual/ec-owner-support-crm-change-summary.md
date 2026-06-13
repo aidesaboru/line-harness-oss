@@ -88,6 +88,7 @@ updated: 2026-06-14
 - event booking LIFF予約作成 `/api/liff/events/:id/bookings` は `Idempotency-Key` を128文字以内の可視ASCIIに制限し、不正/巨大keyはLINE verifyやidempotency予約前に400で止める
 - event admin/LIFF event APIの `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query/pathは、DB lookup、LIFF認証、availability helper、booking判断/更新前に検証し、正常値はtrimして参照する
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
+- フォーム管理、公開opened/partial/submit、Webhook失敗通知、submit後side-effectの失敗ログとエラー応答は、form ID、回答データ、friend ID、LINE user ID、idToken、tag/scenario ID、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
 - LIFF OAuth token交換、LINE token refresh、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、LINE account名/ID/access token、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
 - event bookingの予約処理/通知失敗ログは、LINE user ID、channel token、外部例外本文をconsoleへ出さず、例外種別だけにする
@@ -207,6 +208,7 @@ corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webh
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
+corepack pnpm --filter worker test -- src/routes/forms-access.test.ts # 14 tests
 corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 21 tests
 corepack pnpm --filter worker test -- src/routes/scenarios.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/content-management-access.test.ts # 19 tests
@@ -267,6 +269,7 @@ strict Preflight:
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
 - Form access route tests confirm public submit ignores `_skipWebhook`, rechecks the webhook gate server-side, does not run reward tag/scenario side effects when the gate rejects, stores redacted webhook fetch errors, and never trusts caller-supplied `lineUserId` / `friendId` for partial metadata writes or submit side effects.
 - Form access route tests confirm malformed form path IDs stop before DB lookup/write, D1 prepare, LINE ID token verification, webhook calls, submission writes, or reward side effects. They also confirm public partial/submit reject malformed JSON, non-object `data`, and oversized `data` before LINE ID token verification, webhook calls, submission writes, or reward side effects.
+- Form access route tests also confirm form management, public opened, public submit, and submit side-effect failures keep only exception kind or fixed internal error and omit form IDs, answer data, friend IDs, LINE user IDs, idTokens, tag/scenario IDs, token-like text, and raw exception messages.
 - LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token, rejects malformed or oversized legacy body `idToken` before LINE verification, and resolves the friend only from the verified token subject.
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.

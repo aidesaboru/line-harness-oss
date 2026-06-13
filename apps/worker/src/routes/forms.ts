@@ -27,8 +27,10 @@ const MAX_PUBLIC_FORM_DATA_JSON_LENGTH = 16_384;
 const MAX_PUBLIC_FORM_DATA_FIELDS = 100;
 const FORM_ID_PATTERN = /^[!-~]+$/;
 
-function errorKind(err: unknown): string {
-  return err instanceof Error && err.name ? err.name : typeof err;
+function formRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
 }
 
 async function resolveVerifiedFormFriend(
@@ -113,7 +115,7 @@ forms.get('/api/forms', requireRole('owner', 'admin'), async (c) => {
       ),
     });
   } catch (err) {
-    console.error('GET /api/forms error:', err);
+    console.error(`GET /api/forms error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -129,7 +131,7 @@ forms.get('/api/forms/:id', async (c) => {
     }
     return c.json({ success: true, data: serializeForm(form) });
   } catch (err) {
-    console.error('GET /api/forms/:id error:', err);
+    console.error(`GET /api/forms/:id error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -171,7 +173,7 @@ forms.post('/api/forms', requireRole('owner', 'admin'), async (c) => {
 
     return c.json({ success: true, data: serializeForm(form) }, 201);
   } catch (err) {
-    console.error('POST /api/forms error:', err);
+    console.error(`POST /api/forms error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -219,7 +221,7 @@ forms.put('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
 
     return c.json({ success: true, data: serializeForm(updated) });
   } catch (err) {
-    console.error('PUT /api/forms/:id error:', err);
+    console.error(`PUT /api/forms/:id error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -236,7 +238,7 @@ forms.delete('/api/forms/:id', requireRole('owner', 'admin'), async (c) => {
     await deleteForm(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/forms/:id error:', err);
+    console.error(`DELETE /api/forms/:id error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -253,7 +255,7 @@ forms.get('/api/forms/:id/submissions', requireRole('owner', 'admin'), async (c)
     const submissions = await getFormSubmissions(c.env.DB, id.value);
     return c.json({ success: true, data: submissions.map(serializeSubmission) });
   } catch (err) {
-    console.error('GET /api/forms/:id/submissions error:', err);
+    console.error(`GET /api/forms/:id/submissions error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -279,7 +281,7 @@ forms.post('/api/forms/:id/opened', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('POST /api/forms/:id/opened error:', err);
+    console.error(`POST /api/forms/:id/opened error: ${formRouteErrorKind(err)}`);
     return c.json({ success: true }); // non-blocking, always succeed
   }
 });
@@ -313,7 +315,7 @@ forms.post('/api/forms/:id/partial', async (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    console.error('POST /api/forms/:id/partial error:', err);
+    console.error(`POST /api/forms/:id/partial error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -404,7 +406,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
                 .bind(crypto.randomUUID(), friend.id, form.on_submit_webhook_fail_message, jstNow())
                 .run();
             } catch (e) {
-              console.error('Failed to send webhook fail message:', e);
+              console.error(`Failed to send webhook fail message: ${formRouteErrorKind(e)}`);
             }
           }
         }
@@ -645,14 +647,16 @@ forms.post('/api/forms/:id/submit', async (c) => {
       if (sideEffects.length > 0) {
         const results = await Promise.allSettled(sideEffects);
         for (const r of results) {
-          if (r.status === 'rejected') console.error('Form side-effect failed:', r.reason);
+          if (r.status === 'rejected') {
+            console.error(`Form side-effect failed: ${formRouteErrorKind(r.reason)}`);
+          }
         }
       }
     }
 
     return c.json({ success: true, data: serializeSubmission(submission) }, 201);
   } catch (err) {
-    console.error('POST /api/forms/:id/submit error:', err);
+    console.error(`POST /api/forms/:id/submit error: ${formRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -706,7 +710,7 @@ async function callFormWebhook(
     const eligible = data.eligible ?? (data.data as Record<string, unknown> | undefined)?.eligible ?? data.success;
     return { passed: Boolean(eligible), data };
   } catch (err) {
-    console.error('Form webhook error:', errorKind(err));
+    console.error(`Form webhook error: ${formRouteErrorKind(err)}`);
     return { passed: false, data: { error: 'webhook_error' } };
   }
 }

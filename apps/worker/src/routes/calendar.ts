@@ -120,6 +120,10 @@ function parseOptionalString(
   return { ok: true, value };
 }
 
+function parseCalendarPathId(raw: unknown, label: string): ValueResult<string> {
+  return parseRequiredString(raw, label, CALENDAR_TEXT_ID_MAX_LENGTH, true);
+}
+
 function parseTimestamp(raw: unknown, label: string): ValueResult<string> {
   const parsed = parseRequiredString(raw, label, CALENDAR_TIMESTAMP_MAX_LENGTH);
   if (!parsed.ok) return parsed;
@@ -323,7 +327,9 @@ calendar.post('/api/integrations/google-calendar/connect', requireRole('owner', 
 
 calendar.delete('/api/integrations/google-calendar/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteCalendarConnection(c.env.DB, c.req.param('id')!);
+    const id = parseCalendarPathId(c.req.param('id'), 'connection_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteCalendarConnection(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/integrations/google-calendar/:id error:', err);
@@ -505,12 +511,13 @@ calendar.post('/api/integrations/google-calendar/book', async (c) => {
 
 calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = parseCalendarPathId(c.req.param('id'), 'booking_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseCalendarStatusBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const { status } = parsed.body;
-    const booking = await getCalendarBookingById(c.env.DB, id);
+    const booking = await getCalendarBookingById(c.env.DB, id.value);
     if (!booking) {
       return c.json({ success: false, error: 'Calendar booking not found' }, 404);
     }
@@ -537,7 +544,7 @@ calendar.put('/api/integrations/google-calendar/bookings/:id/status', async (c) 
       }
     }
 
-    await updateCalendarBookingStatus(c.env.DB, id, status);
+    await updateCalendarBookingStatus(c.env.DB, id.value, status);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('PUT /api/integrations/google-calendar/bookings/:id/status error:', err);

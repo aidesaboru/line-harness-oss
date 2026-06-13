@@ -467,6 +467,58 @@ describe('calendar booking friend visibility guards', () => {
     });
   });
 
+  test('calendar path IDs reject malformed values before DB helpers', async () => {
+    const db = makeDb();
+
+    const deleteConnection = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bad%20conn', {
+      method: 'DELETE',
+    });
+    const updateStatus = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bookings/bad%20booking/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'cancelled' }),
+    });
+
+    expect(deleteConnection.status).toBe(400);
+    expect(updateStatus.status).toBe(400);
+    expect(dbMocks.deleteCalendarConnection).not.toHaveBeenCalled();
+    expect(dbMocks.getCalendarBookingById).not.toHaveBeenCalled();
+    expect(dbMocks.getCalendarConnectionById).not.toHaveBeenCalled();
+    expect(dbMocks.updateCalendarBookingStatus).not.toHaveBeenCalled();
+    expect(db.calls).toEqual([]);
+  });
+
+  test('calendar path IDs are trimmed before DB helpers', async () => {
+    const db = makeDb();
+    dbMocks.getCalendarBookingById.mockResolvedValue({
+      id: 'booking-1',
+      connection_id: 'conn-1',
+      friend_id: null,
+      event_id: null,
+      title: '相談予約',
+      start_at: '2026-06-14T10:00:00.000',
+      end_at: '2026-06-14T11:00:00.000',
+      status: 'confirmed',
+      metadata: null,
+      created_at: '2026-06-13T10:00:00.000',
+    });
+
+    const deleteConnection = await setupApp(db, 'owner').request('/api/integrations/google-calendar/%20conn-1%20', {
+      method: 'DELETE',
+    });
+    const updateStatus = await setupApp(db, 'owner').request('/api/integrations/google-calendar/bookings/%20booking-1%20/status', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    expect(deleteConnection.status).toBe(200);
+    expect(updateStatus.status).toBe(200);
+    expect(dbMocks.deleteCalendarConnection).toHaveBeenCalledWith(db, 'conn-1');
+    expect(dbMocks.getCalendarBookingById).toHaveBeenCalledWith(db, 'booking-1');
+    expect(dbMocks.updateCalendarBookingStatus).toHaveBeenCalledWith(db, 'booking-1', 'completed');
+  });
+
   test('calendar slots clamp invalid numeric query values before generating slots', async () => {
     const db = makeDb();
     dbMocks.getCalendarConnectionById.mockResolvedValue({

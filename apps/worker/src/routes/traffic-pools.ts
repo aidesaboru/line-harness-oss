@@ -20,8 +20,16 @@ const trafficPools = new Hono<Env>();
 const TRAFFIC_POOL_SLUG_MAX_LENGTH = 64;
 const TRAFFIC_POOL_NAME_MAX_LENGTH = 120;
 const TRAFFIC_POOL_ID_MAX_LENGTH = 128;
+const TRAFFIC_POOL_PUBLIC_REF_MAX_LENGTH = 512;
 const TRAFFIC_POOL_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const TRAFFIC_POOL_ID_PATTERN = /^[!-~]+$/;
+const TRAFFIC_POOL_PUBLIC_FORWARD_PARAMS: Array<[string, number]> = [
+  ['ref', TRAFFIC_POOL_PUBLIC_REF_MAX_LENGTH],
+  ['form', TRAFFIC_POOL_ID_MAX_LENGTH],
+  ['gate', TRAFFIC_POOL_PUBLIC_REF_MAX_LENGTH],
+  ['xh', TRAFFIC_POOL_PUBLIC_REF_MAX_LENGTH],
+  ['ig', TRAFFIC_POOL_PUBLIC_REF_MAX_LENGTH],
+];
 
 type ParsedTrafficPoolCreateBody =
   | { ok: true; body: { slug: string; name: string; activeAccountId: string } }
@@ -70,6 +78,22 @@ function parseOptionalString(
 
 function parseTrafficPoolPathId(raw: unknown, label: string): { ok: true; value: string } | { ok: false; error: string } {
   return parseRequiredString(raw, label, TRAFFIC_POOL_ID_MAX_LENGTH, TRAFFIC_POOL_ID_PATTERN);
+}
+
+function parseTrafficPoolPublicSlug(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  return parseRequiredString(raw, 'slug', TRAFFIC_POOL_SLUG_MAX_LENGTH, TRAFFIC_POOL_SLUG_PATTERN);
+}
+
+function parsePublicForwardQuery(
+  searchParams: URLSearchParams,
+): { ok: true; value: URLSearchParams } | { ok: false; error: string } {
+  const safeParams = new URLSearchParams();
+  for (const [key, maxLength] of TRAFFIC_POOL_PUBLIC_FORWARD_PARAMS) {
+    const parsed = parseOptionalString(searchParams.get(key) ?? undefined, key, maxLength, TRAFFIC_POOL_ID_PATTERN);
+    if (!parsed.ok) return parsed;
+    if (parsed.value) safeParams.set(key, parsed.value);
+  }
+  return { ok: true, value: safeParams };
 }
 
 function parseOptionalBoolean(raw: unknown, label: string): { ok: true; value?: boolean } | { ok: false; error: string } {
@@ -148,8 +172,12 @@ function serialize(pool: TrafficPoolWithAccount) {
 // ── Public: GET /pool/:slug → 302 redirect to LIFF auth URL ────────────────
 
 trafficPools.get('/pool/:slug', async (c) => {
-  const slug = c.req.param('slug');
-  const pool = await getTrafficPoolBySlug(c.env.DB, slug);
+  const slug = parseTrafficPoolPublicSlug(c.req.param('slug'));
+  if (!slug.ok) return c.json({ success: false, error: slug.error }, 400);
+  const parsedForwardParams = parsePublicForwardQuery(new URL(c.req.url).searchParams);
+  if (!parsedForwardParams.ok) return c.json({ success: false, error: parsedForwardParams.error }, 400);
+
+  const pool = await getTrafficPoolBySlug(c.env.DB, slug.value);
 
   if (!pool) {
     return c.json({ success: false, error: 'Pool not found' }, 404);
@@ -157,12 +185,8 @@ trafficPools.get('/pool/:slug', async (c) => {
 
   const baseUrl = new URL(c.req.url).origin;
   const params = new URLSearchParams();
-  params.set('pool', slug);
-  // Forward safe query params (ref, form, etc.) — block 'account' to prevent pool bypass
-  const blocked = new Set(['pool', 'account']);
-  for (const [key, value] of new URL(c.req.url).searchParams) {
-    if (!blocked.has(key)) params.set(key, value);
-  }
+  params.set('pool', slug.value);
+  for (const [key, value] of parsedForwardParams.value) params.set(key, value);
   return c.redirect(`${baseUrl}/auth/line?${params.toString()}`, 302);
 });
 

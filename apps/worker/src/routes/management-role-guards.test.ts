@@ -491,6 +491,55 @@ describe('management role guards', () => {
     expect(dbMocks.togglePoolAccount).toHaveBeenCalledWith({} as D1Database, 'pool-account-1', false);
   });
 
+  test('public traffic pool route rejects malformed slug and forwarded query before DB lookup', async () => {
+    const app = setupApp('staff');
+    const requests = [
+      '/pool/Bad',
+      '/pool/bad%20slug',
+      `/pool/${'a'.repeat(65)}`,
+      '/pool/main?ref=bad%20ref',
+      '/pool/main?form=bad%20form',
+      '/pool/main?gate=bad%20gate',
+      '/pool/main?xh=bad%20xh',
+      '/pool/main?ig=bad%20ig',
+    ];
+
+    for (const path of requests) {
+      const res = await app.request(path);
+      expect(res.status, path).toBe(400);
+    }
+
+    expect(dbMocks.getTrafficPoolBySlug).not.toHaveBeenCalled();
+  });
+
+  test('public traffic pool route trims slug and preserves only validated retry query', async () => {
+    dbMocks.getTrafficPoolBySlug.mockResolvedValue({
+      id: 'pool-1',
+      slug: 'main',
+      name: 'Main',
+      active_account_id: 'acc-1',
+      account_name: 'Account',
+      liff_id: 'liff-1',
+      login_channel_id: null,
+      login_channel_secret: null,
+      channel_access_token: null,
+      channel_id: null,
+      is_active: 1,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+      updated_at: '2026-06-13T00:00:00.000+09:00',
+    });
+    const app = setupApp('staff');
+
+    const res = await app.request(
+      '/pool/%20main%20?ref=%20launch%20&form=%20form-1%20&gate=%20gate-1%20&account=acc-evil&pool=evil&extra=bad',
+    );
+
+    expect(res.status).toBe(302);
+    expect(dbMocks.getTrafficPoolBySlug).toHaveBeenCalledWith({} as D1Database, 'main');
+    const location = res.headers.get('Location') ?? '';
+    expect(location).toBe('http://localhost/auth/line?pool=main&ref=launch&form=form-1&gate=gate-1');
+  });
+
   test('staff cannot manage chat operators', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [

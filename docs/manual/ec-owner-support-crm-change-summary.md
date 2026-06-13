@@ -79,7 +79,7 @@ updated: 2026-06-13
 - event admin/LIFF event APIの `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query/pathは、DB lookup、LIFF認証、availability helper、booking判断/更新前に検証し、正常値はtrimして参照する
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
-- LIFF OAuth token交換、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
+- LIFF OAuth token交換、LINE token refresh、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、LINE account名/ID/access token、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
 - Webhookプロフィール取得、profile refresh、broadcast test-sendの失敗ログは、LINE user IDやfriend IDを含めない
 - 売上・広告・計測運用API（Stripe events、ad-platforms、affiliates管理/レポート、tracked-links管理）はowner/adminだけに制限し、公開Webhook/クリック/リダイレクトは維持
 - ad-platforms/affiliates/tracked-links管理APIのpath IDと作成/更新/test payloadは、壊れたJSON、不正なadPlatformId/affiliateId/trackedLinkId、許可以外の広告platform名、巨大/ネストした広告config、空/長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveをDB lookup/writeや外部CV送信前に400で止める
@@ -265,7 +265,7 @@ strict Preflight:
 - Management role guard and conversion/calendar access route tests confirm staff cannot manage entry routes, read/mutate conversion points, manage Google Calendar connections, or access account health/migrations while friend-scoped conversion/calendar booking operations still work. Management role guard tests also confirm malformed or unsafe entry route management path IDs and payloads stop before DB helpers/writes, malformed or unsafe account health/migration path IDs and migrate payloads stop before DB helpers or D1 count, and malformed or unsafe conversion point delete path IDs and creation payloads stop before DB helpers/writes, while valid values are trimmed/null-normalized.
 - Friends, duplicates, LIFF access, and image access route tests confirm staff cannot read friends ref stats or duplicate/ref analytics, cannot wrap management links, cannot delete arbitrary stored images, can still upload chat/reply images, and malformed image upload payloads or unsafe public/delete keys stop before R2 put/get/delete.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
-- LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.
+- LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Token refresh service tests also confirm LINE token API failure logs keep only the HTTP status, and success logs omit account names, account IDs, and access tokens. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.
 
 ローカル画面応答:
 

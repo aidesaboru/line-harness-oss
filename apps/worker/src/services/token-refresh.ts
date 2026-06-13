@@ -33,6 +33,21 @@ interface TokenResponse {
   token_type: string;
 }
 
+class LineTokenApiError extends Error {
+  constructor(public readonly status: number) {
+    super('LINE token API request failed');
+    this.name = 'LineTokenApiError';
+  }
+}
+
+function tokenRefreshErrorKind(err: unknown): string {
+  if (err instanceof LineTokenApiError) return `line_token_api_http_status=${err.status}`;
+  if (err instanceof SyntaxError) return 'invalid_token_response_json';
+  if (err instanceof TypeError) return 'token_refresh_network_error';
+  if (err instanceof Error) return err.name || 'token_refresh_error';
+  return typeof err;
+}
+
 async function issueNewToken(
   channelId: string,
   channelSecret: string,
@@ -48,8 +63,7 @@ async function issueNewToken(
   });
 
   if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`LINE token API ${res.status}: ${body}`);
+    throw new LineTokenApiError(res.status);
   }
 
   return res.json() as Promise<TokenResponse>;
@@ -72,9 +86,9 @@ export async function refreshLineAccessTokens(db: D1Database): Promise<void> {
         token_expires_at: expiresAtJst,
       });
 
-      console.log(`🔄 Token refreshed: ${account.name} (expires ${expiresAtJst})`);
+      console.log(`Token refreshed for active LINE account (expires ${expiresAtJst})`);
     } catch (err) {
-      console.error(`❌ Token refresh failed for ${account.name}:`, err);
+      console.error(`Token refresh failed for active LINE account: ${tokenRefreshErrorKind(err)}`);
     }
   }
 }

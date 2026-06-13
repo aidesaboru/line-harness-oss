@@ -12,6 +12,12 @@ const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+function conversationRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function clampInteger(raw: string | null, fallback: number, min: number, max: number): number {
   const value = raw?.trim();
   const n = Number(value || fallback);
@@ -263,8 +269,8 @@ conversations.get('/api/conversations', async (c) => {
 
     return c.json({ success: true, data: { total: countRow?.total ?? 0, items } });
   } catch (err) {
-    console.error('GET /api/conversations error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
+    console.error(`GET /api/conversations error: ${conversationRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 
@@ -374,8 +380,8 @@ conversations.get('/api/conversations/:friendId', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/conversations/:friendId error:', err);
-    return c.json({ success: false, error: String(err) }, 500);
+    console.error(`GET /api/conversations/:friendId error: ${conversationRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
 

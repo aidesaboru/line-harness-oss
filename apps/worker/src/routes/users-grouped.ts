@@ -13,6 +13,12 @@ const USERS_GROUPED_VISIBLE_ID_PATTERN = /^[!-~]+$/;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+function usersGroupedRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function parseOptionalQueryText(raw: unknown, label: string): ValueResult<string | undefined> {
   if (raw === undefined || raw === null) return { ok: true, value: undefined };
   if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
@@ -85,7 +91,7 @@ usersGrouped.get('/api/users-grouped', async (c) => {
     const result = await computeUsersGrouped(c.env.DB, opts);
     return c.json({ success: true, data: result });
   } catch (err) {
-    console.error('GET /api/users-grouped error:', err);
+    console.error(`GET /api/users-grouped error: ${usersGroupedRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

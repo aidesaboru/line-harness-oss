@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { conversations } from './conversations.js';
 
@@ -79,6 +79,14 @@ function makeDb(options: { visibleFriendIds?: string[] } = {}) {
   return { db, calls };
 }
 
+function makeThrowingDb(message: string): D1Database {
+  return {
+    prepare() {
+      throw new Error(message);
+    },
+  } as unknown as D1Database;
+}
+
 function setupApp(db: D1Database, role: StaffRole = 'staff') {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
@@ -88,6 +96,10 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
   });
   app.route('/', conversations);
   return app;
+}
+
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
 }
 
 describe('GET /api/conversations support visibility', () => {
@@ -250,5 +262,50 @@ describe('GET /api/conversations support visibility', () => {
       '2026-06-13T10:00:00.000+09:00',
       200,
     ]);
+  });
+
+  test('conversation queue failure logs only the error kind', async () => {
+    const db = makeThrowingDb('conversation queue secret account-token U-visible friend-visible 相談 acc-1');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/conversations?lineAccountId=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/conversations error: Error');
+      expect(logged).not.toContain('conversation queue secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('相談');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('conversation detail failure does not leak raw exception into logs or response', async () => {
+    const db = makeThrowingDb('conversation detail secret account-token U-visible friend-visible 相談');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/conversations/friend-visible');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/conversations/:friendId error: Error');
+      expect(logged).not.toContain('conversation detail secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('相談');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

@@ -25,6 +25,10 @@ function setupApp(db: D1Database) {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 describe('GET /api/users-grouped support visibility', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -73,5 +77,31 @@ describe('GET /api/users-grouped support visibility', () => {
       expect(res.status, path).toBe(400);
     }
     expect(usersGroupedMocks.computeUsersGrouped).not.toHaveBeenCalled();
+  });
+
+  test('users grouped failure logs only the error kind', async () => {
+    const db = {} as D1Database;
+    usersGroupedMocks.computeUsersGrouped.mockRejectedValueOnce(
+      new Error('users grouped secret 山田 account-token U-visible friend-visible acc-1'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db).request('/api/users-grouped?q=%E5%B1%B1%E7%94%B0&account=acc-1');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/users-grouped error: Error');
+      expect(logged).not.toContain('users grouped secret');
+      expect(logged).not.toContain('山田');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('acc-1');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

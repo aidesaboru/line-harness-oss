@@ -187,6 +187,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker support route testsでは、summary/case作成/manual作成の失敗時にconsoleへ例外種別だけが残り、customer summary、manual本文、friend ID、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] users-grouped顧客統合一覧のqueryが集計前に検証される
   - Worker users-grouped route testsでは、不正な `q/account/page/pageSize/onlyDups/refresh` が顧客統合集計service呼び出し前に400で止まり、正常queryはtrim/parse/上限丸めされることを確認済み。
+- [ ] users-grouped顧客統合一覧失敗時に、検索語、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker users-grouped route testsでは、aggregation失敗時にconsoleへ例外種別だけが残り、検索語、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] conversionイベント一覧/reportのID/date queryがfriend可視範囲check/SQL bind前に検証される
   - Worker conversion/calendar access route testsでは、不正な `conversionPointId/friendId/affiliateCode/startDate/endDate` がfriend可視範囲checkやSQL bind前に400で止まり、正常queryはtrimされることを確認済み。
 - [ ] calendar空き枠取得の不正な `slotMinutes` / `startHour` / `endHour` queryが安全に処理される
@@ -207,6 +209,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker booking LIFF access route testsでは、不正な `Idempotency-Key`、壊れたJSON、不正な予約payloadがLINE verifyやidempotency lookup前に400で止まり、正常payloadのIDはtrimされることを確認済み。
 - [ ] conversation一覧/詳細の `lineAccountId` / `minHoursSince` / `maxHoursSince` / `before` / `friendId` query/pathがfriend可視範囲checkやSQL bind前に検証される
   - Worker conversations route testsでは、不正なID、NaN、逆転した時間範囲、不正cursorがDBへ到達せず400で止まり、正常query/pathはtrimされ、`limit` / `offset` は安全な範囲へ丸められることを確認済み。
+- [ ] conversation一覧/詳細失敗時に、会話本文、絞り込み値、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文がconsole/エラー応答へ出ない
+  - Worker conversations route testsでは、queue/detail失敗時にconsoleへ例外種別だけが残り、API errorは固定文言になり、会話本文、絞り込み値、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文が出ないことを確認済み。
 - [ ] legacy users顧客ID APIのcreate/update/link/match payloadとuser/friend path IDがDB helperやfriend可視範囲check前に検証される
   - Worker users route testsでは、壊れたJSON、空payload、不正email/phone/externalId/displayName/userId/friendIdがDB helperやfriend可視範囲check前に400で止まり、正常payload/path IDはtrim/null正規化されることを確認済み。
 - [ ] account-settingsテスト送信先APIのaccountId query/payloadとfriendIds payloadがDB read/write前に検証される

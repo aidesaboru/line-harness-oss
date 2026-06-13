@@ -156,7 +156,7 @@ async function handleEvent(
     try {
       profile = await lineClient.getProfile(userId);
     } catch (err) {
-      console.error('Failed to get profile for', userId, err);
+      console.error('Failed to get profile for follow event', err);
     }
 
     const friend = await upsertFriend(db, {
@@ -642,7 +642,7 @@ async function getOrCreateFriendForUser(
   try {
     profile = await lineClient.getProfile(userId);
   } catch (err) {
-    console.error(`Failed to get profile for first ${eventContext} from ${userId}`, err);
+    console.error(`Failed to get profile for first ${eventContext}`, err);
   }
 
   const friend = await upsertFriend(db, {

@@ -867,7 +867,7 @@ broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), 
            VALUES (?, ?, 'outgoing', ?, ?, NULL, 'test', 'broadcast', ?)`
         ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, messageContent, now).run();
       } catch (err) {
-        console.error(`Test send to ${friend.id} failed:`, err);
+        console.error('Broadcast test send failed:', err);
         failed++;
       }
     }

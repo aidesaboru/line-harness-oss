@@ -111,7 +111,7 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
           notFound += 1;
         } else {
           otherErrors += 1;
-          console.error(`refresh-profile failed friend=${row.id}:`, msg);
+          console.error('refresh-profile failed:', msg);
         }
       } finally {
         processed += 1;

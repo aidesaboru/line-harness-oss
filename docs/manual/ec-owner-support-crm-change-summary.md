@@ -32,6 +32,7 @@ updated: 2026-06-13
 - admin diagnostics/repair APIの `accountId` query、broadcast/friend path ID、tag/content診断payloadは、DB lookup、LINE profile refresh、repair SQL前に検証し、正常値はtrimする
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - support案件/エスカレーション/manual APIのquery/path ID/JSON payloadは、壊れたJSON、不正なlineAccountId/caseId/escalationId/manualId/friendId/manualIds/activeをDB lookup/write、SQL bind、friend可視範囲check、support event作成前に400で止め、正常IDはtrimして参照・更新する
+- users-grouped顧客統合一覧の `q/account/page/pageSize/onlyDups/refresh` queryは、顧客統合集計とstaff可視範囲付きDB read前に検証し、正常値はtrim/上限丸めしてserviceへ渡す
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、chat一覧/詳細/作成/更新/送信、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
@@ -226,6 +227,7 @@ strict Preflight:
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - Support route tests confirm malformed support case/escalation/manual query values, path IDs, and JSON payloads stop before DB access, SQL bind, support event writes, or manual/case/escalation mutations while valid IDs are trimmed before lookup or update.
+- Users-grouped route tests confirm malformed customer aggregation query values stop before aggregation/service calls while valid `q/account/page/pageSize/onlyDups/refresh` values are trimmed, parsed, and capped.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - friends route tests confirm malformed list/count/ref-stats query values, friend/tag path IDs, metadata updates, and direct message payloads stop before friend visibility checks, DB helpers, SQL bind, LINE push, or tag scenario side effects.
 - Chat route tests confirm malformed or unsafe chat list filters, chat/friend path IDs, message cursors, create/update payloads, send payload IDs, and loading/send paths stop before DB helpers, SQL bind, friend access checks, LINE loading/send calls, or writes while valid IDs, filters, cursors, and payload fields are trimmed.
@@ -299,7 +301,7 @@ strict Preflight:
 - `apps/worker/src/routes/support.ts`: role別更新制限、完了/再オープン、エスカレーション制限、support case/escalation/manual query/path/JSON検証
 - `apps/worker/src/routes/chats.ts`: staffチャット可視範囲、chat query/path/payload検証、送信前検証、顧客返信イベント
 - `apps/worker/src/routes/inbox.ts` / `services/unanswered-inbox.ts`: staffの未対応インボックス一覧、件数、未対応friend ID集合の可視範囲
-- `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲
+- `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲、users-grouped query検証
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限とautomation/auto-reply/notification rule/traffic pool/operator path/payload検証

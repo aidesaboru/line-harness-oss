@@ -41,7 +41,7 @@ describe('GET /api/users-grouped support visibility', () => {
     const db = {} as D1Database;
 
     const res = await setupApp(db).request(
-      '/api/users-grouped?q=%E5%B1%B1%E7%94%B0&onlyDups=1&account=acc-1&page=2&pageSize=20&refresh=1',
+      '/api/users-grouped?q=%20%E5%B1%B1%E7%94%B0%20&onlyDups=1&account=%20acc-1%20&page=2&pageSize=999&refresh=1',
     );
 
     expect(res.status).toBe(200);
@@ -50,9 +50,28 @@ describe('GET /api/users-grouped support visibility', () => {
       onlyDups: true,
       account: 'acc-1',
       page: 2,
-      pageSize: 20,
+      pageSize: 200,
       forceRefresh: true,
       staff: { id: 'staff-1', name: '田島', role: 'staff' },
     });
+  });
+
+  test('rejects malformed users grouped query before aggregation', async () => {
+    const db = {} as D1Database;
+    const cases = [
+      `/api/users-grouped?q=${'x'.repeat(257)}`,
+      '/api/users-grouped?account=bad%20account',
+      '/api/users-grouped?onlyDups=true',
+      '/api/users-grouped?refresh=true',
+      '/api/users-grouped?page=1.5',
+      '/api/users-grouped?page=0',
+      '/api/users-grouped?pageSize=NaN',
+    ];
+
+    for (const path of cases) {
+      const res = await setupApp(db).request(path);
+      expect(res.status, path).toBe(400);
+    }
+    expect(usersGroupedMocks.computeUsersGrouped).not.toHaveBeenCalled();
   });
 });

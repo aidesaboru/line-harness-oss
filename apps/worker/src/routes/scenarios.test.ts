@@ -234,6 +234,29 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
   });
+
+  test('rejects unsafe lineAccountId before SQL or DB helper calls', async () => {
+    const { db, calls } = makeScenarioDb([]);
+
+    const res = await setupApp(db, 'owner').request('/api/scenarios?lineAccountId=bad%20account');
+
+    expect(res.status).toBe(400);
+    expect(calls).toEqual([]);
+    expect(dbMocks.getScenarios).not.toHaveBeenCalled();
+  });
+
+  test('trims valid lineAccountId before SQL bind', async () => {
+    const rows: ScenarioRow[] = [
+      { id: 's-global', name: 'global', line_account_id: null, ...rowBase },
+      { id: 's-acc1', name: 'acc1', line_account_id: 'acc-1', ...rowBase },
+    ];
+    const { db, calls } = makeScenarioDb(rows);
+
+    const res = await setupApp(db, 'owner').request('/api/scenarios?lineAccountId=%20acc-1%20');
+
+    expect(res.status).toBe(200);
+    expect(calls[0].binds).toEqual(['acc-1']);
+  });
 });
 
 describe('scenario definition role guards', () => {
@@ -291,6 +314,58 @@ describe('scenario definition role guards', () => {
 });
 
 describe('scenario payload validation', () => {
+  test('scenario path IDs and preview cursors reject malformed values before DB lookup or writes', async () => {
+    const validStepBody = JSON.stringify({
+      stepOrder: 1,
+      delayMinutes: 0,
+      messageType: 'text',
+      messageContent: 'hello',
+    });
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/scenarios/bad%20scenario'],
+      ['PUT', '/api/scenarios/bad%20scenario', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      }],
+      ['DELETE', '/api/scenarios/bad%20scenario'],
+      ['POST', '/api/scenarios/bad%20scenario/steps', {
+        headers: { 'Content-Type': 'application/json' },
+        body: validStepBody,
+      }],
+      ['PUT', '/api/scenarios/scenario-1/steps/bad%20step', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageContent: 'updated' }),
+      }],
+      ['DELETE', '/api/scenarios/bad%20scenario/steps/step-1'],
+      ['POST', '/api/scenarios/bad%20scenario/steps/reorder', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orders: [{ stepId: 'step-1', stepOrder: 1 }] }),
+      }],
+      ['GET', '/api/scenarios/bad%20scenario/preview'],
+      ['GET', '/api/scenarios/scenario-1/preview?startAt=not-a-date'],
+      ['GET', '/api/scenarios/bad%20scenario/stats'],
+      ['POST', '/api/scenarios/bad%20scenario/enroll/friend-visible'],
+      ['POST', '/api/scenarios/scenario-1/enroll/bad%20friend'],
+    ];
+
+    for (const [method, path, init] of cases) {
+      const { db, calls, batchCalls } = makeScenarioDb([]);
+      const res = await setupApp(db, 'owner').request(path, { ...init, method });
+
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(calls, `${method} ${path}`).toEqual([]);
+      expect(batchCalls, `${method} ${path}`).toEqual([]);
+    }
+
+    expect(dbMocks.getScenarioById).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenario).not.toHaveBeenCalled();
+    expect(dbMocks.deleteScenario).not.toHaveBeenCalled();
+    expect(dbMocks.createScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.deleteScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
   test('scenario create/update rejects malformed or invalid payloads before DB writes', async () => {
     const { db, calls } = makeScenarioDb([]);
     const app = setupApp(db, 'owner');
@@ -366,7 +441,7 @@ describe('scenario payload validation', () => {
       deliveryMode: 'elapsed',
     });
 
-    const updateRes = await app.request('/api/scenarios/scenario-1', {
+    const updateRes = await app.request('/api/scenarios/%20scenario-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -462,7 +537,7 @@ describe('scenario payload validation', () => {
     dbMocks.createScenarioStep.mockResolvedValue(stepRow);
     const app = setupApp(db, 'owner');
 
-    const res = await app.request('/api/scenarios/scenario-1/steps', {
+    const res = await app.request('/api/scenarios/%20scenario-1%20/steps', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -530,7 +605,7 @@ describe('scenario payload validation', () => {
     expect(missingRes.status).toBe(404);
     expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
 
-    const res = await app.request('/api/scenarios/scenario-1/steps/step-1', {
+    const res = await app.request('/api/scenarios/%20scenario-1%20/steps/%20step-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -584,6 +659,31 @@ describe('scenario payload validation', () => {
     expect(res.status).toBe(404);
     expect(batchCalls).toHaveLength(0);
   });
+
+  test('scenario step delete validates scenario ownership before deleting', async () => {
+    const { db } = makeScenarioDb([], {
+      steps: [{
+        id: 'step-1',
+        scenario_id: 'scenario-1',
+        step_order: 1,
+        delay_minutes: 0,
+        offset_days: null,
+        offset_minutes: null,
+        delivery_time: null,
+        message_type: 'text',
+        message_content: 'Hello',
+      }],
+    });
+    const app = setupApp(db, 'owner');
+
+    const missingRes = await app.request('/api/scenarios/other-scenario/steps/step-1', { method: 'DELETE' });
+    expect(missingRes.status).toBe(404);
+    expect(dbMocks.deleteScenarioStep).not.toHaveBeenCalled();
+
+    const res = await app.request('/api/scenarios/%20scenario-1%20/steps/%20step-1%20', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(dbMocks.deleteScenarioStep).toHaveBeenCalledWith(db, 'step-1');
+  });
 });
 
 describe('POST /api/scenarios/:id/enroll/:friendId support visibility', () => {
@@ -618,7 +718,7 @@ describe('POST /api/scenarios/:id/enroll/:friendId support visibility', () => {
     dbMocks.enrollFriendInScenario.mockResolvedValue(enrollment);
     const { db } = makeScenarioDb([], { visibleFriendIds: ['friend-visible'] });
 
-    const res = await setupApp(db, 'staff').request('/api/scenarios/scenario-1/enroll/friend-visible', {
+    const res = await setupApp(db, 'staff').request('/api/scenarios/%20scenario-1%20/enroll/%20friend-visible%20', {
       method: 'POST',
     });
 

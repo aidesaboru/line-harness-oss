@@ -89,6 +89,8 @@ const STEP_ORDER_MAX = 10_000;
 const DELAY_MINUTES_MAX = 10 * 365 * 24 * 60;
 const OFFSET_DAYS_MAX = 3650;
 const REORDER_MAX_ITEMS = 1000;
+const DATE_CURSOR_MAX_LENGTH = 64;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type ConditionType = (typeof VALID_CONDITION_TYPES)[number];
 type ParseResult<T> = { ok: true; body: T } | { ok: false; error: string };
@@ -158,6 +160,35 @@ function parseRequiredString(raw: unknown, label: string, maxLength: number): Va
   const value = raw.trim();
   if (!value) return { ok: false, error: `${label} is required` };
   if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseVisibleId(raw: unknown, label: string): ValueResult<string> {
+  const parsed = parseRequiredString(raw, label, ID_MAX_LENGTH);
+  if (!parsed.ok) return parsed;
+  if (!VISIBLE_ASCII_PATTERN.test(parsed.value)) return { ok: false, error: `${label} is invalid` };
+  return parsed;
+}
+
+function parseOptionalVisibleId(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > ID_MAX_LENGTH) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalDateCursor(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > DATE_CURSOR_MAX_LENGTH) return { ok: false, error: `${label} is too long` };
+  if (!value.includes('T') || !Number.isFinite(new Date(value).getTime())) {
+    return { ok: false, error: `${label} is invalid` };
+  }
   return { ok: true, value };
 }
 
@@ -597,7 +628,9 @@ function serializeFriendScenario(row: DbFriendScenario) {
 // GET /api/scenarios - list all
 scenarios.get('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
   try {
-    const lineAccountId = c.req.query('lineAccountId');
+    const parsedLineAccountId = parseOptionalVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!parsedLineAccountId.ok) return c.json({ success: false, error: parsedLineAccountId.error }, 400);
+    const lineAccountId = parsedLineAccountId.value;
     let items: DbScenarioWithStepCount[];
     if (lineAccountId) {
       const result = await c.env.DB
@@ -631,8 +664,9 @@ scenarios.get('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
 // GET /api/scenarios/:id - get with steps
 scenarios.get('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const scenario = await getScenarioById(c.env.DB, id);
+    const id = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const scenario = await getScenarioById(c.env.DB, id.value);
 
     if (!scenario) {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
@@ -689,13 +723,14 @@ scenarios.post('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
 // PUT /api/scenarios/:id - update (accepts camelCase fields from clients)
 scenarios.put('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseScenarioUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
 
-    const updated = await updateScenario(c.env.DB, id, {
+    const updated = await updateScenario(c.env.DB, id.value, {
       name: body.name,
       description: body.description,
       trigger_type: body.triggerType,
@@ -717,8 +752,9 @@ scenarios.put('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => 
 // DELETE /api/scenarios/:id - delete
 scenarios.delete('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    await deleteScenario(c.env.DB, id);
+    const id = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteScenario(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/scenarios/:id error:', err);
@@ -729,7 +765,8 @@ scenarios.delete('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) 
 // POST /api/scenarios/:id/steps - add step
 scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id')!;
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseScenarioStepCreateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -737,7 +774,7 @@ scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async 
 
     const scenarioRow = await c.env.DB
       .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
-      .bind(scenarioId)
+      .bind(scenarioId.value)
       .first<{ delivery_mode: DeliveryMode }>();
     if (!scenarioRow) {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
@@ -763,7 +800,7 @@ scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async 
     }
 
     const step = await createScenarioStep(c.env.DB, {
-      scenarioId,
+      scenarioId: scenarioId.value,
       stepOrder: body.stepOrder,
       delayMinutes: body.delayMinutes ?? 0,
       messageType: body.messageType,
@@ -788,8 +825,10 @@ scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async 
 // PUT /api/scenarios/:id/steps/:stepId - update step (accepts camelCase)
 scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id')!;
-    const stepId = c.req.param('stepId')!;
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
+    const stepId = parseVisibleId(c.req.param('stepId'), 'stepId');
+    if (!stepId.ok) return c.json({ success: false, error: stepId.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseScenarioStepUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -800,7 +839,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
         `SELECT delay_minutes, offset_days, offset_minutes, delivery_time, message_type, message_content
          FROM scenario_steps WHERE id = ? AND scenario_id = ?`,
       )
-      .bind(stepId, scenarioId)
+      .bind(stepId.value, scenarioId.value)
       .first<{
         delay_minutes: number;
         offset_days: number | null;
@@ -844,7 +883,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
     if (scheduleTouched) {
       const scenarioRow = await c.env.DB
         .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
-        .bind(scenarioId)
+        .bind(scenarioId.value)
         .first<{ delivery_mode: DeliveryMode }>();
       if (!scenarioRow) {
         return c.json({ success: false, error: 'Scenario not found' }, 404);
@@ -908,7 +947,7 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
       if (!content.ok) return c.json({ success: false, error: content.error }, 400);
     }
 
-    const updated = await updateScenarioStep(c.env.DB, stepId, {
+    const updated = await updateScenarioStep(c.env.DB, stepId.value, {
       step_order: body.stepOrder,
       delay_minutes: body.delayMinutes,
       message_type: effectiveMessageType,
@@ -937,8 +976,16 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'),
 // DELETE /api/scenarios/:id/steps/:stepId - delete step
 scenarios.delete('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'), async (c) => {
   try {
-    const stepId = c.req.param('stepId')!;
-    await deleteScenarioStep(c.env.DB, stepId);
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
+    const stepId = parseVisibleId(c.req.param('stepId'), 'stepId');
+    if (!stepId.ok) return c.json({ success: false, error: stepId.error }, 400);
+    const existing = await c.env.DB
+      .prepare(`SELECT id FROM scenario_steps WHERE id = ? AND scenario_id = ?`)
+      .bind(stepId.value, scenarioId.value)
+      .first<{ id: string }>();
+    if (!existing) return c.json({ success: false, error: 'Step not found' }, 404);
+    await deleteScenarioStep(c.env.DB, stepId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/scenarios/:id/steps/:stepId error:', err);
@@ -949,7 +996,8 @@ scenarios.delete('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin
 // POST /api/scenarios/:id/steps/reorder - bulk update step_order
 scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id')!;
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseStepReorderBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
@@ -961,7 +1009,7 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
     // 各 step の next_step_on_false 値を書き換える必要がある。
     const existing = await c.env.DB
       .prepare(`SELECT id, step_order FROM scenario_steps WHERE scenario_id = ?`)
-      .bind(scenarioId)
+      .bind(scenarioId.value)
       .all<{ id: string; step_order: number }>();
     const oldOrderById = new Map(existing.results.map((r) => [r.id, r.step_order]));
     const missing = body.orders.find((o) => !oldOrderById.has(o.stepId));
@@ -983,12 +1031,12 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
     const phase1 = body.orders.map((o, i) =>
       c.env.DB
         .prepare(`UPDATE scenario_steps SET step_order = ? WHERE id = ? AND scenario_id = ?`)
-        .bind(-1 - i, o.stepId, scenarioId),
+        .bind(-1 - i, o.stepId, scenarioId.value),
     );
     const phase2 = body.orders.map((o) =>
       c.env.DB
         .prepare(`UPDATE scenario_steps SET step_order = ? WHERE id = ? AND scenario_id = ?`)
-        .bind(o.stepOrder, o.stepId, scenarioId),
+        .bind(o.stepOrder, o.stepId, scenarioId.value),
     );
     // phase3: branching ターゲット (next_step_on_false) も同様に2フェーズで書き換える。
     // 入れ替え (A 旧2→新4, B 旧4→新2) のケースで一発 UPDATE すると後続が前の結果を上書きするため、
@@ -1000,7 +1048,7 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
           `UPDATE scenario_steps SET next_step_on_false = ?
            WHERE scenario_id = ? AND next_step_on_false = ?`,
         )
-        .bind(-1000 - i, scenarioId, oldOrder),
+        .bind(-1000 - i, scenarioId.value, oldOrder),
     );
     const phase3b = oldToNewArr.map(([, newOrder], i) =>
       c.env.DB
@@ -1008,7 +1056,7 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
           `UPDATE scenario_steps SET next_step_on_false = ?
            WHERE scenario_id = ? AND next_step_on_false = ?`,
         )
-        .bind(newOrder, scenarioId, -1000 - i),
+        .bind(newOrder, scenarioId.value, -1000 - i),
     );
     await c.env.DB.batch([...phase1, ...phase2, ...phase3a, ...phase3b]);
 
@@ -1024,10 +1072,13 @@ const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const;
 
 scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id')!;
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
+    const startParam = parseOptionalDateCursor(c.req.query('startAt'), 'startAt');
+    if (!startParam.ok) return c.json({ success: false, error: startParam.error }, 400);
     const scenarioRow = await c.env.DB
       .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
-      .bind(scenarioId)
+      .bind(scenarioId.value)
       .first<{ delivery_mode: DeliveryMode }>();
     if (!scenarioRow) return c.json({ success: false, error: 'Scenario not found' }, 404);
 
@@ -1037,7 +1088,7 @@ scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async
                 template_id, message_type, message_content
          FROM scenario_steps WHERE scenario_id = ? ORDER BY step_order ASC`,
       )
-      .bind(scenarioId)
+      .bind(scenarioId.value)
       .all<{
         id: string;
         step_order: number;
@@ -1063,9 +1114,8 @@ scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async
     // computeNextDeliveryAt は「JST clock-time を UTC として表現する Date」前提。
     // クエリの startParam は "+09:00" 付き ISO で本物の UTC instant として parse されるため、
     // +9h ずらして JST clock-time 表現に揃える。default の now も同様にずらして表現する。
-    const startParam = c.req.query('startAt');
-    const startAt = startParam
-      ? new Date(new Date(startParam).getTime() + 9 * 60 * 60_000)
+    const startAt = startParam.value
+      ? new Date(new Date(startParam.value).getTime() + 9 * 60 * 60_000)
       : new Date(Date.now() + 9 * 60 * 60_000);
 
     // Day N はカレンダー日数差で算出。経過 24h 単位だと、enrolledAt 14:32 →
@@ -1115,15 +1165,16 @@ scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async
 // GET /api/scenarios/:id/stats - reach rate dashboard
 scenarios.get('/api/scenarios/:id/stats', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id')!;
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
     const scenario = await c.env.DB
       .prepare(`SELECT id FROM scenarios WHERE id = ?`)
-      .bind(scenarioId)
+      .bind(scenarioId.value)
       .first<{ id: string }>();
     if (!scenario) {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
     }
-    const stats = await computeScenarioStats(c.env.DB, scenarioId);
+    const stats = await computeScenarioStats(c.env.DB, scenarioId.value);
     return c.json({ success: true, data: stats });
   } catch (err) {
     console.error('GET /api/scenarios/:id/stats error:', err);
@@ -1134,24 +1185,26 @@ scenarios.get('/api/scenarios/:id/stats', requireRole('owner', 'admin'), async (
 // POST /api/scenarios/:id/enroll/:friendId - manually enroll friend
 scenarios.post('/api/scenarios/:id/enroll/:friendId', async (c) => {
   try {
-    const scenarioId = c.req.param('id');
-    const friendId = c.req.param('friendId');
+    const scenarioId = parseVisibleId(c.req.param('id'), 'scenarioId');
+    if (!scenarioId.ok) return c.json({ success: false, error: scenarioId.error }, 400);
+    const friendId = parseVisibleId(c.req.param('friendId'), 'friendId');
+    if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
     const db = c.env.DB;
 
-    const scenario = await getScenarioById(db, scenarioId);
+    const scenario = await getScenarioById(db, scenarioId.value);
     if (!scenario) {
       return c.json({ success: false, error: 'Scenario not found' }, 404);
     }
 
-    const denied = await ensureSupportFriendAccess(c, friendId);
+    const denied = await ensureSupportFriendAccess(c, friendId.value);
     if (denied) return denied;
 
-    const friend = await getFriendById(db, friendId);
+    const friend = await getFriendById(db, friendId.value);
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
 
-    const enrollment = await enrollFriendInScenario(db, friendId, scenarioId);
+    const enrollment = await enrollFriendInScenario(db, friendId.value, scenarioId.value);
     if (!enrollment) {
       return c.json({ success: false, error: 'Already enrolled in this scenario' }, 409);
     }

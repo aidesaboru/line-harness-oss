@@ -142,6 +142,12 @@ function parseFriendScoreInput(body: Record<string, unknown>): ValueResult<Frien
   };
 }
 
+function scoringRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // ========== スコアリングルールCRUD ==========
 
 scoring.get('/api/scoring-rules', requireRole('owner', 'admin'), async (c) => {
@@ -160,7 +166,7 @@ scoring.get('/api/scoring-rules', requireRole('owner', 'admin'), async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/scoring-rules error:', err);
+    console.error(`GET /api/scoring-rules error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -176,7 +182,7 @@ scoring.get('/api/scoring-rules/:id', requireRole('owner', 'admin'), async (c) =
       data: { id: item.id, name: item.name, eventType: item.event_type, scoreValue: item.score_value, isActive: Boolean(item.is_active), createdAt: item.created_at },
     });
   } catch (err) {
-    console.error('GET /api/scoring-rules/:id error:', err);
+    console.error(`GET /api/scoring-rules/:id error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -190,7 +196,7 @@ scoring.post('/api/scoring-rules', requireRole('owner', 'admin'), async (c) => {
     const item = await createScoringRule(c.env.DB, body.value);
     return c.json({ success: true, data: { id: item.id, name: item.name, eventType: item.event_type, scoreValue: item.score_value } }, 201);
   } catch (err) {
-    console.error('POST /api/scoring-rules error:', err);
+    console.error(`POST /api/scoring-rules error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -208,7 +214,7 @@ scoring.put('/api/scoring-rules/:id', requireRole('owner', 'admin'), async (c) =
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: { id: updated.id, name: updated.name, eventType: updated.event_type, scoreValue: updated.score_value, isActive: Boolean(updated.is_active) } });
   } catch (err) {
-    console.error('PUT /api/scoring-rules/:id error:', err);
+    console.error(`PUT /api/scoring-rules/:id error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -220,7 +226,7 @@ scoring.delete('/api/scoring-rules/:id', requireRole('owner', 'admin'), async (c
     await deleteScoringRule(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/scoring-rules/:id error:', err);
+    console.error(`DELETE /api/scoring-rules/:id error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -252,7 +258,7 @@ scoring.get('/api/friends/:id/score', async (c) => {
       },
     });
   } catch (err) {
-    console.error('GET /api/friends/:id/score error:', err);
+    console.error(`GET /api/friends/:id/score error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -272,7 +278,7 @@ scoring.post('/api/friends/:id/score', async (c) => {
     const newScore = await getFriendScore(c.env.DB, friendId.value);
     return c.json({ success: true, data: { friendId: friendId.value, currentScore: newScore } }, 201);
   } catch (err) {
-    console.error('POST /api/friends/:id/score error:', err);
+    console.error(`POST /api/friends/:id/score error: ${scoringRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

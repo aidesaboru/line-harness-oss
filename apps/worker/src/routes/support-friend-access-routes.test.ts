@@ -437,6 +437,94 @@ describe('friend-scoped support visibility guards', () => {
     });
   });
 
+  test('scoring rule failure logs only the error kind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    dbMocks.createScoringRule.mockRejectedValueOnce(
+      new Error('scoring rule secret account-token rule-1 Hot lead manual reason'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'owner').request('/api/scoring-rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Hot lead', eventType: 'manual', scoreValue: 10 }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/scoring-rules error: Error');
+      expect(logged).not.toContain('scoring rule secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('rule-1');
+      expect(logged).not.toContain('Hot lead');
+      expect(logged).not.toContain('manual reason');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('friend score failure does not leak raw exception into logs or response', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    dbMocks.addScore.mockRejectedValueOnce(
+      new Error('friend score secret account-token friend-visible U-visible manual update'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'staff').request('/api/friends/friend-visible/score', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scoreChange: 5, reason: 'manual update account-token' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/friends/:id/score error: Error');
+      expect(logged).not.toContain('friend score secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('U-visible');
+      expect(logged).not.toContain('manual update');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('friend reminder enrollment failure does not leak raw exception into logs or response', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    dbMocks.enrollFriendInReminder.mockRejectedValueOnce(
+      new Error('reminder secret account-token friend-visible reminder-1 targetDate 2026-06-13'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(db, 'staff').request('/api/reminders/reminder-1/enroll/friend-visible', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetDate: '2026-06-13' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/reminders/:id/enroll/:friendId error: Error');
+      expect(logged).not.toContain('reminder secret');
+      expect(logged).not.toContain('account-token');
+      expect(logged).not.toContain('friend-visible');
+      expect(logged).not.toContain('reminder-1');
+      expect(logged).not.toContain('targetDate');
+      expect(logged).not.toContain('2026-06-13');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('staff cannot read a hidden friend score', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
 

@@ -222,6 +222,12 @@ function parseReminderStepInput(body: Record<string, unknown>): ValueResult<Remi
   };
 }
 
+function reminderRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // ========== リマインダCRUD ==========
 
 reminders.get('/api/reminders', requireRole('owner', 'admin'), async (c) => {
@@ -250,7 +256,7 @@ reminders.get('/api/reminders', requireRole('owner', 'admin'), async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/reminders error:', err);
+    console.error(`GET /api/reminders error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -284,7 +290,7 @@ reminders.get('/api/reminders/:id', requireRole('owner', 'admin'), async (c) => 
       },
     });
   } catch (err) {
-    console.error('GET /api/reminders/:id error:', err);
+    console.error(`GET /api/reminders/:id error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -304,7 +310,7 @@ reminders.post('/api/reminders', requireRole('owner', 'admin'), async (c) => {
     }
     return c.json({ success: true, data: { id: item.id, name: item.name, createdAt: item.created_at } }, 201);
   } catch (err) {
-    console.error('POST /api/reminders error:', err);
+    console.error(`POST /api/reminders error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -322,7 +328,7 @@ reminders.put('/api/reminders/:id', requireRole('owner', 'admin'), async (c) => 
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: { id: updated.id, name: updated.name, isActive: Boolean(updated.is_active) } });
   } catch (err) {
-    console.error('PUT /api/reminders/:id error:', err);
+    console.error(`PUT /api/reminders/:id error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -334,7 +340,7 @@ reminders.delete('/api/reminders/:id', requireRole('owner', 'admin'), async (c) 
     await deleteReminder(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/reminders/:id error:', err);
+    console.error(`DELETE /api/reminders/:id error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -355,7 +361,7 @@ reminders.post('/api/reminders/:id/steps', requireRole('owner', 'admin'), async 
       data: { id: step.id, reminderId: step.reminder_id, offsetMinutes: step.offset_minutes, messageType: step.message_type, createdAt: step.created_at },
     }, 201);
   } catch (err) {
-    console.error('POST /api/reminders/:id/steps error:', err);
+    console.error(`POST /api/reminders/:id/steps error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -369,7 +375,7 @@ reminders.delete('/api/reminders/:reminderId/steps/:stepId', requireRole('owner'
     await deleteReminderStep(c.env.DB, stepId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/reminders/:reminderId/steps/:stepId error:', err);
+    console.error(`DELETE /api/reminders/:reminderId/steps/:stepId error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -398,7 +404,7 @@ reminders.post('/api/reminders/:id/enroll/:friendId', async (c) => {
       data: { id: enrollment.id, friendId: enrollment.friend_id, reminderId: enrollment.reminder_id, targetDate: enrollment.target_date, status: enrollment.status },
     }, 201);
   } catch (err) {
-    console.error('POST /api/reminders/:id/enroll/:friendId error:', err);
+    console.error(`POST /api/reminders/:id/enroll/:friendId error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -422,7 +428,7 @@ reminders.get('/api/friends/:friendId/reminders', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/friends/:friendId/reminders error:', err);
+    console.error(`GET /api/friends/:friendId/reminders error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -441,7 +447,7 @@ reminders.delete('/api/friend-reminders/:id', async (c) => {
     await cancelFriendReminder(c.env.DB, reminderId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/friend-reminders/:id error:', err);
+    console.error(`DELETE /api/friend-reminders/:id error: ${reminderRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -7,6 +7,14 @@ const profileRefresh = new Hono<Env>();
 
 profileRefresh.use('/api/admin/*', requireRole('owner', 'admin'));
 
+const ADMIN_VISIBLE_ID_MAX_LENGTH = 128;
+const ADMIN_TAG_NAME_MAX_LENGTH = 128;
+const ADMIN_TAG_ARRAY_MAX_LENGTH = 100;
+const ADMIN_CONTENT_SUBSTRING_MAX_LENGTH = 1024;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
 function parseNonNegativeOffset(raw: string | undefined): number | null {
   const n = Number(raw ?? 0);
   if (!Number.isFinite(n) || n < 0) return null;
@@ -17,6 +25,73 @@ function clampInteger(raw: string | undefined, fallback: number, min: number, ma
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseVisibleString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleQuery(raw: string | undefined, label: string): ValueResult<string | null> {
+  if (raw === undefined) return { ok: true, value: null };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  return parseVisibleString(value, label, ADMIN_VISIBLE_ID_MAX_LENGTH);
+}
+
+function parseRequiredText(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseTagNameArray(raw: unknown, label: string): ValueResult<string[]> {
+  if (!Array.isArray(raw)) return { ok: false, error: `${label} must be an array` };
+  if (raw.length === 0) return { ok: false, error: `${label} is required` };
+  if (raw.length > ADMIN_TAG_ARRAY_MAX_LENGTH) return { ok: false, error: `${label} has too many items` };
+  const values: string[] = [];
+  for (const item of raw) {
+    const parsed = parseRequiredText(item, label, ADMIN_TAG_NAME_MAX_LENGTH);
+    if (!parsed.ok) return parsed;
+    values.push(parsed.value);
+  }
+  return { ok: true, value: values };
+}
+
+function parseTagLeakBody(raw: unknown): ValueResult<{ tagsA: string[]; tagsB: string[] }> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const tagsA = parseTagNameArray(raw.tagsA, 'tagsA');
+  if (!tagsA.ok) return tagsA;
+  const tagsB = parseTagNameArray(raw.tagsB, 'tagsB');
+  if (!tagsB.ok) return tagsB;
+  return { ok: true, value: { tagsA: tagsA.value, tagsB: tagsB.value } };
+}
+
+function parseContentFilterBody(raw: unknown): ValueResult<{ tagName: string; contentSubstring: string }> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const tagName = parseRequiredText(raw.tagName, 'tagName', ADMIN_TAG_NAME_MAX_LENGTH);
+  if (!tagName.ok) return tagName;
+  const contentSubstring = parseRequiredText(
+    raw.contentSubstring,
+    'contentSubstring',
+    ADMIN_CONTENT_SUBSTRING_MAX_LENGTH,
+  );
+  if (!contentSubstring.ok) return contentSubstring;
+  return { ok: true, value: { tagName: tagName.value, contentSubstring: contentSubstring.value } };
 }
 
 /**
@@ -34,10 +109,13 @@ function clampInteger(raw: string | undefined, fallback: number, min: number, ma
 profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
   const offset = parseNonNegativeOffset(c.req.query('offset'));
   const limit = clampInteger(c.req.query('limit'), 100, 1, 500);
-  const accountIdFilter = c.req.query('accountId') ?? null;
+  const accountIdFilter = parseOptionalVisibleQuery(c.req.query('accountId'), 'accountId');
 
   if (offset == null) {
     return c.json({ success: false, error: 'invalid offset' }, 400);
+  }
+  if (!accountIdFilter.ok) {
+    return c.json({ success: false, error: accountIdFilter.error }, 400);
   }
 
   const db = c.env.DB;
@@ -51,14 +129,14 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
     LEFT JOIN line_accounts a ON a.id = f.line_account_id
     WHERE f.is_following = 1
       AND f.line_user_id IS NOT NULL
-      ${accountIdFilter ? 'AND f.line_account_id = ?' : ''}
+      ${accountIdFilter.value ? 'AND f.line_account_id = ?' : ''}
     ORDER BY f.id
     LIMIT ? OFFSET ?
   `;
 
   const stmt = db.prepare(baseQuery);
-  const bound = accountIdFilter
-    ? stmt.bind(accountIdFilter, limit, offset)
+  const bound = accountIdFilter.value
+    ? stmt.bind(accountIdFilter.value, limit, offset)
     : stmt.bind(limit, offset);
 
   const batch = await bound.all<{
@@ -144,7 +222,9 @@ profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
  * broadcast を reset してしまうと送信痕跡が消えて重複配信のリスクがある)。
  */
 profileRefresh.post('/api/admin/broadcasts/:id/reset-to-draft', async (c) => {
-  const id = c.req.param('id');
+  const parsedId = parseVisibleString(c.req.param('id'), 'id', ADMIN_VISIBLE_ID_MAX_LENGTH);
+  if (!parsedId.ok) return c.json({ success: false, error: parsedId.error }, 400);
+  const id = parsedId.value;
   const db = c.env.DB;
 
   const logged = await db
@@ -193,10 +273,9 @@ profileRefresh.post('/api/admin/broadcasts/:id/reset-to-draft', async (c) => {
  * 重複してないか確認する用。
  */
 profileRefresh.post('/api/admin/tag-leak-check', async (c) => {
-  const body = await c.req.json<{ tagsA: string[]; tagsB: string[] }>();
-  if (!Array.isArray(body.tagsA) || !Array.isArray(body.tagsB)) {
-    return c.json({ success: false, error: 'tagsA/tagsB must be string arrays' }, 400);
-  }
+  const parsed = parseTagLeakBody(await readJsonBody(c));
+  if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+  const body = parsed.value;
   const db = c.env.DB;
 
   const buildIdentSql = (tagNames: string[]) => {
@@ -246,10 +325,9 @@ profileRefresh.post('/api/admin/tag-leak-check', async (c) => {
  * 同一の ident_key を持つ別 friend が既受信なら counted (= 別アカで受信済 person)。
  */
 profileRefresh.post('/api/admin/content-leak-check', async (c) => {
-  const body = await c.req.json<{ tagName: string; contentSubstring: string }>();
-  if (typeof body.tagName !== 'string' || typeof body.contentSubstring !== 'string' || !body.contentSubstring) {
-    return c.json({ success: false, error: 'tagName + contentSubstring required' }, 400);
-  }
+  const parsed = parseContentFilterBody(await readJsonBody(c));
+  if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+  const body = parsed.value;
   const db = c.env.DB;
   const idCol = `COALESCE(
     CASE
@@ -296,7 +374,9 @@ profileRefresh.post('/api/admin/content-leak-check', async (c) => {
  * (ident_key) の重複/未到達数、rest 配信時の重複予測などを一発で出す。
  */
 profileRefresh.post('/api/admin/broadcast-coverage', async (c) => {
-  const body = await c.req.json<{ tagName: string; contentSubstring: string }>();
+  const parsed = parseContentFilterBody(await readJsonBody(c));
+  if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+  const body = parsed.value;
   const db = c.env.DB;
 
   const idCol = `COALESCE(
@@ -405,7 +485,9 @@ profileRefresh.post('/api/admin/broadcast-coverage', async (c) => {
  * 動画 URL を受け取ってる人を除外して、二重配信を防ぐ。
  */
 profileRefresh.post('/api/admin/tag-remove-content-dups', async (c) => {
-  const body = await c.req.json<{ tagName: string; contentSubstring: string }>();
+  const parsed = parseContentFilterBody(await readJsonBody(c));
+  if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+  const body = parsed.value;
   const db = c.env.DB;
 
   const idCol = `COALESCE(
@@ -597,7 +679,9 @@ profileRefresh.get('/api/admin/automations-summary', async (c) => {
 });
 
 profileRefresh.get('/api/admin/friend-debug/:id', async (c) => {
-  const id = c.req.param('id');
+  const parsedId = parseVisibleString(c.req.param('id'), 'id', ADMIN_VISIBLE_ID_MAX_LENGTH);
+  if (!parsedId.ok) return c.json({ success: false, error: parsedId.error }, 400);
+  const id = parsedId.value;
   const db = c.env.DB;
   const friend = await db
     .prepare(`SELECT id, display_name, line_user_id, line_account_id, is_following, user_id FROM friends WHERE id = ?`)

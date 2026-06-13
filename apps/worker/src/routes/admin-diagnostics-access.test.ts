@@ -119,6 +119,104 @@ describe('admin diagnostics role guards', () => {
     expect(db.prepare).not.toHaveBeenCalled();
   });
 
+  test('refresh profiles rejects unsafe account filter before DB access', async () => {
+    const { app, db } = setupApp('owner');
+
+    const res = await app.request('/api/admin/refresh-profiles?accountId=bad%20account', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(db.prepare).not.toHaveBeenCalled();
+    expect(lineClientConstructor).not.toHaveBeenCalled();
+  });
+
+  test('refresh profiles trims valid account filter before SQL bind', async () => {
+    const { app, db } = setupApp('owner');
+
+    const res = await app.request('/api/admin/refresh-profiles?accountId=%20acc-1%20&limit=10&offset=0', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const batchCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
+    expect(batchCall?.binds).toEqual(['acc-1', 10, 0]);
+  });
+
+  test('admin repair and debug routes reject unsafe path ids before DB access', async () => {
+    const { app, db } = setupApp('owner');
+
+    const reset = await app.request('/api/admin/broadcasts/bad%20broadcast/reset-to-draft', { method: 'POST' });
+    const debug = await app.request('/api/admin/friend-debug/bad%20friend');
+
+    expect(reset.status).toBe(400);
+    expect(debug.status).toBe(400);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('diagnostic body routes reject malformed or invalid payloads before DB access', async () => {
+    const { app, db } = setupApp('owner');
+    const requests: Array<[string, RequestInit]> = [
+      ['/api/admin/tag-leak-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['/api/admin/tag-leak-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagsA: [], tagsB: ['B'] }),
+      }],
+      ['/api/admin/content-leak-check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagName: 'A', contentSubstring: ' ' }),
+      }],
+      ['/api/admin/broadcast-coverage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagName: 'x'.repeat(129), contentSubstring: 'hello' }),
+      }],
+      ['/api/admin/tag-remove-content-dups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagName: 'A', contentSubstring: 'x'.repeat(1025) }),
+      }],
+    ];
+
+    for (const [path, init] of requests) {
+      const res = await app.request(path, init);
+      expect(res.status, path).toBe(400);
+    }
+
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('diagnostic body routes trim valid payloads before SQL bind', async () => {
+    const { app, db } = setupApp('owner');
+
+    const tagLeak = await app.request('/api/admin/tag-leak-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tagsA: [' A ', 'B'], tagsB: [' C '] }),
+    });
+    const contentLeak = await app.request('/api/admin/content-leak-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tagName: ' A ', contentSubstring: ' hello ' }),
+    });
+    const removeDups = await app.request('/api/admin/tag-remove-content-dups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tagName: ' Rest ', contentSubstring: ' watched ' }),
+    });
+
+    expect(tagLeak.status).toBe(200);
+    expect(contentLeak.status).toBe(200);
+    expect(removeDups.status).toBe(200);
+    expect(db.calls[0].binds).toEqual(['A', 'B', 'C']);
+    expect(db.calls.some((call) => call.binds.includes('A') && call.binds.includes('%hello%'))).toBe(true);
+    expect(db.calls.some((call) => call.binds.includes('Rest') && call.binds.includes('%watched%'))).toBe(true);
+  });
+
   test('auto reply stats falls back from invalid days query', async () => {
     const { app, db } = setupApp('owner');
 

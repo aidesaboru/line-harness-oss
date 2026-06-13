@@ -193,6 +193,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] 選択中の案件が絞り込み外にある場合、画面に理由と戻り操作が出る
 - Local outside-list browser smokeでは、完了案件をURL直指定して未完了一覧の外に置いた場合に理由と `完了案件を表示` が出て `status=resolved` の一覧へ戻れること、未完了案件をステータス絞り込みで外に置いた場合に `絞り込みをリセット` で `queue=unresolved` の一覧へ戻れることを確認済み。
 - [ ] 長いチャットで過去メッセージを読み込める
+- Local long-chat browser smokeでは、初期表示で最新2件だけを表示し、`過去のメッセージを読み込む` で `beforeCreatedAt`/`beforeId` 付きAPIを呼び、古い2件が前に追加され、全4件が古い順に並び、追加後に読み込みボタンが消えることを確認済み。
 - [ ] サポート案件から「チャットで返信」を押すと、チャット入力欄に返信案が入る
 - Local draft-handoff browser smokeでは、サポート案件の `チャットで返信` から `/chats?friend=...&supportCase=...&lineAccount=...` へ遷移し、メッセージ入力欄に返信案が入り、案件タイトル付きの紐付けバナーが `返信案を入力中` と表示されることを確認済み。
 - [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
@@ -281,6 +282,7 @@ N/A
 - Browser smoke with empty staff-name mock session confirms `/support` shows the staff-name warning, does not render the dummy case/manual/staff suggestion/unanswered badge, and does not call `/api/support/summary`, `/api/support/cases`, `/api/support/manuals`, `/api/chats`, `/api/staff`, or `/api/inbox/unanswered/count`.
 - Browser smoke with list-control mock session confirms updated sort is `updatedAt` desc even when API order differs, initial detail matches the first displayed case, priority sort reorders locally, overdue queue sends `queue=overdue`, status selection clears queue, and search sends `q=Gamma`.
 - Browser smoke with outside-list mock session confirms hidden selected cases keep the detail panel with an explanatory banner; resolved hidden cases reveal the completed list with `status=resolved`, while unresolved hidden cases reset to `queue=unresolved`.
+- Browser smoke with long-chat mock session confirms the chat screen starts with the latest two messages, calls `/api/chats/:id` with `beforeCreatedAt` and `beforeId` when loading older history, prepends the two older messages in chronological order, and hides the load-older button after `hasMoreMessages=false`.
 - Browser smoke with draft-handoff mock session confirms `チャットで返信` opens `/chats?friend=...&supportCase=...&lineAccount=...`, fills the chat message box with the support reply draft, and keeps the support-case title in the linked-draft banner after the URL fallback reruns.
 - Browser smoke with chat mock session confirms `/chats?friend=friend-visible&supportCase=case-visible` shows the support-case link banner without a sessionStorage draft.
 - `corepack pnpm preflight:support-crm:dry-run` success path: strict release env shape passes with secrets redacted.

@@ -178,6 +178,12 @@ function parseUserMatchInput(body: Record<string, unknown>): ValueResult<UserMat
   };
 }
 
+function usersRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 type LinkedFriend = {
   id: string;
   line_user_id: string;
@@ -300,7 +306,7 @@ users.get('/api/users', async (c) => {
     const items = await getScopedUsers(c.env.DB, currentSupportStaff(c));
     return c.json({ success: true, data: items.map(serializeUser) });
   } catch (err) {
-    console.error('GET /api/users error:', err);
+    console.error(`GET /api/users error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -316,7 +322,7 @@ users.get('/api/users/:id', async (c) => {
     }
     return c.json({ success: true, data: serializeUser(user) });
   } catch (err) {
-    console.error('GET /api/users/:id error:', err);
+    console.error(`GET /api/users/:id error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -332,7 +338,7 @@ users.post('/api/users', requireRole('owner', 'admin'), async (c) => {
     const user = await createUser(c.env.DB, body.value);
     return c.json({ success: true, data: serializeUser(user) }, 201);
   } catch (err) {
-    console.error('POST /api/users error:', err);
+    console.error(`POST /api/users error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -354,7 +360,7 @@ users.put('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
     }
     return c.json({ success: true, data: serializeUser(updated) });
   } catch (err) {
-    console.error('PUT /api/users/:id error:', err);
+    console.error(`PUT /api/users/:id error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -367,7 +373,7 @@ users.delete('/api/users/:id', requireRole('owner', 'admin'), async (c) => {
     await deleteUser(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/users/:id error:', err);
+    console.error(`DELETE /api/users/:id error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -394,7 +400,7 @@ users.post('/api/users/:id/link', async (c) => {
     await linkFriendToUser(c.env.DB, friendId.value, userId.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('POST /api/users/:id/link error:', err);
+    console.error(`POST /api/users/:id/link error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -421,7 +427,7 @@ users.get('/api/users/:id/accounts', async (c) => {
       })),
     });
   } catch (err) {
-    console.error('GET /api/users/:id/accounts error:', err);
+    console.error(`GET /api/users/:id/accounts error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -448,7 +454,7 @@ users.post('/api/users/match', async (c) => {
     }
     return c.json({ success: true, data: serializeUser(user) });
   } catch (err) {
-    console.error('POST /api/users/match error:', err);
+    console.error(`POST /api/users/match error: ${usersRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

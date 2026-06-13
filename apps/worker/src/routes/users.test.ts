@@ -214,6 +214,16 @@ function setupApp(db: D1Database, role: StaffRole = 'staff') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   dbMocks.getUsers.mockResolvedValue([userVisible, userHidden, userShared]);
@@ -243,6 +253,139 @@ beforeEach(() => {
 });
 
 describe('users support visibility guards', () => {
+  test('list failure logs only the error kind', async () => {
+    dbMocks.getUsers.mockRejectedValueOnce(
+      new Error(
+        'user list secret user-visible friend-visible visible@example.com 09011112222 token-secret raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(makeDb(), 'owner').request('/api/users');
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/users error: Error');
+      expectNoLogLeak(logged, [
+        'user list secret',
+        'user-visible',
+        'friend-visible',
+        'visible@example.com',
+        '09011112222',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('create failure logs only the error kind', async () => {
+    dbMocks.createUser.mockRejectedValueOnce(
+      new Error(
+        'user create secret user-new new@example.com 09099998888 ext-new 山田太郎 token-secret raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(makeDb(), 'owner').request('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'new@example.com',
+          phone: '09099998888',
+          externalId: 'ext-new',
+          displayName: '山田太郎',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/users error: Error');
+      expectNoLogLeak(logged, [
+        'user create secret',
+        'user-new',
+        'new@example.com',
+        '09099998888',
+        'ext-new',
+        '山田太郎',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('link failure logs only the error kind', async () => {
+    dbMocks.linkFriendToUser.mockRejectedValueOnce(
+      new Error('user link secret user-visible friend-visible token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(makeDb(), 'owner').request('/api/users/user-visible/link', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ friendId: 'friend-visible' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/users/:id/link error: Error');
+      expectNoLogLeak(logged, [
+        'user link secret',
+        'user-visible',
+        'friend-visible',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('match failure logs only the error kind', async () => {
+    dbMocks.getUserByEmail.mockRejectedValueOnce(
+      new Error(
+        'user match secret visible@example.com 09011112222 user-visible token-secret raw-body',
+      ),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp(makeDb(), 'owner').request('/api/users/match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'visible@example.com', phone: '09011112222' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/users/match error: Error');
+      expectNoLogLeak(logged, [
+        'user match secret',
+        'visible@example.com',
+        '09011112222',
+        'user-visible',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('staff user list is scoped to support-visible friends', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible', 'friend-shared-visible'] });
 

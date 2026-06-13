@@ -17,6 +17,8 @@ interface PreviewStep {
   messageContent: string
 }
 
+const SCENARIO_PREVIEW_ERROR_MESSAGE = 'シナリオプレビューの読み込みに失敗しました。もう一度お試しください。'
+
 function nowJstAsLocalInput(): string {
   // JST clock-time as YYYY-MM-DDTHH:MM for <input type="datetime-local">
   const d = new Date(Date.now() + 9 * 60 * 60_000)
@@ -38,9 +40,9 @@ export default function BulkPreviewModal({ open, scenarioId, onClose }: Props) {
       .preview(scenarioId, iso)
       .then((res) => {
         if (res.success) setSteps(res.data.steps)
-        else setError(res.error)
+        else setError(SCENARIO_PREVIEW_ERROR_MESSAGE)
       })
-      .catch(() => setError('プレビューの読み込みに失敗しました'))
+      .catch(() => setError(SCENARIO_PREVIEW_ERROR_MESSAGE))
       .finally(() => setLoading(false))
   }, [open, scenarioId, startAt])
 

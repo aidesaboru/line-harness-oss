@@ -16,6 +16,8 @@ const messageTypeLabels: Record<MessageType, string> = {
   flex: 'Flexメッセージ',
 }
 
+const STEP_SAVE_ERROR_MESSAGE = 'ステップの保存に失敗しました。もう一度お試しください。'
+
 function minutesToDisplay(minutes: number): { days: number; hours: number; mins: number } {
   const days = Math.floor(minutes / (60 * 24))
   const hours = Math.floor((minutes % (60 * 24)) / 60)
@@ -60,8 +62,8 @@ export default function StepEditor({ step, stepOrder, onSave, onCancel }: StepEd
         messageType,
         messageContent,
       })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '保存に失敗しました')
+    } catch {
+      setError(STEP_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

@@ -32,6 +32,11 @@ const ccPrompts = [
 
 type ScenarioWithCount = Scenario & { stepCount?: number }
 
+const SCENARIOS_LIST_ERROR_MESSAGE = 'シナリオの読み込みに失敗しました。もう一度お試しください。'
+const SCENARIO_CREATE_ERROR_MESSAGE = 'シナリオの作成に失敗しました。もう一度お試しください。'
+const SCENARIO_STATUS_ERROR_MESSAGE = 'シナリオのステータス変更に失敗しました。もう一度お試しください。'
+const SCENARIO_DELETE_ERROR_MESSAGE = 'シナリオの削除に失敗しました。もう一度お試しください。'
+
 export default function ScenariosPage() {
   const { selectedAccountId, loading: accountLoading } = useAccount()
   const router = useRouter()
@@ -48,10 +53,12 @@ export default function ScenariosPage() {
       if (res.success) {
         setScenarios(res.data)
       } else {
-        setError(res.error)
+        setScenarios([])
+        setError(SCENARIOS_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('シナリオの読み込みに失敗しました。もう一度お試しください。')
+      setScenarios([])
+      setError(SCENARIOS_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -69,11 +76,13 @@ export default function ScenariosPage() {
         if (res.success) {
           setScenarios(res.data)
         } else {
-          setError(res.error)
+          setScenarios([])
+          setError(SCENARIOS_LIST_ERROR_MESSAGE)
         }
       } catch {
         if (cancelled) return
-        setError('シナリオの読み込みに失敗しました。もう一度お試しください。')
+        setScenarios([])
+        setError(SCENARIOS_LIST_ERROR_MESSAGE)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -102,25 +111,33 @@ export default function ScenariosPage() {
     if (res.success) {
       router.push(`/scenarios/detail?id=${res.data.id}`)
     } else {
-      throw new Error(res.error)
+      throw new Error(SCENARIO_CREATE_ERROR_MESSAGE)
     }
   }
 
   const handleToggleActive = async (id: string, current: boolean) => {
     try {
-      await api.scenarios.update(id, { isActive: !current })
+      const res = await api.scenarios.update(id, { isActive: !current })
+      if (!res.success) {
+        setError(SCENARIO_STATUS_ERROR_MESSAGE)
+        return
+      }
       loadScenarios()
     } catch {
-      setError('ステータスの変更に失敗しました')
+      setError(SCENARIO_STATUS_ERROR_MESSAGE)
     }
   }
 
   const handleDelete = async (id: string) => {
     try {
-      await api.scenarios.delete(id)
+      const res = await api.scenarios.delete(id)
+      if (!res.success) {
+        setError(SCENARIO_DELETE_ERROR_MESSAGE)
+        return
+      }
       loadScenarios()
     } catch {
-      setError('削除に失敗しました')
+      setError(SCENARIO_DELETE_ERROR_MESSAGE)
     }
   }
 

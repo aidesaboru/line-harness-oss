@@ -37,6 +37,8 @@ const triggerOptions: Array<{
   },
 ]
 
+const SCENARIO_CREATE_ERROR_MESSAGE = 'シナリオの作成に失敗しました。もう一度お試しください。'
+
 export default function ScenarioModePicker({ open, onClose, onCreate }: Props) {
   const [stage, setStage] = useState<'pick' | 'name'>('pick')
   const [mode, setMode] = useState<DeliveryMode>('elapsed')
@@ -94,8 +96,8 @@ export default function ScenarioModePicker({ open, onClose, onCreate }: Props) {
       })
       reset()
       onClose()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '作成に失敗しました')
+    } catch {
+      setError(SCENARIO_CREATE_ERROR_MESSAGE)
     } finally {
       setSubmitting(false)
     }

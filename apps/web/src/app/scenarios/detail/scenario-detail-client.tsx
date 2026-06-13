@@ -35,6 +35,12 @@ const modeBadgeStyle: Record<DeliveryMode, { bg: string; text: string; label: st
   absolute_time: { bg: 'bg-amber-50', text: 'text-amber-700', label: '時刻指定' },
 }
 
+const SCENARIO_DETAIL_LOAD_ERROR_MESSAGE = 'シナリオ詳細の読み込みに失敗しました。もう一度お試しください。'
+const SCENARIO_DETAIL_SAVE_ERROR_MESSAGE = 'シナリオの保存に失敗しました。もう一度お試しください。'
+const SCENARIO_STEP_SAVE_ERROR_MESSAGE = 'シナリオステップの保存に失敗しました。もう一度お試しください。'
+const SCENARIO_STEP_DELETE_ERROR_MESSAGE = 'シナリオステップの削除に失敗しました。もう一度お試しください。'
+const SCENARIO_STEP_REORDER_ERROR_MESSAGE = 'シナリオステップの並び替えに失敗しました。もう一度お試しください。'
+
 function formatDelay(minutes: number): string {
   if (minutes === 0) return '即時'
   if (minutes < 60) return `${minutes}分後`
@@ -174,10 +180,12 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
           isActive: res.data.isActive,
         })
       } else {
-        setError(res.error)
+        setScenario(null)
+        setError(SCENARIO_DETAIL_LOAD_ERROR_MESSAGE)
       }
     } catch {
-      setError('シナリオの読み込みに失敗しました')
+      setScenario(null)
+      setError(SCENARIO_DETAIL_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -232,10 +240,10 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         setEditing(false)
         loadScenario()
       } else {
-        setError(res.error)
+        setError(SCENARIO_DETAIL_SAVE_ERROR_MESSAGE)
       }
     } catch {
-      setError('保存に失敗しました')
+      setError(SCENARIO_DETAIL_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -328,13 +336,13 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       if (editingStepId) {
         const res = await api.scenarios.updateStep(id, editingStepId, payload)
         if (!res.success) {
-          setStepError(res.error)
+          setStepError(SCENARIO_STEP_SAVE_ERROR_MESSAGE)
           return
         }
       } else {
         const res = await api.scenarios.addStep(id, payload)
         if (!res.success) {
-          setStepError(res.error)
+          setStepError(SCENARIO_STEP_SAVE_ERROR_MESSAGE)
           return
         }
       }
@@ -343,7 +351,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
       loadScenario()
       reloadStats()
     } catch {
-      setStepError('ステップの保存に失敗しました')
+      setStepError(SCENARIO_STEP_SAVE_ERROR_MESSAGE)
     } finally {
       setStepSaving(false)
     }
@@ -352,10 +360,14 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const handleDeleteStep = async (stepId: string) => {
     if (!confirm('このステップを削除してもよいですか？')) return
     try {
-      await api.scenarios.deleteStep(id, stepId)
+      const res = await api.scenarios.deleteStep(id, stepId)
+      if (!res.success) {
+        setError(SCENARIO_STEP_DELETE_ERROR_MESSAGE)
+        return
+      }
       loadScenario()
     } catch {
-      setError('ステップの削除に失敗しました')
+      setError(SCENARIO_STEP_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -368,15 +380,19 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
     const a = sorted[idx]
     const b = sorted[swap]
     try {
-      await api.scenarios.reorderSteps(id, [
+      const res = await api.scenarios.reorderSteps(id, [
         { stepId: a.id, stepOrder: b.stepOrder },
         { stepId: b.id, stepOrder: a.stepOrder },
       ])
+      if (!res.success) {
+        setError(SCENARIO_STEP_REORDER_ERROR_MESSAGE)
+        return
+      }
       loadScenario()
       // 到達率バッジは stepOrder ベースでマッチングするので、並び替え後は stats も再取得
       reloadStats()
     } catch {
-      setError('並び替えに失敗しました')
+      setError(SCENARIO_STEP_REORDER_ERROR_MESSAGE)
     }
   }
 

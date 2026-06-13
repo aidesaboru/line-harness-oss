@@ -23,6 +23,7 @@ updated: 2026-06-13
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
+- template/message-template定義payloadは、壊れたJSON、不正なname/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
 - automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operatorの管理一覧・変更APIはowner/adminだけに制限し、staffが運用ルールや流入先、担当者マスタを直接参照/変更できないようにした。traffic pool管理payloadは壊れたJSON、不正なslug/name/activeAccountId/lineAccountId/isActiveをDB書き込み前に400で止める
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
 - rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した
@@ -204,7 +205,7 @@ strict Preflight:
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.
-- Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends.
+- Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends. Content management tests also confirm malformed or unsafe template/message-template payloads stop before DB writes or lookup, while valid values are trimmed.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs, and malformed traffic pool management payloads stop before DB writes.
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
 - Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work.

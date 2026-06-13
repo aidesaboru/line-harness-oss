@@ -46,6 +46,52 @@ function setupApp(role: StaffRole = 'staff') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMocks.createTemplate.mockResolvedValue({
+    id: 'template-created',
+    name: 'Greeting',
+    category: 'general',
+    message_type: 'image',
+    message_content: JSON.stringify({
+      originalContentUrl: 'https://example.com/image.jpg',
+      previewImageUrl: 'https://example.com/preview.jpg',
+    }),
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.getTemplateById.mockResolvedValue({
+    id: 'template-1',
+    name: 'Greeting',
+    category: 'general',
+    message_type: 'text',
+    message_content: 'hello',
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.updateTemplate.mockResolvedValue(undefined);
+  dbMocks.createMessageTemplate.mockResolvedValue({
+    id: 'message-template-created',
+    name: 'Reward',
+    message_type: 'text',
+    message_content: 'hello',
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.getMessageTemplateById.mockResolvedValue({
+    id: 'message-template-1',
+    name: 'Reward',
+    message_type: 'text',
+    message_content: 'hello',
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.updateMessageTemplate.mockResolvedValue({
+    id: 'message-template-1',
+    name: 'Reward Updated',
+    message_type: 'flex',
+    message_content: JSON.stringify({ type: 'bubble' }),
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:05:00.000',
+  });
 });
 
 describe('content management role guards', () => {
@@ -109,5 +155,182 @@ describe('content management role guards', () => {
     expect(dbMocks.createMessageTemplate).not.toHaveBeenCalled();
     expect(dbMocks.updateMessageTemplate).not.toHaveBeenCalled();
     expect(dbMocks.deleteMessageTemplate).not.toHaveBeenCalled();
+  });
+});
+
+describe('content management payload validation', () => {
+  test('reusable template create rejects malformed or invalid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const invalidType = await app.request('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Greeting', messageType: 'video', messageContent: 'hello' }),
+    });
+    const invalidFlex = await app.request('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Greeting', messageType: 'flex', messageContent: '{' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(invalidType.status).toBe(400);
+    expect(invalidFlex.status).toBe(400);
+    expect(dbMocks.createTemplate).not.toHaveBeenCalled();
+  });
+
+  test('reusable template create trims valid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+    const imageContent = JSON.stringify({
+      originalContentUrl: 'https://example.com/image.jpg',
+      previewImageUrl: 'https://example.com/preview.jpg',
+    });
+
+    const res = await app.request('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Greeting ',
+        category: ' general ',
+        messageType: ' image ',
+        messageContent: ` ${imageContent} `,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createTemplate).toHaveBeenCalledWith({} as D1Database, {
+      name: 'Greeting',
+      category: 'general',
+      messageType: 'image',
+      messageContent: imageContent,
+    });
+  });
+
+  test('reusable template update rejects malformed or empty payloads before lookup', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/templates/template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const empty = await app.request('/api/templates/template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const invalidType = await app.request('/api/templates/template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageType: 'video' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(empty.status).toBe(400);
+    expect(invalidType.status).toBe(400);
+    expect(dbMocks.getTemplateById).not.toHaveBeenCalled();
+    expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
+  });
+
+  test('reusable template update rejects invalid effective content before DB writes', async () => {
+    const app = setupApp('owner');
+    dbMocks.getTemplateById.mockResolvedValueOnce({
+      id: 'template-1',
+      name: 'Greeting',
+      category: 'general',
+      message_type: 'flex',
+      message_content: JSON.stringify({ type: 'bubble' }),
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+
+    const res = await app.request('/api/templates/template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageContent: '{' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getTemplateById).toHaveBeenCalledTimes(1);
+    expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
+  });
+
+  test('message template create rejects malformed or invalid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const invalidType = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Reward', messageType: 'image', messageContent: 'hello' }),
+    });
+    const invalidFlex = await app.request('/api/message-templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Reward', messageType: 'flex', messageContent: 'not json' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(invalidType.status).toBe(400);
+    expect(invalidFlex.status).toBe(400);
+    expect(dbMocks.createMessageTemplate).not.toHaveBeenCalled();
+  });
+
+  test('message template update rejects malformed or invalid payloads before lookup', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/message-templates/message-template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const empty = await app.request('/api/message-templates/message-template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const invalidType = await app.request('/api/message-templates/message-template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messageType: 'image' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(empty.status).toBe(400);
+    expect(invalidType.status).toBe(400);
+    expect(dbMocks.getMessageTemplateById).not.toHaveBeenCalled();
+    expect(dbMocks.updateMessageTemplate).not.toHaveBeenCalled();
+  });
+
+  test('message template update trims valid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+    const flexContent = JSON.stringify({ type: 'bubble' });
+
+    const res = await app.request('/api/message-templates/message-template-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Reward Updated ',
+        messageType: ' flex ',
+        messageContent: ` ${flexContent} `,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.getMessageTemplateById).toHaveBeenCalledWith({} as D1Database, 'message-template-1');
+    expect(dbMocks.updateMessageTemplate).toHaveBeenCalledWith({} as D1Database, 'message-template-1', {
+      name: 'Reward Updated',
+      messageType: 'flex',
+      messageContent: flexContent,
+    });
   });
 });

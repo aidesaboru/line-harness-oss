@@ -12,6 +12,138 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const templates = new Hono<Env>();
 
+const TEMPLATE_NAME_MAX_LENGTH = 120;
+const TEMPLATE_CATEGORY_MAX_LENGTH = 64;
+const TEMPLATE_CONTENT_MAX_LENGTH = 64 * 1024;
+const TEMPLATE_IMAGE_URL_MAX_LENGTH = 2048;
+const TEMPLATE_MESSAGE_TYPES = new Set(['text', 'image', 'flex', 'carousel']);
+
+type TemplateInput = {
+  name: string;
+  category?: string;
+  messageType: string;
+  messageContent: string;
+};
+
+type TemplateUpdateInput = Partial<TemplateInput>;
+type ParseResult<T> = { ok: true; body: T } | { ok: false; error: string };
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  return { ok: true, value };
+}
+
+function parseOptionalString(raw: unknown, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  return parseRequiredString(raw, label, maxLength);
+}
+
+function parseMessageType(raw: unknown, required: boolean): ValueResult<string | undefined> {
+  if (raw === undefined && !required) return { ok: true, value: undefined };
+  const parsed = parseRequiredString(raw, 'messageType', 32);
+  if (!parsed.ok) return parsed;
+  if (!TEMPLATE_MESSAGE_TYPES.has(parsed.value)) return { ok: false, error: 'messageType is invalid' };
+  return { ok: true, value: parsed.value };
+}
+
+function parseJsonRecord(raw: string, label: string): ValueResult<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: `${label} must be valid JSON` };
+  }
+  if (!isRecord(parsed)) return { ok: false, error: `${label} must be a JSON object` };
+  return { ok: true, value: parsed };
+}
+
+function validateMessageContent(messageType: string, messageContent: string): { ok: true } | { ok: false; error: string } {
+  if (messageType === 'image') {
+    const parsed = parseJsonRecord(messageContent, 'messageContent');
+    if (!parsed.ok) return parsed;
+    for (const key of ['originalContentUrl', 'previewImageUrl']) {
+      const value = parsed.value[key];
+      if (typeof value !== 'string' || !value.trim()) {
+        return { ok: false, error: `messageContent.${key} is required` };
+      }
+      if (value.length > TEMPLATE_IMAGE_URL_MAX_LENGTH) {
+        return { ok: false, error: `messageContent.${key} is too long` };
+      }
+    }
+  }
+  if (messageType === 'flex' || messageType === 'carousel') {
+    const parsed = parseJsonRecord(messageContent, 'messageContent');
+    if (!parsed.ok) return parsed;
+  }
+  return { ok: true };
+}
+
+function parseTemplateCreateBody(raw: unknown): ParseResult<TemplateInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseRequiredString(raw.name, 'name', TEMPLATE_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const category = parseOptionalString(raw.category, 'category', TEMPLATE_CATEGORY_MAX_LENGTH);
+  if (!category.ok) return category;
+  const messageType = parseMessageType(raw.messageType, true);
+  if (!messageType.ok || messageType.value === undefined) {
+    return { ok: false, error: messageType.ok ? 'messageType is required' : messageType.error };
+  }
+  const messageContent = parseRequiredString(raw.messageContent, 'messageContent', TEMPLATE_CONTENT_MAX_LENGTH);
+  if (!messageContent.ok) return messageContent;
+  const content = validateMessageContent(messageType.value, messageContent.value);
+  if (!content.ok) return content;
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      category: category.value,
+      messageType: messageType.value,
+      messageContent: messageContent.value,
+    },
+  };
+}
+
+function parseTemplateUpdateBody(raw: unknown): ParseResult<TemplateUpdateInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseOptionalString(raw.name, 'name', TEMPLATE_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const category = parseOptionalString(raw.category, 'category', TEMPLATE_CATEGORY_MAX_LENGTH);
+  if (!category.ok) return category;
+  const messageType = parseMessageType(raw.messageType, false);
+  if (!messageType.ok) return messageType;
+  const messageContent = parseOptionalString(raw.messageContent, 'messageContent', TEMPLATE_CONTENT_MAX_LENGTH);
+  if (!messageContent.ok) return messageContent;
+  if (
+    name.value === undefined &&
+    category.value === undefined &&
+    messageType.value === undefined &&
+    messageContent.value === undefined
+  ) {
+    return { ok: false, error: 'At least one field is required' };
+  }
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      category: category.value,
+      messageType: messageType.value,
+      messageContent: messageContent.value,
+    },
+  };
+}
+
 templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
   try {
     const category = c.req.query('category') ?? undefined;
@@ -121,10 +253,10 @@ templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async 
 
 templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{ name: string; category?: string; messageType: string; messageContent: string }>();
-    if (!body.name || !body.messageType || !body.messageContent) {
-      return c.json({ success: false, error: 'name, messageType, messageContent are required' }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseTemplateCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     const item = await createTemplate(c.env.DB, body);
     return c.json({ success: true, data: { id: item.id, name: item.name, category: item.category, messageType: item.message_type, createdAt: item.created_at } }, 201);
   } catch (err) {
@@ -136,7 +268,16 @@ templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
 templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseTemplateUpdateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
+    const existing = await getTemplateById(c.env.DB, id);
+    if (!existing) return c.json({ success: false, error: 'Not found' }, 404);
+    const effectiveType = body.messageType ?? existing.message_type;
+    const effectiveContent = body.messageContent ?? existing.message_content;
+    const content = validateMessageContent(effectiveType, effectiveContent);
+    if (!content.ok) return c.json({ success: false, error: content.error }, 400);
     await updateTemplate(c.env.DB, id, body);
     const updated = await getTemplateById(c.env.DB, id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);

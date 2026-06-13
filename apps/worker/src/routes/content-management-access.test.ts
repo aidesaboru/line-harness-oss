@@ -46,6 +46,12 @@ function setupApp(role: StaffRole = 'staff') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMocks.createTag.mockResolvedValue({
+    id: 'tag-created',
+    name: 'VIP',
+    color: '#2563eb',
+    created_at: '2026-06-13T10:00:00.000',
+  });
   dbMocks.createTemplate.mockResolvedValue({
     id: 'template-created',
     name: 'Greeting',
@@ -159,6 +165,47 @@ describe('content management role guards', () => {
 });
 
 describe('content management payload validation', () => {
+  test('tag create rejects malformed or invalid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    const missingName = await app.request('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' ', color: '#2563eb' }),
+    });
+    const invalidColor = await app.request('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'VIP', color: 'green' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(missingName.status).toBe(400);
+    expect(invalidColor.status).toBe(400);
+    expect(dbMocks.createTag).not.toHaveBeenCalled();
+  });
+
+  test('tag create trims valid payloads before DB writes', async () => {
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/tags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' VIP ', color: ' #2563eb ' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(dbMocks.createTag).toHaveBeenCalledWith({} as D1Database, {
+      name: 'VIP',
+      color: '#2563eb',
+    });
+  });
+
   test('reusable template create rejects malformed or invalid payloads before DB writes', async () => {
     const app = setupApp('owner');
 

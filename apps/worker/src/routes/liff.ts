@@ -142,6 +142,13 @@ function parseLiffSendFormLinkBody(value: unknown): LiffSendFormLinkBody | null 
   return { lineUserId, formId, idToken, ref, gate, xh, ig };
 }
 
+function parseLegacyProfileBodyIdToken(value: unknown): string | undefined | null {
+  if (!isPlainRecord(value) || value.idToken === undefined || value.idToken === null || value.idToken === '') {
+    return undefined;
+  }
+  return boundedOptionalString(value.idToken, MAX_LIFF_ID_TOKEN_LENGTH);
+}
+
 // Persist ig_igsid on the LINE friend and notify IG Harness.
 // Used anywhere a LIFF/OAuth flow resolves with a known IGSID so existing
 // friends (who bypass /auth/callback) also get the cross-link written.
@@ -1219,8 +1226,12 @@ liffRoutes.get('/api/liff/config', async (c) => {
 // POST /api/liff/profile - get current LIFF friend profile (public, ID-token verified)
 liffRoutes.post('/api/liff/profile', async (c) => {
   try {
-    const body = (await c.req.json<{ idToken?: string }>().catch(() => ({}))) as { idToken?: string };
-    const authHeader = c.req.header('Authorization') || (body.idToken ? `Bearer ${body.idToken}` : undefined);
+    const rawBody = await c.req.json().catch(() => null);
+    const bodyIdToken = parseLegacyProfileBodyIdToken(rawBody);
+    if (bodyIdToken === null) {
+      return c.json({ success: false, error: 'Invalid LIFF profile payload' }, 400);
+    }
+    const authHeader = c.req.header('Authorization') || (bodyIdToken ? `Bearer ${bodyIdToken}` : undefined);
     const lineUserId = await verifyCallerLineUserId(authHeader, c.env);
     if (!lineUserId) {
       return c.json({ success: false, error: 'Valid LINE idToken required' }, 401);

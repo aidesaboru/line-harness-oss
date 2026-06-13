@@ -71,7 +71,7 @@ updated: 2026-06-13
 - 公開フォームsubmitのWebhook gateは、LIFFクライアントの事前確認や `_skipWebhook` 自己申告を信じず、Worker側で毎回再判定する
 - 公開フォームのopened、partial、submitで友だちへ紐付ける処理は、caller supplied `lineUserId` / `friendId` ではなくLINE ID token検証済みのLINE user IDだけを使う
 - 公開フォームpartial/submitは壊れたJSON、オブジェクト以外の `data`、100項目超または16KB超の `data` をID token検証、Webhook、DB保存前に400で止める
-- `/api/liff/profile` はcaller supplied `lineUserId` で友だち情報を返さず、LINE ID token検証済みのLINE user IDだけでプロフィールを解決する
+- `/api/liff/profile` はcaller supplied `lineUserId` で友だち情報を返さず、body `idToken` も型/長さをLINE verify前に検証し、LINE ID token検証済みのLINE user IDだけでプロフィールを解決する
 - `/api/liff/send-form-link` はフォームURL push前にLINE ID tokenのsubjectとcaller supplied `lineUserId` の一致を必須にする
 - `/api/liff/link` と `/api/liff/send-form-link` は壊れたJSON、巨大なID token/ref/gate/xh/IGSID/displayName/lineUserId/formIdをLINE verify、DB lookup、LINE push前に400で止める
 - tracked-link公開リダイレクト `/t/:linkId` は空白/非ASCII/128文字超の `linkId` をDB lookupやclick記録前に404で止め、caller supplied `f` / `lu` を友だち本人として扱わず、LINEアプリ内では `ref` 付きLIFFへ回し、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionを行う
@@ -242,7 +242,7 @@ strict Preflight:
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
 - Form access route tests confirm public submit ignores `_skipWebhook`, rechecks the webhook gate server-side, does not run reward tag/scenario side effects when the gate rejects, stores redacted webhook fetch errors, and never trusts caller-supplied `lineUserId` / `friendId` for partial metadata writes or submit side effects.
 - Form access route tests confirm malformed form path IDs stop before DB lookup/write, D1 prepare, LINE ID token verification, webhook calls, submission writes, or reward side effects. They also confirm public partial/submit reject malformed JSON, non-object `data`, and oversized `data` before LINE ID token verification, webhook calls, submission writes, or reward side effects.
-- LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token and resolves the friend only from the verified token subject.
+- LIFF access route tests confirm `/api/liff/profile` rejects caller-supplied `lineUserId` without a valid LINE ID token, rejects malformed or oversized legacy body `idToken` before LINE verification, and resolves the friend only from the verified token subject.
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
 - LIFF access route tests confirm public `/api/liff/config` rejects unsafe `liffId` before DB lookup or LINE bot info fetch, and owner/admin ref analytics reject unsafe `lineAccountId/refCode` before DB access while valid filters are trimmed before SQL bind.
@@ -314,7 +314,7 @@ strict Preflight:
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限、公開pool入口入力制限、automation/auto-reply/notification rule/traffic pool/operator path/payload検証
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限、event admin/LIFF event query/path検証、LIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限、rich menu catalog query/path/payload/image検証、rich menu group query/path/payload/R2 key検証、friend単位操作の維持
-- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFF config/ref analytics入力検証、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route path/payload検証、conversion point path/payload検証、calendar query/path/payload検証
+- `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFF profile idToken入力検証、LIFF config/ref analytics入力検証、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route path/payload検証、conversion point path/payload検証、calendar query/path/payload検証
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限、broadcast query/path/payload/segment条件検証、dedup-preview payload検証
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限、path/payload検証、incoming receive署名検証の維持

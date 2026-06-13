@@ -106,6 +106,26 @@ describe('public LIFF profile endpoint', () => {
     expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
   });
 
+  test('rejects malformed legacy body idToken before LINE verification', async () => {
+    const app = setupApp();
+    const cases = [
+      JSON.stringify({ idToken: 123 }),
+      JSON.stringify({ idToken: 't'.repeat(8193) }),
+    ];
+
+    for (const body of cases) {
+      const res = await app.request('/api/liff/profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      expect(res.status, body).toBe(400);
+    }
+
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+
   test('returns only the friend matched by the verified LINE idToken subject', async () => {
     liffAuthMocks.verifyCallerLineUserId.mockResolvedValue('U-verified');
     dbMocks.getFriendByLineUserId.mockResolvedValue({

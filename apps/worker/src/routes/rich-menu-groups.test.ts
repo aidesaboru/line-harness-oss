@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, vi } from 'vitest';
+import { describe, expect, test, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // Mock @line-crm/db so we can drive the route purely from this test file.
@@ -78,6 +78,10 @@ function setupApp(opts: { r2?: R2Bucket; db?: D1Database; role?: 'owner' | 'admi
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 // ----- GET /api/rich-menu-groups -----
@@ -483,6 +487,92 @@ describe('POST /api/rich-menu-groups/:groupId/pages/:pageId/image', () => {
     expect(dbMocks.setRichMenuPageImage).toHaveBeenCalledWith(
       expect.anything(), 'p1', body.data.imageR2Key, 'image/png',
     );
+  });
+});
+
+// ----- Cross-route input validation -----
+
+describe('rich menu route input validation', () => {
+  test('rejects malformed query, path, body, and image-key values before DB, LINE, or R2 side effects', async () => {
+    const db = makeMinimalDbStub();
+    const r2 = {
+      get: vi.fn(),
+      put: vi.fn(),
+    } as unknown as R2Bucket;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const app = setupApp({ db, r2 });
+
+    const cases: Array<{ method: string; path: string; body?: string; headers?: Record<string, string> }> = [
+      { method: 'GET', path: '/api/rich-menu-groups/external/bad%20id/image?accountId=acc-1' },
+      { method: 'GET', path: '/api/rich-menu-groups/external/richmenu-1/image?accountId=bad%20account' },
+      { method: 'POST', path: '/api/rich-menu-groups/import?accountId=bad%20account&richMenuId=richmenu-1' },
+      { method: 'POST', path: '/api/rich-menu-groups/import?accountId=acc-1&richMenuId=bad%20menu' },
+      { method: 'GET', path: '/api/rich-menu-groups/external?accountId=bad%20account' },
+      { method: 'DELETE', path: '/api/rich-menu-groups/external/bad%20id?accountId=acc-1' },
+      { method: 'GET', path: '/api/rich-menu-groups?accountId=bad%20account' },
+      { method: 'GET', path: '/api/rich-menu-groups/bad%20group' },
+      {
+        method: 'PATCH',
+        path: '/api/rich-menu-groups/bad%20group',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      },
+      { method: 'DELETE', path: '/api/rich-menu-groups/bad%20group' },
+      { method: 'DELETE', path: '/api/rich-menu-groups/g1?force=maybe' },
+      {
+        method: 'POST',
+        path: '/api/rich-menu-groups/bad%20group/pages/p1/image',
+        headers: { 'Content-Type': 'image/png' },
+        body: String.fromCharCode(...PNG_2500x1686),
+      },
+      {
+        method: 'POST',
+        path: '/api/rich-menu-groups/g1/pages/bad%20page/image',
+        headers: { 'Content-Type': 'image/png' },
+        body: String.fromCharCode(...PNG_2500x1686),
+      },
+      { method: 'GET', path: '/api/rich-menu-images/rich-menus/acc-1/g1/p1/not-a-timestamp.png' },
+      { method: 'POST', path: '/api/rich-menu-groups/bad%20group/publish' },
+      { method: 'POST', path: '/api/rich-menu-groups/bad%20group/unpublish' },
+      {
+        method: 'POST',
+        path: '/api/rich-menu-groups/bad%20group/apply-to-tag',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+      {
+        method: 'POST',
+        path: '/api/rich-menu-groups/g1/apply-to-tag',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify('bad'),
+      },
+      {
+        method: 'POST',
+        path: '/api/rich-menu-groups/g1/apply-to-tag',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tagId: 'bad tag' }),
+      },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request(item.path, {
+        method: item.method,
+        headers: item.headers,
+        body: item.body,
+      });
+      expect(res.status, `${item.method} ${item.path}`).toBe(400);
+    }
+
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.getRichMenuGroups).not.toHaveBeenCalled();
+    expect(dbMocks.getRichMenuGroupById).not.toHaveBeenCalled();
+    expect(dbMocks.getRichMenuGroupWithPages).not.toHaveBeenCalled();
+    expect(dbMocks.pageBelongsToGroup).not.toHaveBeenCalled();
+    expect(dbMocks.acquirePublishLock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(r2.get).not.toHaveBeenCalled();
+    expect(db.prepare).not.toHaveBeenCalled();
   });
 });
 

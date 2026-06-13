@@ -269,6 +269,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker management role guard testsでは、staffがbooking/event admin routeへ直接アクセスしても403で止まり、DBへ到達しないことを確認済み。Events route testsではowner文脈の既存admin操作が引き続き通ることを確認済み。
 - [ ] rich menu catalog/group管理APIがowner/adminだけに制限される
   - Worker rich-menu group/support-friend access route testsでは、staffがLINE rich menu catalogやrich menu group管理APIへ直接アクセスしても403で止まり、見えている友だち単位のrich menu参照は引き続き通ることを確認済み。
+- [ ] rich menu group管理APIのquery/path/payload/R2 keyがDB/LINE/R2副作用前に検証される
+  - Worker rich-menu group route testsでは、不正なaccountId/richMenuId/groupId/pageId/tagId、apply-to-tag payload、force query、画像R2 keyがDB helper、SQL bind、LINE fetch、R2 get/put前に400で止まり、正常なID/name/chatBarText/actionTypeはtrimされることを確認済み。
 - [ ] entry route/conversion point/Google Calendar接続/account health・migration管理APIがowner/adminだけに制限される
   - Worker management role guard testsでは、staffが流入経路、conversion point一覧/作成/削除、Google Calendar接続一覧/作成/削除、account health/migration管理APIへ直接アクセスしても403で止まり、DB helperやD1へ到達しないことを確認済み。Conversion/calendar access route testsでは、friend単位のconversion/calendar booking操作が引き続き可視範囲内で通ることを確認済み。
 - [ ] entry route管理payloadがDB書き込み前に検証される
@@ -411,6 +413,7 @@ N/A
 - `corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts`
 - `corepack pnpm --filter worker test -- src/routes/notifications.test.ts`
 - `corepack pnpm --filter worker test -- src/routes/automations.test.ts`
+- `corepack pnpm --filter worker test -- src/routes/rich-menu-groups.test.ts`
 - `corepack pnpm --filter worker test`
 - `corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts`
 - `corepack pnpm build`
@@ -435,6 +438,7 @@ N/A
 - Management role guard tests verify malformed or unsafe auto-reply account/path/payload values stop before DB helpers while valid values are trimmed, null-normalized, and template snapshots are filled from the selected template.
 - Notifications route tests verify malformed or unsafe notification rule query/path/payload values stop before DB helpers or SQL bind while valid rule payloads are trimmed and channels are deduped.
 - Automations route tests verify malformed or unsafe automation query/path/payload values stop before DB helpers or SQL bind while valid rule payloads, action types, priorities, and account scopes are normalized before persistence.
+- Rich-menu group route tests verify malformed or unsafe rich menu account/rich-menu/group/page/tag query/path values, apply-to-tag bodies, force query values, and image R2 keys stop before DB helpers, SQL bind, LINE fetch, or R2 get/put while valid IDs and labels are normalized.
 - Web support-meta/clipboard/staff-form tests verify manual editor validation, copy fallback behavior, and staff creation payload validation; support/staff pages route destructive actions through the shared in-app confirmation dialog before API calls.
 - `corepack pnpm support-crm:release-readiness` separates local/PR evidence failures, missing PR-safe Preflight summary evidence, stale CI runs, and external waits such as draft status, production strict Preflight, and fork PR CI approval.
 - GitHub Actions workflow coverage includes `apps/web/**`, `scripts/**`, `package.json`, Web tests, script tests, and Web production build.

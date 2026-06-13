@@ -182,6 +182,43 @@ describe('operations API role guards', () => {
     ]);
   });
 
+  test('owner Stripe events clamp invalid and fractional limit query values', async () => {
+    const app = setupApp('owner');
+
+    expect((await app.request('/api/integrations/stripe/events?limit=abc')).status).toBe(200);
+    expect((await app.request('/api/integrations/stripe/events?limit=2.9')).status).toBe(200);
+    expect((await app.request('/api/integrations/stripe/events?limit=9999')).status).toBe(200);
+
+    expect(dbMocks.getStripeEvents).toHaveBeenNthCalledWith(1, {} as D1Database, {
+      friendId: undefined,
+      eventType: undefined,
+      limit: 100,
+    });
+    expect(dbMocks.getStripeEvents).toHaveBeenNthCalledWith(2, {} as D1Database, {
+      friendId: undefined,
+      eventType: undefined,
+      limit: 2,
+    });
+    expect(dbMocks.getStripeEvents).toHaveBeenNthCalledWith(3, {} as D1Database, {
+      friendId: undefined,
+      eventType: undefined,
+      limit: 500,
+    });
+  });
+
+  test('owner ad conversion logs clamp invalid and oversized limit query values', async () => {
+    dbMocks.getAdConversionLogs.mockResolvedValue([]);
+    const app = setupApp('owner');
+
+    expect((await app.request('/api/ad-platforms/platform-1/logs?limit=Infinity')).status).toBe(200);
+    expect((await app.request('/api/ad-platforms/platform-1/logs?limit=0')).status).toBe(200);
+    expect((await app.request('/api/ad-platforms/platform-1/logs?limit=9999')).status).toBe(200);
+
+    expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(1, {} as D1Database, 'platform-1', 50);
+    expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(2, {} as D1Database, 'platform-1', 1);
+    expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(3, {} as D1Database, 'platform-1', 500);
+  });
+
   test('public affiliate click endpoint remains unguarded', async () => {
     const res = await setupApp('staff').request('/api/affiliates/click', {
       method: 'POST',

@@ -16,10 +16,15 @@ type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
+type DbCall = { sql: string; binds: unknown[] };
+
 function makeDb() {
+  const calls: DbCall[] = [];
   const db = {
-    prepare: vi.fn(() => ({
-      bind: vi.fn(function bind() {
+    calls,
+    prepare: vi.fn((sql: string) => ({
+      bind: vi.fn(function bind(...args: unknown[]) {
+        calls.push({ sql, binds: args });
         return this;
       }),
       all: vi.fn().mockResolvedValue({ results: [] }),
@@ -27,7 +32,7 @@ function makeDb() {
       run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
     })),
   };
-  return db as unknown as D1Database & { prepare: ReturnType<typeof vi.fn> };
+  return db as unknown as D1Database & { prepare: ReturnType<typeof vi.fn>; calls: DbCall[] };
 }
 
 function setupApp(role: StaffRole = 'staff', db = makeDb()) {
@@ -93,5 +98,50 @@ describe('admin diagnostics role guards', () => {
 
     expect(res.status).toBe(200);
     expect(db.prepare).toHaveBeenCalled();
+  });
+
+  test('refresh profiles clamps limit and floors offset before SQL bind', async () => {
+    const { app, db } = setupApp('owner');
+
+    const res = await app.request('/api/admin/refresh-profiles?limit=abc&offset=1.9', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    const batchCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
+    expect(batchCall?.binds.slice(-2)).toEqual([100, 1]);
+  });
+
+  test('refresh profiles rejects invalid offset before DB access', async () => {
+    const { app, db } = setupApp('owner');
+
+    const res = await app.request('/api/admin/refresh-profiles?offset=Infinity', { method: 'POST' });
+
+    expect(res.status).toBe(400);
+    expect(db.prepare).not.toHaveBeenCalled();
+  });
+
+  test('auto reply stats falls back from invalid days query', async () => {
+    const { app, db } = setupApp('owner');
+
+    const res = await app.request('/api/admin/auto-reply-stats?days=abc');
+
+    expect(res.status).toBe(200);
+    const dateBinds = db.calls
+      .flatMap((call) => call.binds)
+      .filter((bind): bind is string => typeof bind === 'string' && bind.includes('+09:00'));
+    expect(dateBinds).toHaveLength(2);
+    expect(dateBinds.every((value) => !value.includes('Invalid'))).toBe(true);
+  });
+
+  test('recent messages clamps invalid limit before SQL bind', async () => {
+    const { app, db } = setupApp('owner');
+
+    expect((await app.request('/api/admin/recent-messages?limit=Infinity')).status).toBe(200);
+    expect((await app.request('/api/admin/recent-messages?limit=2.9')).status).toBe(200);
+    expect((await app.request('/api/admin/recent-messages?limit=9999')).status).toBe(200);
+
+    const limitBinds = db.calls
+      .filter((call) => call.sql.includes('FROM messages_log ml'))
+      .map((call) => call.binds[0]);
+    expect(limitBinds).toEqual([20, 2, 100]);
   });
 });

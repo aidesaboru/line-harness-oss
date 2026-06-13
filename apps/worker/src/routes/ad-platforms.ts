@@ -26,6 +26,12 @@ function maskConfig(config: Record<string, unknown>): Record<string, unknown> {
 
 const adPlatforms = new Hono<Env>();
 
+function clampLimit(raw: string | undefined, fallback = 50): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
 // GET /api/ad-platforms - list all
 adPlatforms.get('/api/ad-platforms', requireRole('owner', 'admin'), async (c) => {
   try {
@@ -174,7 +180,7 @@ adPlatforms.delete('/api/ad-platforms/:id', requireRole('owner', 'admin'), async
 adPlatforms.get('/api/ad-platforms/:id/logs', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const limit = Number(c.req.query('limit') ?? '50');
+    const limit = clampLimit(c.req.query('limit'), 50);
     const logs = await getAdConversionLogs(c.env.DB, id, limit);
 
     return c.json({

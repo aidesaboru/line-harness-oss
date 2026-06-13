@@ -82,6 +82,7 @@ const rowBase = {
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
+  dbMocks.getAutomationLogs.mockResolvedValue([]);
 });
 
 describe('GET /api/automations?lineAccountId=X', () => {
@@ -140,5 +141,20 @@ describe('GET /api/automations?lineAccountId=X', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
+  });
+});
+
+describe('GET /api/automations/:id/logs', () => {
+  test('clamps invalid, fractional, and oversized limit query values', async () => {
+    const { db } = makeAutomationDb([]);
+    const app = setupApp(db);
+
+    expect((await app.request('/api/automations/auto-1/logs?limit=abc')).status).toBe(200);
+    expect((await app.request('/api/automations/auto-1/logs?limit=2.9')).status).toBe(200);
+    expect((await app.request('/api/automations/auto-1/logs?limit=9999')).status).toBe(200);
+
+    expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(1, db, 'auto-1', 100);
+    expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(2, db, 'auto-1', 2);
+    expect(dbMocks.getAutomationLogs).toHaveBeenNthCalledWith(3, db, 'auto-1', 500);
   });
 });

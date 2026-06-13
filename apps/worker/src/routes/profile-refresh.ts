@@ -7,6 +7,18 @@ const profileRefresh = new Hono<Env>();
 
 profileRefresh.use('/api/admin/*', requireRole('owner', 'admin'));
 
+function parseNonNegativeOffset(raw: string | undefined): number | null {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.floor(n);
+}
+
+function clampInteger(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
 /**
  * 友だち全員のプロフィール (display_name / picture_url / status_message) を
  * LINE Messaging API から再取得して messages_log の dedup 品質を維持する。
@@ -20,11 +32,11 @@ profileRefresh.use('/api/admin/*', requireRole('owner', 'admin'));
  * Caller (cron / curl) は hasMore=false まで offset を進めて再 POST する想定。
  */
 profileRefresh.post('/api/admin/refresh-profiles', async (c) => {
-  const offset = Number.parseInt(c.req.query('offset') ?? '0', 10);
-  const limit = Math.min(Number.parseInt(c.req.query('limit') ?? '100', 10), 500);
+  const offset = parseNonNegativeOffset(c.req.query('offset'));
+  const limit = clampInteger(c.req.query('limit'), 100, 1, 500);
   const accountIdFilter = c.req.query('accountId') ?? null;
 
-  if (!Number.isFinite(offset) || offset < 0) {
+  if (offset == null) {
     return c.json({ success: false, error: 'invalid offset' }, 400);
   }
 
@@ -441,7 +453,7 @@ profileRefresh.post('/api/admin/tag-remove-content-dups', async (c) => {
  */
 profileRefresh.get('/api/admin/auto-reply-stats', async (c) => {
   const db = c.env.DB;
-  const days = Number.parseInt(c.req.query('days') ?? '30', 10);
+  const days = clampInteger(c.req.query('days'), 30, 1, 365);
 
   // 1. 各アカウントで「auto_replies の keyword と一致する incoming text」の件数
   //    = 「ユーザーが trigger した回数」
@@ -513,7 +525,7 @@ profileRefresh.get('/api/admin/auto-reply-stats', async (c) => {
  * 直近 N 件の incoming + outgoing messages_log を返す。debug 用。
  */
 profileRefresh.get('/api/admin/recent-messages', async (c) => {
-  const limit = Math.min(Number.parseInt(c.req.query('limit') ?? '20', 10), 100);
+  const limit = clampInteger(c.req.query('limit'), 20, 1, 100);
   const db = c.env.DB;
 
   const res = await db

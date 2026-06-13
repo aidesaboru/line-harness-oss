@@ -11,6 +11,12 @@ import type { Env } from '../index.js';
 
 const notifications = new Hono<Env>();
 
+function clampLimit(raw: string | undefined, fallback = 100): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
 // ========== 通知ルールCRUD ==========
 
 notifications.get('/api/notifications/rules', async (c) => {
@@ -114,7 +120,7 @@ notifications.delete('/api/notifications/rules/:id', async (c) => {
 notifications.get('/api/notifications', async (c) => {
   try {
     const status = c.req.query('status') ?? undefined;
-    const limit = Number(c.req.query('limit') ?? '100');
+    const limit = clampLimit(c.req.query('limit'), 100);
     const lineAccountId = c.req.query('lineAccountId') ?? undefined;
     let items;
     if (lineAccountId) {

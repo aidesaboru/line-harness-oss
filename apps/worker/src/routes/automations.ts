@@ -11,6 +11,12 @@ import type { Env } from '../index.js';
 
 const automations = new Hono<Env>();
 
+function clampLimit(raw: string | undefined, fallback = 100): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
 // ========== 自動化ルールCRUD ==========
 
 automations.get('/api/automations', async (c) => {
@@ -163,7 +169,7 @@ automations.delete('/api/automations/:id', async (c) => {
 automations.get('/api/automations/:id/logs', async (c) => {
   try {
     const automationId = c.req.param('id');
-    const limit = Number(c.req.query('limit') ?? '100');
+    const limit = clampLimit(c.req.query('limit'), 100);
     const logs = await getAutomationLogs(c.env.DB, automationId, limit);
     return c.json({
       success: true,

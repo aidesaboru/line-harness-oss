@@ -10,6 +10,12 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const stripe = new Hono<Env>();
 
+function clampLimit(raw: string | undefined, fallback = 100): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
 interface StripeWebhookBody {
   id: string;
   type: string;
@@ -31,7 +37,7 @@ stripe.get('/api/integrations/stripe/events', requireRole('owner', 'admin'), asy
   try {
     const friendId = c.req.query('friendId') ?? undefined;
     const eventType = c.req.query('eventType') ?? undefined;
-    const limit = Number(c.req.query('limit') ?? '100');
+    const limit = clampLimit(c.req.query('limit'), 100);
     const items = await getStripeEvents(c.env.DB, { friendId, eventType, limit });
     return c.json({
       success: true,

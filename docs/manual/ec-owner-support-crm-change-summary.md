@@ -17,6 +17,7 @@ updated: 2026-06-13
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
 - support案件一覧、友だち一覧、conversionイベント一覧の `limit` / `offset` queryは、SQL bind前に既定値、整数、有限値へ丸める
 - calendar空き枠取得の `slotMinutes` / `startHour` / `endHour` queryは、0以下、範囲外、非数値を既定値へ戻し、開始時刻が終了時刻以上なら400で止める
+- automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの `limit` / `offset` / `days` queryも既定値、上限、整数へ正規化し、Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` を残さない
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
@@ -118,6 +119,7 @@ corepack pnpm --filter web test -- src/lib/inbox-pagination.test.ts
 corepack pnpm --filter worker test -- src/routes/support.test.ts
 corepack pnpm --filter worker test -- src/routes/friends.test.ts
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
+corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
 corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
@@ -148,6 +150,8 @@ strict Preflight:
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm calendar slot query values cannot create zero-minute/negative loops and invalid time windows stop before calendar lookup.
+- Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind.
+- `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 
 ローカル画面応答:
 

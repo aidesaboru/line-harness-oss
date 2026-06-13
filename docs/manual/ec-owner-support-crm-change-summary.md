@@ -74,6 +74,7 @@ updated: 2026-06-13
 - `/api/liff/link` と `/api/liff/send-form-link` は壊れたJSON、巨大なID token/ref/gate/xh/IGSID/displayName/lineUserId/formIdをLINE verify、DB lookup、LINE push前に400で止める
 - tracked-link公開リダイレクト `/t/:linkId` は空白/非ASCII/128文字超の `linkId` をDB lookupやclick記録前に404で止め、caller supplied `f` / `lu` を友だち本人として扱わず、LINEアプリ内では `ref` 付きLIFFへ回し、`/api/liff/link` のLINE ID token検証後にだけ友だち付きクリック、tag、scenario attributionを行う
 - event booking LIFF予約作成 `/api/liff/events/:id/bookings` は `Idempotency-Key` を128文字以内の可視ASCIIに制限し、不正/巨大keyはLINE verifyやidempotency予約前に400で止める
+- event admin/LIFF event APIの `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query/pathは、DB lookup、LIFF認証、availability helper、booking判断/更新前に検証し、正常値はtrimして参照する
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
 - LIFF OAuth token交換、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
@@ -246,6 +247,7 @@ strict Preflight:
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management path IDs and payloads reject malformed JSON, unsafe route IDs/codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB lookup, DB writes, click-detail lookup, logs lookup, deletion, or test-send lookup, while valid values are trimmed and normalized before persistence.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
+- Events route tests confirm malformed event admin/LIFF `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query and path values stop before DB access, LIFF auth helpers, availability helpers, or booking mutations while valid IDs and filters are trimmed before lookup.
 - Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management path IDs and payloads stop before DB lookup/writes, and the public incoming receive endpoint remains signature-gated.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
@@ -305,7 +307,7 @@ strict Preflight:
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限とautomation/auto-reply/notification rule/traffic pool/operator path/payload検証
-- `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限とLIFF公開導線の維持
+- `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限、event admin/LIFF event query/path検証、LIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限、rich menu catalog query/path/payload/image検証、rich menu group query/path/payload/R2 key検証、friend単位操作の維持
 - `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route path/payload検証、conversion point path/payload検証、calendar query/path/payload検証
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限、broadcast query/path/payload/segment条件検証、dedup-preview payload検証

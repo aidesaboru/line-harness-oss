@@ -743,6 +743,20 @@ function setupApp(state: { events: EventRow[]; slots?: SlotRow[]; bookings?: Boo
   return app;
 }
 
+function setupNoDbApp() {
+  const app = new Hono<TestEnv>();
+  const prepare = vi.fn(() => {
+    throw new Error('DB should not be called');
+  });
+  app.use('*', async (c, next) => {
+    c.set('staff', { id: 'staff-1', role: 'owner' });
+    c.env = { DB: { prepare } as unknown as D1Database } as TestEnv['Bindings'];
+    await next();
+  });
+  app.route('/', events);
+  return { app, prepare };
+}
+
 beforeEach(() => {
   for (const fn of Object.values(availabilityMocks)) fn.mockReset();
   for (const fn of Object.values(liffAuthMocks)) fn.mockReset();
@@ -751,6 +765,77 @@ beforeEach(() => {
   for (const fn of Object.values(reminderMocks)) fn.mockReset();
   for (const fn of Object.values(notifierMocks)) fn.mockReset();
   reminderMocks.computeRemindersForBooking.mockReturnValue([]);
+});
+
+describe('event route input guards', () => {
+  test('rejects malformed admin query and path IDs before DB access', async () => {
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/events/admin/events?account_id=bad%20account'],
+      ['GET', '/api/events/admin/events/bad%20event?account_id=la1'],
+      ['GET', '/api/events/admin/events/bad%20event/slots?account_id=la1'],
+      ['PUT', '/api/events/admin/events/e1/slots/bad%20slot?account_id=la1', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capacity: 10 }),
+      }],
+      ['GET', '/api/events/admin/events/e1/bookings?account_id=la1&status=bogus'],
+      ['GET', '/api/events/admin/events/e1/bookings?account_id=la1&slot_id=bad%20slot'],
+      ['POST', '/api/events/admin/events/e1/bookings/bad%20booking/decide?account_id=la1', {
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm' }),
+      }],
+      ['GET', '/api/events/admin/events/notifications/pending?account_id=bad%20account'],
+    ];
+
+    for (const [method, path, init] of cases) {
+      const { app, prepare } = setupNoDbApp();
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(prepare, `${method} ${path}`).not.toHaveBeenCalled();
+    }
+  });
+
+  test('rejects malformed LIFF query and path IDs before DB or helper calls', async () => {
+    const cases: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/liff/events/bad%20event?liffId=L1'],
+      ['GET', '/api/liff/events/e1?liffId=bad%20liff'],
+      ['GET', '/api/liff/events/e1/slots?liffId=bad%20liff'],
+      ['POST', '/api/liff/events/me/bad%20booking/cancel?liffId=L1', {
+        headers: { Authorization: 'Bearer t' },
+      }],
+    ];
+
+    for (const [method, path, init] of cases) {
+      const { app, prepare } = setupNoDbApp();
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+      expect(prepare, `${method} ${path}`).not.toHaveBeenCalled();
+    }
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(availabilityMocks.getSlotsWithRemaining).not.toHaveBeenCalled();
+  });
+
+  test('trims valid admin and LIFF IDs before lookup', async () => {
+    const state = {
+      events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1 })],
+      slots: [{ id: 's1', event_id: 'e1', starts_at: '2099-06-01T10:00:00Z', ends_at: '2099-06-01T12:00:00Z', capacity: null, is_active: 1, sort_order: 0, deleted_at: null }],
+      bookings: [{ id: 'b1', event_id: 'e1', slot_id: 's1', friend_id: 'f1', line_account_id: 'la1', status: 'requested' } as BookingRow & Record<string, unknown>],
+      accounts: [{ id: 'la1', liff_id: 'L1', is_active: 1 }],
+    };
+    const app = setupApp(state);
+
+    const adminRes = await app.request('/api/events/admin/events/%20e1%20?account_id=%20la1%20');
+    expect(adminRes.status).toBe(200);
+
+    const bookingsRes = await app.request(
+      '/api/events/admin/events/%20e1%20/bookings?account_id=%20la1%20&status=%20requested%20&slot_id=%20s1%20',
+    );
+    expect(bookingsRes.status).toBe(200);
+    const bookingsBody = (await bookingsRes.json()) as { items: Array<{ id: string }> };
+    expect(bookingsBody.items.map((item) => item.id)).toEqual(['b1']);
+
+    const liffRes = await app.request('/api/liff/events/%20e1%20?liffId=%20L1%20');
+    expect(liffRes.status).toBe(200);
+  });
 });
 
 describe('POST /api/events/admin/events', () => {

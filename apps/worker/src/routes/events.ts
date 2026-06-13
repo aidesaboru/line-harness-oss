@@ -16,6 +16,7 @@ import {
   EVENT_DESCRIPTION_MAX,
   CUSTOMER_NOTE_MAX,
   EVENT_IDEMPOTENCY_TTL_MINUTES,
+  type EventBookingStatus,
   type EventTargetType,
 } from '../services/event-booking-types.js';
 import { getSlotsWithRemaining } from '../services/event-availability.js';
@@ -43,6 +44,19 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const events = new Hono<Env>();
 const EVENT_IDEMPOTENCY_KEY_MAX_LENGTH = 128;
+const EVENT_VISIBLE_ID_MAX_LENGTH = 128;
+const EVENT_VISIBLE_ID_PATTERN = /^[!-~]+$/;
+const EVENT_BOOKING_STATUSES = new Set<EventBookingStatus>([
+  'requested',
+  'confirmed',
+  'rejected',
+  'cancelled',
+  'expired',
+  'no_show',
+  'attended',
+]);
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; code: string };
 
 events.use('/api/events/admin/*', requireRole('owner', 'admin'));
 
@@ -53,8 +67,53 @@ function bad(c: Context<Env>, code: string, status = 422): Response {
   return c.json({ error: code }, status as 400 | 401 | 403 | 404 | 409 | 410 | 422 | 429);
 }
 
-function getAccountId(c: Context<Env>): string | null {
-  return c.req.query('account_id') ?? null;
+function parseRequiredVisibleId(
+  raw: unknown,
+  requiredCode: string,
+  invalidCode: string,
+): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, code: requiredCode };
+  const value = raw.trim();
+  if (!value) return { ok: false, code: requiredCode };
+  if (value.length > EVENT_VISIBLE_ID_MAX_LENGTH) return { ok: false, code: invalidCode };
+  if (!EVENT_VISIBLE_ID_PATTERN.test(value)) return { ok: false, code: invalidCode };
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleId(raw: unknown, invalidCode: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, code: invalidCode };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > EVENT_VISIBLE_ID_MAX_LENGTH) return { ok: false, code: invalidCode };
+  if (!EVENT_VISIBLE_ID_PATTERN.test(value)) return { ok: false, code: invalidCode };
+  return { ok: true, value };
+}
+
+function getAccountId(c: Context<Env>): ValueResult<string> {
+  return parseRequiredVisibleId(c.req.query('account_id'), 'account_id_required', 'invalid_account_id');
+}
+
+function getEventPathId(c: Context<Env>): ValueResult<string> {
+  return parseRequiredVisibleId(c.req.param('id'), 'invalid_event_id', 'invalid_event_id');
+}
+
+function getSlotPathId(c: Context<Env>): ValueResult<string> {
+  return parseRequiredVisibleId(c.req.param('slotId'), 'invalid_slot_id', 'invalid_slot_id');
+}
+
+function getBookingPathId(c: Context<Env>): ValueResult<string> {
+  return parseRequiredVisibleId(c.req.param('bookingId'), 'invalid_booking_id', 'invalid_booking_id');
+}
+
+function parseOptionalBookingStatus(raw: unknown): ValueResult<EventBookingStatus | undefined> {
+  const parsed = parseOptionalVisibleId(raw, 'invalid_status');
+  if (!parsed.ok) return { ok: false, code: parsed.code };
+  if (parsed.value === undefined) return { ok: true, value: undefined };
+  if (!EVENT_BOOKING_STATUSES.has(parsed.value as EventBookingStatus)) {
+    return { ok: false, code: 'invalid_status' };
+  }
+  return { ok: true, value: parsed.value as EventBookingStatus };
 }
 
 function parseEventIdempotencyKey(raw: string | undefined): string | null {
@@ -68,11 +127,15 @@ function parseEventIdempotencyKey(raw: string | undefined): string | null {
 }
 
 async function resolveAccountIdFromLiff(c: Context<Env>): Promise<string | null> {
-  const liffId = c.req.query('liffId');
-  if (!liffId) return null;
+  const liffId = parseRequiredVisibleId(
+    c.req.query('liffId'),
+    'liff_account_resolution_failed',
+    'liff_account_resolution_failed',
+  );
+  if (!liffId.ok) return null;
   const acc = await c.env.DB
     .prepare(`SELECT id FROM line_accounts WHERE liff_id = ? AND is_active = 1`)
-    .bind(liffId)
+    .bind(liffId.value)
     .first<{ id: string }>();
   return acc?.id ?? null;
 }
@@ -155,8 +218,9 @@ function validateEventInput(
 // ============================================================
 
 events.post('/api/events/admin/events', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const account_id = accountId.value;
   const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
   const v = validateEventInput(body, true);
   if (!v.ok) return bad(c, v.code, 422);
@@ -209,8 +273,9 @@ events.post('/api/events/admin/events', async (c) => {
 });
 
 events.get('/api/events/admin/events', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const account_id = accountId.value;
   const { results } = await c.env.DB
     .prepare(
       `SELECT
@@ -248,8 +313,11 @@ events.get('/api/events/admin/events', async (c) => {
 });
 
 events.get('/api/events/admin/events/:id', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const account_id = accountId.value;
   const row = await c.env.DB
     .prepare(
       `SELECT * FROM events
@@ -259,16 +327,19 @@ events.get('/api/events/admin/events/:id', async (c) => {
               AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
         )`,
     )
-    .bind(c.req.param('id'), account_id, account_id)
+    .bind(eventId.value, account_id, account_id)
     .first();
   if (!row) return bad(c, 'not_found', 404);
   return c.json(row);
 });
 
 events.put('/api/events/admin/events/:id', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const account_id = accountId.value;
+  const id = eventId.value;
   const exists = await c.env.DB
     .prepare(
       `SELECT id FROM events
@@ -418,9 +489,12 @@ async function rebuildRemindersForSlot(db: D1Database, slot_id: string): Promise
 }
 
 events.delete('/api/events/admin/events/:id', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const account_id = accountId.value;
+  const id = eventId.value;
   // Authorize via multi-account ownership: shared events can be deleted by
   // any account listed in account_ids, not only the sentinel line_account_id.
   if (!(await ownsEvent(c.env.DB, id, account_id))) return bad(c, 'not_found', 404);
@@ -504,9 +578,13 @@ function validateSlotInput(s: SlotInput, isCreate: boolean): { ok: true } | { ok
 }
 
 events.get('/api/events/admin/events/:id/slots', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  if (!(await ownsEvent(c.env.DB, c.req.param('id'), account_id))) return bad(c, 'not_found', 404);
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
+  if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
   const { results } = await c.env.DB
     .prepare(
       `SELECT
@@ -516,15 +594,18 @@ events.get('/api/events/admin/events/:id/slots', async (c) => {
        WHERE s.event_id = ? AND s.deleted_at IS NULL
        ORDER BY s.sort_order ASC, s.starts_at ASC`,
     )
-    .bind(c.req.param('id'))
+    .bind(event_id)
     .all();
   return c.json({ items: results ?? [] });
 });
 
 events.post('/api/events/admin/events/:id/slots', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { slots?: SlotInput[] };
@@ -558,10 +639,15 @@ events.post('/api/events/admin/events/:id/slots', async (c) => {
 });
 
 events.put('/api/events/admin/events/:id/slots/:slotId', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
-  const slot_id = c.req.param('slotId');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const slotId = getSlotPathId(c);
+  if (!slotId.ok) return bad(c, slotId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
+  const slot_id = slotId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
   const slot = await c.env.DB
     .prepare(`SELECT * FROM event_slots WHERE id = ? AND event_id = ? AND deleted_at IS NULL`)
@@ -658,6 +744,8 @@ events.get('/api/liff/events/me', async (c) => {
 });
 
 events.post('/api/liff/events/me/:bookingId/cancel', async (c) => {
+  const bookingId = getBookingPathId(c);
+  if (!bookingId.ok) return bad(c, bookingId.code, 400);
   const account_id = await resolveAccountIdFromLiff(c);
   if (!account_id) return bad(c, 'liff_account_resolution_failed', 400);
   const callerLineUserId = await verifyCallerLineUserId(c.req.header('Authorization'), c.env);
@@ -676,7 +764,7 @@ events.post('/api/liff/events/me/:bookingId/cancel', async (c) => {
          JOIN event_slots s ON s.id = b.slot_id
         WHERE b.id = ? AND b.friend_id = ? AND b.line_account_id = ?`,
     )
-    .bind(c.req.param('bookingId'), friend.id, account_id)
+    .bind(bookingId.value, friend.id, account_id)
     .first<{ id: string; status: string; cancel_deadline_hours_before: number | null; slot_starts_at: string }>();
   if (!row) return bad(c, 'not_found', 404);
   if (row.status !== 'requested' && row.status !== 'confirmed') return bad(c, 'invalid_state', 409);
@@ -703,6 +791,8 @@ events.post('/api/liff/events/me/:bookingId/cancel', async (c) => {
 // ============================================================
 
 events.get('/api/liff/events/:id', async (c) => {
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
   const account_id = await resolveAccountIdFromLiff(c);
   if (!account_id) return bad(c, 'liff_account_resolution_failed', 400);
   const row = await c.env.DB
@@ -714,7 +804,7 @@ events.get('/api/liff/events/:id', async (c) => {
               AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
         )`,
     )
-    .bind(c.req.param('id'), account_id, account_id)
+    .bind(eventId.value, account_id, account_id)
     .first<Record<string, unknown>>();
   if (!row) return bad(c, 'not_found', 404);
 
@@ -750,7 +840,7 @@ events.get('/api/liff/events/:id', async (c) => {
               AND b.status IN ('requested','confirmed')
             LIMIT 1`,
         )
-        .bind(c.req.param('id'), idKey)
+        .bind(eventId.value, idKey)
         .first<{ id: string; status: string; slot_starts_at: string; line_account_id: string }>();
       if (existing) myExistingBooking = existing;
     }
@@ -760,6 +850,8 @@ events.get('/api/liff/events/:id', async (c) => {
 });
 
 events.get('/api/liff/events/:id/slots', async (c) => {
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
   const account_id = await resolveAccountIdFromLiff(c);
   if (!account_id) return bad(c, 'liff_account_resolution_failed', 400);
   const ev = await c.env.DB
@@ -771,10 +863,10 @@ events.get('/api/liff/events/:id/slots', async (c) => {
               AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
         )`,
     )
-    .bind(c.req.param('id'), account_id, account_id)
+    .bind(eventId.value, account_id, account_id)
     .first<{ id: string }>();
   if (!ev) return bad(c, 'not_found', 404);
-  const items = await getSlotsWithRemaining(c.env.DB, c.req.param('id'), {
+  const items = await getSlotsWithRemaining(c.env.DB, eventId.value, {
     only_active: true,
     only_future: true,
   });
@@ -812,6 +904,9 @@ function startsAtJst(utcIso: string): string {
 }
 
 events.post('/api/liff/events/:id/bookings', async (c) => {
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const event_id = eventId.value;
   const account_id = await resolveAccountIdFromLiff(c);
   if (!account_id) return bad(c, 'liff_account_resolution_failed', 400);
   const rawIdemKey = c.req.header('Idempotency-Key');
@@ -888,7 +983,7 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
               AND EXISTS (SELECT 1 FROM json_each(account_ids) WHERE value = ?))
         )`,
     )
-    .bind(c.req.param('id'), account_id, account_id)
+    .bind(event_id, account_id, account_id)
     .first<EventDbRow>();
   if (!event) return finalize(409, { error: 'event_unpublished' });
 
@@ -1093,10 +1188,15 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
 
 
 events.delete('/api/events/admin/events/:id/slots/:slotId', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
-  const slot_id = c.req.param('slotId');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const slotId = getSlotPathId(c);
+  if (!slotId.ok) return bad(c, slotId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
+  const slot_id = slotId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
   const slot = await c.env.DB
     .prepare(`SELECT id FROM event_slots WHERE id = ? AND event_id = ? AND deleted_at IS NULL`)
@@ -1121,8 +1221,9 @@ events.delete('/api/events/admin/events/:id/slots/:slotId', async (c) => {
 // ============================================================
 
 events.get('/api/events/admin/events/notifications/pending', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const account_id = accountId.value;
   const row = await c.env.DB
     .prepare(
       `SELECT COUNT(*) AS c
@@ -1135,21 +1236,26 @@ events.get('/api/events/admin/events/notifications/pending', async (c) => {
 });
 
 events.get('/api/events/admin/events/:id/bookings', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const status = parseOptionalBookingStatus(c.req.query('status'));
+  if (!status.ok) return bad(c, status.code, 400);
+  const slotId = parseOptionalVisibleId(c.req.query('slot_id'), 'invalid_slot_id');
+  if (!slotId.ok) return bad(c, slotId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
-  const status = c.req.query('status');
-  const slot_id = c.req.query('slot_id');
   const conditions = ['b.event_id = ?'];
   const params: unknown[] = [event_id];
-  if (status) {
+  if (status.value) {
     conditions.push('b.status = ?');
-    params.push(status);
+    params.push(status.value);
   }
-  if (slot_id) {
+  if (slotId.value) {
     conditions.push('b.slot_id = ?');
-    params.push(slot_id);
+    params.push(slotId.value);
   }
   const { results } = await c.env.DB
     .prepare(
@@ -1245,11 +1351,16 @@ async function notifyBookingFriend(
 }
 
 events.post('/api/events/admin/events/:id/bookings/:bookingId/decide', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const bookingId = getBookingPathId(c);
+  if (!bookingId.ok) return bad(c, bookingId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
-  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, c.req.param('bookingId'));
+  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, bookingId.value);
   if (!booking) return bad(c, 'not_found', 404);
   if (booking.decided_at != null) return bad(c, 'already_decided', 409);
 
@@ -1318,11 +1429,16 @@ events.post('/api/events/admin/events/:id/bookings/:bookingId/decide', async (c)
 });
 
 events.post('/api/events/admin/events/:id/bookings/:bookingId/cancel', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const bookingId = getBookingPathId(c);
+  if (!bookingId.ok) return bad(c, bookingId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
-  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, c.req.param('bookingId'));
+  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, bookingId.value);
   if (!booking) return bad(c, 'not_found', 404);
   if (!canTransition(booking.status as never, 'cancel')) return bad(c, 'invalid_state', 409);
 
@@ -1344,11 +1460,16 @@ events.post('/api/events/admin/events/:id/bookings/:bookingId/cancel', async (c)
 });
 
 events.put('/api/events/admin/events/:id/bookings/:bookingId', async (c) => {
-  const account_id = getAccountId(c);
-  if (!account_id) return bad(c, 'account_id_required', 400);
-  const event_id = c.req.param('id');
+  const accountId = getAccountId(c);
+  if (!accountId.ok) return bad(c, accountId.code, 400);
+  const eventId = getEventPathId(c);
+  if (!eventId.ok) return bad(c, eventId.code, 400);
+  const bookingId = getBookingPathId(c);
+  if (!bookingId.ok) return bad(c, bookingId.code, 400);
+  const account_id = accountId.value;
+  const event_id = eventId.value;
   if (!(await ownsEvent(c.env.DB, event_id, account_id))) return bad(c, 'not_found', 404);
-  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, c.req.param('bookingId'));
+  const booking = await loadBookingForAction(c.env.DB, account_id, event_id, bookingId.value);
   if (!booking) return bad(c, 'not_found', 404);
 
   const body = (await c.req.json().catch(() => ({}))) as { internal_note?: string | null; status?: string };

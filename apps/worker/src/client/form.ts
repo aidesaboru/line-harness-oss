@@ -82,6 +82,8 @@ const state: FormState = {
 // Replier pool loading state (shared between renderFormPage and attachXAutocomplete)
 let _replierPoolReady = false;
 
+class PublicFormError extends Error {}
+
 function escapeHtml(str: string): string {
   const div = document.createElement('div');
   div.textContent = str;
@@ -787,15 +789,12 @@ async function submitForm(): Promise<void> {
         body: JSON.stringify(webhookBody),
       });
       if (!webhookSubmitRes.ok) {
-        const errText = await webhookSubmitRes.text().catch(() => '');
-        let errMsg = '送信に失敗しました';
-        try { const errData = JSON.parse(errText); errMsg = errData.error || errMsg; } catch { errMsg = errText || errMsg; }
-        throw new Error(`${webhookSubmitRes.status}: ${errMsg}`);
+        throw new Error(`webhook_submit_failed_${webhookSubmitRes.status}`);
       }
       // Check server-side webhook recheck result
       const submitResult = await webhookSubmitRes.clone().json().catch(() => null) as { data?: { webhookPassed?: boolean } } | null;
       if (submitResult?.data?.webhookPassed === false) {
-        throw new Error(state.formDef.onSubmitWebhookFailMessage || '条件を満たしていません');
+        throw new PublicFormError(state.formDef.onSubmitWebhookFailMessage || '条件を満たしていません');
       }
       renderWebhookSuccess(successMsg);
       return;
@@ -811,10 +810,7 @@ async function submitForm(): Promise<void> {
     });
 
     if (!res.ok) {
-      const errText = await res.text().catch(() => '');
-      let errMsg = '送信に失敗しました';
-      try { const errData = JSON.parse(errText); errMsg = errData.error || errMsg; } catch { errMsg = errText || errMsg; }
-      throw new Error(`${res.status}: ${errMsg}`);
+      throw new Error(`form_submit_failed_${res.status}`);
     }
 
     renderSuccess();
@@ -829,7 +825,7 @@ async function submitForm(): Promise<void> {
     const errEl = document.createElement('p');
     errEl.className = 'form-error-msg';
     errEl.style.cssText = 'color:#e53e3e;font-size:14px;margin:8px 0;text-align:center;';
-    errEl.textContent = err instanceof Error ? err.message : '送信に失敗しました';
+    errEl.textContent = err instanceof PublicFormError ? err.message : '送信に失敗しました';
     const btn = document.getElementById('submitBtn');
     btn?.parentElement?.insertBefore(errEl, btn);
   }
@@ -1253,7 +1249,7 @@ export async function initForm(formId: string | null): Promise<void> {
       method: 'POST',
       body: JSON.stringify({}),
     }).catch(() => { /* silent */ });
-  } catch (err) {
-    renderFormError(err instanceof Error ? err.message : 'エラーが発生しました');
+  } catch {
+    renderFormError('エラーが発生しました');
   }
 }

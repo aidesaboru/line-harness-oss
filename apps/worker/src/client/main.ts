@@ -292,11 +292,11 @@ async function linkAndAddFlow() {
       }
     }
 
-  } catch (err) {
+  } catch {
     if (redirectUrl) {
       window.location.href = redirectUrl;
     } else {
-      showError(err instanceof Error ? err.message : 'エラーが発生しました');
+      showError('エラーが発生しました');
     }
   }
 }
@@ -482,8 +482,8 @@ async function main() {
     } else {
       await linkAndAddFlow();
     }
-  } catch (err) {
-    showError(err instanceof Error ? err.message : 'LIFF初期化エラー');
+  } catch {
+    showError('LIFF初期化エラー');
   }
 }
 

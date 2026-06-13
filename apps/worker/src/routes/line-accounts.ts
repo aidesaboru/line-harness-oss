@@ -277,6 +277,10 @@ function lineAccountRouteErrorKind(err: unknown): string {
   return typeof err;
 }
 
+function isLineAccountUniqueConstraintFailure(err: unknown): boolean {
+  return err instanceof Error && /UNIQUE constraint failed/i.test(err.message);
+}
+
 function serializeLineAccount(row: DbLineAccount) {
   return {
     id: row.id,
@@ -525,8 +529,7 @@ lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
     // D1 surfaces UNIQUE-constraint violations as a thrown error. Surface
     // those as 409 so idempotent callers (e.g. create-line-harness retry
     // loop) can treat "already registered" as a non-fatal success.
-    const message = err instanceof Error ? err.message : String(err);
-    if (/UNIQUE constraint failed/i.test(message)) {
+    if (isLineAccountUniqueConstraintFailure(err)) {
       return c.json({ success: false, error: 'channelId already registered' }, 409);
     }
     console.error(`POST /api/line-accounts error: ${lineAccountRouteErrorKind(err)}`);

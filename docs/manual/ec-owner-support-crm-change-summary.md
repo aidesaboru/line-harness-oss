@@ -99,6 +99,7 @@ updated: 2026-06-14
 - event booking LIFF予約作成 `/api/liff/events/:id/bookings` は `Idempotency-Key` を128文字以内の可視ASCIIに制限し、不正/巨大keyはLINE verifyやidempotency予約前に400で止める
 - event admin/LIFF event APIの `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query/pathは、DB lookup、LIFF認証、availability helper、booking判断/更新前に検証し、正常値はtrimして参照する
 - 公開フォーム送信クライアントとフォームsubmit routeは、回答データ、送信先、レスポンスステータス、friend ID、LINE user IDをconsoleへ出さない
+- 公開LIFF/booking/formクライアントの失敗画面は、APIレスポンス本文やraw例外本文を表示せず、固定の利用者向けエラーだけを出す。Webhook gateの管理者設定メッセージだけは公開用文言として維持する
 - フォーム管理、公開opened/partial/submit、Webhook失敗通知、submit後side-effectの失敗ログとエラー応答は、form ID、回答データ、friend ID、LINE user ID、idToken、tag/scenario ID、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - Webhook follow、LIFF/X Harness連携、booking LIFF認証は、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyをconsoleへ出さない
 - LIFF OAuth token交換、LINE token refresh、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、LINE account名/ID/access token、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする

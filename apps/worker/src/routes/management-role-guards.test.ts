@@ -119,9 +119,12 @@ beforeEach(() => {
 });
 
 describe('management role guards', () => {
-  test('staff cannot manage automation, auto-reply, or notification rule definitions', async () => {
+  test('staff cannot read or manage automation, auto-reply, or notification rule definitions', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/automations'],
+      ['GET', '/api/automations/automation-1'],
+      ['GET', '/api/automations/automation-1/logs'],
       ['POST', '/api/automations', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Welcome', eventType: 'friend_add', actions: [] }),
@@ -131,6 +134,8 @@ describe('management role guards', () => {
         body: JSON.stringify({ isActive: false }),
       }],
       ['DELETE', '/api/automations/automation-1'],
+      ['GET', '/api/auto-replies'],
+      ['GET', '/api/auto-replies/reply-1'],
       ['POST', '/api/auto-replies', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keyword: 'help', responseType: 'text', responseContent: 'hello' }),
@@ -140,6 +145,9 @@ describe('management role guards', () => {
         body: JSON.stringify({ responseContent: 'updated' }),
       }],
       ['DELETE', '/api/auto-replies/reply-1'],
+      ['GET', '/api/notifications/rules'],
+      ['GET', '/api/notifications/rules/rule-1'],
+      ['GET', '/api/notifications'],
       ['POST', '/api/notifications/rules', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'New booking', eventType: 'booking_created' }),
@@ -156,12 +164,20 @@ describe('management role guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getAutomations).not.toHaveBeenCalled();
+    expect(dbMocks.getAutomationById).not.toHaveBeenCalled();
+    expect(dbMocks.getAutomationLogs).not.toHaveBeenCalled();
     expect(dbMocks.createAutomation).not.toHaveBeenCalled();
     expect(dbMocks.updateAutomation).not.toHaveBeenCalled();
     expect(dbMocks.deleteAutomation).not.toHaveBeenCalled();
+    expect(dbMocks.getAutoReplies).not.toHaveBeenCalled();
+    expect(dbMocks.getAutoReplyById).not.toHaveBeenCalled();
     expect(dbMocks.createAutoReply).not.toHaveBeenCalled();
     expect(dbMocks.updateAutoReply).not.toHaveBeenCalled();
     expect(dbMocks.deleteAutoReply).not.toHaveBeenCalled();
+    expect(dbMocks.getNotificationRules).not.toHaveBeenCalled();
+    expect(dbMocks.getNotificationRuleById).not.toHaveBeenCalled();
+    expect(dbMocks.getNotifications).not.toHaveBeenCalled();
     expect(dbMocks.createNotificationRule).not.toHaveBeenCalled();
     expect(dbMocks.updateNotificationRule).not.toHaveBeenCalled();
     expect(dbMocks.deleteNotificationRule).not.toHaveBeenCalled();
@@ -282,6 +298,7 @@ describe('management role guards', () => {
       }],
       ['DELETE', '/api/entry-routes/route-1'],
       ['GET', '/api/entry-routes/route-1/funnel'],
+      ['GET', '/api/conversions/points'],
       ['POST', '/api/conversions/points', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Purchase', eventType: 'purchase', value: 1000 }),
@@ -313,6 +330,7 @@ describe('management role guards', () => {
     expect(dbMocks.updateEntryRoute).not.toHaveBeenCalled();
     expect(dbMocks.deleteEntryRoute).not.toHaveBeenCalled();
     expect(dbMocks.getEntryRouteFunnel).not.toHaveBeenCalled();
+    expect(dbMocks.getConversionPoints).not.toHaveBeenCalled();
     expect(dbMocks.createConversionPoint).not.toHaveBeenCalled();
     expect(dbMocks.deleteConversionPoint).not.toHaveBeenCalled();
     expect(dbMocks.getCalendarConnections).not.toHaveBeenCalled();

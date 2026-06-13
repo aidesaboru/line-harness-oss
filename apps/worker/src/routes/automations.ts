@@ -20,7 +20,7 @@ function clampLimit(raw: string | undefined, fallback = 100): number {
 
 // ========== 自動化ルールCRUD ==========
 
-automations.get('/api/automations', async (c) => {
+automations.get('/api/automations', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     let items;
@@ -55,9 +55,9 @@ automations.get('/api/automations', async (c) => {
   }
 });
 
-automations.get('/api/automations/:id', async (c) => {
+automations.get('/api/automations/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const item = await getAutomationById(c.env.DB, c.req.param('id'));
+    const item = await getAutomationById(c.env.DB, c.req.param('id')!);
     if (!item) return c.json({ success: false, error: 'Automation not found' }, 404);
 
     // ログも取得
@@ -167,7 +167,7 @@ automations.delete('/api/automations/:id', requireRole('owner', 'admin'), async 
 
 // ========== 自動化ログ ==========
 
-automations.get('/api/automations/:id/logs', async (c) => {
+automations.get('/api/automations/:id/logs', requireRole('owner', 'admin'), async (c) => {
   try {
     const automationId = c.req.param('id');
     const limit = clampLimit(c.req.query('limit'), 100);

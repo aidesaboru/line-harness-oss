@@ -48,8 +48,12 @@ function makeNotificationsDb(rows: NotificationRow[] = []) {
 }
 
 function setupApp(db: D1Database) {
-  const app = new Hono<{ Bindings: { DB: D1Database } }>();
+  const app = new Hono<{
+    Bindings: { DB: D1Database };
+    Variables: { staff: { id: string; name: string; role: 'owner' } };
+  }>();
   app.use('*', async (c, next) => {
+    c.set('staff', { id: 'owner-1', name: 'Owner', role: 'owner' });
     c.env = { DB: db };
     await next();
   });

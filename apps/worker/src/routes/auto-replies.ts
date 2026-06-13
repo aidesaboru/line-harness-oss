@@ -106,7 +106,7 @@ async function buildAutomationKeywordIndex(db: D1Database): Promise<Map<string, 
 }
 
 // GET /api/auto-replies — list all auto-replies (optional ?accountId filter)
-autoReplies.get('/api/auto-replies', async (c) => {
+autoReplies.get('/api/auto-replies', requireRole('owner', 'admin'), async (c) => {
   try {
     const accountId = c.req.query('accountId');
     const items = await getAutoReplies(c.env.DB, accountId || undefined);
@@ -134,7 +134,7 @@ autoReplies.get('/api/auto-replies', async (c) => {
 });
 
 // GET /api/auto-replies/:id — get by ID
-autoReplies.get('/api/auto-replies/:id', async (c) => {
+autoReplies.get('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
     const item = await getAutoReplyById(c.env.DB, id);

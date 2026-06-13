@@ -133,7 +133,7 @@ function serializeFriendScenario(row: DbFriendScenario) {
 }
 
 // GET /api/scenarios - list all
-scenarios.get('/api/scenarios', async (c) => {
+scenarios.get('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     let items: DbScenarioWithStepCount[];
@@ -167,9 +167,9 @@ scenarios.get('/api/scenarios', async (c) => {
 });
 
 // GET /api/scenarios/:id - get with steps
-scenarios.get('/api/scenarios/:id', async (c) => {
+scenarios.get('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const scenario = await getScenarioById(c.env.DB, id);
 
     if (!scenario) {
@@ -598,9 +598,9 @@ scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin')
 // GET /api/scenarios/:id/preview - timeline preview (deterministic, no jitter)
 const WEEKDAY_JA = ['日', '月', '火', '水', '木', '金', '土'] as const;
 
-scenarios.get('/api/scenarios/:id/preview', async (c) => {
+scenarios.get('/api/scenarios/:id/preview', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id');
+    const scenarioId = c.req.param('id')!;
     const scenarioRow = await c.env.DB
       .prepare(`SELECT delivery_mode FROM scenarios WHERE id = ?`)
       .bind(scenarioId)
@@ -689,9 +689,9 @@ scenarios.get('/api/scenarios/:id/preview', async (c) => {
 });
 
 // GET /api/scenarios/:id/stats - reach rate dashboard
-scenarios.get('/api/scenarios/:id/stats', async (c) => {
+scenarios.get('/api/scenarios/:id/stats', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id');
+    const scenarioId = c.req.param('id')!;
     const scenario = await c.env.DB
       .prepare(`SELECT id FROM scenarios WHERE id = ?`)
       .bind(scenarioId)

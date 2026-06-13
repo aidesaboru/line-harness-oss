@@ -12,7 +12,7 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const templates = new Hono<Env>();
 
-templates.get('/api/templates', async (c) => {
+templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
   try {
     const category = c.req.query('category') ?? undefined;
     const items = await getTemplatesWithUsageCount(c.env.DB, category);
@@ -35,9 +35,9 @@ templates.get('/api/templates', async (c) => {
   }
 });
 
-templates.get('/api/templates/:id', async (c) => {
+templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const item = await getTemplateById(c.env.DB, id);
     if (!item) return c.json({ success: false, error: 'Template not found' }, 404);
     const usedBy = await getTemplateUsage(c.env.DB, id);
@@ -61,7 +61,7 @@ templates.get('/api/templates/:id', async (c) => {
 });
 
 // GET /api/templates/:id/usages — auto_replies + scenario_steps での使用箇所
-templates.get('/api/templates/:id/usages', async (c) => {
+templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async (c) => {
   try {
     const templateId = c.req.param('id');
 

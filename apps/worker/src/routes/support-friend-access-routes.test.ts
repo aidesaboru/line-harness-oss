@@ -154,10 +154,12 @@ beforeEach(() => {
 });
 
 describe('friend-scoped support visibility guards', () => {
-  test('staff cannot manage scoring rule or reminder definitions', async () => {
+  test('staff cannot read or manage scoring rule or reminder definitions', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
     const app = setupApp(db, 'staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/scoring-rules'],
+      ['GET', '/api/scoring-rules/rule-1'],
       ['POST', '/api/scoring-rules', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Hot lead', eventType: 'manual', scoreValue: 10 }),
@@ -167,6 +169,8 @@ describe('friend-scoped support visibility guards', () => {
         body: JSON.stringify({ scoreValue: 20 }),
       }],
       ['DELETE', '/api/scoring-rules/rule-1'],
+      ['GET', '/api/reminders'],
+      ['GET', '/api/reminders/reminder-1'],
       ['POST', '/api/reminders', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Follow up' }),
@@ -188,9 +192,14 @@ describe('friend-scoped support visibility guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getScoringRules).not.toHaveBeenCalled();
+    expect(dbMocks.getScoringRuleById).not.toHaveBeenCalled();
     expect(dbMocks.createScoringRule).not.toHaveBeenCalled();
     expect(dbMocks.updateScoringRule).not.toHaveBeenCalled();
     expect(dbMocks.deleteScoringRule).not.toHaveBeenCalled();
+    expect(dbMocks.getReminders).not.toHaveBeenCalled();
+    expect(dbMocks.getReminderById).not.toHaveBeenCalled();
+    expect(dbMocks.getReminderSteps).not.toHaveBeenCalled();
     expect(dbMocks.createReminder).not.toHaveBeenCalled();
     expect(dbMocks.updateReminder).not.toHaveBeenCalled();
     expect(dbMocks.deleteReminder).not.toHaveBeenCalled();

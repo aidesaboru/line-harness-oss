@@ -65,9 +65,12 @@ describe('content management role guards', () => {
     expect(dbMocks.deleteTag).not.toHaveBeenCalled();
   });
 
-  test('staff cannot mutate reusable templates', async () => {
+  test('staff cannot read or mutate reusable templates', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/templates'],
+      ['GET', '/api/templates/template-1'],
+      ['GET', '/api/templates/template-1/usages'],
       ['POST', '/api/templates', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Greeting', messageType: 'text', messageContent: 'hello' }),
@@ -77,6 +80,8 @@ describe('content management role guards', () => {
         body: JSON.stringify({ messageContent: 'updated' }),
       }],
       ['DELETE', '/api/templates/template-1'],
+      ['GET', '/api/message-templates'],
+      ['GET', '/api/message-templates/message-template-1'],
       ['POST', '/api/message-templates', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Intro', messageType: 'text', messageContent: 'hello' }),
@@ -93,9 +98,14 @@ describe('content management role guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getTemplatesWithUsageCount).not.toHaveBeenCalled();
+    expect(dbMocks.getTemplateById).not.toHaveBeenCalled();
+    expect(dbMocks.getTemplateUsage).not.toHaveBeenCalled();
     expect(dbMocks.createTemplate).not.toHaveBeenCalled();
     expect(dbMocks.updateTemplate).not.toHaveBeenCalled();
     expect(dbMocks.deleteTemplate).not.toHaveBeenCalled();
+    expect(dbMocks.listMessageTemplates).not.toHaveBeenCalled();
+    expect(dbMocks.getMessageTemplateById).not.toHaveBeenCalled();
     expect(dbMocks.createMessageTemplate).not.toHaveBeenCalled();
     expect(dbMocks.updateMessageTemplate).not.toHaveBeenCalled();
     expect(dbMocks.deleteMessageTemplate).not.toHaveBeenCalled();

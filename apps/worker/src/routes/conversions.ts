@@ -148,7 +148,7 @@ async function getScopedConversionReport(
 // ── Conversion Points ───────────────────────────────────────────────────────
 
 // GET /api/conversions/points - list all
-conversions.get('/api/conversions/points', async (c) => {
+conversions.get('/api/conversions/points', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getConversionPoints(c.env.DB);
     return c.json({

@@ -24,7 +24,7 @@ function serialize(t: MessageTemplate) {
 }
 
 // GET /api/message-templates — list all
-messageTemplates.get('/api/message-templates', async (c) => {
+messageTemplates.get('/api/message-templates', requireRole('owner', 'admin'), async (c) => {
   try {
     const templates = await listMessageTemplates(c.env.DB);
     return c.json({ success: true, data: templates.map(serialize) });
@@ -35,9 +35,9 @@ messageTemplates.get('/api/message-templates', async (c) => {
 });
 
 // GET /api/message-templates/:id — get by id
-messageTemplates.get('/api/message-templates/:id', async (c) => {
+messageTemplates.get('/api/message-templates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const t = await getMessageTemplateById(c.env.DB, c.req.param('id'));
+    const t = await getMessageTemplateById(c.env.DB, c.req.param('id')!);
     if (!t) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(t) });
   } catch (err) {

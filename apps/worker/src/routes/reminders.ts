@@ -20,7 +20,7 @@ const reminders = new Hono<Env>();
 
 // ========== リマインダCRUD ==========
 
-reminders.get('/api/reminders', async (c) => {
+reminders.get('/api/reminders', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     let items: Awaited<ReturnType<typeof getReminders>>;
@@ -50,9 +50,9 @@ reminders.get('/api/reminders', async (c) => {
   }
 });
 
-reminders.get('/api/reminders/:id', async (c) => {
+reminders.get('/api/reminders/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const [reminder, steps] = await Promise.all([
       getReminderById(c.env.DB, id),
       getReminderSteps(c.env.DB, id),

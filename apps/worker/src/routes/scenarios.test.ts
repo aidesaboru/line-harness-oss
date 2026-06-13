@@ -116,7 +116,7 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     ];
     const { db, calls } = makeScenarioDb(rows);
 
-    const res = await setupApp(db).request('/api/scenarios?lineAccountId=acc-1');
+    const res = await setupApp(db, 'owner').request('/api/scenarios?lineAccountId=acc-1');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: { id: string; lineAccountId: string | null }[] };
     expect(body.success).toBe(true);
@@ -141,7 +141,7 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     ]);
     const { db } = makeScenarioDb([]);
 
-    const res = await setupApp(db).request('/api/scenarios');
+    const res = await setupApp(db, 'owner').request('/api/scenarios');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: { id: string }[] };
     expect(body.data.map((d) => d.id)).toEqual(['s-x']);
@@ -154,7 +154,7 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
     ];
     const { db } = makeScenarioDb(rows);
 
-    const res = await setupApp(db).request('/api/scenarios?lineAccountId=acc-1');
+    const res = await setupApp(db, 'owner').request('/api/scenarios?lineAccountId=acc-1');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: unknown[] };
     expect(body.data).toEqual([]);
@@ -162,10 +162,14 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
 });
 
 describe('scenario definition role guards', () => {
-  test('staff cannot mutate scenario definitions or steps', async () => {
+  test('staff cannot read or mutate scenario definitions or steps', async () => {
     const { db } = makeScenarioDb([]);
     const app = setupApp(db, 'staff');
     const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/scenarios'],
+      ['GET', '/api/scenarios/scenario-1'],
+      ['GET', '/api/scenarios/scenario-1/preview'],
+      ['GET', '/api/scenarios/scenario-1/stats'],
       ['POST', '/api/scenarios', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: 'Campaign', triggerType: 'friend_add' }),
@@ -200,6 +204,8 @@ describe('scenario definition role guards', () => {
       expect(res.status, `${method} ${path}`).toBe(403);
     }
 
+    expect(dbMocks.getScenarios).not.toHaveBeenCalled();
+    expect(dbMocks.getScenarioById).not.toHaveBeenCalled();
     expect(dbMocks.createScenario).not.toHaveBeenCalled();
     expect(dbMocks.updateScenario).not.toHaveBeenCalled();
     expect(dbMocks.deleteScenario).not.toHaveBeenCalled();

@@ -20,7 +20,7 @@ function clampLimit(raw: string | undefined, fallback = 100): number {
 
 // ========== 通知ルールCRUD ==========
 
-notifications.get('/api/notifications/rules', async (c) => {
+notifications.get('/api/notifications/rules', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = c.req.query('lineAccountId');
     let items;
@@ -52,9 +52,9 @@ notifications.get('/api/notifications/rules', async (c) => {
   }
 });
 
-notifications.get('/api/notifications/rules/:id', async (c) => {
+notifications.get('/api/notifications/rules/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const item = await getNotificationRuleById(c.env.DB, c.req.param('id'));
+    const item = await getNotificationRuleById(c.env.DB, c.req.param('id')!);
     if (!item) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
@@ -118,7 +118,7 @@ notifications.delete('/api/notifications/rules/:id', requireRole('owner', 'admin
 
 // ========== 通知一覧 ==========
 
-notifications.get('/api/notifications', async (c) => {
+notifications.get('/api/notifications', requireRole('owner', 'admin'), async (c) => {
   try {
     const status = c.req.query('status') ?? undefined;
     const limit = clampLimit(c.req.query('limit'), 100);

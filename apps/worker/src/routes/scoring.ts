@@ -17,7 +17,7 @@ const scoring = new Hono<Env>();
 
 // ========== スコアリングルールCRUD ==========
 
-scoring.get('/api/scoring-rules', async (c) => {
+scoring.get('/api/scoring-rules', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getScoringRules(c.env.DB);
     return c.json({
@@ -38,9 +38,9 @@ scoring.get('/api/scoring-rules', async (c) => {
   }
 });
 
-scoring.get('/api/scoring-rules/:id', async (c) => {
+scoring.get('/api/scoring-rules/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const item = await getScoringRuleById(c.env.DB, c.req.param('id'));
+    const item = await getScoringRuleById(c.env.DB, c.req.param('id')!);
     if (!item) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,

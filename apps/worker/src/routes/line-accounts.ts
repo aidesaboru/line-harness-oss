@@ -271,6 +271,12 @@ function parseLineAccountOrderBody(raw: unknown): ParsedLineAccountOrderBody {
   return { ok: true, body: { ordered } };
 }
 
+function lineAccountRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function serializeLineAccount(row: DbLineAccount) {
   return {
     id: row.id,
@@ -359,7 +365,7 @@ lineAccounts.get('/api/line-accounts', async (c) => {
     );
     return c.json({ success: true, data: results });
   } catch (err) {
-    console.error('GET /api/line-accounts error:', err);
+    console.error(`GET /api/line-accounts error: ${lineAccountRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -379,7 +385,7 @@ lineAccounts.get('/api/line-accounts/:id', async (c) => {
       : serializeLineAccountFull(account);
     return c.json({ success: true, data });
   } catch (err) {
-    console.error('GET /api/line-accounts/:id error:', err);
+    console.error(`GET /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -511,7 +517,7 @@ lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
         console.log(`[line-accounts] enrolled new account ${account.id} into main pool`);
       }
     } catch (err) {
-      console.error('[line-accounts] failed to auto-enroll into main pool', err);
+      console.error(`[line-accounts] failed to auto-enroll into main pool: ${lineAccountRouteErrorKind(err)}`);
     }
 
     return c.json({ success: true, data: serializeLineAccountFull(account) }, 201);
@@ -523,7 +529,7 @@ lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
     if (/UNIQUE constraint failed/i.test(message)) {
       return c.json({ success: false, error: 'channelId already registered' }, 409);
     }
-    console.error('POST /api/line-accounts error:', err);
+    console.error(`POST /api/line-accounts error: ${lineAccountRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -550,7 +556,7 @@ lineAccounts.patch(
       await updateLineAccountOrder(c.env.DB, parsed.body.ordered);
       return c.json({ success: true });
     } catch (err) {
-      console.error('PATCH /api/line-accounts/order error:', err);
+      console.error(`PATCH /api/line-accounts/order error: ${lineAccountRouteErrorKind(err)}`);
       return c.json({ success: false, error: 'Internal server error' }, 500);
     }
   },
@@ -652,7 +658,7 @@ lineAccounts.patch(
       if (!updated) return c.json({ success: false, error: 'LINE account not found' }, 404);
       return c.json({ success: true, data: serializeLineAccount(updated) });
     } catch (err) {
-      console.error('PATCH /api/line-accounts/:id error:', err);
+      console.error(`PATCH /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);
       return c.json({ success: false, error: 'Internal server error' }, 500);
     }
   },
@@ -744,7 +750,7 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
 
     return c.json({ success: true, data: serializeLineAccountFull(updated) });
   } catch (err) {
-    console.error('PUT /api/line-accounts/:id error:', err);
+    console.error(`PUT /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -757,7 +763,7 @@ lineAccounts.delete('/api/line-accounts/:id', requireRole('owner'), async (c) =>
     await deleteLineAccount(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/line-accounts/:id error:', err);
+    console.error(`DELETE /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

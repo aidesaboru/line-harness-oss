@@ -54,6 +54,16 @@ function setupApp(
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 const fakeAccount = {
   id: 'acc-1',
   channel_id: '123456789',
@@ -77,6 +87,100 @@ beforeEach(() => {
 });
 
 describe('POST /api/line-accounts', () => {
+  test('create failure logs only the error kind', async () => {
+    dbMocks.createLineAccount.mockRejectedValueOnce(
+      new Error('line secret channel-token channel-secret login-secret acc-1 2009624792-XXXX raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+      const res = await app.request('/api/line-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channelId: '123456789',
+          name: 'メイン',
+          channelAccessToken: 'channel-token',
+          channelSecret: 'channel-secret',
+          loginChannelId: '2009624792',
+          loginChannelSecret: 'login-secret',
+          liffId: '2009624792-XXXX',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/line-accounts error: Error');
+      expectNoLogLeak(logged, [
+        'line secret',
+        'channel-token',
+        'channel-secret',
+        'login-secret',
+        'acc-1',
+        '123456789',
+        '2009624792',
+        '2009624792-XXXX',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('auto-enroll failure logs only the error kind and still creates account', async () => {
+    dbMocks.createLineAccount.mockResolvedValue({
+      ...fakeAccount,
+      channel_access_token: 'channel-token',
+      channel_secret: 'channel-secret',
+      login_channel_id: '2009624792',
+      login_channel_secret: 'login-secret',
+      liff_id: '2009624792-XXXX',
+    });
+    dbMocks.getTrafficPoolBySlug.mockResolvedValue({ id: 'pool-secret' });
+    dbMocks.addPoolAccount.mockRejectedValueOnce(
+      new Error('enroll secret pool-secret acc-1 channel-token login-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+      const res = await app.request('/api/line-accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channelId: '123456789',
+          name: 'メイン',
+          channelAccessToken: 'channel-token',
+          channelSecret: 'channel-secret',
+          loginChannelId: '2009624792',
+          loginChannelSecret: 'login-secret',
+          liffId: '2009624792-XXXX',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('[line-accounts] failed to auto-enroll into main pool: Error');
+      expectNoLogLeak(logged, [
+        'enroll secret',
+        'pool-secret',
+        'acc-1',
+        'channel-token',
+        'channel-secret',
+        'login-secret',
+        '123456789',
+        '2009624792',
+        '2009624792-XXXX',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects malformed JSON before create', async () => {
     const app = setupApp('owner');
     const res = await app.request('/api/line-accounts', {
@@ -280,6 +384,43 @@ describe('line account path ID validation', () => {
 });
 
 describe('PATCH /api/line-accounts/:id', () => {
+  test('metadata update failure logs only the error kind', async () => {
+    dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
+    dbMocks.updateLineAccountFields.mockRejectedValueOnce(
+      new Error('metadata secret acc-1 login-secret 2009624792 2009624792-XXXX raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('admin');
+      const res = await app.request('/api/line-accounts/acc-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          loginChannelId: '2009624792',
+          loginChannelSecret: 'login-secret',
+          liffId: '2009624792-XXXX',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('PATCH /api/line-accounts/:id error: Error');
+      expectNoLogLeak(logged, [
+        'metadata secret',
+        'acc-1',
+        'login-secret',
+        '2009624792',
+        '2009624792-XXXX',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects malformed JSON before lookup or update', async () => {
     const app = setupApp('admin');
     const res = await app.request('/api/line-accounts/acc-1', {
@@ -549,6 +690,40 @@ describe('Login pair / uniqueness validation', () => {
 });
 
 describe('PUT /api/line-accounts/:id', () => {
+  test('credential update failure logs only the error kind', async () => {
+    dbMocks.updateLineAccount.mockRejectedValueOnce(
+      new Error('credential secret acc-1 channel-token channel-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp('owner');
+      const res = await app.request('/api/line-accounts/acc-1', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          channelAccessToken: 'channel-token',
+          channelSecret: 'channel-secret',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('PUT /api/line-accounts/:id error: Error');
+      expectNoLogLeak(logged, [
+        'credential secret',
+        'acc-1',
+        'channel-token',
+        'channel-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects malformed JSON before lookup or update', async () => {
     const app = setupApp('owner');
     const res = await app.request('/api/line-accounts/acc-1', {

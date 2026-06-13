@@ -65,6 +65,7 @@ updated: 2026-06-14
 - conversion point削除path IDと作成payloadは、不正なconversionPointId、壊れたJSON、不正なname/eventType/valueをDB helper/書き込み前に400で止め、正常path/payloadはtrim/value null正規化して使う
 - conversion記録payloadは、壊れたJSON、不正なconversionPointId/friendId/userId/affiliateCode/metadataをfriend可視範囲checkやDB書き込み前に400で止め、正常payloadはtrim/null正規化/metadata文字列化して保存する
 - LINEアカウント管理API（詳細、登録、metadata更新、credential更新、削除、表示順更新）は壊れたJSON、不正なpath ID/channelId/name/credential/Login/LIFF/isActive/displayOrderをDB lookup、DB書き込み、重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
+- LINEアカウント管理APIの登録、main pool自動登録、metadata更新、credential更新失敗ログとエラー応答は、LINE account ID、channel ID、channel token/secret、Login Channel ID/Secret、LIFF ID、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - 画像upload/公開表示/削除APIは、壊れたJSON、不正なbase64/mimeType/filename、空/過大な画像、不正なR2 keyをR2 put/get/delete前に止め、正常key/filenameはtrimする
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限し、管理payload/query/path IDは副作用前に検証する
@@ -215,7 +216,7 @@ corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.te
 corepack pnpm --filter worker test -- src/routes/scenarios.test.ts # 18 tests
 corepack pnpm --filter worker test -- src/routes/content-management-access.test.ts # 19 tests
 corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts # 29 tests
-corepack pnpm --filter worker test -- src/routes/line-accounts.test.ts # 24 tests
+corepack pnpm --filter worker test -- src/routes/line-accounts.test.ts # 28 tests
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
@@ -283,6 +284,7 @@ strict Preflight:
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
 - Events route tests confirm malformed event admin/LIFF `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query and path values stop before DB access, LIFF auth helpers, availability helpers, or booking mutations while valid IDs and filters are trimmed before lookup.
 - Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
+- Line account route tests also confirm create, main-pool auto-enroll, metadata update, and credential update failures keep only exception kind or fixed internal error and omit LINE account IDs, channel IDs, channel tokens/secrets, Login Channel IDs/secrets, LIFF IDs, token-like text, and raw exception messages.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management path IDs and payloads stop before DB lookup/writes, and the public incoming receive endpoint remains signature-gated.
 - Webhooks route tests also confirm incoming/outgoing management and public incoming receive failures keep only exception kind or fixed internal error and omit webhook IDs, sourceType, URLs, eventTypes, secrets, signatures, payload text, token-like text, and raw exception messages.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.

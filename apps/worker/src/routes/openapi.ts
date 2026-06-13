@@ -747,6 +747,53 @@ const spec = {
         responses: { '201': { description: 'Recorded' }, '400': { description: 'Invalid click payload' } },
       },
     },
+    '/api/webhooks/incoming': {
+      get: { tags: ['Webhook'], summary: '受信Webhook一覧（owner/admin）', responses: { '200': { description: 'Incoming webhooks' }, '403': { description: 'Requires owner/admin' } } },
+      post: {
+        tags: ['Webhook'],
+        summary: '受信Webhook作成（owner/admin）',
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, sourceType: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' }, secret: { type: 'string', minLength: 32, maxLength: 4096 } }, required: ['name', 'secret'] } } } },
+        responses: { '201': { description: 'Created' }, '400': { description: 'Invalid incoming webhook payload' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/webhooks/incoming/{id}': {
+      put: {
+        tags: ['Webhook'],
+        summary: '受信Webhook更新（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, sourceType: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' }, secret: { type: 'string', minLength: 32, maxLength: 4096 }, isActive: { type: 'boolean' } } } } } },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid incoming webhook payload' }, '403': { description: 'Requires owner/admin' } },
+      },
+      delete: { tags: ['Webhook'], summary: '受信Webhook削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
+    },
+    '/api/webhooks/incoming/{id}/receive': {
+      post: {
+        tags: ['Webhook'],
+        summary: '外部受信Webhook（署名検証）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        security: [],
+        responses: { '200': { description: 'Accepted' }, '401': { description: 'Missing or invalid signature' } },
+      },
+    },
+    '/api/webhooks/outgoing': {
+      get: { tags: ['Webhook'], summary: '送信Webhook一覧（owner/admin）', responses: { '200': { description: 'Outgoing webhooks' }, '403': { description: 'Requires owner/admin' } } },
+      post: {
+        tags: ['Webhook'],
+        summary: '送信Webhook作成（owner/admin）',
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, url: { type: 'string', format: 'uri', maxLength: 2048 }, eventTypes: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' } }, secret: { type: 'string', minLength: 32, maxLength: 4096 } }, required: ['name', 'url', 'secret'] } } } },
+        responses: { '201': { description: 'Created' }, '400': { description: 'Invalid outgoing webhook payload' }, '403': { description: 'Requires owner/admin' } },
+      },
+    },
+    '/api/webhooks/outgoing/{id}': {
+      put: {
+        tags: ['Webhook'],
+        summary: '送信Webhook更新（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, url: { type: 'string', format: 'uri', maxLength: 2048 }, eventTypes: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' } }, secret: { type: 'string', minLength: 32, maxLength: 4096 }, isActive: { type: 'boolean' } } } } } },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid outgoing webhook payload' }, '403': { description: 'Requires owner/admin' } },
+      },
+      delete: { tags: ['Webhook'], summary: '送信Webhook削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
+    },
     // ── Webhook ─────────────────────────────────────────────────────────────
     '/webhook': {
       post: {

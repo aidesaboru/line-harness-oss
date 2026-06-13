@@ -206,14 +206,16 @@ fields の type: `text`, `email`, `tel`, `number`, `textarea`, `select`, `radio`
 | メソッド | パス | 説明 | リクエストボディ |
 |---------|------|------|----------------|
 | GET | `/api/webhooks/incoming` | 受信 Webhook 一覧 | - |
-| POST | `/api/webhooks/incoming` | 受信 Webhook 作成 | `{ name, sourceType?, secret? }` |
-| PUT | `/api/webhooks/incoming/:id` | 更新 | - |
+| POST | `/api/webhooks/incoming` | 受信 Webhook 作成 | `{ name, sourceType?, secret }` |
+| PUT | `/api/webhooks/incoming/:id` | 更新 | `{ name?, sourceType?, secret?, isActive? }` |
 | DELETE | `/api/webhooks/incoming/:id` | 削除 | - |
 | POST | `/api/webhooks/incoming/:id/receive` | 受信 (認証不要) | any JSON |
 | GET | `/api/webhooks/outgoing` | 送信 Webhook 一覧 | - |
-| POST | `/api/webhooks/outgoing` | 送信 Webhook 作成 | `{ name, url, eventTypes[], secret? }` |
-| PUT | `/api/webhooks/outgoing/:id` | 更新 | - |
+| POST | `/api/webhooks/outgoing` | 送信 Webhook 作成 | `{ name, url, eventTypes?, secret }` |
+| PUT | `/api/webhooks/outgoing/:id` | 更新 | `{ name?, url?, eventTypes?, secret?, isActive? }` |
 | DELETE | `/api/webhooks/outgoing/:id` | 削除 | - |
+
+入力制約: `name` は1-120文字、`sourceType` は64文字以内の可視ASCII、`secret` は32-4096文字。送信Webhookの `url` はHTTPS URLかつ2048文字以内、`eventTypes` は32件以内、各値は128文字以内の可視ASCII。
 
 ### /api/notifications/*
 

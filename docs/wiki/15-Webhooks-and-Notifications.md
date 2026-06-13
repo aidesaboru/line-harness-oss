@@ -100,7 +100,7 @@ curl -X GET "https://your-worker.your-subdomain.workers.dev/api/webhooks/incomin
       "id": "wh-uuid-1",
       "name": "Stripe決済通知",
       "sourceType": "stripe",
-      "secret": "whsec_xxx...",
+      "hasSecret": true,
       "isActive": true,
       "createdAt": "2026-03-20T10:00:00.000",
       "updatedAt": "2026-03-20T10:00:00.000"
@@ -118,9 +118,11 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/webhooks/incomi
   -d '{
     "name": "Stripe決済通知",
     "sourceType": "stripe",
-    "secret": "whsec_test_xxxxx"
+    "secret": "whsec_test_xxxxxxxxxxxxxxxxxxxxx"
   }'
 ```
+
+作成・更新時は `name` 1-120文字、`sourceType` 64文字以内の可視ASCII、`secret` 32-4096文字を受け付ける。
 
 **レスポンス (201):**
 
@@ -264,7 +266,7 @@ curl -X GET "https://your-worker.your-subdomain.workers.dev/api/webhooks/outgoin
       "name": "Slack通知",
       "url": "https://hooks.slack.com/services/T.../B.../xxx",
       "eventTypes": ["friend_add", "cv_fire"],
-      "secret": "my-webhook-secret",
+      "hasSecret": true,
       "isActive": true,
       "createdAt": "2026-03-20T10:00:00.000",
       "updatedAt": "2026-03-20T10:00:00.000"
@@ -283,9 +285,11 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/webhooks/outgoi
     "name": "全イベントSlack通知",
     "url": "https://hooks.slack.com/services/T.../B.../xxx",
     "eventTypes": ["*"],
-    "secret": "my-secret-key-123"
+    "secret": "my-secret-key-123456789012345678"
   }'
 ```
+
+作成・更新時は `name` 1-120文字、`url` HTTPSかつ2048文字以内、`eventTypes` 最大32件・各128文字以内の可視ASCII、`secret` 32-4096文字を受け付ける。
 
 **レスポンス (201):**
 
@@ -489,12 +493,12 @@ curl -X GET "https://your-worker.your-subdomain.workers.dev/api/notifications?st
 # 1. 受信Webhook作成（Stripe用）
 IN_WH=$(curl -s -X POST ".../api/webhooks/incoming" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"name":"Stripe","sourceType":"stripe"}' | jq -r '.data.id')
+  -d '{"name":"Stripe","sourceType":"stripe","secret":"whsec_stripe_1234567890123456789"}' | jq -r '.data.id')
 
 # 2. 送信Webhook作成（Slack通知用）
 curl -X POST ".../api/webhooks/outgoing" \
   -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
-  -d '{"name":"Slack","url":"https://hooks.slack.com/...","eventTypes":["incoming_webhook.stripe"]}'
+  -d '{"name":"Slack","url":"https://hooks.slack.com/...","eventTypes":["incoming_webhook.stripe"],"secret":"slack_webhook_123456789012345678"}'
 
 # 3. オートメーション作成（決済完了→タグ付与）
 curl -X POST ".../api/automations" \

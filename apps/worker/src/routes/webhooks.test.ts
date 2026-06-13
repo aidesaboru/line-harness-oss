@@ -128,6 +128,21 @@ describe('webhook management role guards', () => {
 // =====================================================
 
 describe('POST /api/webhooks/outgoing — validation', () => {
+  test('rejects malformed JSON before create', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/outgoing',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not-json',
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(createOutgoingWebhook).not.toHaveBeenCalled();
+  });
+
   test('rejects missing secret with 400', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -206,6 +221,57 @@ describe('POST /api/webhooks/outgoing — validation', () => {
     expect(createOutgoingWebhook).not.toHaveBeenCalled();
   });
 
+  test('rejects malformed eventTypes before create', async () => {
+    const app = setupApp();
+    const badShape = await app.request(
+      '/api/webhooks/outgoing',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'test',
+          url: 'https://example.com/hook',
+          eventTypes: 'not-an-array',
+          secret: VALID_SECRET,
+        }),
+      },
+      baseEnv,
+    );
+    const badNull = await app.request(
+      '/api/webhooks/outgoing',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'test',
+          url: 'https://example.com/hook',
+          eventTypes: null,
+          secret: VALID_SECRET,
+        }),
+      },
+      baseEnv,
+    );
+    const badValue = await app.request(
+      '/api/webhooks/outgoing',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'test',
+          url: 'https://example.com/hook',
+          eventTypes: ['bad event'],
+          secret: VALID_SECRET,
+        }),
+      },
+      baseEnv,
+    );
+
+    expect(badShape.status).toBe(400);
+    expect(badNull.status).toBe(400);
+    expect(badValue.status).toBe(400);
+    expect(createOutgoingWebhook).not.toHaveBeenCalled();
+  });
+
   test('accepts https:// + 32-char secret with 201, returns secret only on create', async () => {
     vi.mocked(createOutgoingWebhook).mockResolvedValue({
       id: 'wh-1',
@@ -225,16 +291,21 @@ describe('POST /api/webhooks/outgoing — validation', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: 'test',
-          url: 'https://example.com/hook',
-          eventTypes: ['*'],
-          secret: VALID_SECRET,
+          name: ' test ',
+          url: ' https://example.com/hook ',
+          eventTypes: [' support.case.created '],
+          secret: ` ${VALID_SECRET} `,
         }),
       },
       baseEnv,
     );
     expect(res.status).toBe(201);
-    expect(createOutgoingWebhook).toHaveBeenCalledOnce();
+    expect(createOutgoingWebhook).toHaveBeenCalledWith({} as D1Database, {
+      name: 'test',
+      url: 'https://example.com/hook',
+      eventTypes: ['support.case.created'],
+      secret: VALID_SECRET,
+    });
     const body = (await res.json()) as {
       success: boolean;
       data: { id: string; secret: string; name: string };
@@ -250,6 +321,22 @@ describe('POST /api/webhooks/outgoing — validation', () => {
 // =====================================================
 
 describe('PUT /api/webhooks/outgoing/:id — validation', () => {
+  test('rejects malformed JSON before update', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/outgoing/wh-1',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not-json',
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(updateOutgoingWebhook).not.toHaveBeenCalled();
+    expect(getOutgoingWebhookById).not.toHaveBeenCalled();
+  });
+
   test('rejects updating to http:// URL with 400', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -278,6 +365,22 @@ describe('PUT /api/webhooks/outgoing/:id — validation', () => {
     );
     expect(res.status).toBe(400);
     expect(updateOutgoingWebhook).not.toHaveBeenCalled();
+  });
+
+  test('rejects malformed eventTypes before update', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/outgoing/wh-1',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventTypes: [{}] }),
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(updateOutgoingWebhook).not.toHaveBeenCalled();
+    expect(getOutgoingWebhookById).not.toHaveBeenCalled();
   });
 
   test('rejects truthy non-boolean isActive with 400 (migration bypass)', async () => {
@@ -432,6 +535,21 @@ describe('GET /api/webhooks/outgoing — secret exposure', () => {
 // =====================================================
 
 describe('POST /api/webhooks/incoming — validation', () => {
+  test('rejects malformed JSON before create', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/incoming',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not-json',
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(createIncomingWebhook).not.toHaveBeenCalled();
+  });
+
   test('rejects missing secret with 400', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -462,6 +580,21 @@ describe('POST /api/webhooks/incoming — validation', () => {
     expect(createIncomingWebhook).not.toHaveBeenCalled();
   });
 
+  test('rejects unsafe sourceType before create', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/incoming',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'test', sourceType: 'bad source', secret: VALID_SECRET }),
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(createIncomingWebhook).not.toHaveBeenCalled();
+  });
+
   test('accepts 32-char secret with 201, returns secret on create only', async () => {
     vi.mocked(createIncomingWebhook).mockResolvedValue({
       id: 'iwh-1',
@@ -479,12 +612,16 @@ describe('POST /api/webhooks/incoming — validation', () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'test', secret: VALID_SECRET }),
+        body: JSON.stringify({ name: ' test ', sourceType: ' custom ', secret: ` ${VALID_SECRET} ` }),
       },
       baseEnv,
     );
     expect(res.status).toBe(201);
-    expect(createIncomingWebhook).toHaveBeenCalledOnce();
+    expect(createIncomingWebhook).toHaveBeenCalledWith({} as D1Database, {
+      name: 'test',
+      sourceType: 'custom',
+      secret: VALID_SECRET,
+    });
     const body = (await res.json()) as { data: { id: string; secret: string } };
     expect(body.data.secret).toBe(VALID_SECRET);
   });
@@ -495,6 +632,22 @@ describe('POST /api/webhooks/incoming — validation', () => {
 // =====================================================
 
 describe('PUT /api/webhooks/incoming/:id — validation', () => {
+  test('rejects malformed JSON before update', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/incoming/iwh-1',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not-json',
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(updateIncomingWebhook).not.toHaveBeenCalled();
+    expect(getIncomingWebhookById).not.toHaveBeenCalled();
+  });
+
   test('rejects updating secret to fewer than 32 chars with 400', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -508,6 +661,22 @@ describe('PUT /api/webhooks/incoming/:id — validation', () => {
     );
     expect(res.status).toBe(400);
     expect(updateIncomingWebhook).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsafe sourceType before update', async () => {
+    const app = setupApp();
+    const res = await app.request(
+      '/api/webhooks/incoming/iwh-1',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceType: 'bad source' }),
+      },
+      baseEnv,
+    );
+    expect(res.status).toBe(400);
+    expect(updateIncomingWebhook).not.toHaveBeenCalled();
+    expect(getIncomingWebhookById).not.toHaveBeenCalled();
   });
 
   test('rejects re-activating webhook whose stored secret is too short (migration bypass)', async () => {

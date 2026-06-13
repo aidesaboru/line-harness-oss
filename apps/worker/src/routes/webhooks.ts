@@ -17,10 +17,44 @@ import { requireRole } from '../middleware/role-guard.js';
 const webhooks = new Hono<Env>();
 
 const MIN_SECRET_LENGTH = 32;
+const MAX_SECRET_LENGTH = 4096;
+const WEBHOOK_NAME_MAX_LENGTH = 120;
+const WEBHOOK_SOURCE_TYPE_MAX_LENGTH = 64;
+const WEBHOOK_URL_MAX_LENGTH = 2048;
+const WEBHOOK_EVENT_TYPES_MAX_COUNT = 32;
+const WEBHOOK_EVENT_TYPE_MAX_LENGTH = 128;
+const WEBHOOK_TOKEN_PATTERN = /^[!-~]+$/;
+
+type ParsedIncomingCreateBody =
+  | { ok: true; body: { name: string; sourceType?: string; secret: string } }
+  | { ok: false; error: string };
+type ParsedIncomingUpdateBody =
+  | { ok: true; body: { name?: string; sourceType?: string; secret?: string; isActive?: boolean } }
+  | { ok: false; error: string };
+type ParsedOutgoingCreateBody =
+  | { ok: true; body: { name: string; url: string; eventTypes: string[]; secret: string } }
+  | { ok: false; error: string };
+type ParsedOutgoingUpdateBody =
+  | { ok: true; body: { name?: string; url?: string; eventTypes?: string[]; secret?: string; isActive?: boolean } }
+  | { ok: false; error: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
 
 function validateSecret(secret: unknown): string | null {
-  if (typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) {
+  if (typeof secret !== 'string') {
+    return 'secret must be a string';
+  }
+  if (secret.length < MIN_SECRET_LENGTH) {
     return `secret must be at least ${MIN_SECRET_LENGTH} characters`;
+  }
+  if (secret.length > MAX_SECRET_LENGTH) {
+    return 'secret is too long';
   }
   return null;
 }
@@ -29,6 +63,7 @@ function validateHttpsUrl(url: unknown): string | null {
   if (typeof url !== 'string' || url.length === 0) {
     return 'url is required';
   }
+  if (url.length > WEBHOOK_URL_MAX_LENGTH) return 'url is too long';
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -39,6 +74,133 @@ function validateHttpsUrl(url: unknown): string | null {
     return 'url must use https:// scheme';
   }
   return null;
+}
+
+function parseWebhookName(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) return required ? { ok: false, error: 'name is required' } : { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: 'name must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'name is required' };
+  if (value.length > WEBHOOK_NAME_MAX_LENGTH) return { ok: false, error: 'name is too long' };
+  return { ok: true, value };
+}
+
+function parseWebhookSourceType(raw: unknown): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) return { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: 'sourceType must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: true };
+  if (value.length > WEBHOOK_SOURCE_TYPE_MAX_LENGTH || !WEBHOOK_TOKEN_PATTERN.test(value)) {
+    return { ok: false, error: 'sourceType is invalid' };
+  }
+  return { ok: true, value };
+}
+
+function parseWebhookSecret(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) return required ? { ok: false, error: 'secret is required' } : { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: 'secret must be a string' };
+  const value = raw.trim();
+  const secretError = validateSecret(value);
+  if (secretError) return { ok: false, error: secretError };
+  return { ok: true, value };
+}
+
+function parseWebhookUrl(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) return required ? { ok: false, error: 'url is required' } : { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: 'url must be a string' };
+  const value = raw.trim();
+  const urlError = validateHttpsUrl(value);
+  if (urlError) return { ok: false, error: urlError };
+  return { ok: true, value };
+}
+
+function parseWebhookEventTypes(raw: unknown, required: boolean): { ok: true; value?: string[] } | { ok: false; error: string } {
+  if (raw === undefined) return required ? { ok: false, error: 'eventTypes is required' } : { ok: true };
+  if (!Array.isArray(raw)) return { ok: false, error: 'eventTypes must be an array' };
+  if (raw.length > WEBHOOK_EVENT_TYPES_MAX_COUNT) return { ok: false, error: 'eventTypes has too many items' };
+  const value: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') return { ok: false, error: 'eventTypes must contain strings' };
+    const eventType = item.trim();
+    if (
+      !eventType ||
+      eventType.length > WEBHOOK_EVENT_TYPE_MAX_LENGTH ||
+      !WEBHOOK_TOKEN_PATTERN.test(eventType)
+    ) {
+      return { ok: false, error: 'eventTypes contains an invalid value' };
+    }
+    value.push(eventType);
+  }
+  return { ok: true, value };
+}
+
+function parseIncomingCreateBody(raw: unknown): ParsedIncomingCreateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseWebhookName(raw.name, true);
+  if (!name.ok) return name;
+  const sourceType = parseWebhookSourceType(raw.sourceType);
+  if (!sourceType.ok) return sourceType;
+  const secret = parseWebhookSecret(raw.secret, true);
+  if (!secret.ok) return secret;
+  return { ok: true, body: { name: name.value!, sourceType: sourceType.value, secret: secret.value! } };
+}
+
+function parseIncomingUpdateBody(raw: unknown): ParsedIncomingUpdateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseWebhookName(raw.name, false);
+  if (!name.ok) return name;
+  const sourceType = parseWebhookSourceType(raw.sourceType);
+  if (!sourceType.ok) return sourceType;
+  const secret = parseWebhookSecret(raw.secret, false);
+  if (!secret.ok) return secret;
+  if (raw.isActive !== undefined && typeof raw.isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be a boolean' };
+  }
+  return {
+    ok: true,
+    body: { name: name.value, sourceType: sourceType.value, secret: secret.value, isActive: raw.isActive },
+  };
+}
+
+function parseOutgoingCreateBody(raw: unknown): ParsedOutgoingCreateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseWebhookName(raw.name, true);
+  if (!name.ok) return name;
+  const url = parseWebhookUrl(raw.url, true);
+  if (!url.ok) return url;
+  const eventTypes = parseWebhookEventTypes(raw.eventTypes === undefined ? [] : raw.eventTypes, false);
+  if (!eventTypes.ok) return eventTypes;
+  const secret = parseWebhookSecret(raw.secret, true);
+  if (!secret.ok) return secret;
+  return {
+    ok: true,
+    body: { name: name.value!, url: url.value!, eventTypes: eventTypes.value ?? [], secret: secret.value! },
+  };
+}
+
+function parseOutgoingUpdateBody(raw: unknown): ParsedOutgoingUpdateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const name = parseWebhookName(raw.name, false);
+  if (!name.ok) return name;
+  const url = parseWebhookUrl(raw.url, false);
+  if (!url.ok) return url;
+  const eventTypes = parseWebhookEventTypes(raw.eventTypes, false);
+  if (!eventTypes.ok) return eventTypes;
+  const secret = parseWebhookSecret(raw.secret, false);
+  if (!secret.ok) return secret;
+  if (raw.isActive !== undefined && typeof raw.isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be a boolean' };
+  }
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      url: url.value,
+      eventTypes: eventTypes.value,
+      secret: secret.value,
+      isActive: raw.isActive,
+    },
+  };
 }
 
 // Constant-time hex-string compare to avoid timing oracles.
@@ -91,18 +253,14 @@ webhooks.get('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c) 
 
 webhooks.post('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{ name: string; sourceType?: string; secret?: string }>();
-    if (!body.name) {
-      return c.json({ success: false, error: 'name is required' }, 400);
-    }
-    const secretError = validateSecret(body.secret);
-    if (secretError) {
-      return c.json({ success: false, error: secretError }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseIncomingCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     const item = await createIncomingWebhook(c.env.DB, {
       name: body.name,
       sourceType: body.sourceType,
-      secret: body.secret as string,
+      secret: body.secret,
     });
     return c.json(
       {
@@ -129,16 +287,10 @@ webhooks.post('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c)
 webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{ name?: string; sourceType?: string; secret?: string; isActive?: boolean }>();
-    if (body.isActive !== undefined && typeof body.isActive !== 'boolean') {
-      return c.json({ success: false, error: 'isActive must be a boolean' }, 400);
-    }
-    if (body.secret !== undefined) {
-      const secretError = validateSecret(body.secret);
-      if (secretError) {
-        return c.json({ success: false, error: secretError }, 400);
-      }
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseIncomingUpdateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     // Activation gate: never re-enable a webhook whose post-update secret
     // would still be invalid. Otherwise migration 034 can be bypassed by
     // toggling isActive without touching the legacy null/short secret.
@@ -211,28 +363,15 @@ webhooks.get('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c) 
 
 webhooks.post('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      name: string;
-      url: string;
-      eventTypes?: string[];
-      secret?: string;
-    }>();
-    if (!body.name) {
-      return c.json({ success: false, error: 'name is required' }, 400);
-    }
-    const urlError = validateHttpsUrl(body.url);
-    if (urlError) {
-      return c.json({ success: false, error: urlError }, 400);
-    }
-    const secretError = validateSecret(body.secret);
-    if (secretError) {
-      return c.json({ success: false, error: secretError }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseOutgoingCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     const item = await createOutgoingWebhook(c.env.DB, {
       name: body.name,
       url: body.url,
-      eventTypes: body.eventTypes ?? [],
-      secret: body.secret as string,
+      eventTypes: body.eventTypes,
+      secret: body.secret,
     });
     return c.json(
       {
@@ -259,28 +398,10 @@ webhooks.post('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c)
 webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      name?: string;
-      url?: string;
-      eventTypes?: string[];
-      secret?: string;
-      isActive?: boolean;
-    }>();
-    if (body.isActive !== undefined && typeof body.isActive !== 'boolean') {
-      return c.json({ success: false, error: 'isActive must be a boolean' }, 400);
-    }
-    if (body.url !== undefined) {
-      const urlError = validateHttpsUrl(body.url);
-      if (urlError) {
-        return c.json({ success: false, error: urlError }, 400);
-      }
-    }
-    if (body.secret !== undefined) {
-      const secretError = validateSecret(body.secret);
-      if (secretError) {
-        return c.json({ success: false, error: secretError }, 400);
-      }
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseOutgoingUpdateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
     // Activation gate: a PUT that re-enables an outgoing webhook must leave
     // the row with both a valid secret AND an https url even after the
     // partial update. Without this, migration 034 can be bypassed by

@@ -32,6 +32,18 @@ interface ConversionEventFilters {
   offset?: number;
 }
 
+function clampLimit(raw: string | undefined, fallback = 100): number {
+  const n = Number(raw ?? fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(500, Math.floor(n)));
+}
+
+function clampOffset(raw: string | undefined): number {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
 function conversionFriendScope(c: Context<Env>, friendIdExpression: string) {
   return supportFriendVisibilitySql(currentSupportStaff(c), friendIdExpression);
 }
@@ -259,8 +271,8 @@ conversions.get('/api/conversions/events', async (c) => {
       affiliateCode: c.req.query('affiliateCode'),
       startDate: c.req.query('startDate'),
       endDate: c.req.query('endDate'),
-      limit: Number(c.req.query('limit') ?? '100'),
-      offset: Number(c.req.query('offset') ?? '0'),
+      limit: clampLimit(c.req.query('limit'), 100),
+      offset: clampOffset(c.req.query('offset')),
     });
 
     return c.json({

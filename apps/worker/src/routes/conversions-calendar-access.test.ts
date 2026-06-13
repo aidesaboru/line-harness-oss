@@ -214,6 +214,26 @@ describe('conversion friend visibility guards', () => {
     expect(listCall?.binds).toEqual(['staff-1', '%田島%', '%田島%', '%田島%', 10, 5]);
   });
 
+  test('conversion events clamp invalid limit and fractional offset before SQL bind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/conversions/events?limit=abc&offset=1.9');
+
+    expect(res.status).toBe(200);
+    const listCall = db.calls.find((call) => call.sql.includes('FROM conversion_events ce'));
+    expect(listCall?.binds.slice(-2)).toEqual([100, 1]);
+  });
+
+  test('conversion events reset non-finite offset before SQL bind', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/conversions/events?offset=Infinity');
+
+    expect(res.status).toBe(200);
+    const listCall = db.calls.find((call) => call.sql.includes('FROM conversion_events ce'));
+    expect(listCall?.binds.slice(-2)).toEqual([100, 0]);
+  });
+
   test('staff cannot request hidden friend conversion events directly', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
 

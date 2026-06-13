@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { readStaffIdentityCache } from '@/lib/auth-session'
-import { canAccessStaffRoute } from './layout/sidebar-access'
+import { canAccessSidebarRoute } from './layout/sidebar-access'
 
 export default function StaffRouteGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -18,7 +18,7 @@ export default function StaffRouteGuard({ children }: { children: React.ReactNod
   }, [pathname])
 
   const allowed = useMemo(
-    () => ready && canAccessStaffRoute(pathname, role),
+    () => ready && canAccessSidebarRoute(pathname, role),
     [pathname, ready, role],
   )
 

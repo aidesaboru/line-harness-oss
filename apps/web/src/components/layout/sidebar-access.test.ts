@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canAccessStaffRoute, canShowSidebarItem } from './sidebar-access'
+import { canAccessSidebarRoute, canShowSidebarItem } from './sidebar-access'
 
 describe('sidebar role access', () => {
   it('keeps staff focused on support work only', () => {
@@ -31,18 +31,26 @@ describe('sidebar role access', () => {
   })
 
   it('redirects staff away from management routes while allowing support routes', () => {
-    expect(canAccessStaffRoute('/support', 'staff')).toBe(true)
-    expect(canAccessStaffRoute('/support/case-1', 'staff')).toBe(true)
-    expect(canAccessStaffRoute('/chats', 'staff')).toBe(true)
-    expect(canAccessStaffRoute('/notifications', 'staff')).toBe(true)
+    expect(canAccessSidebarRoute('/support', 'staff')).toBe(true)
+    expect(canAccessSidebarRoute('/support/case-1', 'staff')).toBe(true)
+    expect(canAccessSidebarRoute('/chats', 'staff')).toBe(true)
+    expect(canAccessSidebarRoute('/notifications', 'staff')).toBe(true)
 
-    expect(canAccessStaffRoute('/', 'staff')).toBe(false)
-    expect(canAccessStaffRoute('/broadcasts', 'staff')).toBe(false)
-    expect(canAccessStaffRoute('/accounts', 'staff')).toBe(false)
-    expect(canAccessStaffRoute('/staff', 'staff')).toBe(false)
+    expect(canAccessSidebarRoute('/', 'staff')).toBe(false)
+    expect(canAccessSidebarRoute('/broadcasts', 'staff')).toBe(false)
+    expect(canAccessSidebarRoute('/accounts', 'staff')).toBe(false)
+    expect(canAccessSidebarRoute('/staff', 'staff')).toBe(false)
 
-    expect(canAccessStaffRoute('/broadcasts', 'owner')).toBe(true)
-    expect(canAccessStaffRoute('/broadcasts', 'admin')).toBe(true)
-    expect(canAccessStaffRoute('/broadcasts', null)).toBe(true)
+    expect(canAccessSidebarRoute('/broadcasts', 'owner')).toBe(true)
+    expect(canAccessSidebarRoute('/broadcasts', 'admin')).toBe(true)
+    expect(canAccessSidebarRoute('/broadcasts', null)).toBe(true)
+  })
+
+  it('keeps staff management routes owner-only even when opened directly', () => {
+    expect(canAccessSidebarRoute('/staff', 'owner')).toBe(true)
+    expect(canAccessSidebarRoute('/staff', 'admin')).toBe(false)
+    expect(canAccessSidebarRoute('/staff', 'staff')).toBe(false)
+    expect(canAccessSidebarRoute('/staff/member-1', 'admin')).toBe(false)
+    expect(canAccessSidebarRoute('/staff/member-1', 'owner')).toBe(true)
   })
 })

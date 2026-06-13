@@ -273,6 +273,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker conversion/calendar access route testsでは、壊れたJSON、不正なconversionPointId/friendId/userId/affiliateCode/metadataがfriend可視範囲checkやDB write前に400で止まり、正常payloadはtrim/null正規化/metadata文字列化されることを確認済み。
 - [ ] friends ref集計、重複統計、ref流入分析、LIFFリンクwrap、画像削除APIがowner/adminだけに制限される
   - Worker friends/duplicates/LIFF/image access route testsでは、staffがfriends ref集計、重複統計、ref summary/detail、LIFFリンクwrap、画像削除へ直接アクセスしても403で止まり、画像アップロードはstaffのチャット返信用に維持されることを確認済み。
+- [ ] 画像upload/公開表示/削除APIのpayloadとR2 keyがR2 put/get/delete前に検証される
+  - Worker image access route testsでは、壊れたJSON、不正base64/mimeType/filename、空/過大画像、不正R2 keyがR2 put/get/delete前に400/404で止まり、正常filename/keyはtrimされることを確認済み。
 - [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない
   - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く

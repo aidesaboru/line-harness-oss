@@ -51,6 +51,7 @@ updated: 2026-06-13
 - conversion記録payloadは、壊れたJSON、不正なconversionPointId/friendId/userId/affiliateCode/metadataをfriend可視範囲checkやDB書き込み前に400で止め、正常payloadはtrim/null正規化/metadata文字列化して保存する
 - LINEアカウント管理API（登録、metadata更新、credential更新、表示順更新）は壊れたJSON、不正なchannelId/name/credential/Login/LIFF/isActive/displayOrderをDB書き込みや重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
+- 画像upload/公開表示/削除APIは、壊れたJSON、不正なbase64/mimeType/filename、空/過大な画像、不正なR2 keyをR2 put/get/delete前に止め、正常key/filenameはtrimする
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、作成/更新payloadの壊れたJSON、不正なname/sourceType/url/eventTypes/secret/isActiveをDB書き込み前に400で止め、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
@@ -184,6 +185,7 @@ corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 1
 corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 15 tests
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
+corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build
@@ -238,7 +240,7 @@ strict Preflight:
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
 - Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work.
 - Management role guard and conversion/calendar access route tests confirm staff cannot manage entry routes, read/mutate conversion points, manage Google Calendar connections, or access account health/migrations while friend-scoped conversion/calendar booking operations still work. Management role guard tests also confirm malformed or unsafe entry route management payloads stop before DB writes, malformed or unsafe account health/migration path IDs and migrate payloads stop before DB helpers or D1 count, and malformed or unsafe conversion point creation payloads stop before DB writes, while valid values are trimmed/null-normalized.
-- Friends, duplicates, LIFF access, and image access route tests confirm staff cannot read friends ref stats or duplicate/ref analytics, cannot wrap management links, cannot delete arbitrary stored images, and can still upload chat/reply images.
+- Friends, duplicates, LIFF access, and image access route tests confirm staff cannot read friends ref stats or duplicate/ref analytics, cannot wrap management links, cannot delete arbitrary stored images, can still upload chat/reply images, and malformed image upload payloads or unsafe public/delete keys stop before R2 put/get/delete.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
 - LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.
 

@@ -87,13 +87,18 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/line-accounts" 
     "channelId": "1234567890",
     "name": "サブアカウント",
     "channelAccessToken": "token-here",
-    "channelSecret": "secret-here"
+    "channelSecret": "secret-here",
+    "loginChannelId": "2000000000",
+    "loginChannelSecret": "login-secret-here",
+    "liffId": "2000000000-abcDEF"
   }'
 ```
 
-全フィールド必須。
+`channelId`、`name`、`channelAccessToken`、`channelSecret` は必須。`loginChannelId` と `loginChannelSecret` は片方だけでは保存できない。`liffId` は任意。
 
 #### アカウント更新
+
+表示名、国、用途、Login/LIFF設定などのmetadataは `PATCH` で更新する。Messaging APIの `channelAccessToken` / `channelSecret` はownerだけが `PUT` で更新する。
 
 ```bash
 curl -X PUT "https://your-worker.your-subdomain.workers.dev/api/line-accounts/{id}" \
@@ -108,6 +113,8 @@ curl -X PUT "https://your-worker.your-subdomain.workers.dev/api/line-accounts/{i
 ```
 
 全フィールドオプション。
+
+入力制約: `name` は1-120文字、`channelId` は64文字以内の可視ASCII、`channelAccessToken` / `channelSecret` / `loginChannelSecret` は4096文字以内の可視ASCII、`loginChannelId` / `liffId` は128文字以内の可視ASCII。表示順更新の `displayOrder` は0以上の整数。
 
 #### アカウント削除
 

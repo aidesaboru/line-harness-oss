@@ -13,6 +13,9 @@ const dbMocks = {
   updateLineAccountFields: vi.fn(),
   updateLineAccountOrder: vi.fn(),
   deleteLineAccount: vi.fn(),
+  getTrafficPoolBySlug: vi.fn(),
+  createTrafficPool: vi.fn(),
+  addPoolAccount: vi.fn(),
 };
 vi.mock('@line-crm/db', () => dbMocks);
 
@@ -74,6 +77,35 @@ beforeEach(() => {
 });
 
 describe('POST /api/line-accounts', () => {
+  test('rejects malformed JSON before create', async () => {
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createLineAccount).not.toHaveBeenCalled();
+  });
+
+  test('rejects unsafe credential payload before create', async () => {
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channelId: '123456789',
+        name: 'メイン',
+        channelAccessToken: 'token with space',
+        channelSecret: 'secret',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.createLineAccount).not.toHaveBeenCalled();
+  });
+
   test('passes loginChannelId / loginChannelSecret / liffId through to createLineAccount', async () => {
     dbMocks.createLineAccount.mockResolvedValue({
       ...fakeAccount,
@@ -87,10 +119,10 @@ describe('POST /api/line-accounts', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        channelId: '123456789',
-        name: 'メイン',
-        channelAccessToken: 'token',
-        channelSecret: 'secret',
+        channelId: ' 123456789 ',
+        name: ' メイン ',
+        channelAccessToken: ' token ',
+        channelSecret: ' secret ',
         loginChannelId: '2009624792',
         loginChannelSecret: 'login-secret',
         liffId: '2009624792-XXXX',
@@ -101,6 +133,9 @@ describe('POST /api/line-accounts', () => {
     expect(dbMocks.createLineAccount).toHaveBeenCalledTimes(1);
     expect(dbMocks.createLineAccount.mock.calls[0][1]).toMatchObject({
       channelId: '123456789',
+      name: 'メイン',
+      channelAccessToken: 'token',
+      channelSecret: 'secret',
       loginChannelId: '2009624792',
       loginChannelSecret: 'login-secret',
       liffId: '2009624792-XXXX',
@@ -165,7 +200,98 @@ describe('POST /api/line-accounts', () => {
   });
 });
 
+describe('PATCH /api/line-accounts/order', () => {
+  test('trims ids and updates display order', async () => {
+    const app = setupApp('admin');
+    const res = await app.request('/api/line-accounts/order', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ordered: [{ id: ' acc-2 ', displayOrder: 1 }] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateLineAccountOrder.mock.calls[0][1]).toEqual([
+      { id: 'acc-2', displayOrder: 1 },
+    ]);
+  });
+
+  test('rejects malformed JSON before order update', async () => {
+    const app = setupApp('admin');
+    const res = await app.request('/api/line-accounts/order', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.updateLineAccountOrder).not.toHaveBeenCalled();
+  });
+
+  test('rejects malformed order payload before order update', async () => {
+    const app = setupApp('admin');
+    const fractional = await app.request('/api/line-accounts/order', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ordered: [{ id: 'acc-1', displayOrder: 1.5 }] }),
+    });
+    const duplicate = await app.request('/api/line-accounts/order', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ordered: [
+          { id: 'acc-1', displayOrder: 0 },
+          { id: ' acc-1 ', displayOrder: 1 },
+        ],
+      }),
+    });
+
+    expect(fractional.status).toBe(400);
+    expect(duplicate.status).toBe(400);
+    expect(dbMocks.updateLineAccountOrder).not.toHaveBeenCalled();
+  });
+});
+
 describe('PATCH /api/line-accounts/:id', () => {
+  test('rejects malformed JSON before lookup or update', async () => {
+    const app = setupApp('admin');
+    const res = await app.request('/api/line-accounts/acc-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
+  });
+
+  test('rejects malformed metadata before lookup or update', async () => {
+    const app = setupApp('admin');
+    const badBoolean = await app.request('/api/line-accounts/acc-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 'true' }),
+    });
+    const credentialOnPatch = await app.request('/api/line-accounts/acc-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelAccessToken: 'token' }),
+    });
+    const emptyPayload = await app.request('/api/line-accounts/acc-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(badBoolean.status).toBe(400);
+    expect(credentialOnPatch.status).toBe(400);
+    expect(emptyPayload.status).toBe(400);
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
+  });
+
   test('updates loginChannelId / loginChannelSecret / liffId via metadata path', async () => {
     dbMocks.getLineAccountById.mockResolvedValue(fakeAccount);
     dbMocks.updateLineAccountFields.mockResolvedValue({
@@ -395,6 +521,40 @@ describe('Login pair / uniqueness validation', () => {
 });
 
 describe('PUT /api/line-accounts/:id', () => {
+  test('rejects malformed JSON before lookup or update', async () => {
+    const app = setupApp('owner');
+    const res = await app.request('/api/line-accounts/acc-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
+  });
+
+  test('rejects malformed credential update before lookup or update', async () => {
+    const app = setupApp('owner');
+    const badSecret = await app.request('/api/line-accounts/acc-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelSecret: '' }),
+    });
+    const badBoolean = await app.request('/api/line-accounts/acc-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 1 }),
+    });
+
+    expect(badSecret.status).toBe(400);
+    expect(badBoolean.status).toBe(400);
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
+  });
+
   test('owner can update Login/LIFF + country/role in one request', async () => {
     dbMocks.getLineAccountById.mockResolvedValue({
       ...fakeAccount,

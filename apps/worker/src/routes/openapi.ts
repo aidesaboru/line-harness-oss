@@ -437,8 +437,8 @@ const spec = {
       post: {
         tags: ['LINE Accounts'],
         summary: 'LINEアカウント登録',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { channelId: { type: 'string' }, name: { type: 'string' }, channelAccessToken: { type: 'string' }, channelSecret: { type: 'string' } }, required: ['channelId', 'name', 'channelAccessToken', 'channelSecret'] } } } },
-        responses: { '201': { description: 'Account created' } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { channelId: { type: 'string', minLength: 1, maxLength: 64, pattern: '^[!-~]+$' }, name: { type: 'string', minLength: 1, maxLength: 120 }, channelAccessToken: { type: 'string', minLength: 1, maxLength: 4096, pattern: '^[!-~]+$' }, channelSecret: { type: 'string', minLength: 1, maxLength: 4096, pattern: '^[!-~]+$' }, loginChannelId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' }, loginChannelSecret: { type: 'string', nullable: true, maxLength: 4096, pattern: '^[!-~]+$' }, liffId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' } }, required: ['channelId', 'name', 'channelAccessToken', 'channelSecret'] } } } },
+        responses: { '201': { description: 'Account created' }, '400': { description: 'Invalid LINE account payload' }, '409': { description: 'Duplicate channel/login/LIFF identifier' } },
       },
     },
     '/api/line-accounts/order': {
@@ -468,7 +468,7 @@ const spec = {
             },
           },
         },
-        responses: { '200': { description: 'Order updated' } },
+        responses: { '200': { description: 'Order updated' }, '400': { description: 'Invalid order payload' } },
       },
     },
     '/api/line-accounts/{id}': {
@@ -483,18 +483,27 @@ const spec = {
               schema: {
                 type: 'object',
                 properties: {
-                  name: { type: 'string' },
+                  name: { type: 'string', minLength: 1, maxLength: 120 },
                   isActive: { type: 'boolean' },
-                  country: { type: 'string', nullable: true },
-                  role: { type: 'string', nullable: true },
+                  country: { type: 'string', nullable: true, maxLength: 64 },
+                  role: { type: 'string', nullable: true, maxLength: 64 },
+                  loginChannelId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' },
+                  loginChannelSecret: { type: 'string', nullable: true, maxLength: 4096, pattern: '^[!-~]+$' },
+                  liffId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' },
                 },
               },
             },
           },
         },
-        responses: { '200': { description: 'Updated' } },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid metadata payload' }, '409': { description: 'Duplicate Login/LIFF identifier' } },
       },
-      put: { tags: ['LINE Accounts'], summary: 'LINEアカウント更新', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' } } },
+      put: {
+        tags: ['LINE Accounts'],
+        summary: 'LINEアカウント更新',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, channelAccessToken: { type: 'string', minLength: 1, maxLength: 4096, pattern: '^[!-~]+$' }, channelSecret: { type: 'string', minLength: 1, maxLength: 4096, pattern: '^[!-~]+$' }, loginChannelId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' }, loginChannelSecret: { type: 'string', nullable: true, maxLength: 4096, pattern: '^[!-~]+$' }, liffId: { type: 'string', nullable: true, maxLength: 128, pattern: '^[!-~]+$' }, isActive: { type: 'boolean' }, country: { type: 'string', nullable: true, maxLength: 64 }, role: { type: 'string', nullable: true, maxLength: 64 } } } } } },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid LINE account payload' }, '409': { description: 'Duplicate Login/LIFF identifier' } },
+      },
       delete: { tags: ['LINE Accounts'], summary: 'LINEアカウント削除', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' } } },
     },
     // ── Conversions ─────────────────────────────────────────────────────────

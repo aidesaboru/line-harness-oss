@@ -26,6 +26,7 @@ updated: 2026-06-13
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
 - rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した
 - entry route管理、conversion point定義参照/作成/削除、Google Calendar接続管理、account health/migration APIはowner/adminだけに制限し、staffは友だち単位で許可されたcalendar booking/conversion記録だけを使える
+- LINEアカウント管理API（登録、metadata更新、credential更新、表示順更新）は壊れたJSON、不正なchannelId/name/credential/Login/LIFF/isActive/displayOrderをDB書き込みや重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
@@ -197,6 +198,7 @@ strict Preflight:
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
 - Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management payloads reject malformed JSON, unsafe codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB writes or test-send lookup, while valid payloads are trimmed and normalized before persistence.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
+- Line account route tests confirm malformed or unsafe LINE account create/update/order payloads stop before DB writes or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management payloads stop before DB writes, and the public incoming receive endpoint remains signature-gated.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.

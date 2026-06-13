@@ -14,6 +14,259 @@ import type { Env } from '../index.js';
 
 const lineAccounts = new Hono<Env>();
 
+const LINE_ACCOUNT_NAME_MAX_LENGTH = 120;
+const LINE_ACCOUNT_CHANNEL_ID_MAX_LENGTH = 64;
+const LINE_ACCOUNT_SECRET_MAX_LENGTH = 4096;
+const LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH = 128;
+const LINE_ACCOUNT_METADATA_MAX_LENGTH = 64;
+const LINE_ACCOUNT_ORDER_MAX_ITEMS = 200;
+const LINE_ACCOUNT_DISPLAY_ORDER_MAX = 10000;
+const LINE_ACCOUNT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ParsedLineAccountCreateBody =
+  | {
+      ok: true;
+      body: {
+        channelId: string;
+        name: string;
+        channelAccessToken: string;
+        channelSecret: string;
+        loginChannelId?: string | null;
+        loginChannelSecret?: string | null;
+        liffId?: string | null;
+      };
+    }
+  | { ok: false; error: string };
+
+type ParsedLineAccountPatchBody =
+  | {
+      ok: true;
+      body: {
+        name?: string;
+        isActive?: boolean;
+        country?: string | null;
+        role?: string | null;
+        loginChannelId?: string | null;
+        loginChannelSecret?: string | null;
+        liffId?: string | null;
+      };
+    }
+  | { ok: false; error: string };
+
+type ParsedLineAccountPutBody =
+  | {
+      ok: true;
+      body: {
+        name?: string;
+        channelAccessToken?: string;
+        channelSecret?: string;
+        loginChannelId?: string | null;
+        loginChannelSecret?: string | null;
+        liffId?: string | null;
+        isActive?: boolean;
+        country?: string | null;
+        role?: string | null;
+      };
+    }
+  | { ok: false; error: string };
+
+type ParsedLineAccountOrderBody =
+  | { ok: true; body: { ordered: Array<{ id: string; displayOrder: number }> } }
+  | { ok: false; error: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseRequiredString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  asciiOnly = false,
+): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (asciiOnly && !LINE_ACCOUNT_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  asciiOnly = false,
+): { ok: true; value?: string | null } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string or null` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (asciiOnly && !LINE_ACCOUNT_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalNonEmptyString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  asciiOnly = false,
+): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (asciiOnly && !LINE_ACCOUNT_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalBoolean(raw: unknown, label: string): { ok: true; value?: boolean } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true };
+  if (typeof raw !== 'boolean') return { ok: false, error: `${label} must be a boolean` };
+  return { ok: true, value: raw };
+}
+
+function parseLineAccountCreateBody(raw: unknown): ParsedLineAccountCreateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const channelId = parseRequiredString(raw.channelId, 'channelId', LINE_ACCOUNT_CHANNEL_ID_MAX_LENGTH, true);
+  if (!channelId.ok) return channelId;
+  const name = parseRequiredString(raw.name, 'name', LINE_ACCOUNT_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const channelAccessToken = parseRequiredString(
+    raw.channelAccessToken,
+    'channelAccessToken',
+    LINE_ACCOUNT_SECRET_MAX_LENGTH,
+    true,
+  );
+  if (!channelAccessToken.ok) return channelAccessToken;
+  const channelSecret = parseRequiredString(raw.channelSecret, 'channelSecret', LINE_ACCOUNT_SECRET_MAX_LENGTH, true);
+  if (!channelSecret.ok) return channelSecret;
+  const loginChannelId = parseOptionalString(raw.loginChannelId, 'loginChannelId', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+  if (!loginChannelId.ok) return loginChannelId;
+  const loginChannelSecret = parseOptionalString(
+    raw.loginChannelSecret,
+    'loginChannelSecret',
+    LINE_ACCOUNT_SECRET_MAX_LENGTH,
+    true,
+  );
+  if (!loginChannelSecret.ok) return loginChannelSecret;
+  const liffId = parseOptionalString(raw.liffId, 'liffId', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+  if (!liffId.ok) return liffId;
+  return {
+    ok: true,
+    body: {
+      channelId: channelId.value,
+      name: name.value,
+      channelAccessToken: channelAccessToken.value,
+      channelSecret: channelSecret.value,
+      loginChannelId: loginChannelId.value,
+      loginChannelSecret: loginChannelSecret.value,
+      liffId: liffId.value,
+    },
+  };
+}
+
+function parseLineAccountPatchBody(raw: unknown, allowCredentialKeys = false): ParsedLineAccountPatchBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (!allowCredentialKeys && (raw.channelAccessToken !== undefined || raw.channelSecret !== undefined)) {
+    return { ok: false, error: 'channel credentials must be updated with PUT' };
+  }
+  const name = parseOptionalNonEmptyString(raw.name, 'name', LINE_ACCOUNT_NAME_MAX_LENGTH);
+  if (!name.ok) return name;
+  const isActive = parseOptionalBoolean(raw.isActive, 'isActive');
+  if (!isActive.ok) return isActive;
+  const country = parseOptionalString(raw.country, 'country', LINE_ACCOUNT_METADATA_MAX_LENGTH);
+  if (!country.ok) return country;
+  const role = parseOptionalString(raw.role, 'role', LINE_ACCOUNT_METADATA_MAX_LENGTH);
+  if (!role.ok) return role;
+  const loginChannelId = parseOptionalString(raw.loginChannelId, 'loginChannelId', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+  if (!loginChannelId.ok) return loginChannelId;
+  const loginChannelSecret = parseOptionalString(
+    raw.loginChannelSecret,
+    'loginChannelSecret',
+    LINE_ACCOUNT_SECRET_MAX_LENGTH,
+    true,
+  );
+  if (!loginChannelSecret.ok) return loginChannelSecret;
+  const liffId = parseOptionalString(raw.liffId, 'liffId', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+  if (!liffId.ok) return liffId;
+  return {
+    ok: true,
+    body: {
+      name: name.value ?? undefined,
+      isActive: isActive.value,
+      country: country.value,
+      role: role.value,
+      loginChannelId: loginChannelId.value,
+      loginChannelSecret: loginChannelSecret.value,
+      liffId: liffId.value,
+    },
+  };
+}
+
+function parseLineAccountPutBody(raw: unknown): ParsedLineAccountPutBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const patch = parseLineAccountPatchBody(raw, true);
+  if (!patch.ok) return patch;
+  const channelAccessToken = parseOptionalNonEmptyString(
+    raw.channelAccessToken,
+    'channelAccessToken',
+    LINE_ACCOUNT_SECRET_MAX_LENGTH,
+    true,
+  );
+  if (!channelAccessToken.ok) return channelAccessToken;
+  const channelSecret = parseOptionalNonEmptyString(raw.channelSecret, 'channelSecret', LINE_ACCOUNT_SECRET_MAX_LENGTH, true);
+  if (!channelSecret.ok) return channelSecret;
+  return {
+    ok: true,
+    body: {
+      ...patch.body,
+      channelAccessToken: channelAccessToken.value,
+      channelSecret: channelSecret.value,
+    },
+  };
+}
+
+function parseLineAccountOrderBody(raw: unknown): ParsedLineAccountOrderBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (!Array.isArray(raw.ordered)) return { ok: false, error: 'ordered: array required' };
+  if (raw.ordered.length > LINE_ACCOUNT_ORDER_MAX_ITEMS) return { ok: false, error: 'ordered has too many items' };
+  const ordered: Array<{ id: string; displayOrder: number }> = [];
+  const seen = new Set<string>();
+  for (const item of raw.ordered) {
+    if (!isRecord(item)) {
+      return { ok: false, error: 'ordered[] must be an object' };
+    }
+    const id = parseRequiredString(item.id, 'ordered[].id', LINE_ACCOUNT_OPTIONAL_ID_MAX_LENGTH, true);
+    if (!id.ok) return id;
+    if (seen.has(id.value)) return { ok: false, error: 'ordered[].id must be unique' };
+    seen.add(id.value);
+    if (
+      typeof item.displayOrder !== 'number' ||
+      !Number.isInteger(item.displayOrder) ||
+      item.displayOrder < 0 ||
+      item.displayOrder > LINE_ACCOUNT_DISPLAY_ORDER_MAX
+    ) {
+      return { ok: false, error: 'ordered[].displayOrder must be a safe integer' };
+    }
+    ordered.push({ id: id.value, displayOrder: item.displayOrder });
+  }
+  return { ok: true, body: { ordered } };
+}
+
 function serializeLineAccount(row: DbLineAccount) {
   return {
     id: row.id,
@@ -125,25 +378,6 @@ lineAccounts.get('/api/line-accounts/:id', async (c) => {
   }
 });
 
-// Normalize optional string inputs from the UI:
-//   undefined → undefined (caller skips the column)
-//   null      → null      (explicit clear)
-//   ""        → null      (UI cleared the field)
-//   non-string → undefined (defensive: silently drop bad input)
-//
-// Defined here (and in PATCH below) rather than shared, because the create
-// path treats undefined and "" identically (both "no value provided"), while
-// the partial-update path needs to distinguish "field absent" (no change)
-// from "field cleared" (set to null). Keep the helper local so future
-// behavior changes don't accidentally couple the two paths.
-function normalizeOptionalString(v: unknown): string | null | undefined {
-  if (v === undefined) return undefined;
-  if (v === null) return null;
-  if (typeof v !== 'string') return undefined;
-  const trimmed = v.trim();
-  return trimmed === '' ? null : trimmed;
-}
-
 // Pair-validate Login Channel ID / Secret. Required because the OAuth flow
 // asymmetrically gates on the two columns:
 //   /auth/line       — switches to account-specific client_id as soon as
@@ -220,29 +454,14 @@ async function checkUniqueLoginAndLiff(
 // POST /api/line-accounts - create
 lineAccounts.post('/api/line-accounts', requireRole('owner'), async (c) => {
   try {
-    const body = await c.req.json<{
-      channelId: string;
-      name: string;
-      channelAccessToken: string;
-      channelSecret: string;
-      loginChannelId?: string | null;
-      loginChannelSecret?: string | null;
-      liffId?: string | null;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseLineAccountCreateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
-    if (!body.channelId || !body.name || !body.channelAccessToken || !body.channelSecret) {
-      return c.json(
-        { success: false, error: 'channelId, name, channelAccessToken, and channelSecret are required' },
-        400,
-      );
-    }
-
-    // Optional fields: empty string from UI = "not provided" → store NULL.
-    // Trim whitespace defensively (LINE IDs/secrets shouldn't have spaces;
-    // accidental spaces from copy-paste would silently break OAuth otherwise).
-    const loginChannelId = normalizeOptionalString(body.loginChannelId) ?? null;
-    const loginChannelSecret = normalizeOptionalString(body.loginChannelSecret) ?? null;
-    const liffId = normalizeOptionalString(body.liffId) ?? null;
+    const loginChannelId = body.loginChannelId ?? null;
+    const loginChannelSecret = body.loginChannelSecret ?? null;
+    const liffId = body.liffId ?? null;
 
     const pairError = validateLoginChannelPair(
       { loginChannelId, loginChannelSecret },
@@ -318,23 +537,11 @@ lineAccounts.patch(
   requireRole('owner', 'admin'),
   async (c) => {
     try {
-      const body = await c.req.json<{
-        ordered: Array<{ id: string; displayOrder: number }>;
-      }>();
+      const rawBody = await readJsonBody(c);
+      const parsed = parseLineAccountOrderBody(rawBody);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-      if (!Array.isArray(body.ordered)) {
-        return c.json({ success: false, error: 'ordered: array required' }, 400);
-      }
-      for (const item of body.ordered) {
-        if (typeof item.id !== 'string' || typeof item.displayOrder !== 'number') {
-          return c.json(
-            { success: false, error: 'ordered[].id (string) and displayOrder (number) required' },
-            400,
-          );
-        }
-      }
-
-      await updateLineAccountOrder(c.env.DB, body.ordered);
+      await updateLineAccountOrder(c.env.DB, parsed.body.ordered);
       return c.json({ success: true });
     } catch (err) {
       console.error('PATCH /api/line-accounts/order error:', err);
@@ -359,24 +566,16 @@ lineAccounts.patch(
   async (c) => {
     try {
       const id = c.req.param('id')!;
-      const body = await c.req.json<{
-        name?: string;
-        isActive?: boolean;
-        country?: string | null;
-        role?: string | null;
-        loginChannelId?: string | null;
-        loginChannelSecret?: string | null;
-        liffId?: string | null;
-      }>();
+      const rawBody = await readJsonBody(c);
+      const parsed = parseLineAccountPatchBody(rawBody);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      const body = parsed.body;
 
-      // Normalize: trim non-empty strings; treat empty/whitespace-only as null.
-      // Empty-string-from-UI represents "user cleared the field" — store as NULL,
-      // not as empty string, so countryFlag() lookup degrades gracefully.
-      const country = normalizeOptionalString(body.country);
-      const role = normalizeOptionalString(body.role);
-      const loginChannelId = normalizeOptionalString(body.loginChannelId);
-      const loginChannelSecret = normalizeOptionalString(body.loginChannelSecret);
-      const liffId = normalizeOptionalString(body.liffId);
+      const country = body.country;
+      const role = body.role;
+      const loginChannelId = body.loginChannelId;
+      const loginChannelSecret = body.loginChannelSecret;
+      const liffId = body.liffId;
 
       // Pre-validate Login pair + uniqueness against the existing row so the
       // caller gets a clean error before we mutate. Skip the lookup entirely
@@ -411,10 +610,15 @@ lineAccounts.patch(
       }
 
       const fieldsTouched =
+        body.name !== undefined ||
         country !== undefined ||
         role !== undefined ||
         body.isActive !== undefined ||
         touchesLoginOrLiff;
+
+      if (!fieldsTouched) {
+        return c.json({ success: false, error: 'At least one field is required' }, 400);
+      }
 
       // Route to the fields helper when name is not being changed.
       if (body.name === undefined && fieldsTouched) {
@@ -458,23 +662,16 @@ lineAccounts.patch(
 lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      name?: string;
-      channelAccessToken?: string;
-      channelSecret?: string;
-      loginChannelId?: string | null;
-      loginChannelSecret?: string | null;
-      liffId?: string | null;
-      isActive?: boolean;
-      country?: string | null;
-      role?: string | null;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseLineAccountPutBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
-    const country = normalizeOptionalString(body.country);
-    const role = normalizeOptionalString(body.role);
-    const loginChannelId = normalizeOptionalString(body.loginChannelId);
-    const loginChannelSecret = normalizeOptionalString(body.loginChannelSecret);
-    const liffId = normalizeOptionalString(body.liffId);
+    const country = body.country;
+    const role = body.role;
+    const loginChannelId = body.loginChannelId;
+    const loginChannelSecret = body.loginChannelSecret;
+    const liffId = body.liffId;
 
     // Validate Login pair + uniqueness identically to PATCH. PUT is the
     // owner-only credential rotation endpoint, so the same correctness

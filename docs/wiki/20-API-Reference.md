@@ -300,9 +300,13 @@ fields の type: `text`, `email`, `tel`, `number`, `textarea`, `select`, `radio`
 |---------|------|------|----------------|
 | GET | `/api/line-accounts` | アカウント一覧 (シークレット省略) | - |
 | GET | `/api/line-accounts/:id` | 詳細 (シークレット含む) | - |
-| POST | `/api/line-accounts` | 登録 | `{ channelId, name, channelAccessToken, channelSecret }` |
-| PUT | `/api/line-accounts/:id` | 更新 | `{ name?, channelAccessToken?, channelSecret?, isActive? }` |
+| POST | `/api/line-accounts` | 登録 | `{ channelId, name, channelAccessToken, channelSecret, loginChannelId?, loginChannelSecret?, liffId? }` |
+| PATCH | `/api/line-accounts/order` | 表示順更新 | `{ ordered: [{ id, displayOrder }] }` |
+| PATCH | `/api/line-accounts/:id` | metadata/Login/LIFF更新 | `{ name?, isActive?, country?, role?, loginChannelId?, loginChannelSecret?, liffId? }` |
+| PUT | `/api/line-accounts/:id` | credential含む更新 | `{ name?, channelAccessToken?, channelSecret?, loginChannelId?, loginChannelSecret?, liffId?, isActive?, country?, role? }` |
 | DELETE | `/api/line-accounts/:id` | 削除 | - |
+
+入力制約: `name` は1-120文字、`channelId` は64文字以内の可視ASCII、credentialとLogin secretは4096文字以内の可視ASCII、`loginChannelId` / `liffId` は128文字以内の可視ASCII。`loginChannelId` と `loginChannelSecret` は片方だけでは保存できない。
 
 ### /api/accounts/* (ヘルス & 移行)
 

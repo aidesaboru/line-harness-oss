@@ -110,6 +110,20 @@ export function preflightSummaryExitCode(result: PreflightSummaryResult): number
   return 0;
 }
 
+export async function readStreamText(stream: AsyncIterable<unknown>): Promise<string> {
+  let text = '';
+  for await (const chunk of stream) {
+    if (typeof chunk === 'string') {
+      text += chunk;
+    } else if (chunk instanceof Uint8Array) {
+      text += Buffer.from(chunk).toString('utf8');
+    } else {
+      text += String(chunk);
+    }
+  }
+  return text;
+}
+
 function usage(): string {
   return [
     'Support CRM preflight PR-safe summary helper.',
@@ -123,7 +137,7 @@ function usage(): string {
   ].join('\n');
 }
 
-function readInput(args: string[]): { ok: true; text: string } | { ok: false; error: string } {
+async function readInput(args: string[]): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
   const fileFlag = args.find((arg) => arg === '--file' || arg === '-f' || arg.startsWith('--file='));
   if (fileFlag) {
     const path = fileFlag.startsWith('--file=')
@@ -136,26 +150,17 @@ function readInput(args: string[]): { ok: true; text: string } | { ok: false; er
   if (stdin.isTTY) {
     return { ok: false, error: 'Pass --file <log> or pipe preflight output into this command.' };
   }
-  return { ok: true, text: readFileSync(0, 'utf8') };
+  return { ok: true, text: await readStreamText(stdin as AsyncIterable<unknown>) };
 }
 
-const isCliEntry = (() => {
-  if (!argv[1]) return false;
-  try {
-    return fileURLToPath(import.meta.url) === argv[1];
-  } catch {
-    return false;
-  }
-})();
-
-if (isCliEntry) {
+async function main(): Promise<void> {
   if (argv.includes('--help') || argv.includes('-h')) {
     stdout.write(`${usage()}\n`);
     exit(0);
   }
 
   try {
-    const input = readInput(argv.slice(2));
+    const input = await readInput(argv.slice(2));
     if (!input.ok) {
       stderr.write(`support-crm-preflight-summary: ${input.error}\n\n${usage()}\n`);
       exit(2);
@@ -173,4 +178,17 @@ if (isCliEntry) {
     stderr.write(`support-crm-preflight-summary: ${err instanceof Error ? err.message : String(err)}\n`);
     exit(2);
   }
+}
+
+const isCliEntry = (() => {
+  if (!argv[1]) return false;
+  try {
+    return fileURLToPath(import.meta.url) === argv[1];
+  } catch {
+    return false;
+  }
+})();
+
+if (isCliEntry) {
+  void main();
 }

@@ -3,8 +3,10 @@ import {
   formatPreflightPrSummary,
   parsePreflightSummaryLog,
   preflightSummaryExitCode,
+  readStreamText,
   sanitizePreflightSummaryText,
 } from './support-crm-preflight-summary';
+import { Readable } from 'node:stream';
 
 describe('support CRM preflight PR-safe summary', () => {
   it('formats a successful strict preflight as a paste-safe PR summary', () => {
@@ -80,5 +82,15 @@ describe('support CRM preflight PR-safe summary', () => {
   it('redacts common accidental sensitive text in check names', () => {
     expect(sanitizePreflightSummaryText('https://worker.example case-visible-abcdef Bearer staff_secret_1234567890abcdef'))
       .toBe('[url-redacted] [id-redacted] Bearer [secret-redacted]');
+  });
+
+  it('reads piped preflight logs from async stdin chunks', async () => {
+    const text = await readStreamText(Readable.from([
+      'PASS owner: login identity\n',
+      Buffer.from('Support CRM preflight: 1 passed, 0 skipped, 0 failed.\n'),
+    ]));
+
+    expect(text).toContain('PASS owner: login identity');
+    expect(text).toContain('Support CRM preflight: 1 passed, 0 skipped, 0 failed.');
   });
 });

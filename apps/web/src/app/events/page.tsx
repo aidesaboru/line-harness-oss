@@ -6,6 +6,8 @@ import Header from '@/components/layout/header'
 import { eventsApi, type EventListItem } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 
+const EVENTS_LOAD_ERROR_MESSAGE = 'イベント一覧の読み込みに失敗しました。もう一度お試しください。'
+
 function formatJpDate(iso: string | null): string {
   if (!iso) return '日時未設定'
   return new Date(iso).toLocaleString('ja-JP', {
@@ -26,8 +28,8 @@ export default function EventsListPage() {
     try {
       const res = await eventsApi.listEvents(selectedAccountId)
       setItems(res.items)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+    } catch {
+      setError(EVENTS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }

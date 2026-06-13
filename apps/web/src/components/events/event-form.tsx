@@ -32,6 +32,27 @@ const DEFAULT_DRAFT: EventDetail = {
   sort_order: 0,
 }
 
+const EVENT_FORM_LOAD_ERROR_MESSAGE = 'イベント情報の読み込みに失敗しました。もう一度お試しください。'
+const EVENT_FORM_SAVE_ERROR_MESSAGE = 'イベント情報の保存に失敗しました。入力内容を確認して、もう一度お試しください。'
+const EVENT_SLOT_LOAD_ERROR_MESSAGE = '予約枠の読み込みに失敗しました。もう一度お試しください。'
+const EVENT_SLOT_SAVE_ERROR_MESSAGE = '予約枠の保存に失敗しました。入力内容を確認して、もう一度お試しください。'
+const EVENT_SLOT_DELETE_ERROR_MESSAGE = '予約枠の削除に失敗しました。もう一度お試しください。'
+const EVENT_SLOT_STATUS_ERROR_MESSAGE = '予約枠の状態更新に失敗しました。もう一度お試しください。'
+
+const eventFormValidationMessages = new Set([
+  'イベント名は必須です',
+  'イベント名は255字以内で入力してください',
+  '詳細は20000字以内で入力してください',
+  '複数アカウント横断の場合は対象アカを 1 件以上選択してください',
+  '開始時刻 < 終了時刻',
+  '定員は1以上の整数',
+])
+
+function eventFormErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message.trim() : ''
+  return eventFormValidationMessages.has(message) ? message : fallback
+}
+
 export interface EventFormProps {
   accountId: string
   eventId: string | null
@@ -92,7 +113,7 @@ export default function EventForm({ accountId, eventId }: EventFormProps) {
         setDraft(ev)
         setSlots(slotsRes.items)
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        if (!cancelled) setError(eventFormErrorMessage(e, EVENT_FORM_LOAD_ERROR_MESSAGE))
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -168,7 +189,7 @@ export default function EventForm({ accountId, eventId }: EventFormProps) {
         router.replace(`/events/edit?id=${created.id}`)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(eventFormErrorMessage(e, EVENT_FORM_SAVE_ERROR_MESSAGE))
     } finally {
       setSaving(false)
     }
@@ -655,8 +676,12 @@ function SlotsTab({
 
   async function refresh() {
     if (!eventId) return
-    const res = await eventsApi.listSlots(accountId, eventId)
-    setSlots(res.items)
+    try {
+      const res = await eventsApi.listSlots(accountId, eventId)
+      setSlots(res.items)
+    } catch {
+      setErr(EVENT_SLOT_LOAD_ERROR_MESSAGE)
+    }
   }
 
   async function deleteSlot(slotId: string) {
@@ -667,8 +692,8 @@ function SlotsTab({
     try {
       await eventsApi.deleteSlot(accountId, eventId, slotId)
       await refresh()
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+    } catch {
+      setErr(EVENT_SLOT_DELETE_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }
@@ -680,6 +705,8 @@ function SlotsTab({
     try {
       await eventsApi.updateSlot(accountId, eventId, s.id, { is_active: s.is_active === 1 ? 0 : 1 })
       await refresh()
+    } catch {
+      setErr(EVENT_SLOT_STATUS_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }
@@ -813,7 +840,7 @@ function AddSlotDialog({
       if (cap != null && (!Number.isInteger(cap) || cap < 1)) throw new Error('定員は1以上の整数')
       await onSubmit({ starts_at: s, ends_at: e, capacity: cap })
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      setErr(eventFormErrorMessage(e, EVENT_SLOT_SAVE_ERROR_MESSAGE))
     } finally {
       setBusy(false)
     }
@@ -916,7 +943,7 @@ function BulkSlotDialog({
         capacity: cap,
       })
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e))
+      setErr(eventFormErrorMessage(e, EVENT_SLOT_SAVE_ERROR_MESSAGE))
     } finally {
       setBusy(false)
     }

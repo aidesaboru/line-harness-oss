@@ -30,6 +30,7 @@ updated: 2026-06-13
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
+- Meet Harness完了callback `/api/meet-callback` は `MEET_CALLBACK_SECRET` と `X-Meet-Callback-Signature` のHMAC-SHA256署名検証を必須にし、未設定/未署名/不正署名ではDB lookupやLINE push前に止める
 - フォーム管理API（一覧、作成、更新、削除、回答一覧）はowner/adminだけに制限し、LIFF用のフォーム定義GET、opened、partial、submit公開エンドポイントは維持
 - `/api/forms/:id` の公開認証skipはGET/HEADだけに限定し、同じパスのPUT/DELETEが未認証で通らないようにした
 - 公開フォームsubmitのWebhook gateは、LIFFクライアントの事前確認や `_skipWebhook` 自己申告を信じず、Worker側で毎回再判定する
@@ -116,6 +117,7 @@ updated: 2026-06-13
 - `apps/worker/src/routes/broadcasts-access.test.ts`
 - `apps/worker/src/routes/forms-access.test.ts`
 - `apps/worker/src/routes/operations-access.test.ts`
+- `apps/worker/src/routes/meet-callback.test.ts`
 - `apps/worker/src/routes/duplicates-access.test.ts`
 - `apps/worker/src/routes/images-access.test.ts`
 - `apps/worker/src/middleware/auth.test.ts`
@@ -183,6 +185,7 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - Operations and LIFF access route tests confirm `/t/:linkId` ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings while the public incoming receive endpoint remains signature-gated.
+- Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs.
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.

@@ -48,6 +48,7 @@ crons = ["*/5 * * * *"]
 | `LIFF_URL` | 任意 | string | LIFF アプリ URL | `https://liff.line.me/12345-abcde` |
 | `LINE_LOGIN_CHANNEL_ID` | 任意 | string | LINE Login チャネルID（UUID連携用） | `9876543210` |
 | `LINE_LOGIN_CHANNEL_SECRET` | 任意 | string | LINE Login チャネルシークレット | `xyz789...` |
+| `MEET_CALLBACK_SECRET` | 任意 | string | Meet Harness callbackのHMAC-SHA256署名検証キー（32文字以上） | `32+ random chars` |
 
 ### シークレット設定コマンド
 
@@ -60,6 +61,7 @@ npx wrangler secret put LINE_CHANNEL_ID
 npx wrangler secret put LIFF_URL
 npx wrangler secret put LINE_LOGIN_CHANNEL_ID
 npx wrangler secret put LINE_LOGIN_CHANNEL_SECRET
+npx wrangler secret put MEET_CALLBACK_SECRET
 
 # 設定済みシークレット一覧確認
 npx wrangler secret list
@@ -79,6 +81,7 @@ export type Env = {
     LINE_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_ID: string;
     LINE_LOGIN_CHANNEL_SECRET: string;
+    MEET_CALLBACK_SECRET?: string;
   };
 };
 ```

@@ -130,6 +130,7 @@ wrangler secret put LIFF_URL
 
 # オプション
 wrangler secret put STRIPE_WEBHOOK_SECRET
+wrangler secret put MEET_CALLBACK_SECRET
 ```
 
 ---
@@ -270,6 +271,7 @@ wrangler d1 create line-crm
 | 変数名 | 説明 | 設定方法 |
 |--------|------|----------|
 | `STRIPE_WEBHOOK_SECRET` | Stripe Webhook 署名検証キー | `wrangler secret put` |
+| `MEET_CALLBACK_SECRET` | Meet Harness callbackのHMAC-SHA256署名検証キー | `wrangler secret put` |
 
 ---
 

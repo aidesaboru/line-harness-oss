@@ -20,6 +20,7 @@ updated: 2026-06-13
 - calendar空き枠/予約一覧の `connectionId` / `date` / `friendId` queryは、Calendar接続lookup、予約範囲lookup、friend可視範囲check、SQL bind前に検証し、正常値はtrimする
 - booking admin API共通の `account_id` queryは、メニュー/スタッフ/シフト/予約管理SQL前に検証し、正常値はtrimする
 - booking admin APIのmenu/staff/shift/booking path IDは、更新/削除/所属確認/予約判断SQL前に検証し、正常値はtrimする
+- booking admin APIのmenu/staff/staff_menus/shifts/generate/requests payloadと `status` / `from` / `to` queryは、DB書き込みや予約lookup前に検証し、正常値はtrimする
 - booking LIFF staff選択の `menus/:id/staff` path IDは、staff lookup SQL前に検証し、正常値はtrimする
 - booking LIFF availabilityの `liffId` / `menu_id` / `staff_id` / `from` / `to` queryは、LINE account lookupやavailability helper呼び出し前に検証し、正常値はtrimする
 - booking LIFF予約作成の `Idempotency-Key` と `menu_id` / `staff_id` / `starts_at` / `customer_note` payloadは、LINE verify、idempotency lookup、menu lookup前に検証し、正常値はtrimする
@@ -174,7 +175,7 @@ corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
-corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts
+corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build

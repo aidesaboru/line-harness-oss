@@ -39,10 +39,38 @@ const BOOKING_IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const BOOKING_DATE_QUERY_MAX_LENGTH = 32;
 const BOOKING_STARTS_AT_MAX_LENGTH = 64;
 const BOOKING_CUSTOMER_NOTE_MAX_LENGTH = 1000;
+const BOOKING_ADMIN_TEXT_MAX_LENGTH = 128;
+const BOOKING_ADMIN_LONG_TEXT_MAX_LENGTH = 2048;
+const BOOKING_ADMIN_URL_MAX_LENGTH = 2048;
+const BOOKING_ADMIN_DURATION_MINUTES_MAX = 1440;
+const BOOKING_ADMIN_PRICE_MAX = 10_000_000;
+const BOOKING_ADMIN_SORT_ORDER_MAX = 100_000;
+const BOOKING_ADMIN_STAFF_MENU_MAX_LENGTH = 500;
+const BOOKING_ADMIN_SHIFT_MAX_LENGTH = 366;
+const BOOKING_ADMIN_GENERATE_WEEKS_MAX = 52;
 const BOOKING_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const BOOKING_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const BOOKING_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 const JST_OFFSET_MS = 9 * 3600_000;
+const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
+const BOOKING_ADMIN_STATUSES = new Set<BookingStatus>([
+  'requested',
+  'confirmed',
+  'rejected',
+  'expired',
+  'cancelled',
+  'completed',
+  'no_show',
+]);
+const BOOKING_ADMIN_ACTIONS = new Set<BookingAction>([
+  'approve',
+  'reject',
+  'expire',
+  'cancel',
+  'complete',
+  'no_show',
+]);
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 type BookingRequestInput = {
@@ -50,6 +78,44 @@ type BookingRequestInput = {
   staffId: string;
   startsAt: string;
   customerNote: string | null;
+};
+type BookingAdminStatusFilter = BookingStatus | 'all';
+type BookingDayKey = (typeof DAY_KEYS)[number];
+type BookingWeeklyTemplate = Record<BookingDayKey, { start: string; end: string } | null>;
+type AdminMenuInput = {
+  name: string;
+  categoryLabel: string | null;
+  description: string | null;
+  durationMinutes: number;
+  bufferAfterMinutes: number;
+  basePrice: number;
+  sortOrder: number;
+  isActive?: boolean;
+};
+type AdminStaffInput = {
+  name: string;
+  displayName: string;
+  role: string | null;
+  profileImageUrl: string | null;
+  bio: string | null;
+  sortOrder: number;
+  isDesignationOptional: boolean;
+  isActive?: boolean;
+};
+type AdminStaffMenuInput = {
+  menus: Array<{
+    menuId: string;
+    isOffered: boolean;
+    overrideDurationMinutes: number | null;
+    overridePrice: number | null;
+  }>;
+};
+type AdminShiftInput = { workDate: string; startTime: string; endTime: string };
+type AdminShiftRange = { from: string; to: string } | null;
+type AdminShiftGenerateInput = {
+  fromDate: string;
+  weeks: number;
+  weeklyTemplate: BookingWeeklyTemplate;
 };
 
 function startsAtJst(utcIso: string): string {
@@ -100,6 +166,321 @@ async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<strin
   } catch {
     return { ok: false, error: 'invalid_json' };
   }
+}
+
+function parseRequiredText(raw: unknown, error: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error };
+  const value = raw.trim();
+  if (!value || value.length > maxLength) return { ok: false, error };
+  return { ok: true, value };
+}
+
+function parseOptionalText(raw: unknown, error: string, maxLength: number): ValueResult<string | null> {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > maxLength) return { ok: false, error };
+  return { ok: true, value };
+}
+
+function parseInteger(
+  raw: unknown,
+  error: string,
+  opts: { min: number; max: number },
+): ValueResult<number> {
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return { ok: false, error };
+  if (raw < opts.min || raw > opts.max) return { ok: false, error };
+  return { ok: true, value: raw };
+}
+
+function parseOptionalInteger(
+  raw: unknown,
+  error: string,
+  opts: { min: number; max: number },
+): ValueResult<number | null> {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  return parseInteger(raw, error, opts);
+}
+
+function parseOptionalFlag(raw: unknown, error: string): ValueResult<boolean | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw === 'boolean') return { ok: true, value: raw };
+  if (raw === 0 || raw === 1) return { ok: true, value: raw === 1 };
+  return { ok: false, error };
+}
+
+function parseRequiredFlag(raw: unknown, error: string): ValueResult<boolean> {
+  const parsed = parseOptionalFlag(raw, error);
+  if (!parsed.ok) return parsed;
+  if (parsed.value === undefined) return { ok: false, error };
+  return { ok: true, value: parsed.value };
+}
+
+function parseDateOnly(raw: unknown, label: string, error: string): ValueResult<string> {
+  const parsed = parseBookingDateQuery(typeof raw === 'string' ? raw : undefined, label);
+  if (!parsed.ok) return { ok: false, error };
+  return parsed;
+}
+
+function parseTime(raw: unknown, error: string): ValueResult<string> {
+  const parsed = parseVisibleString(raw, 'time', BOOKING_DATE_QUERY_MAX_LENGTH);
+  if (!parsed.ok || !BOOKING_TIME_PATTERN.test(parsed.value)) return { ok: false, error };
+  return parsed;
+}
+
+function isTimeRangeValid(start: string, end: string): boolean {
+  return start < end;
+}
+
+function parseAdminMenuInput(
+  body: Record<string, unknown>,
+  opts: { allowIsActive: boolean },
+): ValueResult<AdminMenuInput> {
+  const name = parseRequiredText(body.name, 'invalid_menu_name', BOOKING_ADMIN_TEXT_MAX_LENGTH);
+  if (!name.ok) return name;
+  const categoryLabel = parseOptionalText(
+    body.category_label,
+    'invalid_category_label',
+    BOOKING_ADMIN_TEXT_MAX_LENGTH,
+  );
+  if (!categoryLabel.ok) return categoryLabel;
+  const description = parseOptionalText(
+    body.description,
+    'invalid_description',
+    BOOKING_ADMIN_LONG_TEXT_MAX_LENGTH,
+  );
+  if (!description.ok) return description;
+  const durationMinutes = parseInteger(body.duration_minutes, 'invalid_duration_minutes', {
+    min: 1,
+    max: BOOKING_ADMIN_DURATION_MINUTES_MAX,
+  });
+  if (!durationMinutes.ok) return durationMinutes;
+  const bufferAfterMinutes = parseInteger(body.buffer_after_minutes ?? 0, 'invalid_buffer_after_minutes', {
+    min: 0,
+    max: BOOKING_ADMIN_DURATION_MINUTES_MAX,
+  });
+  if (!bufferAfterMinutes.ok) return bufferAfterMinutes;
+  const basePrice = parseInteger(body.base_price, 'invalid_base_price', {
+    min: 0,
+    max: BOOKING_ADMIN_PRICE_MAX,
+  });
+  if (!basePrice.ok) return basePrice;
+  const sortOrder = parseInteger(body.sort_order ?? 0, 'invalid_sort_order', {
+    min: -BOOKING_ADMIN_SORT_ORDER_MAX,
+    max: BOOKING_ADMIN_SORT_ORDER_MAX,
+  });
+  if (!sortOrder.ok) return sortOrder;
+  const isActive = opts.allowIsActive
+    ? parseOptionalFlag(body.is_active, 'invalid_is_active')
+    : ({ ok: true, value: undefined } satisfies ValueResult<boolean | undefined>);
+  if (!isActive.ok) return isActive;
+  return {
+    ok: true,
+    value: {
+      name: name.value,
+      categoryLabel: categoryLabel.value,
+      description: description.value,
+      durationMinutes: durationMinutes.value,
+      bufferAfterMinutes: bufferAfterMinutes.value,
+      basePrice: basePrice.value,
+      sortOrder: sortOrder.value,
+      isActive: isActive.value,
+    },
+  };
+}
+
+function parseAdminStaffInput(
+  body: Record<string, unknown>,
+  opts: { allowIsActive: boolean },
+): ValueResult<AdminStaffInput> {
+  const name = parseRequiredText(body.name, 'invalid_staff_name', BOOKING_ADMIN_TEXT_MAX_LENGTH);
+  if (!name.ok) return name;
+  const displayName = parseRequiredText(body.display_name, 'invalid_display_name', BOOKING_ADMIN_TEXT_MAX_LENGTH);
+  if (!displayName.ok) return displayName;
+  const role = parseOptionalText(body.role, 'invalid_role', BOOKING_ADMIN_TEXT_MAX_LENGTH);
+  if (!role.ok) return role;
+  const profileImageUrl = parseOptionalText(
+    body.profile_image_url,
+    'invalid_profile_image_url',
+    BOOKING_ADMIN_URL_MAX_LENGTH,
+  );
+  if (!profileImageUrl.ok) return profileImageUrl;
+  const bio = parseOptionalText(body.bio, 'invalid_bio', BOOKING_ADMIN_LONG_TEXT_MAX_LENGTH);
+  if (!bio.ok) return bio;
+  const sortOrder = parseInteger(body.sort_order ?? 0, 'invalid_sort_order', {
+    min: -BOOKING_ADMIN_SORT_ORDER_MAX,
+    max: BOOKING_ADMIN_SORT_ORDER_MAX,
+  });
+  if (!sortOrder.ok) return sortOrder;
+  const isDesignationOptional = parseOptionalFlag(
+    body.is_designation_optional ?? false,
+    'invalid_is_designation_optional',
+  );
+  if (!isDesignationOptional.ok || isDesignationOptional.value === undefined) {
+    return { ok: false, error: 'invalid_is_designation_optional' };
+  }
+  const isActive = opts.allowIsActive
+    ? parseOptionalFlag(body.is_active, 'invalid_is_active')
+    : ({ ok: true, value: undefined } satisfies ValueResult<boolean | undefined>);
+  if (!isActive.ok) return isActive;
+  return {
+    ok: true,
+    value: {
+      name: name.value,
+      displayName: displayName.value,
+      role: role.value,
+      profileImageUrl: profileImageUrl.value,
+      bio: bio.value,
+      sortOrder: sortOrder.value,
+      isDesignationOptional: isDesignationOptional.value,
+      isActive: isActive.value,
+    },
+  };
+}
+
+function parseAdminStaffMenusInput(body: Record<string, unknown>): ValueResult<AdminStaffMenuInput> {
+  if (!Array.isArray(body.menus) || body.menus.length > BOOKING_ADMIN_STAFF_MENU_MAX_LENGTH) {
+    return { ok: false, error: 'invalid_menus' };
+  }
+  const menus: AdminStaffMenuInput['menus'] = [];
+  for (const row of body.menus) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      return { ok: false, error: 'invalid_menus' };
+    }
+    const item = row as Record<string, unknown>;
+    const menuId = parseVisibleString(item.menu_id, 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+    if (!menuId.ok) return { ok: false, error: 'invalid_menu_id' };
+    const isOffered = parseRequiredFlag(item.is_offered, 'invalid_is_offered');
+    if (!isOffered.ok) return isOffered;
+    const overrideDurationMinutes = parseOptionalInteger(
+      item.override_duration_minutes,
+      'invalid_override_duration_minutes',
+      { min: 1, max: BOOKING_ADMIN_DURATION_MINUTES_MAX },
+    );
+    if (!overrideDurationMinutes.ok) return overrideDurationMinutes;
+    const overridePrice = parseOptionalInteger(item.override_price, 'invalid_override_price', {
+      min: 0,
+      max: BOOKING_ADMIN_PRICE_MAX,
+    });
+    if (!overridePrice.ok) return overridePrice;
+    menus.push({
+      menuId: menuId.value,
+      isOffered: isOffered.value,
+      overrideDurationMinutes: overrideDurationMinutes.value,
+      overridePrice: overridePrice.value,
+    });
+  }
+  return { ok: true, value: { menus } };
+}
+
+function parseAdminShiftItem(row: unknown): ValueResult<AdminShiftInput> {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) {
+    return { ok: false, error: 'invalid_shifts' };
+  }
+  const item = row as Record<string, unknown>;
+  const workDate = parseDateOnly(item.work_date, 'work_date', 'invalid_work_date');
+  if (!workDate.ok) return workDate;
+  const startTime = parseTime(item.start_time, 'invalid_start_time');
+  if (!startTime.ok) return startTime;
+  const endTime = parseTime(item.end_time, 'invalid_end_time');
+  if (!endTime.ok) return endTime;
+  if (!isTimeRangeValid(startTime.value, endTime.value)) {
+    return { ok: false, error: 'invalid_time_range' };
+  }
+  return {
+    ok: true,
+    value: { workDate: workDate.value, startTime: startTime.value, endTime: endTime.value },
+  };
+}
+
+function parseAdminShiftsInput(body: Record<string, unknown>): ValueResult<AdminShiftInput[]> {
+  if (!Array.isArray(body.shifts) || body.shifts.length > BOOKING_ADMIN_SHIFT_MAX_LENGTH) {
+    return { ok: false, error: 'invalid_shifts' };
+  }
+  const shifts: AdminShiftInput[] = [];
+  for (const row of body.shifts) {
+    const parsed = parseAdminShiftItem(row);
+    if (!parsed.ok) return parsed;
+    shifts.push(parsed.value);
+  }
+  return { ok: true, value: shifts };
+}
+
+function parseAdminShiftRange(fromRaw: string | undefined, toRaw: string | undefined): ValueResult<AdminShiftRange> {
+  const fromValue = fromRaw?.trim();
+  const toValue = toRaw?.trim();
+  if (!fromValue && !toValue) return { ok: true, value: null };
+  if (!fromValue || !toValue) return { ok: false, error: 'invalid_date_range' };
+  const from = parseBookingDateQuery(fromValue, 'from');
+  if (!from.ok) return { ok: false, error: 'invalid_from' };
+  const to = parseBookingDateQuery(toValue, 'to');
+  if (!to.ok) return { ok: false, error: 'invalid_to' };
+  if (from.value > to.value) return { ok: false, error: 'invalid_date_range' };
+  return { ok: true, value: { from: from.value, to: to.value } };
+}
+
+function parseWeeklyTemplate(raw: unknown): ValueResult<BookingWeeklyTemplate> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'invalid_weekly_template' };
+  }
+  const source = raw as Record<string, unknown>;
+  const weeklyTemplate = {} as BookingWeeklyTemplate;
+  for (const day of DAY_KEYS) {
+    const rawDay = source[day];
+    if (rawDay === undefined || rawDay === null) {
+      weeklyTemplate[day] = null;
+      continue;
+    }
+    if (!rawDay || typeof rawDay !== 'object' || Array.isArray(rawDay)) {
+      return { ok: false, error: 'invalid_weekly_template' };
+    }
+    const item = rawDay as Record<string, unknown>;
+    const start = parseTime(item.start, 'invalid_weekly_template');
+    if (!start.ok) return start;
+    const end = parseTime(item.end, 'invalid_weekly_template');
+    if (!end.ok) return end;
+    if (!isTimeRangeValid(start.value, end.value)) {
+      return { ok: false, error: 'invalid_weekly_template' };
+    }
+    weeklyTemplate[day] = { start: start.value, end: end.value };
+  }
+  return { ok: true, value: weeklyTemplate };
+}
+
+function parseAdminShiftGenerateInput(body: Record<string, unknown>): ValueResult<AdminShiftGenerateInput> {
+  const fromDate = parseDateOnly(body.from_date, 'from_date', 'invalid_from_date');
+  if (!fromDate.ok) return fromDate;
+  const weeks = parseInteger(body.weeks, 'invalid_weeks', {
+    min: 1,
+    max: BOOKING_ADMIN_GENERATE_WEEKS_MAX,
+  });
+  if (!weeks.ok) return weeks;
+  const weeklyTemplate = parseWeeklyTemplate(body.weekly_template);
+  if (!weeklyTemplate.ok) return weeklyTemplate;
+  return {
+    ok: true,
+    value: { fromDate: fromDate.value, weeks: weeks.value, weeklyTemplate: weeklyTemplate.value },
+  };
+}
+
+function parseAdminRequestStatus(raw: string | undefined): ValueResult<BookingAdminStatusFilter> {
+  const value = raw?.trim();
+  if (!value) return { ok: true, value: 'requested' };
+  if (value === 'all') return { ok: true, value: 'all' };
+  if (BOOKING_ADMIN_STATUSES.has(value as BookingStatus)) {
+    return { ok: true, value: value as BookingStatus };
+  }
+  return { ok: false, error: 'invalid_status' };
+}
+
+function parseBookingActionInput(body: Record<string, unknown>): ValueResult<BookingAction> {
+  if (typeof body.action !== 'string') return { ok: false, error: 'invalid_action' };
+  const action = body.action.trim();
+  if (!BOOKING_ADMIN_ACTIONS.has(action as BookingAction)) {
+    return { ok: false, error: 'invalid_action' };
+  }
+  return { ok: true, value: action as BookingAction };
 }
 
 function parseOptionalCustomerNote(raw: unknown): ValueResult<string | null> {
@@ -618,15 +999,11 @@ booking.get('/api/booking/admin/menus', async (c) => {
 booking.post('/api/booking/admin/menus', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const b = await c.req.json<{
-    name: string;
-    category_label?: string | null;
-    description?: string | null;
-    duration_minutes: number;
-    buffer_after_minutes?: number;
-    base_price: number;
-    sort_order?: number;
-  }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const parsed = parseAdminMenuInput(rawBody.value, { allowIsActive: false });
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.value;
   const id = crypto.randomUUID();
   await c.env.DB
     .prepare(
@@ -639,12 +1016,12 @@ booking.post('/api/booking/admin/menus', async (c) => {
       id,
       accountId,
       b.name,
-      b.category_label ?? null,
-      b.description ?? null,
-      b.duration_minutes,
-      b.buffer_after_minutes ?? 0,
-      b.base_price,
-      b.sort_order ?? 0,
+      b.categoryLabel,
+      b.description,
+      b.durationMinutes,
+      b.bufferAfterMinutes,
+      b.basePrice,
+      b.sortOrder,
     )
     .run();
   return c.json({ id }, 201);
@@ -655,16 +1032,11 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
   const id = parseVisibleString(c.req.param('id'), 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!id.ok) return c.json({ error: 'invalid_menu_id' }, 400);
-  const b = await c.req.json<{
-    name: string;
-    category_label?: string | null;
-    description?: string | null;
-    duration_minutes: number;
-    buffer_after_minutes?: number;
-    base_price: number;
-    sort_order?: number;
-    is_active?: boolean;
-  }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const parsed = parseAdminMenuInput(rawBody.value, { allowIsActive: true });
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.value;
   await c.env.DB
     .prepare(
       `UPDATE menus
@@ -676,13 +1048,13 @@ booking.put('/api/booking/admin/menus/:id', async (c) => {
     )
     .bind(
       b.name,
-      b.category_label ?? null,
-      b.description ?? null,
-      b.duration_minutes,
-      b.buffer_after_minutes ?? 0,
-      b.base_price,
-      b.sort_order ?? 0,
-      b.is_active === false ? 0 : 1,
+      b.categoryLabel,
+      b.description,
+      b.durationMinutes,
+      b.bufferAfterMinutes,
+      b.basePrice,
+      b.sortOrder,
+      b.isActive === false ? 0 : 1,
       id.value,
       accountId,
     )
@@ -727,15 +1099,11 @@ booking.get('/api/booking/admin/staff', async (c) => {
 booking.post('/api/booking/admin/staff', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const b = await c.req.json<{
-    name: string;
-    display_name: string;
-    role?: string | null;
-    profile_image_url?: string | null;
-    bio?: string | null;
-    sort_order?: number;
-    is_designation_optional?: boolean;
-  }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const parsed = parseAdminStaffInput(rawBody.value, { allowIsActive: false });
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.value;
   const id = crypto.randomUUID();
   await c.env.DB
     .prepare(
@@ -748,12 +1116,12 @@ booking.post('/api/booking/admin/staff', async (c) => {
       id,
       accountId,
       b.name,
-      b.display_name,
-      b.role ?? null,
-      b.profile_image_url ?? null,
-      b.bio ?? null,
-      b.sort_order ?? 0,
-      b.is_designation_optional ? 1 : 0,
+      b.displayName,
+      b.role,
+      b.profileImageUrl,
+      b.bio,
+      b.sortOrder,
+      b.isDesignationOptional ? 1 : 0,
     )
     .run();
   return c.json({ id }, 201);
@@ -764,16 +1132,11 @@ booking.put('/api/booking/admin/staff/:id', async (c) => {
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
   const id = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!id.ok) return c.json({ error: 'invalid_staff_id' }, 400);
-  const b = await c.req.json<{
-    name: string;
-    display_name: string;
-    role?: string | null;
-    profile_image_url?: string | null;
-    bio?: string | null;
-    sort_order?: number;
-    is_designation_optional?: boolean;
-    is_active?: boolean;
-  }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const parsed = parseAdminStaffInput(rawBody.value, { allowIsActive: true });
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.value;
   await c.env.DB
     .prepare(
       `UPDATE staff
@@ -784,13 +1147,13 @@ booking.put('/api/booking/admin/staff/:id', async (c) => {
     )
     .bind(
       b.name,
-      b.display_name,
-      b.role ?? null,
-      b.profile_image_url ?? null,
-      b.bio ?? null,
-      b.sort_order ?? 0,
-      b.is_designation_optional ? 1 : 0,
-      b.is_active === false ? 0 : 1,
+      b.displayName,
+      b.role,
+      b.profileImageUrl,
+      b.bio,
+      b.sortOrder,
+      b.isDesignationOptional ? 1 : 0,
+      b.isActive === false ? 0 : 1,
       id.value,
       accountId,
     )
@@ -847,17 +1210,14 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
   const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   const staffIdValue = staffId.value;
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const parsed = parseAdminStaffMenusInput(rawBody.value);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.value;
   if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
-  const b = await c.req.json<{
-    menus: Array<{
-      menu_id: string;
-      is_offered: boolean;
-      override_duration_minutes?: number | null;
-      override_price?: number | null;
-    }>;
-  }>();
   // menu_id も同 account のものに限定。account 外の menu_id は無視。
   const validMenuIds = new Set(
     (
@@ -868,7 +1228,7 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
     ).results.map((r) => r.id),
   );
   await c.env.DB.prepare(`DELETE FROM staff_menus WHERE staff_id = ?`).bind(staffIdValue).run();
-  const filtered = b.menus.filter((m) => validMenuIds.has(m.menu_id));
+  const filtered = b.menus.filter((m) => validMenuIds.has(m.menuId));
   if (filtered.length > 0) {
     const stmts = filtered.map((m) =>
       c.env.DB
@@ -879,10 +1239,10 @@ booking.put('/api/booking/admin/staff/:id/menus', async (c) => {
         )
         .bind(
           staffIdValue,
-          m.menu_id,
-          m.is_offered ? 1 : 0,
-          m.override_duration_minutes ?? null,
-          m.override_price ?? null,
+          m.menuId,
+          m.isOffered ? 1 : 0,
+          m.overrideDurationMinutes,
+          m.overridePrice,
         ),
     );
     await c.env.DB.batch(stmts);
@@ -898,12 +1258,12 @@ booking.get('/api/booking/admin/staff/:id/shifts', async (c) => {
   const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   const staffIdValue = staffId.value;
+  const range = parseAdminShiftRange(c.req.query('from'), c.req.query('to'));
+  if (!range.ok) return c.json({ error: range.error }, 400);
   if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
-  const from = c.req.query('from');
-  const to = c.req.query('to');
-  const sql = from && to
+  const sql = range.value
     ? `SELECT id, work_date, start_time, end_time
          FROM staff_shifts
         WHERE staff_id = ? AND work_date BETWEEN ? AND ?
@@ -913,7 +1273,9 @@ booking.get('/api/booking/admin/staff/:id/shifts', async (c) => {
         WHERE staff_id = ?
         ORDER BY work_date ASC`;
   const stmt = c.env.DB.prepare(sql);
-  const rows = await (from && to ? stmt.bind(staffIdValue, from, to) : stmt.bind(staffIdValue)).all();
+  const rows = await (range.value
+    ? stmt.bind(staffIdValue, range.value.from, range.value.to)
+    : stmt.bind(staffIdValue)).all();
   return c.json({ shifts: rows.results });
 });
 
@@ -923,14 +1285,15 @@ booking.put('/api/booking/admin/staff/:id/shifts', async (c) => {
   const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   const staffIdValue = staffId.value;
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const shifts = parseAdminShiftsInput(rawBody.value);
+  if (!shifts.ok) return c.json({ error: shifts.error }, 400);
   if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
-  const b = await c.req.json<{
-    shifts: Array<{ work_date: string; start_time: string; end_time: string }>;
-  }>();
   // Upsert each row
-  for (const s of b.shifts) {
+  for (const s of shifts.value) {
     await c.env.DB
       .prepare(
         `INSERT INTO staff_shifts (id, staff_id, work_date, start_time, end_time)
@@ -940,10 +1303,10 @@ booking.put('/api/booking/admin/staff/:id/shifts', async (c) => {
                 end_time = excluded.end_time,
                 updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')`,
       )
-      .bind(crypto.randomUUID(), staffIdValue, s.work_date, s.start_time, s.end_time)
+      .bind(crypto.randomUUID(), staffIdValue, s.workDate, s.startTime, s.endTime)
       .run();
   }
-  return c.json({ ok: true, count: b.shifts.length });
+  return c.json({ ok: true, count: shifts.value.length });
 });
 
 booking.delete('/api/booking/admin/staff/:id/shifts/:shiftId', async (c) => {
@@ -970,27 +1333,19 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
   const staffId = parseVisibleString(c.req.param('id'), 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!staffId.ok) return c.json({ error: 'invalid_staff_id' }, 400);
   const staffIdValue = staffId.value;
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const b = parseAdminShiftGenerateInput(rawBody.value);
+  if (!b.ok) return c.json({ error: b.error }, 400);
   if (!(await assertStaffInAccount(c.env.DB, staffIdValue, accountId))) {
     return c.json({ error: 'staff_not_found_in_account' }, 404);
   }
-  const b = await c.req.json<{
-    from_date: string; // YYYY-MM-DD
-    weeks: number;
-    weekly_template: Record<
-      'sun' | 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat',
-      { start: string; end: string } | null
-    >;
-  }>();
-  if (!b.from_date || !b.weeks || !b.weekly_template) {
-    return c.json({ error: 'missing_params' }, 400);
-  }
-  const dayKeys: Array<keyof typeof b.weekly_template> = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-  const start = new Date(`${b.from_date}T00:00:00Z`);
+  const start = new Date(`${b.value.fromDate}T00:00:00Z`);
   const stmts: D1PreparedStatement[] = [];
-  for (let i = 0; i < b.weeks * 7; i++) {
+  for (let i = 0; i < b.value.weeks * 7; i++) {
     const d = new Date(start);
     d.setUTCDate(start.getUTCDate() + i);
-    const tpl = b.weekly_template[dayKeys[d.getUTCDay()]];
+    const tpl = b.value.weeklyTemplate[DAY_KEYS[d.getUTCDay()]];
     if (!tpl) continue;
     stmts.push(
       c.env.DB
@@ -1012,8 +1367,9 @@ booking.post('/api/booking/admin/staff/:id/shifts/generate', async (c) => {
 booking.get('/api/booking/admin/requests', async (c) => {
   const accountId = await resolveAccountIdAdmin(c);
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
-  const status = c.req.query('status');
-  const sql = status === 'all'
+  const status = parseAdminRequestStatus(c.req.query('status'));
+  if (!status.ok) return c.json({ error: status.error }, 400);
+  const sql = status.value === 'all'
     ? `SELECT b.*,
               m.name AS menu_name,
               s.display_name AS staff_name,
@@ -1037,9 +1393,9 @@ booking.get('/api/booking/admin/requests', async (c) => {
         ORDER BY b.starts_at ASC
         LIMIT 200`;
   const stmt = c.env.DB.prepare(sql);
-  const rows = await (status === 'all' || !status
-    ? (status === 'all' ? stmt.bind(accountId) : stmt.bind(accountId, 'requested'))
-    : stmt.bind(accountId, status)).all();
+  const rows = await (status.value === 'all'
+    ? stmt.bind(accountId)
+    : stmt.bind(accountId, status.value)).all();
   return c.json({ requests: rows.results });
 });
 
@@ -1048,16 +1404,19 @@ booking.patch('/api/booking/admin/requests/:id', async (c) => {
   if (!accountId) return c.json({ error: 'missing_account_id' }, 400);
   const id = parseVisibleString(c.req.param('id'), 'booking_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
   if (!id.ok) return c.json({ error: 'invalid_booking_id' }, 400);
-  const b = await c.req.json<{ action: BookingAction }>();
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const action = parseBookingActionInput(rawBody.value);
+  if (!action.ok) return c.json({ error: action.error }, 400);
   const row = await c.env.DB
     .prepare(`SELECT id, status, starts_at FROM bookings WHERE id = ? AND line_account_id = ?`)
     .bind(id.value, accountId)
     .first<{ id: string; status: BookingStatus; starts_at: string }>();
   if (!row) return c.json({ error: 'not_found' }, 404);
-  if (!canTransition(row.status, b.action)) {
+  if (!canTransition(row.status, action.value)) {
     return c.json({ error: 'invalid_transition' }, 409);
   }
-  const next = nextStatus(row.status, b.action);
+  const next = nextStatus(row.status, action.value);
   // 条件付き UPDATE: 同時 PATCH の race を防ぐ。changes=0 のときは別オペレータが先に
   // 状態を変えたので 409 を返し、副作用（reminders 作成・通知）は走らせない。
   const updateResult = await c.env.DB

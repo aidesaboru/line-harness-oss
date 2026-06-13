@@ -60,11 +60,17 @@ function makeDb() {
           }
           return null as T | null;
         }),
-        all: vi.fn().mockResolvedValue({ results: [] }),
+        all: vi.fn(async <T>() => {
+          if (sql.includes('SELECT id FROM menus WHERE line_account_id = ?')) {
+            return { results: [{ id: 'menu-1' }] as T[] };
+          }
+          return { results: [] as T[] };
+        }),
         run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 0 } }),
       };
       return stmt;
     }),
+    batch: vi.fn().mockResolvedValue([]),
   };
   return db as unknown as D1Database & { calls: DbCall[]; prepare: ReturnType<typeof vi.fn> };
 }
@@ -176,6 +182,259 @@ describe('booking admin path id access', () => {
     );
     expect(requestRes.status).toBe(404);
     expect(requestDb.calls.find((call) => call.sql.includes('FROM bookings'))?.binds)
+      .toEqual(['booking-1', 'acc-1']);
+  });
+});
+
+describe('booking admin payload and query access', () => {
+  test('rejects invalid menu and staff payloads before DB writes', async () => {
+    const requests: Array<[string, string, string]> = [
+      ['POST', '/api/booking/admin/menus?account_id=acc-1', '{'],
+      ['POST', '/api/booking/admin/menus?account_id=acc-1', JSON.stringify({
+        name: ' ',
+        duration_minutes: 30,
+        base_price: 1000,
+      })],
+      ['POST', '/api/booking/admin/menus?account_id=acc-1', JSON.stringify({
+        name: 'Menu',
+        duration_minutes: 0,
+        base_price: 1000,
+      })],
+      ['POST', '/api/booking/admin/staff?account_id=acc-1', JSON.stringify({
+        name: 'Staff',
+        display_name: 'Staff',
+        is_designation_optional: 'yes',
+      })],
+      ['POST', '/api/booking/admin/staff?account_id=acc-1', JSON.stringify({
+        name: ' ',
+        display_name: 'Staff',
+      })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const { app, db } = setupApp(makeDb(), 'owner');
+
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, `${method} ${path} ${body}`).toBe(400);
+      expect(db.calls.some((call) => call.sql.includes('INSERT INTO menus')), body).toBe(false);
+      expect(db.calls.some((call) => call.sql.includes('INSERT INTO staff')), body).toBe(false);
+    }
+  });
+
+  test('trims valid menu and staff payloads before DB writes', async () => {
+    const menuDb = makeDb();
+    const menuRes = await setupApp(menuDb, 'owner').app.request(
+      '/api/booking/admin/menus?account_id=acc-1',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: ' Menu ',
+          category_label: ' Category ',
+          description: ' Description ',
+          duration_minutes: 45,
+          buffer_after_minutes: 5,
+          base_price: 2500,
+          sort_order: 3,
+        }),
+      },
+    );
+
+    expect(menuRes.status).toBe(201);
+    expect(menuDb.calls.find((call) => call.sql.includes('INSERT INTO menus'))?.binds).toEqual([
+      expect.any(String),
+      'acc-1',
+      'Menu',
+      'Category',
+      'Description',
+      45,
+      5,
+      2500,
+      3,
+    ]);
+
+    const staffDb = makeDb();
+    const staffRes = await setupApp(staffDb, 'owner').app.request(
+      '/api/booking/admin/staff?account_id=acc-1',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: ' staff-name ',
+          display_name: ' Display Name ',
+          role: ' Stylist ',
+          profile_image_url: ' https://example.com/staff.png ',
+          bio: ' Bio ',
+          sort_order: 4,
+          is_designation_optional: 1,
+        }),
+      },
+    );
+
+    expect(staffRes.status).toBe(201);
+    expect(staffDb.calls.find((call) => call.sql.includes('INSERT INTO staff'))?.binds).toEqual([
+      expect.any(String),
+      'acc-1',
+      'staff-name',
+      'Display Name',
+      'Stylist',
+      'https://example.com/staff.png',
+      'Bio',
+      4,
+      1,
+    ]);
+  });
+
+  test('rejects invalid staff menu and shift payloads before DB writes', async () => {
+    const requests: Array<[string, string, string]> = [
+      ['PUT', '/api/booking/admin/staff/staff-1/menus?account_id=acc-1', JSON.stringify({
+        menus: [{ menu_id: 'bad menu', is_offered: true }],
+      })],
+      ['PUT', '/api/booking/admin/staff/staff-1/menus?account_id=acc-1', JSON.stringify({
+        menus: [{ menu_id: 'menu-1', is_offered: 'yes' }],
+      })],
+      ['PUT', '/api/booking/admin/staff/staff-1/shifts?account_id=acc-1', JSON.stringify({
+        shifts: [{ work_date: '2026-02-31', start_time: '10:00', end_time: '11:00' }],
+      })],
+      ['PUT', '/api/booking/admin/staff/staff-1/shifts?account_id=acc-1', JSON.stringify({
+        shifts: [{ work_date: '2026-06-01', start_time: '12:00', end_time: '11:00' }],
+      })],
+      ['POST', '/api/booking/admin/staff/staff-1/shifts/generate?account_id=acc-1', JSON.stringify({
+        from_date: '2026-06-01',
+        weeks: 53,
+        weekly_template: { mon: { start: '10:00', end: '19:00' } },
+      })],
+      ['POST', '/api/booking/admin/staff/staff-1/shifts/generate?account_id=acc-1', JSON.stringify({
+        from_date: '2026-06-01',
+        weeks: 1,
+        weekly_template: { mon: { start: '19:00', end: '10:00' } },
+      })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const { app, db } = setupApp(makeDb(), 'owner');
+
+      const res = await app.request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, `${method} ${path} ${body}`).toBe(400);
+      expect(db.prepare, body).not.toHaveBeenCalled();
+    }
+  });
+
+  test('trims valid staff menu and shift payload values before DB writes', async () => {
+    const staffMenuDb = makeDb();
+    const staffMenuRes = await setupApp(staffMenuDb, 'owner').app.request(
+      '/api/booking/admin/staff/%20staff-1%20/menus?account_id=%20acc-1%20',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          menus: [{
+            menu_id: ' menu-1 ',
+            is_offered: true,
+            override_duration_minutes: 35,
+            override_price: 4000,
+          }],
+        }),
+      },
+    );
+
+    expect(staffMenuRes.status).toBe(200);
+    expect(staffMenuDb.calls.find((call) => call.sql.includes('SELECT 1 AS ok FROM staff'))?.binds)
+      .toEqual(['staff-1', 'acc-1']);
+    expect(staffMenuDb.calls.find((call) => call.sql.includes('DELETE FROM staff_menus'))?.binds)
+      .toEqual(['staff-1']);
+    expect(staffMenuDb.calls.find((call) => call.sql.includes('INSERT INTO staff_menus'))?.binds)
+      .toEqual(['staff-1', 'menu-1', 1, 35, 4000]);
+
+    const shiftDb = makeDb();
+    const shiftRes = await setupApp(shiftDb, 'owner').app.request(
+      '/api/booking/admin/staff/%20staff-1%20/shifts?account_id=%20acc-1%20',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          shifts: [{ work_date: ' 2026-06-01 ', start_time: ' 10:00 ', end_time: ' 18:00 ' }],
+        }),
+      },
+    );
+
+    expect(shiftRes.status).toBe(200);
+    expect(shiftDb.calls.find((call) => call.sql.includes('INSERT INTO staff_shifts'))?.binds)
+      .toEqual([expect.any(String), 'staff-1', '2026-06-01', '10:00', '18:00']);
+  });
+
+  test('rejects invalid shift query before lookup and trims valid date range', async () => {
+    const invalidDb = makeDb();
+    const invalidRes = await setupApp(invalidDb, 'owner').app.request(
+      '/api/booking/admin/staff/staff-1/shifts?account_id=acc-1&from=2026-02-31&to=2026-06-02',
+    );
+
+    expect(invalidRes.status).toBe(400);
+    expect(invalidDb.prepare).not.toHaveBeenCalled();
+
+    const validDb = makeDb();
+    const validRes = await setupApp(validDb, 'owner').app.request(
+      '/api/booking/admin/staff/%20staff-1%20/shifts?account_id=%20acc-1%20&from=%202026-06-01%20&to=%202026-06-02%20',
+    );
+
+    expect(validRes.status).toBe(200);
+    expect(validDb.calls.find((call) => call.sql.includes('FROM staff_shifts'))?.binds)
+      .toEqual(['staff-1', '2026-06-01', '2026-06-02']);
+  });
+
+  test('rejects invalid request status/action before booking SQL and trims valid values', async () => {
+    const invalidStatusDb = makeDb();
+    const invalidStatusRes = await setupApp(invalidStatusDb, 'owner').app.request(
+      '/api/booking/admin/requests?account_id=acc-1&status=bad%20status',
+    );
+
+    expect(invalidStatusRes.status).toBe(400);
+    expect(invalidStatusDb.prepare).not.toHaveBeenCalled();
+
+    const validStatusDb = makeDb();
+    const validStatusRes = await setupApp(validStatusDb, 'owner').app.request(
+      '/api/booking/admin/requests?account_id=%20acc-1%20&status=%20confirmed%20',
+    );
+
+    expect(validStatusRes.status).toBe(200);
+    expect(validStatusDb.calls.find((call) => call.sql.includes('FROM bookings b'))?.binds)
+      .toEqual(['acc-1', 'confirmed']);
+
+    const invalidActionDb = makeDb();
+    const invalidActionRes = await setupApp(invalidActionDb, 'owner').app.request(
+      '/api/booking/admin/requests/booking-1?account_id=acc-1',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve later' }),
+      },
+    );
+
+    expect(invalidActionRes.status).toBe(400);
+    expect(invalidActionDb.calls.some((call) => call.sql.includes('FROM bookings'))).toBe(false);
+
+    const validActionDb = makeDb();
+    const validActionRes = await setupApp(validActionDb, 'owner').app.request(
+      '/api/booking/admin/requests/%20booking-1%20?account_id=%20acc-1%20',
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: ' approve ' }),
+      },
+    );
+
+    expect(validActionRes.status).toBe(404);
+    expect(validActionDb.calls.find((call) => call.sql.includes('FROM bookings'))?.binds)
       .toEqual(['booking-1', 'acc-1']);
   });
 });

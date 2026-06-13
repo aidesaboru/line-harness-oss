@@ -185,6 +185,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker booking access route testsでは、不正な `account_id` がDB lookup前に400で止まり、正常queryはtrimされることを確認済み。
 - [ ] booking admin APIのmenu/staff/shift/booking path IDが更新/削除/所属確認/予約判断SQL前に検証される
   - Worker booking access route testsでは、不正なmenu/staff/booking path IDがSQL前に400で止まり、正常path IDはtrimされることを確認済み。
+- [ ] booking admin APIのmenu/staff/staff_menus/shifts/generate/requests payloadと `status` / `from` / `to` queryがDB書き込みや予約lookup前に検証される
+  - Worker booking access route testsでは、不正なJSON、型違い、範囲外数値、不正date/time/status/actionがDB書き込みやbooking lookup前に400で止まり、正常payload/queryはtrimされることを確認済み。
 - [ ] booking LIFF staff選択の `menus/:id/staff` path IDがstaff lookup SQL前に検証される
   - Worker booking LIFF access route testsでは、不正なmenu path IDがstaff lookup SQL前に400で止まり、正常path IDはtrimされることを確認済み。
 - [ ] booking LIFF availabilityの `liffId` / `menu_id` / `staff_id` / `from` / `to` queryがLINE account lookupやavailability helper呼び出し前に検証される

@@ -24,6 +24,10 @@ import type { Env } from '../index.js';
 
 const liffRoutes = new Hono<Env>();
 
+function errorKind(err: unknown): string {
+  return err instanceof Error && err.name ? err.name : typeof err;
+}
+
 // Persist ig_igsid on the LINE friend and notify IG Harness.
 // Used anywhere a LIFF/OAuth flow resolves with a known IGSID so existing
 // friends (who bypass /auth/callback) also get the cross-link written.
@@ -60,9 +64,7 @@ async function linkIgIgsid(
   }
 
   if (!linked) {
-    console.warn(
-      `Skipping IG Harness notify: friend ${friendId} is already linked to a different IGSID`,
-    );
+    console.warn('Skipping IG Harness notify: friend is already linked to a different IGSID');
     return;
   }
 
@@ -78,14 +80,10 @@ async function linkIgIgsid(
       })
         .then(async (res) => {
           if (!res.ok) {
-            console.error(
-              'IG Harness link-line failed:',
-              res.status,
-              await res.text().catch(() => ''),
-            );
+            console.error('IG Harness link-line failed:', res.status);
           }
         })
-        .catch((err) => console.error('IG Harness link-line error:', err)),
+        .catch((err) => console.error('IG Harness link-line error:', errorKind(err))),
     );
   }
 }
@@ -662,8 +660,7 @@ liffRoutes.get('/auth/callback', async (c) => {
     });
 
     if (!tokenRes.ok) {
-      const errText = await tokenRes.text();
-      console.error('Token exchange failed:', errText);
+      console.error('Token exchange failed:', tokenRes.status);
       return c.html(errorPage('Token exchange failed'));
     }
 
@@ -837,7 +834,7 @@ liffRoutes.get('/auth/callback', async (c) => {
           await applyXHarnessActions(db, friend.id, xhResult);
         }
       } catch (err) {
-        console.error('X Harness token resolution error (non-blocking):', err);
+        console.error('X Harness token resolution error (non-blocking):', errorKind(err));
       }
     }
 
@@ -1226,7 +1223,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
             await applyXHarnessActions(db, friend.id, xhResult);
           }
         } catch (err) {
-          console.error('X Harness token resolution error (non-blocking):', err);
+          console.error('X Harness token resolution error (non-blocking):', errorKind(err));
         }
       }
       return c.json({
@@ -1293,7 +1290,7 @@ liffRoutes.post('/api/liff/link', async (c) => {
           await applyXHarnessActions(db, friend.id, xhResult);
         }
       } catch (err) {
-        console.error('X Harness token resolution error (non-blocking):', err);
+        console.error('X Harness token resolution error (non-blocking):', errorKind(err));
       }
     }
 
@@ -1640,7 +1637,7 @@ async function applyXHarnessActions(
         await addTagToFriend(db, friendId, tagRow.id);
       }
     } catch (err) {
-      console.error(`X Harness: failed to add tag "${result.tag}":`, err);
+      console.error('X Harness: failed to add tag:', errorKind(err));
     }
   }
 
@@ -1650,7 +1647,7 @@ async function applyXHarnessActions(
       const { enrollFriendInScenario } = await import('@line-crm/db');
       await enrollFriendInScenario(db, friendId, result.scenarioId);
     } catch (err) {
-      console.error(`X Harness: failed to enroll in scenario:`, err);
+      console.error('X Harness: failed to enroll in scenario:', errorKind(err));
     }
   }
 }

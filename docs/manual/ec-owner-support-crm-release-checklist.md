@@ -183,6 +183,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - `apps/worker/src/client/form.ts` と `apps/worker/src/routes/forms.ts` の `Form reply|console.log` 検索は0件で、Worker typecheck/buildも通過済み。
 - [ ] Webhook follow、LIFF/X Harness連携、booking LIFF認証時に、LINE user ID、friend ID、表示名、Xユーザー名、channel候補、verify失敗bodyがconsoleへ出ない
   - Webhook/events/broadcast/admin-diagnostics route tests、Worker typecheck、Worker buildで、Webhook/profile refresh/broadcast test-sendの失敗ログ匿名化後も動作が壊れていないことを確認済み。
+- [ ] LIFF OAuth token交換、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、tag名、例外本文がconsoleへ出ない
+  - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
@@ -242,6 +244,7 @@ corepack pnpm --filter worker test -- src/routes/support.test.ts
 corepack pnpm --filter worker test -- src/routes/friends.test.ts
 corepack pnpm --filter worker test -- src/routes/conversions-calendar-access.test.ts
 corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/operations-access.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/notifications.test.ts
+corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts
 corepack pnpm --filter worker test
 corepack pnpm --filter worker test -- src/routes/support.test.ts src/routes/chats.test.ts src/routes/staff.test.ts src/services/support-access.test.ts
 corepack pnpm build

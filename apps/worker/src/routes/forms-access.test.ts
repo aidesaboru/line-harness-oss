@@ -138,6 +138,61 @@ describe('form management role guards', () => {
     expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalledWith({} as D1Database, 'U-victim');
   });
 
+  test('public form partial submit rejects invalid data before LINE idToken verification', async () => {
+    const app = setupApp('staff');
+    const invalidJson = await app.request('/api/forms/form-1/partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const arrayData = await app.request('/api/forms/form-1/partial', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken: 'id-token', data: ['not', 'an', 'object'] }),
+    });
+
+    expect(invalidJson.status).toBe(400);
+    expect(arrayData.status).toBe(400);
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+
+  test('public form submit rejects oversized data before webhook or submission writes', async () => {
+    dbMocks.getFormById.mockResolvedValue({
+      id: 'form-1',
+      name: 'Survey',
+      description: null,
+      fields: '[]',
+      on_submit_tag_id: 'tag-reward',
+      on_submit_scenario_id: 'scenario-reward',
+      on_submit_message_type: null,
+      on_submit_message_content: null,
+      on_submit_webhook_url: 'https://x-harness.test/api/engagement-gates/gate-1/verify',
+      on_submit_webhook_headers: null,
+      on_submit_webhook_fail_message: null,
+      save_to_metadata: 0,
+      is_active: 1,
+      submit_count: 0,
+      created_at: '2026-06-13T10:00:00.000',
+      updated_at: '2026-06-13T10:00:00.000',
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp('staff').request('/api/forms/form-1/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: { answer: 'x'.repeat(17_000) } }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(liffAuthMocks.verifyCallerLineUserId).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dbMocks.createFormSubmission).not.toHaveBeenCalled();
+    expect(dbMocks.addTagToFriend).not.toHaveBeenCalled();
+    expect(dbMocks.enrollFriendInScenario).not.toHaveBeenCalled();
+  });
+
   test('public form submit ignores _skipWebhook and rechecks webhook gate server-side', async () => {
     dbMocks.getFormById.mockResolvedValue({
       id: 'form-1',

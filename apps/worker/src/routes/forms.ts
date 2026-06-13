@@ -22,6 +22,8 @@ import { requireRole } from '../middleware/role-guard.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
 
 const forms = new Hono<Env>();
+const MAX_PUBLIC_FORM_DATA_JSON_LENGTH = 16_384;
+const MAX_PUBLIC_FORM_DATA_FIELDS = 100;
 
 function errorKind(err: unknown): string {
   return err instanceof Error && err.name ? err.name : typeof err;
@@ -71,6 +73,18 @@ function serializeSubmission(row: DbFormSubmission & { friend_name?: string | nu
     data: JSON.parse(row.data || '{}') as Record<string, unknown>,
     createdAt: row.created_at,
   };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parsePublicFormData(value: unknown): Record<string, unknown> | null {
+  if (value === undefined) return {};
+  if (!isPlainRecord(value)) return null;
+  if (Object.keys(value).length > MAX_PUBLIC_FORM_DATA_FIELDS) return null;
+  if (JSON.stringify(value).length > MAX_PUBLIC_FORM_DATA_JSON_LENGTH) return null;
+  return { ...value };
 }
 
 // GET /api/forms — list all forms (with submission stats + delivering accounts)
@@ -257,7 +271,14 @@ forms.post('/api/forms/:id/opened', async (c) => {
 forms.post('/api/forms/:id/partial', async (c) => {
   try {
     const formId = c.req.param('id');
-    const body = await c.req.json<{ idToken?: string; data?: Record<string, unknown> }>();
+    const body = await c.req.json<{ idToken?: string; data?: Record<string, unknown> }>().catch(() => null);
+    if (!body) {
+      return c.json({ success: false, error: 'Invalid form payload' }, 400);
+    }
+    const partialData = parsePublicFormData(body.data);
+    if (!partialData) {
+      return c.json({ success: false, error: 'Invalid form data' }, 400);
+    }
 
     const friend = await resolveVerifiedFormFriend(c, body.idToken);
 
@@ -267,7 +288,7 @@ forms.post('/api/forms/:id/partial', async (c) => {
 
     // Save survey data to friend metadata (merge with existing)
     const existingMeta = friend.metadata ? JSON.parse(friend.metadata) : {};
-    const merged = { ...existingMeta, ...body.data };
+    const merged = { ...existingMeta, ...partialData };
     await c.env.DB.prepare(
       'UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?',
     ).bind(JSON.stringify(merged), jstNow(), friend.id).run();
@@ -297,9 +318,15 @@ forms.post('/api/forms/:id/submit', async (c) => {
       idToken?: string;
       data?: Record<string, unknown>;
       trackedLinkId?: string;
-    }>();
+    }>().catch(() => null);
+    if (!body) {
+      return c.json({ success: false, error: 'Invalid form payload' }, 400);
+    }
 
-    const submissionData = body.data ?? {};
+    const submissionData = parsePublicFormData(body.data);
+    if (!submissionData) {
+      return c.json({ success: false, error: 'Invalid form data' }, 400);
+    }
 
     // Validate required fields
     const fields = JSON.parse(form.fields || '[]') as Array<{

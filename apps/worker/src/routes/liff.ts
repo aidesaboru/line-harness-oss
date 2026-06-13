@@ -26,9 +26,89 @@ import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 
 const liffRoutes = new Hono<Env>();
+const MAX_LIFF_ID_TOKEN_LENGTH = 8192;
+const MAX_LIFF_LINE_USER_ID_LENGTH = 128;
+const MAX_LIFF_FORM_ID_LENGTH = 128;
+const MAX_LIFF_DISPLAY_NAME_LENGTH = 256;
+const MAX_LIFF_REF_LENGTH = 512;
+const MAX_LIFF_IGSID_LENGTH = 512;
+
+type LiffLinkBody = {
+  idToken: string;
+  displayName?: string | null;
+  ref?: string;
+  existingUuid?: string;
+  ig?: string;
+};
+
+type LiffSendFormLinkBody = {
+  lineUserId: string;
+  formId: string;
+  idToken?: string;
+  ref?: string;
+  gate?: string;
+  xh?: string;
+  ig?: string;
+};
 
 function errorKind(err: unknown): string {
   return err instanceof Error && err.name ? err.name : typeof err;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function boundedRequiredString(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return null;
+  return trimmed;
+}
+
+function boundedOptionalString(value: unknown, maxLength: number): string | undefined | null {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > maxLength) return null;
+  return trimmed;
+}
+
+function parseLiffLinkBody(value: unknown): LiffLinkBody | null {
+  if (!isPlainRecord(value)) return null;
+  const idToken = boundedRequiredString(value.idToken, MAX_LIFF_ID_TOKEN_LENGTH);
+  if (!idToken) return null;
+
+  const ref = boundedOptionalString(value.ref, MAX_LIFF_REF_LENGTH);
+  const existingUuid = boundedOptionalString(value.existingUuid, MAX_LIFF_REF_LENGTH);
+  const ig = boundedOptionalString(value.ig, MAX_LIFF_IGSID_LENGTH);
+  if (ref === null || existingUuid === null || ig === null) return null;
+
+  let displayName: string | null | undefined;
+  if (value.displayName === null) {
+    displayName = null;
+  } else {
+    displayName = boundedOptionalString(value.displayName, MAX_LIFF_DISPLAY_NAME_LENGTH);
+    if (displayName === null) return null;
+  }
+
+  return { idToken, displayName, ref, existingUuid, ig };
+}
+
+function parseLiffSendFormLinkBody(value: unknown): LiffSendFormLinkBody | null {
+  if (!isPlainRecord(value)) return null;
+  const lineUserId = boundedRequiredString(value.lineUserId, MAX_LIFF_LINE_USER_ID_LENGTH);
+  const formId = boundedRequiredString(value.formId, MAX_LIFF_FORM_ID_LENGTH);
+  if (!lineUserId || !formId) return null;
+
+  const idToken = boundedOptionalString(value.idToken, MAX_LIFF_ID_TOKEN_LENGTH);
+  const ref = boundedOptionalString(value.ref, MAX_LIFF_REF_LENGTH);
+  const gate = boundedOptionalString(value.gate, MAX_LIFF_REF_LENGTH);
+  const xh = boundedOptionalString(value.xh, MAX_LIFF_REF_LENGTH);
+  const ig = boundedOptionalString(value.ig, MAX_LIFF_IGSID_LENGTH);
+  if (idToken === null || ref === null || gate === null || xh === null || ig === null) return null;
+
+  return { lineUserId, formId, idToken, ref, gate, xh, ig };
 }
 
 // Persist ig_igsid on the LINE friend and notify IG Harness.
@@ -1140,13 +1220,11 @@ liffRoutes.post('/api/liff/profile', async (c) => {
 // POST /api/liff/link - link friend to user UUID (public, verified via LINE ID token)
 liffRoutes.post('/api/liff/link', async (c) => {
   try {
-    const body = await c.req.json<{
-      idToken: string;
-      displayName?: string | null;
-      ref?: string;
-      existingUuid?: string;
-      ig?: string;
-    }>();
+    const rawBody = await c.req.json().catch(() => null);
+    const body = parseLiffLinkBody(rawBody);
+    if (!body) {
+      return c.json({ success: false, error: 'Invalid LIFF link payload' }, 400);
+    }
 
     if (!body.idToken) {
       return c.json({ success: false, error: 'idToken is required' }, 400);
@@ -1704,15 +1782,12 @@ async function resolveXHarnessToken(
 // Security: requires idToken to verify the caller is the actual LINE user
 liffRoutes.post('/api/liff/send-form-link', async (c) => {
   try {
-    const { lineUserId, formId, idToken, ref, gate, xh, ig } = await c.req.json<{
-      lineUserId: string;
-      formId: string;
-      idToken?: string;
-      ref?: string;
-      gate?: string;
-      xh?: string;
-      ig?: string;
-    }>();
+    const rawBody = await c.req.json().catch(() => null);
+    const body = parseLiffSendFormLinkBody(rawBody);
+    if (!body) {
+      return c.json({ success: false, error: 'Invalid send-form-link payload' }, 400);
+    }
+    const { lineUserId, formId, idToken, ref, gate, xh, ig } = body;
     if (!lineUserId || !formId) {
       return c.json({ success: false, error: 'lineUserId and formId required' }, 400);
     }

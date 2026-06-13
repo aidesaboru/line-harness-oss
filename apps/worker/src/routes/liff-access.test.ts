@@ -164,6 +164,32 @@ describe('public LIFF profile endpoint', () => {
 });
 
 describe('public LIFF link endpoint', () => {
+  test('rejects malformed or oversized link payloads before LINE verification', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const app = setupApp();
+
+    const malformed = await app.request('/api/liff/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const oversized = await app.request('/api/liff/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idToken: 'token',
+        ref: 'r'.repeat(600),
+      }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(oversized.status).toBe(400);
+    expect(dbMocks.getLineAccounts).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+
   test('records tracked-link clicks only after LINE idToken verification resolves the friend', async () => {
     const db = createPreparedDb();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -254,6 +280,27 @@ describe('public LIFF send-form-link endpoint', () => {
 
     expect(res.status).toBe(401);
     expect(dbMocks.getLineAccounts).not.toHaveBeenCalled();
+    expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
+  });
+
+  test('rejects oversized send-form-link payloads before LINE verification', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp().request('/api/liff/send-form-link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineUserId: 'U-victim',
+        formId: 'form-1',
+        idToken: 'id-token',
+        ig: 'i'.repeat(600),
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.getLineAccounts).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(dbMocks.getFriendByLineUserId).not.toHaveBeenCalled();
   });
 

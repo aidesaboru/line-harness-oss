@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUnansweredInboxListOptions,
+  buildUnansweredInboxSummaryOptions,
   getInboxTotalPages,
   INBOX_OVERDUE_WAIT_MINUTES,
 } from './inbox-pagination'
@@ -39,5 +40,19 @@ describe('inbox pagination helpers', () => {
     expect(getInboxTotalPages(0, 50)).toBe(1)
     expect(getInboxTotalPages(51, 50)).toBe(2)
     expect(getInboxTotalPages(-1, 0)).toBe(1)
+  })
+
+  it('builds matching summary options without paging fields', () => {
+    expect(buildUnansweredInboxSummaryOptions({
+      q: '田島',
+      account: 'acc-1',
+      minWaitMinutes: INBOX_OVERDUE_WAIT_MINUTES,
+      page: 4,
+      pageSize: 50,
+    })).toEqual({
+      q: '田島',
+      account: 'acc-1',
+      minWaitMinutes: INBOX_OVERDUE_WAIT_MINUTES,
+    })
   })
 })

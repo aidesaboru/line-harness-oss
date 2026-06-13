@@ -300,6 +300,50 @@ describe('countUnanswered', () => {
     expect(c.byAccount).toEqual([]);
     expect(c.oldestWaitMinutes).toBeNull();
   });
+
+  test('検索/account/待ち時間filterをsummaryにも反映する', async () => {
+    const now = Date.now();
+    const twoHoursAgo = new Date(now - 120 * 60_000).toISOString();
+    const tenMinAgo = new Date(now - 10 * 60_000).toISOString();
+    const db = stubDB({
+      rows: [
+        {
+          friend_id: 'f1', display_name: '山田', picture_url: null,
+          line_account_id: 'a1', account_name: 'L ①',
+          last_incoming: twoHoursAgo,
+          last_manual: null, last_machine: null,
+          last_incoming_type: 'text', last_incoming_content: '料金の相談です',
+        },
+        {
+          friend_id: 'f2', display_name: '佐藤', picture_url: null,
+          line_account_id: 'a1', account_name: 'L ①',
+          last_incoming: tenMinAgo,
+          last_manual: null, last_machine: null,
+          last_incoming_type: 'text', last_incoming_content: '料金の相談です',
+        },
+        {
+          friend_id: 'f3', display_name: '田中', picture_url: null,
+          line_account_id: 'a2', account_name: 'L ②',
+          last_incoming: twoHoursAgo,
+          last_manual: null, last_machine: null,
+          last_incoming_type: 'text', last_incoming_content: '料金の相談です',
+        },
+      ],
+    });
+
+    const c = await countUnanswered(db, {
+      account: 'a1',
+      q: '料金',
+      minWaitMinutes: 60,
+    });
+
+    expect(c.total).toBe(1);
+    expect(c.byAccount).toEqual([
+      { accountId: 'a1', accountName: 'L ①', count: 1 },
+    ]);
+    expect(c.oldestWaitMinutes).toBeGreaterThanOrEqual(120);
+    expect(c.oldestWaitMinutes).toBeLessThan(122);
+  });
 });
 
 describe('auto_reply マッチ除外', () => {

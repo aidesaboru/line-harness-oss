@@ -359,13 +359,16 @@ export async function getUnansweredFriendIds(
 
 export async function countUnanswered(
   db: D1Database,
-  staff?: SupportAccessStaff,
+  optsOrStaff: UnansweredInboxOptions | SupportAccessStaff = {},
 ): Promise<UnansweredCount> {
-  const allRows = await getAllUnansweredRows(db, staff);
+  const opts: UnansweredInboxOptions =
+    'role' in optsOrStaff ? { staff: optsOrStaff } : optsOrStaff;
+  const allRows = await getAllUnansweredRows(db, opts.staff);
+  const filteredRows = applyFilters(allRows, opts);
 
   const byAccountMap = new Map<string, { accountName: string; count: number }>();
   let oldest: string | null = null;
-  for (const r of allRows) {
+  for (const r of filteredRows) {
     const key = r.accountId ?? '__unassigned__';
     const existing = byAccountMap.get(key);
     if (existing) {
@@ -386,7 +389,7 @@ export async function countUnanswered(
       : null;
 
   return {
-    total: allRows.length,
+    total: filteredRows.length,
     byAccount,
     oldestWaitMinutes,
   };

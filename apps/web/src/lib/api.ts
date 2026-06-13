@@ -1254,12 +1254,22 @@ export const api = {
           }>;
         }>>(`/api/inbox/unanswered${qs ? `?${qs}` : ''}`);
       },
-      count: () =>
-        fetchApi<ApiResponse<{
+      count: (opts?: {
+        q?: string;
+        account?: string;
+        minWaitMinutes?: number;
+      }) => {
+        const p = new URLSearchParams();
+        if (opts?.q) p.set('q', opts.q);
+        if (opts?.account) p.set('account', opts.account);
+        if (opts?.minWaitMinutes) p.set('minWaitMinutes', String(opts.minWaitMinutes));
+        const qs = p.toString();
+        return fetchApi<ApiResponse<{
           total: number;
           byAccount: Array<{ accountId: string; accountName: string; count: number }>;
           oldestWaitMinutes: number | null;
-        }>>('/api/inbox/unanswered/count'),
+        }>>(`/api/inbox/unanswered/count${qs ? `?${qs}` : ''}`);
+      },
     },
   },
   richMenuGroups: {

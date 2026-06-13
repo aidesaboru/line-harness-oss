@@ -284,6 +284,7 @@ N/A
 - `corepack pnpm --filter web test -- src/components/layout/sidebar-access.test.ts`
 - `corepack pnpm --filter web test -- src/lib/support-chat-draft.test.ts`
 - `corepack pnpm --filter web test -- src/lib/inbox-pagination.test.ts`
+- `corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts`
 - `corepack pnpm test:scripts`
 - `corepack pnpm --filter worker typecheck`
 - `corepack pnpm --filter worker test -- src/middleware/auth.test.ts src/routes/users.test.ts src/routes/account-settings.test.ts src/routes/admin-diagnostics-access.test.ts src/routes/broadcasts-access.test.ts src/routes/forms-access.test.ts src/routes/operations-access.test.ts`
@@ -296,7 +297,7 @@ N/A
 - `git diff --check`
 - Browser smoke with login mock session confirms unauthenticated `/support` redirects to `/login`; entering an API key calls `/api/auth/login`, the next `/api/auth/session` succeeds, and the dashboard renders the login staff identity, owner role, selected LINE account, and KPI cards.
 - Browser smoke with owner/admin/staff mock sessions confirms `/support` role UI: owner/admin show one `新規案件` button; staff shows zero `新規案件` buttons. Staff mock sidebar only shows 友だち管理, 個別チャット, サポートCRM, and 未対応 while hiding management menus; direct staff access to `/broadcasts` returns to `/support`; direct admin access to `/staff` also returns to `/support`.
-- Web helper tests confirm `/notifications` builds server-side unanswered inbox queries for search/account/1時間以上/page/pageSize and clamps invalid paging values.
+- Web helper and Worker route/service tests confirm `/notifications` builds server-side unanswered inbox queries for search/account/1時間以上/page/pageSize, summary count uses the same filters, and invalid paging values are clamped.
 - Browser smoke with empty staff-name mock session confirms `/support` shows the staff-name warning, does not render the dummy case/manual/staff suggestion/unanswered badge, and does not call `/api/support/summary`, `/api/support/cases`, `/api/support/manuals`, `/api/chats`, `/api/staff`, or `/api/inbox/unanswered/count`.
 - Browser smoke with list-control mock session confirms updated sort is `updatedAt` desc even when API order differs, initial detail matches the first displayed case, priority sort reorders locally, overdue queue sends `queue=overdue`, status selection clears queue, and search sends `q=Gamma`.
 - Browser smoke with outside-list mock session confirms hidden selected cases keep the detail panel with an explanatory banner; resolved hidden cases reveal the completed list with `status=resolved`, while unresolved hidden cases reset to `queue=unresolved`.

@@ -49,16 +49,21 @@ describe('inbox routes support visibility', () => {
     });
   });
 
-  test('unanswered count passes current staff into the service scope', async () => {
+  test('unanswered count passes filters and current staff into the service scope', async () => {
     const db = {} as D1Database;
 
-    const res = await setupApp(db).request('/api/inbox/unanswered/count');
+    const res = await setupApp(db).request('/api/inbox/unanswered/count?q=%E7%9B%B8%E8%AB%87&account=acc-1&minWaitMinutes=60');
 
     expect(res.status).toBe(200);
     expect(inboxMocks.countUnanswered).toHaveBeenCalledWith(db, {
-      id: 'staff-1',
-      name: '田島',
-      role: 'staff',
+      q: '相談',
+      account: 'acc-1',
+      minWaitMinutes: 60,
+      staff: {
+        id: 'staff-1',
+        name: '田島',
+        role: 'staff',
+      },
     });
   });
 });

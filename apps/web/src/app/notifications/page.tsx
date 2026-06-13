@@ -6,7 +6,11 @@ import InboxFilters from '@/components/inbox/inbox-filters'
 import InboxList from '@/components/inbox/inbox-list'
 import InboxSummaryBar from '@/components/inbox/inbox-summary-bar'
 import { api } from '@/lib/api'
-import { buildUnansweredInboxListOptions, getInboxTotalPages } from '@/lib/inbox-pagination'
+import {
+  buildUnansweredInboxListOptions,
+  buildUnansweredInboxSummaryOptions,
+  getInboxTotalPages,
+} from '@/lib/inbox-pagination'
 import type { InboxRowData } from '@/components/inbox/inbox-row'
 
 const PAGE_SIZE = 50
@@ -67,15 +71,16 @@ export default function InboxPage() {
     setLoading(true)
     setError('')
     try {
+      const listOptions = buildUnansweredInboxListOptions({
+        q,
+        account,
+        overdueOnly,
+        page,
+        pageSize: PAGE_SIZE,
+      })
       const [listRes, summaryRes] = await Promise.all([
-        api.inbox.unanswered.list(buildUnansweredInboxListOptions({
-          q,
-          account,
-          overdueOnly,
-          page,
-          pageSize: PAGE_SIZE,
-        })),
-        api.inbox.unanswered.count(),
+        api.inbox.unanswered.list(listOptions),
+        api.inbox.unanswered.count(buildUnansweredInboxSummaryOptions(listOptions)),
       ])
       // 古いリクエストが新しいリクエストの後に到着したら破棄
       if (seq !== requestSeqRef.current) return

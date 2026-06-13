@@ -8,6 +8,11 @@ export type UnansweredInboxListOptions = {
   pageSize: number
 }
 
+export type UnansweredInboxSummaryOptions = Pick<
+  UnansweredInboxListOptions,
+  'q' | 'account' | 'minWaitMinutes'
+>
+
 export function getInboxTotalPages(total: number, pageSize: number): number {
   const safeTotal = Math.max(0, total)
   const safePageSize = Math.max(1, pageSize)
@@ -28,5 +33,15 @@ export function buildUnansweredInboxListOptions(input: {
     ...(input.overdueOnly ? { minWaitMinutes: INBOX_OVERDUE_WAIT_MINUTES } : {}),
     page: Math.max(1, input.page),
     pageSize: Math.max(1, input.pageSize),
+  }
+}
+
+export function buildUnansweredInboxSummaryOptions(
+  listOptions: UnansweredInboxListOptions,
+): UnansweredInboxSummaryOptions {
+  return {
+    ...(listOptions.q ? { q: listOptions.q } : {}),
+    ...(listOptions.account ? { account: listOptions.account } : {}),
+    ...(listOptions.minWaitMinutes ? { minWaitMinutes: listOptions.minWaitMinutes } : {}),
   }
 }

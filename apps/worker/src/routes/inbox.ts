@@ -36,7 +36,16 @@ inbox.get('/api/inbox/unanswered', async (c) => {
 
 inbox.get('/api/inbox/unanswered/count', async (c) => {
   try {
-    const result = await countUnanswered(c.env.DB, currentSupportStaff(c));
+    const q = c.req.query('q');
+    const account = c.req.query('account') || undefined;
+    const minWaitMinutesStr = c.req.query('minWaitMinutes');
+
+    const result = await countUnanswered(c.env.DB, {
+      q: q || undefined,
+      account,
+      minWaitMinutes: minWaitMinutesStr ? Number.parseInt(minWaitMinutesStr, 10) : undefined,
+      staff: currentSupportStaff(c),
+    });
     return c.json({ success: true, data: result });
   } catch (err) {
     console.error('GET /api/inbox/unanswered/count error:', err);

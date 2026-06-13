@@ -85,6 +85,16 @@ function parsePublicTrackedLinkId(raw: string | undefined): string | null {
   return linkId;
 }
 
+function parseTrackedLinkPathId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: 'trackedLinkId must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'trackedLinkId is required' };
+  if (value.length > TRACKED_LINK_ID_MAX_LENGTH || !TRACKED_LINK_ID_PATTERN.test(value)) {
+    return { ok: false, error: 'trackedLinkId is invalid' };
+  }
+  return { ok: true, value };
+}
+
 function parseTrackedLinkName(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
   if (raw == null) return required ? { ok: false, error: 'name is required' } : { ok: true };
   if (typeof raw !== 'string') return { ok: false, error: 'name must be a string' };
@@ -197,12 +207,13 @@ trackedLinks.get('/api/tracked-links', requireRole('owner', 'admin'), async (c) 
 // GET /api/tracked-links/:id — get single with click details
 trackedLinks.get('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const link = await getTrackedLinkById(c.env.DB, id);
+    const id = parseTrackedLinkPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const link = await getTrackedLinkById(c.env.DB, id.value);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);
     }
-    const clicks = await getLinkClicks(c.env.DB, id);
+    const clicks = await getLinkClicks(c.env.DB, id.value);
     const base = getBaseUrl(c);
     return c.json({
       success: true,
@@ -250,12 +261,13 @@ trackedLinks.post('/api/tracked-links', requireRole('owner', 'admin'), async (c)
 // PATCH /api/tracked-links/:id — update mutable fields
 trackedLinks.patch('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseTrackedLinkPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseUpdateTrackedLinkBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    const link = await updateTrackedLink(c.env.DB, id, parsed.body);
+    const link = await updateTrackedLink(c.env.DB, id.value, parsed.body);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);
     }
@@ -270,12 +282,13 @@ trackedLinks.patch('/api/tracked-links/:id', requireRole('owner', 'admin'), asyn
 // DELETE /api/tracked-links/:id
 trackedLinks.delete('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const link = await getTrackedLinkById(c.env.DB, id);
+    const id = parseTrackedLinkPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const link = await getTrackedLinkById(c.env.DB, id.value);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);
     }
-    await deleteTrackedLink(c.env.DB, id);
+    await deleteTrackedLink(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/tracked-links/:id error:', err);

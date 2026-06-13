@@ -136,6 +136,11 @@ function parseVisibleAsciiToken(raw: unknown, key: string, required: boolean): {
   return { ok: true, value };
 }
 
+function parseAdPlatformPathId(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  const id = parseVisibleAsciiToken(raw, 'adPlatformId', true);
+  return id.ok ? { ok: true, value: id.value! } : id;
+}
+
 function parseCreateAdPlatformBody(raw: unknown): ParsedCreateAdPlatformBody {
   if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
   const name = parseAdPlatformName(raw.name, true);
@@ -240,12 +245,13 @@ adPlatforms.post('/api/ad-platforms', requireRole('owner', 'admin'), async (c) =
 // PUT /api/ad-platforms/:id - update
 adPlatforms.put('/api/ad-platforms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseAdPlatformPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseUpdateAdPlatformBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    const platform = await updateAdPlatform(c.env.DB, id, parsed.body);
+    const platform = await updateAdPlatform(c.env.DB, id.value, parsed.body);
     if (!platform) {
       return c.json({ success: false, error: 'Not found' }, 404);
     }
@@ -301,7 +307,9 @@ adPlatforms.post('/api/ad-platforms/test', requireRole('owner', 'admin'), async 
 // DELETE /api/ad-platforms/:id - delete
 adPlatforms.delete('/api/ad-platforms/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteAdPlatform(c.env.DB, c.req.param('id')!);
+    const id = parseAdPlatformPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteAdPlatform(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/ad-platforms/:id error:', err);
@@ -312,9 +320,10 @@ adPlatforms.delete('/api/ad-platforms/:id', requireRole('owner', 'admin'), async
 // GET /api/ad-platforms/:id/logs - conversion send logs
 adPlatforms.get('/api/ad-platforms/:id/logs', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseAdPlatformPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const limit = clampLimit(c.req.query('limit'), 50);
-    const logs = await getAdConversionLogs(c.env.DB, id, limit);
+    const logs = await getAdConversionLogs(c.env.DB, id.value, limit);
 
     return c.json({
       success: true,

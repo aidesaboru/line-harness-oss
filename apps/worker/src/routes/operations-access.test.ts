@@ -493,6 +493,46 @@ describe('operations API role guards', () => {
     expect(dbMocks.updateAdPlatform).not.toHaveBeenCalled();
   });
 
+  test('owner operations management rejects malformed path IDs before DB helpers', async () => {
+    const app = setupApp('owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['PUT', '/api/ad-platforms/bad%20platform', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      }],
+      ['DELETE', '/api/ad-platforms/bad%20platform'],
+      ['GET', '/api/ad-platforms/bad%20platform/logs'],
+      ['GET', '/api/affiliates/bad%20affiliate'],
+      ['PUT', '/api/affiliates/bad%20affiliate', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      }],
+      ['DELETE', '/api/affiliates/bad%20affiliate'],
+      ['GET', '/api/tracked-links/bad%20link'],
+      ['PATCH', '/api/tracked-links/bad%20link', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      }],
+      ['DELETE', '/api/tracked-links/bad%20link'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.updateAdPlatform).not.toHaveBeenCalled();
+    expect(dbMocks.deleteAdPlatform).not.toHaveBeenCalled();
+    expect(dbMocks.getAdConversionLogs).not.toHaveBeenCalled();
+    expect(dbMocks.getAffiliateById).not.toHaveBeenCalled();
+    expect(dbMocks.updateAffiliate).not.toHaveBeenCalled();
+    expect(dbMocks.deleteAffiliate).not.toHaveBeenCalled();
+    expect(dbMocks.getTrackedLinkById).not.toHaveBeenCalled();
+    expect(dbMocks.getLinkClicks).not.toHaveBeenCalled();
+    expect(dbMocks.updateTrackedLink).not.toHaveBeenCalled();
+    expect(dbMocks.deleteTrackedLink).not.toHaveBeenCalled();
+  });
+
   test('owner ad platform management trims and normalizes valid payloads before writes', async () => {
     const app = setupApp('owner');
 
@@ -505,7 +545,7 @@ describe('operations API role guards', () => {
         config: { access_token: 'secret', priority: 1, enabled: true },
       }),
     });
-    const updated = await app.request('/api/ad-platforms/platform-1', {
+    const updated = await app.request('/api/ad-platforms/%20platform-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ displayName: ' ', config: { pixel_id: 'px-1' }, isActive: false }),
@@ -603,7 +643,7 @@ describe('operations API role guards', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: ' Partner ', code: ' partner-1 ', commissionRate: 0.25 }),
     });
-    const updated = await app.request('/api/affiliates/affiliate-1', {
+    const updated = await app.request('/api/affiliates/%20affiliate-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: ' Partner New ', commissionRate: 0.2, isActive: false }),
@@ -676,7 +716,7 @@ describe('operations API role guards', () => {
         rewardTemplateId: 'reward_1',
       }),
     });
-    const updated = await app.request('/api/tracked-links/link-1', {
+    const updated = await app.request('/api/tracked-links/%20link-1%20', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: ' LP New ', tagId: null, isActive: false }),

@@ -211,7 +211,9 @@ affiliates.get('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
 // GET /api/affiliates/:id - get single
 affiliates.get('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const item = await getAffiliateById(c.env.DB, c.req.param('id')!);
+    const id = parseVisibleString(c.req.param('id'), 'id', AFFILIATE_ID_MAX_LENGTH);
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const item = await getAffiliateById(c.env.DB, id.value);
     if (!item) {
       return c.json({ success: false, error: 'Affiliate not found' }, 404);
     }
@@ -240,13 +242,14 @@ affiliates.post('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
 // PUT /api/affiliates/:id - update
 affiliates.put('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseVisibleString(c.req.param('id'), 'id', AFFILIATE_ID_MAX_LENGTH);
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseUpdateAffiliateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
 
-    const updated = await updateAffiliate(c.env.DB, id, {
+    const updated = await updateAffiliate(c.env.DB, id.value, {
       name: body.name,
       commission_rate: body.commissionRate,
       is_active: body.isActive !== undefined ? (body.isActive ? 1 : 0) : undefined,
@@ -265,7 +268,9 @@ affiliates.put('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) =
 // DELETE /api/affiliates/:id - delete
 affiliates.delete('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteAffiliate(c.env.DB, c.req.param('id')!);
+    const id = parseVisibleString(c.req.param('id'), 'id', AFFILIATE_ID_MAX_LENGTH);
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteAffiliate(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/affiliates/:id error:', err);

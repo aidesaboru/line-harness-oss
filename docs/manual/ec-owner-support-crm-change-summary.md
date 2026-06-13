@@ -76,7 +76,7 @@ updated: 2026-06-13
 - LIFF OAuth token交換、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
 - Webhookプロフィール取得、profile refresh、broadcast test-sendの失敗ログは、LINE user IDやfriend IDを含めない
 - 売上・広告・計測運用API（Stripe events、ad-platforms、affiliates管理/レポート、tracked-links管理）はowner/adminだけに制限し、公開Webhook/クリック/リダイレクトは維持
-- ad-platforms/affiliates/tracked-links管理APIの作成/更新/test payloadは、壊れたJSON、許可以外の広告platform名、巨大/ネストした広告config、空/長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveをDB書き込みや外部CV送信前に400で止める
+- ad-platforms/affiliates/tracked-links管理APIのpath IDと作成/更新/test payloadは、壊れたJSON、不正なadPlatformId/affiliateId/trackedLinkId、許可以外の広告platform名、巨大/ネストした広告config、空/長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveをDB lookup/writeや外部CV送信前に400で止める
 - 公開affiliate click `/api/affiliates/click` は壊れたJSON、空/128文字超またはURL-safeではない `code`、HTTP(S)以外または2048文字超の `url` をDB lookupやクリック保存前に400で止める
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
@@ -238,7 +238,7 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
 - Operations and LIFF access route tests confirm `/t/:linkId` rejects malformed or oversized link IDs before lookup/click recording, ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
-- Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management payloads reject malformed JSON, unsafe codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB writes or test-send lookup, while valid payloads are trimmed and normalized before persistence.
+- Operations route tests confirm owner/admin ad-platform, affiliate, and tracked-link management path IDs and payloads reject malformed JSON, unsafe route IDs/codes/URLs, invalid rates/IDs/config values, and invalid booleans before DB lookup, DB writes, click-detail lookup, logs lookup, deletion, or test-send lookup, while valid values are trimmed and normalized before persistence.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
 - Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management path IDs and payloads stop before DB lookup/writes, and the public incoming receive endpoint remains signature-gated.
@@ -307,7 +307,7 @@ strict Preflight:
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限、path/payload検証、incoming receive署名検証の維持
 - `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証
 - `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限
-- `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
+- `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、ad-platform/affiliate/tracked-link管理path/payload検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload/query検証
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲と、friends query/path/tag/metadata/direct message payload検証

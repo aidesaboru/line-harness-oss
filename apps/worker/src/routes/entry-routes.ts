@@ -217,6 +217,12 @@ function parseEntryRouteUpdateBody(raw: unknown): ParsedEntryRouteUpdateBody {
   return { ok: true, body };
 }
 
+function entryRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function serialize(row: EntryRoute) {
   return {
     id: row.id,
@@ -240,7 +246,7 @@ entryRoutes.get('/api/entry-routes', async (c) => {
     const rows = await getEntryRoutes(c.env.DB);
     return c.json({ success: true, data: rows.map(serialize) });
   } catch (err) {
-    console.error('GET /api/entry-routes error:', err);
+    console.error(`GET /api/entry-routes error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -254,7 +260,7 @@ entryRoutes.get('/api/entry-routes/:id', async (c) => {
     if (!row) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(row) });
   } catch (err) {
-    console.error('GET /api/entry-routes/:id error:', err);
+    console.error(`GET /api/entry-routes/:id error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -269,7 +275,7 @@ entryRoutes.post('/api/entry-routes', async (c) => {
     const row = await createEntryRoute(c.env.DB, body);
     return c.json({ success: true, data: serialize(row) }, 201);
   } catch (err) {
-    console.error('POST /api/entry-routes error:', err);
+    console.error(`POST /api/entry-routes error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -287,7 +293,7 @@ entryRoutes.patch('/api/entry-routes/:id', async (c) => {
     if (!row) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: serialize(row) });
   } catch (err) {
-    console.error('PATCH /api/entry-routes/:id error:', err);
+    console.error(`PATCH /api/entry-routes/:id error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -300,7 +306,7 @@ entryRoutes.delete('/api/entry-routes/:id', async (c) => {
     await deleteEntryRoute(c.env.DB, id.value);
     return c.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/entry-routes/:id error:', err);
+    console.error(`DELETE /api/entry-routes/:id error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -315,7 +321,7 @@ entryRoutes.get('/api/entry-routes/:id/funnel', async (c) => {
     const funnel = await getEntryRouteFunnel(c.env.DB, id.value);
     return c.json({ success: true, data: funnel });
   } catch (err) {
-    console.error('GET /api/entry-routes/:id/funnel error:', err);
+    console.error(`GET /api/entry-routes/:id/funnel error: ${entryRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

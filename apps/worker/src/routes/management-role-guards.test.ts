@@ -1331,4 +1331,68 @@ describe('entry route payload validation', () => {
     expect(dbMocks.deleteEntryRoute).toHaveBeenCalledWith(expect.anything(), 'route-1');
     expect(dbMocks.getEntryRouteFunnel).toHaveBeenCalledWith(expect.anything(), 'route-1');
   });
+
+  test('owner entry route failures log only the error kind', async () => {
+    const app = setupApp('owner');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fail = () => new Error('entry route secret route-1 tag-1 scenario-1 pool-1 tmpl-1 token-secret raw-body');
+    const expectInternalError = async (res: Response) => {
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+    };
+
+    try {
+      dbMocks.getEntryRoutes.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/entry-routes'));
+
+      dbMocks.getEntryRouteById.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/entry-routes/route-1'));
+
+      dbMocks.createEntryRoute.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/entry-routes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refCode: 'launch', name: 'Launch route' }),
+        }),
+      );
+
+      dbMocks.updateEntryRoute.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/entry-routes/route-1', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Updated route' }),
+        }),
+      );
+
+      dbMocks.deleteEntryRoute.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/entry-routes/route-1', { method: 'DELETE' }));
+
+      dbMocks.getEntryRouteById.mockResolvedValueOnce(entryRouteRow);
+      dbMocks.getEntryRouteFunnel.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/entry-routes/route-1/funnel'));
+
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/entry-routes error: Error');
+      expect(logged).toContain('GET /api/entry-routes/:id error: Error');
+      expect(logged).toContain('POST /api/entry-routes error: Error');
+      expect(logged).toContain('PATCH /api/entry-routes/:id error: Error');
+      expect(logged).toContain('DELETE /api/entry-routes/:id error: Error');
+      expect(logged).toContain('GET /api/entry-routes/:id/funnel error: Error');
+      expectNoLogLeak(logged, [
+        'entry route secret',
+        'route-1',
+        'tag-1',
+        'scenario-1',
+        'pool-1',
+        'tmpl-1',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });

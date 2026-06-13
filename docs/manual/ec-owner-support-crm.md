@@ -318,6 +318,8 @@ corepack pnpm preflight:support-crm
 
 `SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID` を設定すると、サポート担当が見えるチャットであっても、未対応の `messageType` は送信前検証で止まることを確認します。この確認も送信前検証だけを使うため、実際のLINEメッセージは送られず、チャット行も作りません。
 
+同じvisible friend fixtureで、HTTPS画像URLの `image` payloadは通り、`http://` の画像URLは送信前検証で止まることも確認します。
+
 この確認が終わるまでは、既存の本番LINE公式アカウントの運用は切り替えません。
 
 ## スタッフ追加

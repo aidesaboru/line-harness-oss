@@ -520,6 +520,42 @@ async function runRoleChecks(
       fetchImpl,
       config,
       credential,
+      'staff: HTTPS image chat payload validates',
+      `/api/chats/${encodeURIComponent(config.staffVisibleFriendId)}/send/validate`,
+      [200],
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          messageType: 'image',
+          content: JSON.stringify({
+            originalContentUrl: 'https://example.com/preflight-original.png',
+            previewImageUrl: 'https://example.com/preflight-preview.png',
+          }),
+        }),
+      },
+    ));
+    checks.push(await checkExpectedStatus(
+      fetchImpl,
+      config,
+      credential,
+      'staff: non-HTTPS image chat payload is blocked',
+      `/api/chats/${encodeURIComponent(config.staffVisibleFriendId)}/send/validate`,
+      [400],
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          messageType: 'image',
+          content: JSON.stringify({
+            originalContentUrl: 'http://example.com/preflight-original.png',
+            previewImageUrl: 'https://example.com/preflight-preview.png',
+          }),
+        }),
+      },
+    ));
+    checks.push(await checkExpectedStatus(
+      fetchImpl,
+      config,
+      credential,
       'staff: visible friend direct history can be opened',
       `/api/friends/${encodeURIComponent(config.staffVisibleFriendId)}/messages`,
       [200],
@@ -543,6 +579,8 @@ async function runRoleChecks(
   } else {
     checks.push(skipIfMissing('staff: visible chat can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
     checks.push(skipIfMissing('staff: unsupported chat message type is blocked', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
+    checks.push(skipIfMissing('staff: HTTPS image chat payload validates', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
+    checks.push(skipIfMissing('staff: non-HTTPS image chat payload is blocked', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
     checks.push(skipIfMissing('staff: visible friend direct history can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
     checks.push(skipIfMissing('staff: visible friend score can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
     checks.push(skipIfMissing('staff: visible friend reminders can be opened', 'SUPPORT_CRM_STAFF_VISIBLE_FRIEND_ID'));
@@ -723,6 +761,9 @@ export function nextActionForResult(item: CheckResult): string | null {
   }
   if (name.includes('support summary') || name.includes('support cases') || name.includes('support manuals') || name.endsWith(': chats')) {
     return 'Check SUPPORT_CRM_LINE_ACCOUNT_ID, the API key role, and the corresponding support/chats endpoint.';
+  }
+  if (name.includes('image chat payload')) {
+    return 'Check /api/chats/:id/send/validate image payload validation; LINE image URLs must be HTTPS.';
   }
   if (name.includes('is blocked')) {
     return 'Check staff role guards; staff must not be able to mutate routing, manual, or owner/admin-only resources.';

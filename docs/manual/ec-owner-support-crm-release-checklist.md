@@ -173,6 +173,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] 未完了案件を再オープンにできない
 - [ ] 完了済み案件からの顧客返信がLINE送信前に止まる
 - [ ] 未対応のチャット `messageType` がLINE送信前、DB記録前に止まる
+- [ ] LINE画像payloadのHTTPS検証が送信前に効く
+  - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている
 
 ## 3. 画面確認

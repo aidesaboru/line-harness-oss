@@ -108,7 +108,24 @@ function createHappyFetch(calls: FetchCall[] = []): (input: string, init?: Reque
       return jsonResponse(400, { success: false, error: 'reopen resolved cases before sending support replies' });
     }
     if (url.pathname === '/api/chats/friend-visible/send/validate' && method === 'POST' && role === 'staff') {
-      return jsonResponse(400, { success: false, error: 'messageType must be text, flex, or image' });
+      const body = typeof init.body === 'string'
+        ? JSON.parse(init.body) as { messageType?: string; content?: string }
+        : {};
+      if (body.messageType === 'sticker') {
+        return jsonResponse(400, { success: false, error: 'messageType must be text, flex, or image' });
+      }
+      if (body.messageType === 'image') {
+        const content = typeof body.content === 'string'
+          ? JSON.parse(body.content) as { originalContentUrl?: unknown; previewImageUrl?: unknown }
+          : {};
+        const originalContentUrl = typeof content.originalContentUrl === 'string' ? content.originalContentUrl : '';
+        const previewImageUrl = typeof content.previewImageUrl === 'string' ? content.previewImageUrl : '';
+        if (originalContentUrl.startsWith('https://') && previewImageUrl.startsWith('https://')) {
+          return successObject({ valid: true });
+        }
+        return jsonResponse(400, { success: false, error: 'image content must include HTTPS originalContentUrl and previewImageUrl' });
+      }
+      return successObject({ valid: true });
     }
     if (url.pathname === '/api/support/cases/case-visible/escalations' && method === 'POST' && role === 'staff') {
       return jsonResponse(403, { success: false, error: 'staff cannot create routed escalations' });
@@ -275,6 +292,14 @@ describe('support CRM preflight helpers', () => {
       name: 'preflight: full coverage required',
       detail: '2 optional checks skipped',
     })).toBe('Set the fixture/env values listed under Skipped optional checks, or unset SUPPORT_CRM_REQUIRE_FULL_COVERAGE when partial coverage is intentional.');
+  });
+
+  it('suggests the image payload validator when image URL validation fails', () => {
+    expect(nextActionForResult({
+      status: 'fail',
+      name: 'staff: non-HTTPS image chat payload is blocked',
+      detail: 'expected 400, got 200',
+    })).toContain('LINE image URLs must be HTTPS');
   });
 
   it('dry-runs strict release env without exposing full secrets', () => {
@@ -457,6 +482,27 @@ describe('runSupportCrmPreflight', () => {
       content: JSON.stringify({ packageId: '1', stickerId: '1' }),
     });
 
+    const staffImagePayloads = calls
+      .filter((call) => call.url.pathname === '/api/chats/friend-visible/send/validate' && call.method === 'POST')
+      .map((call) => JSON.parse(call.body as string) as { messageType?: string; content?: string })
+      .filter((body) => body.messageType === 'image');
+    expect(staffImagePayloads).toEqual([
+      {
+        messageType: 'image',
+        content: JSON.stringify({
+          originalContentUrl: 'https://example.com/preflight-original.png',
+          previewImageUrl: 'https://example.com/preflight-preview.png',
+        }),
+      },
+      {
+        messageType: 'image',
+        content: JSON.stringify({
+          originalContentUrl: 'http://example.com/preflight-original.png',
+          previewImageUrl: 'https://example.com/preflight-preview.png',
+        }),
+      },
+    ]);
+
     expect(calls).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: 'GET',
@@ -567,6 +613,8 @@ describe('runSupportCrmPreflight', () => {
       'staff: forbidden case is hidden',
       'staff: visible chat can be opened',
       'staff: unsupported chat message type is blocked',
+      'staff: HTTPS image chat payload validates',
+      'staff: non-HTTPS image chat payload is blocked',
       'staff: visible friend direct history can be opened',
       'staff: visible friend score can be opened',
       'staff: visible friend reminders can be opened',
@@ -603,7 +651,7 @@ describe('runSupportCrmPreflight', () => {
       }),
       expect.objectContaining({
         name: 'preflight: full coverage required',
-        detail: '12 optional checks skipped',
+        detail: '14 optional checks skipped',
       }),
     ]);
   });

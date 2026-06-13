@@ -59,7 +59,7 @@ updated: 2026-06-13
 - `corepack pnpm preflight:support-crm` を追加
 - owner/admin/staff APIキーのログイン権限、CORS、サポート要約、案件一覧、マニュアル検索、チャット一覧を検査
 - staffによる案件作成、担当変更、エスカレ担当指定、マニュアル作成/更新/無効化が拒否されることを検査
-- optional fixtureでstaff可視範囲、friend direct履歴/score/reminder APIの可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否を検査
+- optional fixtureでstaff可視範囲、friend direct履歴/score/reminder APIの可視範囲、未完了案件の再オープン禁止、完了済み案件からの返信禁止、未対応チャットmessageTypeの送信前拒否、LINE画像payloadのHTTPS検証を検査
 - `corepack pnpm preflight:support-crm:dry-run` で本番切替前の環境変数不足を実通信なし・APIキー伏せ字で確認
 - `corepack pnpm preflight:support-crm:summary` でPreflight生ログを、URL、APIキー、友だちID、案件IDを含めないPR用summaryへ変換
 - dry-runのstrict必須envと本番投入前チェックリストがズレたらscript testで検知
@@ -135,6 +135,7 @@ strict Preflight:
 - リモートstrict Preflight結果: friend score/reminder API guard追加後に `32 passed, 0 skipped, 0 failed`
 - リモートcleanup確認: synthetic fixtureのLINEアカウント、staff、案件、イベント、メッセージ、友だち、チャットがすべて0。一時owner行も `residual_count: 0`
 - Remote browser cookie login/session check: Pages originとデプロイ済みWorkerでstaff sessionを確認済み
+- support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 
 ローカル画面応答:
 

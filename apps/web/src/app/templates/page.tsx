@@ -48,6 +48,12 @@ const typeBadgeColor: Record<string, string> = {
   carousel: 'bg-amber-100 text-amber-700',
 }
 
+const TEMPLATE_LIST_ERROR_MESSAGE = 'テンプレート一覧の読み込みに失敗しました。もう一度お試しください。'
+const TEMPLATE_DETAIL_ERROR_MESSAGE = 'テンプレート詳細の読み込みに失敗しました。もう一度お試しください。'
+const TEMPLATE_CREATE_ERROR_MESSAGE = 'テンプレートの作成に失敗しました。もう一度お試しください。'
+const TEMPLATE_UPDATE_ERROR_MESSAGE = 'テンプレートの更新に失敗しました。もう一度お試しください。'
+const TEMPLATE_DELETE_ERROR_MESSAGE = 'テンプレートの削除に失敗しました。もう一度お試しください。'
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('ja-JP', {
     year: 'numeric',
@@ -102,10 +108,12 @@ export default function TemplatesPage() {
       if (res.success) {
         setTemplates(res.data)
       } else {
-        setError(res.error)
+        setTemplates([])
+        setError(TEMPLATE_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('テンプレートの読み込みに失敗しました。')
+      setTemplates([])
+      setError(TEMPLATE_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -129,14 +137,14 @@ export default function TemplatesPage() {
       if (detailRes.success && detailRes.data) {
         setDrawerData(detailRes.data)
       } else {
-        setDrawerError((detailRes as { error?: string }).error ?? '読み込みに失敗しました')
+        setDrawerError(TEMPLATE_DETAIL_ERROR_MESSAGE)
       }
       if (usagesRes && usagesRes.success) {
         setScenarioStepUsages(usagesRes.data.scenarioSteps)
       }
-    }).catch((err) => {
+    }).catch(() => {
       if (cancelled) return
-      setDrawerError(err instanceof Error ? err.message : String(err))
+      setDrawerError(TEMPLATE_DETAIL_ERROR_MESSAGE)
     }).finally(() => {
       if (!cancelled) setDrawerLoading(false)
     })
@@ -164,10 +172,10 @@ export default function TemplatesPage() {
         setForm({ name: '', category: 'general', messageType: 'text', messageContent: '' })
         load()
       } else {
-        setFormError(res.error)
+        setFormError(TEMPLATE_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(TEMPLATE_CREATE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -188,16 +196,25 @@ export default function TemplatesPage() {
       const updates: Record<string, string> = {}
       if (editContent !== null) updates.messageContent = editContent
       if (editName !== null) updates.name = editName
-      await api.templates.update(drawerData.id, updates)
+      const updateRes = await api.templates.update(drawerData.id, updates)
+      if (!updateRes.success) {
+        setError(TEMPLATE_UPDATE_ERROR_MESSAGE)
+        return
+      }
       const r = await api.templates.get(drawerData.id)
-      if (r.success && r.data) setDrawerData(r.data)
+      if (r.success && r.data) {
+        setDrawerData(r.data)
+      } else {
+        setError(TEMPLATE_DETAIL_ERROR_MESSAGE)
+      }
       setEditContent(null)
       setEditName(null)
       load()
     } catch {
-      setError('更新に失敗しました')
+      setError(TEMPLATE_UPDATE_ERROR_MESSAGE)
+    } finally {
+      setSavingEdit(false)
     }
-    setSavingEdit(false)
   }
 
   const handleDelete = async (id: string, usageCount: number) => {
@@ -207,11 +224,15 @@ export default function TemplatesPage() {
       if (!confirm('このテンプレートを削除しますか？')) return
     }
     try {
-      await api.templates.delete(id)
+      const res = await api.templates.delete(id)
+      if (!res.success) {
+        setError(TEMPLATE_DELETE_ERROR_MESSAGE)
+        return
+      }
       if (drawerId === id) setDrawerId(null)
       load()
     } catch {
-      setError('削除に失敗しました')
+      setError(TEMPLATE_DELETE_ERROR_MESSAGE)
     }
   }
 

@@ -32,6 +32,8 @@ interface FormState {
   dedupPriority: string[]
 }
 
+const BROADCAST_CREATE_ERROR_MESSAGE = '配信の作成に失敗しました。もう一度お試しください。'
+
 export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFormProps) {
   const { selectedAccountId } = useAccount()
   // 「リンクするイベント」セレクタ用: 公開中の events を取得して
@@ -102,10 +104,10 @@ export default function BroadcastForm({ tags, onSuccess, onCancel }: BroadcastFo
       if (res.success) {
         onSuccess()
       } else {
-        setError(res.error)
+        setError(BROADCAST_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setError('作成に失敗しました')
+      setError(BROADCAST_CREATE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

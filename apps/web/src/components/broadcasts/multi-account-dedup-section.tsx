@@ -47,6 +47,8 @@ interface Props {
   onTargetTagIdChange: (id: string | null) => void
 }
 
+const BROADCAST_DEDUP_PREVIEW_ERROR_MESSAGE = '重複除外プレビューの取得に失敗しました。もう一度お試しください。'
+
 function PriorityRow({ id, label, flag, ordinal }: { id: string; label: string; flag: string; ordinal: number }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
   const style = {
@@ -126,10 +128,10 @@ export default function MultiAccountDedupSection({
         if (res.success && res.data) {
           setPreview(res.data)
         } else {
-          setPreviewError(res.error || 'プレビュー取得失敗')
+          setPreviewError(BROADCAST_DEDUP_PREVIEW_ERROR_MESSAGE)
         }
       } catch {
-        setPreviewError('プレビュー取得失敗')
+        setPreviewError(BROADCAST_DEDUP_PREVIEW_ERROR_MESSAGE)
       } finally {
         setPreviewLoading(false)
       }

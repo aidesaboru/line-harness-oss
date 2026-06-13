@@ -39,6 +39,10 @@ const statusConfig: Record<
   sent: { label: '送信完了', className: 'bg-green-100 text-green-700' },
 }
 
+const BROADCAST_LIST_ERROR_MESSAGE = '配信一覧の読み込みに失敗しました。もう一度お試しください。'
+const BROADCAST_INSIGHT_ERROR_MESSAGE = '配信インサイトの取得に失敗しました。もう一度お試しください。'
+const BROADCAST_DELETE_ERROR_MESSAGE = '配信の削除に失敗しました。もう一度お試しください。'
+
 function formatDatetime(iso: string | null): string {
   if (!iso) return '-'
   return new Date(iso).toLocaleString('ja-JP', {
@@ -90,9 +94,11 @@ function BroadcastList() {
       const res = await api.broadcasts.fetchInsight(id)
       if (res.success && res.data) {
         setInsights(prev => ({ ...prev, [id]: res.data }))
+      } else {
+        setError(BROADCAST_INSIGHT_ERROR_MESSAGE)
       }
     } catch {
-      setError('インサイトの取得に失敗しました')
+      setError(BROADCAST_INSIGHT_ERROR_MESSAGE)
     } finally {
       setFetchingInsight(null)
     }
@@ -107,10 +113,14 @@ function BroadcastList() {
         api.tags.list(),
       ])
       if (broadcastsRes.success) setBroadcasts(broadcastsRes.data)
-      else setError(broadcastsRes.error)
+      else {
+        setBroadcasts([])
+        setError(BROADCAST_LIST_ERROR_MESSAGE)
+      }
       if (tagsRes.success) setTags(tagsRes.data)
     } catch {
-      setError('データの読み込みに失敗しました。もう一度お試しください。')
+      setBroadcasts([])
+      setError(BROADCAST_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -126,10 +136,14 @@ function BroadcastList() {
   const handleDelete = async (id: string) => {
     if (!confirm('この配信を削除してもよいですか？')) return
     try {
-      await api.broadcasts.delete(id)
+      const res = await api.broadcasts.delete(id)
+      if (!res.success) {
+        setError(BROADCAST_DELETE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('削除に失敗しました')
+      setError(BROADCAST_DELETE_ERROR_MESSAGE)
     }
   }
 

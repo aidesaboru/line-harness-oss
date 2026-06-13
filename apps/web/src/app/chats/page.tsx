@@ -122,6 +122,18 @@ function isStaleChat(chat: Pick<Chat, 'lastMessageAt' | 'status'>): boolean {
   return t > 0 && Date.now() - t >= CHAT_STALE_MS
 }
 
+function apiErrorStatus(err: unknown): number | null {
+  const message = err instanceof Error ? err.message : ''
+  const match = message.match(/^API error:\s*(\d{3})\b/)
+  return match ? Number(match[1]) : null
+}
+
+function chatFailureMessage(kind: 'detail' | 'older' | 'loading'): string {
+  if (kind === 'detail') return 'チャット詳細の読み込みに失敗しました。もう一度お試しください。'
+  if (kind === 'older') return '過去メッセージの読み込みに失敗しました。もう一度お試しください。'
+  return 'ローディング表示の開始に失敗しました。'
+}
+
 function buildEmptyChatDetailFromFriend(friend: {
   id: string
   displayName?: string | null
@@ -550,15 +562,11 @@ export default function ChatsPage() {
         setNotes((res.data as unknown as ChatDetail).notes || '')
       } else {
         if (await loadFriendFallback()) return
-        // API は 200 で success:false を返す可能性 (例: 404 lookup)。詳細を画面に出す。
-        const errMsg = (res as { error?: string }).error ?? '不明なエラー'
-        setError(`チャット詳細の読み込みに失敗しました: ${errMsg}`)
+        setError(chatFailureMessage('detail'))
       }
     } catch (err) {
-      // ネットワーク / parse / auth fail などの例外。empty catch だと原因不明だったので詳細を出す。
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('API error: 404') && await loadFriendFallback()) return
-      setError(`チャット詳細の読み込みに失敗しました: ${msg}`)
+      if (apiErrorStatus(err) === 404 && await loadFriendFallback()) return
+      setError(chatFailureMessage('detail'))
     } finally {
       setDetailLoading(false)
     }
@@ -578,8 +586,7 @@ export default function ChatsPage() {
         beforeId: cursor.id,
       })
       if (!res.success) {
-        const errMsg = (res as { error?: string }).error ?? '不明なエラー'
-        setError(`過去メッセージの読み込みに失敗しました: ${errMsg}`)
+        setError(chatFailureMessage('older'))
         return
       }
 
@@ -601,9 +608,8 @@ export default function ChatsPage() {
         if (!current) return
         current.scrollTop = current.scrollHeight - previousScrollHeight + current.scrollTop
       }, 0)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      setError(`過去メッセージの読み込みに失敗しました: ${msg}`)
+    } catch {
+      setError(chatFailureMessage('older'))
     } finally {
       setLoadingOlderMessages(false)
     }
@@ -743,11 +749,10 @@ export default function ChatsPage() {
         body: JSON.stringify({ loadingSeconds }),
       })
       if (!res.success) {
-        setError(res.error ?? 'ローディング表示の開始に失敗しました。')
+        setError(chatFailureMessage('loading'))
       }
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : 'unknown'
-      setError(`ローディング表示の開始に失敗しました: ${detail}`)
+    } catch {
+      setError(chatFailureMessage('loading'))
     }
   }, [showLoadingIndicator, loadingSeconds])
 

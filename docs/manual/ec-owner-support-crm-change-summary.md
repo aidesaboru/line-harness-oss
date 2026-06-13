@@ -46,7 +46,7 @@ updated: 2026-06-13
 - template一覧の `category` queryは、DB helper呼び出し前に長さ検証し、正常値はtrimする
 - automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operatorの管理一覧・変更APIはowner/adminだけに制限し、staffが運用ルールや流入先、担当者マスタを直接参照/変更できないようにした。automation管理payload/query/path IDは壊れたJSON、不正なeventType/action type/isActive/priority、空updateをDB helper/SQL bind前に400で止め、正常値はtrimし、action typeとlineAccountIdを正規化する。auto-reply管理payload/query/path IDは壊れたJSON、不正なkeyword/matchType/responseType/ID/isActive、空本文/空updateをDB helper前に400で止め、正常値はtrim/null正規化する。notification rule管理payload/query/path IDは壊れたJSON、不正なeventType/channels/status/isActive、空updateをDB helper/SQL bind前に400で止め、正常値はtrim/dedupeする。traffic pool管理payloadは壊れたJSON、不正なslug/name/activeAccountId/lineAccountId/isActiveをDB書き込み前に400で止める
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
-- rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した。rich menu group管理APIのaccountId/richMenuId/groupId/pageId/tagId、apply-to-tag payload、画像R2 keyはDB helper、SQL bind、LINE API、R2 get/put前に検証し、正常なID/name/chatBarText/actionTypeはtrimする
+- rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した。rich menu catalog APIのaccountId/richMenuId/create payload/画像payload/friend path ID/friend link payloadと、rich menu group管理APIのaccountId/richMenuId/groupId/pageId/tagId、apply-to-tag payload、画像R2 keyはDB helper、SQL bind、LINE API、R2 get/put前に検証し、正常なID/name/chatBarText/actionTypeはtrimする
 - entry route管理、conversion point定義参照/作成/削除、Google Calendar接続管理、account health/migration APIはowner/adminだけに制限し、staffは友だち単位で許可されたcalendar booking/conversion記録だけを使える
 - entry route管理payloadは、壊れたJSON、不正なrefCode/name/redirectUrl/関連ID/runAccountFriendAddScenarios/isActiveをDB書き込み前に400で止め、正常payloadはtrim/null正規化して保存する
 - account health/migration APIのaccount/migration path IDとmigration作成payloadは、壊れたJSON、不正なfromAccountId/toAccountId/migrationIdをDB helperやD1 count前に400で止め、正常値はtrimする
@@ -185,7 +185,7 @@ corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webh
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
-corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 15 tests
+corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 16 tests
 corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
@@ -247,7 +247,7 @@ strict Preflight:
 - Scenario/support-friend/content-management route tests confirm staff cannot read or mutate scenario, reminder, scoring rule, reusable template, or message-template definitions, cannot mutate tag definitions, and friend-scoped staff operations remain guarded by visible support-case friends. Scenario route tests also confirm malformed or unsafe scenario/step/reorder payloads stop before DB lookup or writes, valid values are trimmed, and step mutations stay scoped to the path scenario. Content management tests also confirm malformed or unsafe tag/template/message-template payloads stop before DB writes or lookup, oversized template category query filters stop before DB helper calls, and valid values are trimmed.
 - Management role guard tests confirm staff cannot read or mutate automation, auto-reply, notification rule, traffic pool, pool-account, or operator management APIs, and malformed traffic pool management payloads stop before DB writes.
 - Management role guard and events route tests confirm staff cannot access booking/event admin routes while owner/admin event management behavior remains covered.
-- Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work. Rich-menu group tests also confirm malformed account/rich-menu/group/page/tag path or query values, malformed apply-to-tag bodies, invalid force values, and unsafe image R2 keys stop before DB helpers, SQL bind, LINE fetch, or R2 get/put while valid IDs and labels are normalized.
+- Rich-menu group and support-friend access route tests confirm staff cannot manage LINE rich menu catalogs or rich menu groups while visible-friend rich menu operations still work. Support-friend access route tests also confirm malformed rich menu catalog account/rich-menu IDs, create payloads, image payloads, friend path IDs, and friend link payloads stop before DB lookup, friend visibility checks, LINE fetch, LINE link, or image upload. Rich-menu group tests also confirm malformed account/rich-menu/group/page/tag path or query values, malformed apply-to-tag bodies, invalid force values, and unsafe image R2 keys stop before DB helpers, SQL bind, LINE fetch, or R2 get/put while valid IDs and labels are normalized.
 - Management role guard and conversion/calendar access route tests confirm staff cannot manage entry routes, read/mutate conversion points, manage Google Calendar connections, or access account health/migrations while friend-scoped conversion/calendar booking operations still work. Management role guard tests also confirm malformed or unsafe entry route management payloads stop before DB writes, malformed or unsafe account health/migration path IDs and migrate payloads stop before DB helpers or D1 count, and malformed or unsafe conversion point creation payloads stop before DB writes, while valid values are trimmed/null-normalized.
 - Friends, duplicates, LIFF access, and image access route tests confirm staff cannot read friends ref stats or duplicate/ref analytics, cannot wrap management links, cannot delete arbitrary stored images, can still upload chat/reply images, and malformed image upload payloads or unsafe public/delete keys stop before R2 put/get/delete.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
@@ -299,7 +299,7 @@ strict Preflight:
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
 - `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限とautomation/auto-reply/notification rule/traffic pool payload検証
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限とLIFF公開導線の維持
-- `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限、rich menu group query/path/payload/R2 key検証、friend単位操作の維持
+- `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限、rich menu catalog query/path/payload/image検証、rich menu group query/path/payload/R2 key検証、friend単位操作の維持
 - `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route/conversion point payload検証、calendar query/payload検証
 - `apps/worker/src/routes/broadcasts.ts` / `dedup-preview.ts`: broadcast管理API、dedup preview、配信/集計APIのowner/admin制限、broadcast query/path/payload/segment条件検証、dedup-preview payload検証
 - `apps/worker/src/routes/profile-refresh.ts`: admin診断/repair APIのowner/admin制限
@@ -315,7 +315,7 @@ strict Preflight:
 - `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限、scenario payload検証、staffのscenario手動登録で使うfriend可視範囲
 - `apps/worker/src/routes/scoring.ts` / `reminders.ts`: scoring rule/reminder定義管理のowner/admin制限と、staffのfriend score/reminder操作の可視範囲
 - `apps/worker/src/routes/tags.ts` / `templates.ts` / `message-templates.ts`: tag/template/message template定義管理のowner/admin制限
-- `apps/worker/src/routes/rich-menus.ts`: staffのrich-menu操作のfriend可視範囲
+- `apps/worker/src/routes/rich-menus.ts`: staffのrich-menu操作のfriend可視範囲とfriend rich menu path/payload検証
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
 - `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲

@@ -26,6 +26,10 @@ const dbMocks = {
 };
 
 const lineClientMethods = {
+  createRichMenu: vi.fn(),
+  deleteRichMenu: vi.fn(),
+  setDefaultRichMenu: vi.fn(),
+  uploadRichMenuImage: vi.fn(),
   linkRichMenuToUser: vi.fn(),
   unlinkRichMenuFromUser: vi.fn(),
   getRichMenuIdOfUser: vi.fn(),
@@ -562,5 +566,54 @@ describe('friend-scoped support visibility guards', () => {
     expect(body.data).toEqual({ id: 'menu-1', name: 'VIP Menu', isDefault: false });
     expect(dbMocks.getFriendById).toHaveBeenCalledWith(db, 'friend-visible');
     expect(lineClientMethods.getRichMenuIdOfUser).toHaveBeenCalledWith('U-visible');
+  });
+
+  test('rich menu routes reject malformed catalog and friend inputs before DB or LINE side effects', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'owner');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['GET', '/api/rich-menus?accountId=bad%20account'],
+      ['POST', '/api/rich-menus', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(['bad']),
+      }],
+      ['POST', '/api/rich-menus', {
+        headers: { 'Content-Type': 'application/json' },
+        body: '{',
+      }],
+      ['POST', '/api/rich-menus', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'VIP', selected: 'yes' }),
+      }],
+      ['DELETE', '/api/rich-menus/bad%20menu'],
+      ['POST', '/api/rich-menus/bad%20menu/default'],
+      ['POST', '/api/rich-menus/menu-1/image', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: '%%%%' }),
+      }],
+      ['POST', '/api/rich-menus/menu-1/image?accountId=bad%20account', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: 'AAAA' }),
+      }],
+      ['GET', '/api/friends/bad%20friend/rich-menu'],
+      ['DELETE', '/api/friends/bad%20friend/rich-menu'],
+      ['POST', '/api/friends/bad%20friend/rich-menu', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ richMenuId: 'menu-1' }),
+      }],
+      ['POST', '/api/friends/friend-visible/rich-menu', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ richMenuId: 'bad menu' }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.getFriendById).not.toHaveBeenCalled();
+    expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
+    expect(lineClientConstructor).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ import {
 import { computeScenarioStats } from '../services/scenario-stats.js';
 import { resolveStepContent } from '@line-crm/db';
 import { ensureSupportFriendAccess } from './support-friend-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 import type {
   Scenario as DbScenario,
   ScenarioWithStepCount as DbScenarioWithStepCount,
@@ -189,7 +190,7 @@ scenarios.get('/api/scenarios/:id', async (c) => {
 });
 
 // POST /api/scenarios - create
-scenarios.post('/api/scenarios', async (c) => {
+scenarios.post('/api/scenarios', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{
       name: string;
@@ -238,9 +239,9 @@ scenarios.post('/api/scenarios', async (c) => {
 });
 
 // PUT /api/scenarios/:id - update (accepts camelCase fields from clients)
-scenarios.put('/api/scenarios/:id', async (c) => {
+scenarios.put('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json<{
       name?: string;
       description?: string | null;
@@ -274,9 +275,9 @@ scenarios.put('/api/scenarios/:id', async (c) => {
 });
 
 // DELETE /api/scenarios/:id - delete
-scenarios.delete('/api/scenarios/:id', async (c) => {
+scenarios.delete('/api/scenarios/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     await deleteScenario(c.env.DB, id);
     return c.json({ success: true, data: null });
   } catch (err) {
@@ -286,9 +287,9 @@ scenarios.delete('/api/scenarios/:id', async (c) => {
 });
 
 // POST /api/scenarios/:id/steps - add step
-scenarios.post('/api/scenarios/:id/steps', async (c) => {
+scenarios.post('/api/scenarios/:id/steps', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id');
+    const scenarioId = c.req.param('id')!;
     const body = await c.req.json<{
       stepOrder: number;
       delayMinutes?: number;
@@ -362,10 +363,10 @@ scenarios.post('/api/scenarios/:id/steps', async (c) => {
 });
 
 // PUT /api/scenarios/:id/steps/:stepId - update step (accepts camelCase)
-scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
+scenarios.put('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id');
-    const stepId = c.req.param('stepId');
+    const scenarioId = c.req.param('id')!;
+    const stepId = c.req.param('stepId')!;
     const body = await c.req.json<{
       stepOrder?: number;
       delayMinutes?: number;
@@ -508,9 +509,9 @@ scenarios.put('/api/scenarios/:id/steps/:stepId', async (c) => {
 });
 
 // DELETE /api/scenarios/:id/steps/:stepId - delete step
-scenarios.delete('/api/scenarios/:id/steps/:stepId', async (c) => {
+scenarios.delete('/api/scenarios/:id/steps/:stepId', requireRole('owner', 'admin'), async (c) => {
   try {
-    const stepId = c.req.param('stepId');
+    const stepId = c.req.param('stepId')!;
     await deleteScenarioStep(c.env.DB, stepId);
     return c.json({ success: true, data: null });
   } catch (err) {
@@ -520,9 +521,9 @@ scenarios.delete('/api/scenarios/:id/steps/:stepId', async (c) => {
 });
 
 // POST /api/scenarios/:id/steps/reorder - bulk update step_order
-scenarios.post('/api/scenarios/:id/steps/reorder', async (c) => {
+scenarios.post('/api/scenarios/:id/steps/reorder', requireRole('owner', 'admin'), async (c) => {
   try {
-    const scenarioId = c.req.param('id');
+    const scenarioId = c.req.param('id')!;
     const body = await c.req.json<{ orders: { stepId: string; stepOrder: number }[] }>();
 
     if (!Array.isArray(body.orders) || body.orders.length === 0) {

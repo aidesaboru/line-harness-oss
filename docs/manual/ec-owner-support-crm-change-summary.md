@@ -21,6 +21,7 @@ updated: 2026-06-13
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
+- scenario、reminder、scoring rule、tag、template、message templateの定義作成/更新/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
@@ -101,6 +102,8 @@ updated: 2026-06-13
 - `apps/worker/src/routes/support.test.ts`
 - `apps/worker/src/routes/chats.test.ts`
 - `apps/worker/src/routes/support-friend-access-routes.test.ts`
+- `apps/worker/src/routes/scenarios.test.ts`
+- `apps/worker/src/routes/content-management-access.test.ts`
 - `apps/worker/src/routes/users.test.ts`
 - `apps/worker/src/routes/account-settings.test.ts`
 - `apps/worker/src/routes/admin-diagnostics-access.test.ts`
@@ -172,6 +175,7 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - Operations and LIFF access route tests confirm `/t/:linkId` ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings while the public incoming receive endpoint remains signature-gated.
+- Scenario/support-friend/content-management route tests confirm staff cannot mutate scenario, reminder, scoring rule, tag, reusable template, or message-template definitions while friend-scoped staff operations remain guarded by visible support-case friends.
 - Webhook/events/broadcast/admin-diagnostics route tests, Worker typecheck, and Worker build confirm removing or anonymizing identifier logs from webhook, LIFF, booking, profile refresh, and broadcast test-send routes does not change behavior.
 - LIFF route logging now keeps external integration failures observable without printing LINE friend UUIDs, external response bodies, X Harness tag values, or raw exception messages. Webhook/webhooks/events route tests, Worker typecheck, and Worker build confirm the OAuth/LIFF-adjacent routes still compile and pass.
 
@@ -229,8 +233,10 @@ strict Preflight:
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard
 - `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲
-- `apps/worker/src/routes/scenarios.ts`: staffのscenario手動登録で使うfriend可視範囲
-- `apps/worker/src/routes/scoring.ts` / `reminders.ts` / `rich-menus.ts`: staffのfriend score、reminder、rich-menu操作の可視範囲
+- `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限と、staffのscenario手動登録で使うfriend可視範囲
+- `apps/worker/src/routes/scoring.ts` / `reminders.ts`: scoring rule/reminder定義管理のowner/admin制限と、staffのfriend score/reminder操作の可視範囲
+- `apps/worker/src/routes/tags.ts` / `templates.ts` / `message-templates.ts`: tag/template/message template定義管理のowner/admin制限
+- `apps/worker/src/routes/rich-menus.ts`: staffのrich-menu操作のfriend可視範囲
 - `apps/web/src/app/support/page.tsx`: verified identity前提のUI制御、案件/チャット導線
 - `apps/web/src/app/chats/page.tsx`: サポート案件付き送信、画像/テキスト送信時の復旧通知
 - `scripts/support-crm-preflight.ts`: 本番切替前の自動検査範囲

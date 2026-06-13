@@ -154,6 +154,50 @@ beforeEach(() => {
 });
 
 describe('friend-scoped support visibility guards', () => {
+  test('staff cannot manage scoring rule or reminder definitions', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'staff');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['POST', '/api/scoring-rules', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Hot lead', eventType: 'manual', scoreValue: 10 }),
+      }],
+      ['PUT', '/api/scoring-rules/rule-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scoreValue: 20 }),
+      }],
+      ['DELETE', '/api/scoring-rules/rule-1'],
+      ['POST', '/api/reminders', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Follow up' }),
+      }],
+      ['PUT', '/api/reminders/reminder-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      }],
+      ['DELETE', '/api/reminders/reminder-1'],
+      ['POST', '/api/reminders/reminder-1/steps', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offsetMinutes: 10, messageType: 'text', messageContent: 'ping' }),
+      }],
+      ['DELETE', '/api/reminders/reminder-1/steps/step-1'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(dbMocks.createScoringRule).not.toHaveBeenCalled();
+    expect(dbMocks.updateScoringRule).not.toHaveBeenCalled();
+    expect(dbMocks.deleteScoringRule).not.toHaveBeenCalled();
+    expect(dbMocks.createReminder).not.toHaveBeenCalled();
+    expect(dbMocks.updateReminder).not.toHaveBeenCalled();
+    expect(dbMocks.deleteReminder).not.toHaveBeenCalled();
+    expect(dbMocks.createReminderStep).not.toHaveBeenCalled();
+    expect(dbMocks.deleteReminderStep).not.toHaveBeenCalled();
+  });
+
   test('staff cannot read a hidden friend score', async () => {
     const db = makeDb({ visibleFriendIds: ['friend-visible'] });
 

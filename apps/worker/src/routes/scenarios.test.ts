@@ -161,6 +161,54 @@ describe('GET /api/scenarios?lineAccountId=X', () => {
   });
 });
 
+describe('scenario definition role guards', () => {
+  test('staff cannot mutate scenario definitions or steps', async () => {
+    const { db } = makeScenarioDb([]);
+    const app = setupApp(db, 'staff');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['POST', '/api/scenarios', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Campaign', triggerType: 'friend_add' }),
+      }],
+      ['PUT', '/api/scenarios/scenario-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed' }),
+      }],
+      ['DELETE', '/api/scenarios/scenario-1'],
+      ['POST', '/api/scenarios/scenario-1/steps', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          stepOrder: 1,
+          delayMinutes: 0,
+          messageType: 'text',
+          messageContent: 'hello',
+        }),
+      }],
+      ['PUT', '/api/scenarios/scenario-1/steps/step-1', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messageContent: 'updated' }),
+      }],
+      ['DELETE', '/api/scenarios/scenario-1/steps/step-1'],
+      ['POST', '/api/scenarios/scenario-1/steps/reorder', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orders: [{ stepId: 'step-1', stepOrder: 1 }] }),
+      }],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(403);
+    }
+
+    expect(dbMocks.createScenario).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenario).not.toHaveBeenCalled();
+    expect(dbMocks.deleteScenario).not.toHaveBeenCalled();
+    expect(dbMocks.createScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.updateScenarioStep).not.toHaveBeenCalled();
+    expect(dbMocks.deleteScenarioStep).not.toHaveBeenCalled();
+  });
+});
+
 describe('POST /api/scenarios/:id/enroll/:friendId support visibility', () => {
   const scenario = { id: 'scenario-1', name: 'manual', line_account_id: null, ...rowBase };
   const enrollment = {

@@ -14,6 +14,7 @@ import {
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { ensureSupportFriendAccess } from './support-friend-access.js';
+import { requireRole } from '../middleware/role-guard.js';
 
 const reminders = new Hono<Env>();
 
@@ -82,7 +83,7 @@ reminders.get('/api/reminders/:id', async (c) => {
   }
 });
 
-reminders.post('/api/reminders', async (c) => {
+reminders.post('/api/reminders', requireRole('owner', 'admin'), async (c) => {
   try {
     const body = await c.req.json<{ name: string; description?: string; lineAccountId?: string | null }>();
     if (!body.name) return c.json({ success: false, error: 'name is required' }, 400);
@@ -99,9 +100,9 @@ reminders.post('/api/reminders', async (c) => {
   }
 });
 
-reminders.put('/api/reminders/:id', async (c) => {
+reminders.put('/api/reminders/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id');
+    const id = c.req.param('id')!;
     const body = await c.req.json();
     await updateReminder(c.env.DB, id, body);
     const updated = await getReminderById(c.env.DB, id);
@@ -113,9 +114,9 @@ reminders.put('/api/reminders/:id', async (c) => {
   }
 });
 
-reminders.delete('/api/reminders/:id', async (c) => {
+reminders.delete('/api/reminders/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteReminder(c.env.DB, c.req.param('id'));
+    await deleteReminder(c.env.DB, c.req.param('id')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/reminders/:id error:', err);
@@ -125,9 +126,9 @@ reminders.delete('/api/reminders/:id', async (c) => {
 
 // ========== リマインダステップ ==========
 
-reminders.post('/api/reminders/:id/steps', async (c) => {
+reminders.post('/api/reminders/:id/steps', requireRole('owner', 'admin'), async (c) => {
   try {
-    const reminderId = c.req.param('id');
+    const reminderId = c.req.param('id')!;
     const body = await c.req.json<{ offsetMinutes: number; messageType: string; messageContent: string }>();
     if (body.offsetMinutes === undefined || !body.messageType || !body.messageContent) {
       return c.json({ success: false, error: 'offsetMinutes, messageType, messageContent are required' }, 400);
@@ -143,9 +144,9 @@ reminders.post('/api/reminders/:id/steps', async (c) => {
   }
 });
 
-reminders.delete('/api/reminders/:reminderId/steps/:stepId', async (c) => {
+reminders.delete('/api/reminders/:reminderId/steps/:stepId', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteReminderStep(c.env.DB, c.req.param('stepId'));
+    await deleteReminderStep(c.env.DB, c.req.param('stepId')!);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/reminders/:reminderId/steps/:stepId error:', err);

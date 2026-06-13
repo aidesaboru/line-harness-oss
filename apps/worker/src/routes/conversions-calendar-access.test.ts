@@ -190,6 +190,60 @@ describe('conversion friend visibility guards', () => {
     expect(dbMocks.trackConversion).not.toHaveBeenCalled();
   });
 
+  test('conversion track rejects malformed or unsafe payloads before friend access checks', async () => {
+    const requests: BodyInit[] = [
+      '{',
+      JSON.stringify([]),
+      JSON.stringify({ conversionPointId: 1, friendId: 'friend-visible' }),
+      JSON.stringify({ conversionPointId: 'point 1', friendId: 'friend-visible' }),
+      JSON.stringify({ conversionPointId: 'point-1', friendId: 'friend visible' }),
+      JSON.stringify({ conversionPointId: 'point-1', friendId: 'friend-visible', userId: 123 }),
+      JSON.stringify({ conversionPointId: 'point-1', friendId: 'friend-visible', affiliateCode: 'bad code' }),
+      JSON.stringify({ conversionPointId: 'point-1', friendId: 'friend-visible', metadata: [] }),
+      JSON.stringify({ conversionPointId: 'point-1', friendId: 'friend-visible', metadata: { note: 'x'.repeat(16 * 1024 + 1) } }),
+    ];
+
+    for (const body of requests) {
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request('/api/conversions/track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status).toBe(400);
+      expect(db.calls).toEqual([]);
+    }
+
+    expect(dbMocks.trackConversion).not.toHaveBeenCalled();
+  });
+
+  test('conversion track trims and serializes valid payloads before DB writes', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/conversions/track', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversionPointId: ' point-1 ',
+        friendId: ' friend-visible ',
+        userId: ' ',
+        affiliateCode: ' aff_2026 ',
+        metadata: { source: 'support', amount: 9800 },
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '%田島%', '%田島%', '%田島%'] });
+    expect(dbMocks.trackConversion).toHaveBeenCalledWith(db, {
+      conversionPointId: 'point-1',
+      friendId: 'friend-visible',
+      userId: null,
+      affiliateCode: 'aff_2026',
+      metadata: JSON.stringify({ source: 'support', amount: 9800 }),
+    });
+  });
+
   test('staff conversion events are scoped to support-visible friends', async () => {
     const db = makeDb({
       visibleFriendIds: ['friend-visible'],

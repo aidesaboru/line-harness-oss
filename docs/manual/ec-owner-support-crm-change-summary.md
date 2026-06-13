@@ -31,6 +31,7 @@ updated: 2026-06-13
 - entry route管理、conversion point定義参照/作成/削除、Google Calendar接続管理、account health/migration APIはowner/adminだけに制限し、staffは友だち単位で許可されたcalendar booking/conversion記録だけを使える
 - entry route管理payloadは、壊れたJSON、不正なrefCode/name/redirectUrl/関連ID/runAccountFriendAddScenarios/isActiveをDB書き込み前に400で止め、正常payloadはtrim/null正規化して保存する
 - conversion point作成payloadは、壊れたJSON、不正なname/eventType/valueをDB書き込み前に400で止め、正常payloadはtrim/value null正規化して保存する
+- conversion記録payloadは、壊れたJSON、不正なconversionPointId/friendId/userId/affiliateCode/metadataをfriend可視範囲checkやDB書き込み前に400で止め、正常payloadはtrim/null正規化/metadata文字列化して保存する
 - LINEアカウント管理API（登録、metadata更新、credential更新、表示順更新）は壊れたJSON、不正なchannelId/name/credential/Login/LIFF/isActive/displayOrderをDB書き込みや重複lookup前に400で止め、Login Channel ID/Secretの片側だけ保存される状態を防ぐ
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限
@@ -190,7 +191,7 @@ strict Preflight:
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
-- conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm calendar slot query values cannot create zero-minute/negative loops and invalid time windows stop before calendar lookup, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
+- conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops and invalid time windows stop before calendar lookup, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
 - Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind.
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
@@ -271,7 +272,7 @@ strict Preflight:
 - `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証
 - `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限
 - `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
-- `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲
+- `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload検証
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard

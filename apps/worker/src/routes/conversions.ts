@@ -16,7 +16,11 @@ const conversions = new Hono<Env>();
 const CONVERSION_POINT_NAME_MAX_LENGTH = 120;
 const CONVERSION_POINT_EVENT_TYPE_MAX_LENGTH = 128;
 const CONVERSION_POINT_VALUE_MAX = 1_000_000_000_000;
+const CONVERSION_ID_MAX_LENGTH = 128;
+const CONVERSION_METADATA_MAX_KEYS = 50;
+const CONVERSION_METADATA_MAX_JSON_LENGTH = 16 * 1024;
 const CONVERSION_POINT_EVENT_TYPE_PATTERN = /^[!-~]+$/;
+const CONVERSION_ID_PATTERN = /^[!-~]+$/;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -24,6 +28,13 @@ type ParsedConversionPointCreateBody = ValueResult<{
   name: string;
   eventType: string;
   value: number | null;
+}>;
+type ParsedConversionTrackBody = ValueResult<{
+  conversionPointId: string;
+  friendId: string;
+  userId: string | null;
+  affiliateCode: string | null;
+  metadata: string | null;
 }>;
 
 interface ConversionEventRow {
@@ -80,6 +91,36 @@ function parseOptionalNullableValue(raw: unknown): ValueResult<number | null | u
   return { ok: true, value: raw };
 }
 
+function parseOptionalNullableString(
+  raw: unknown,
+  label: string,
+  maxLength: number,
+  pattern?: RegExp,
+): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (pattern && !pattern.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalMetadata(raw: unknown): ValueResult<string | null | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null) return { ok: true, value: null };
+  if (!isRecord(raw)) return { ok: false, error: 'metadata must be an object' };
+  if (Object.keys(raw).length > CONVERSION_METADATA_MAX_KEYS) {
+    return { ok: false, error: 'metadata has too many keys' };
+  }
+  const serialized = JSON.stringify(raw);
+  if (serialized.length > CONVERSION_METADATA_MAX_JSON_LENGTH) {
+    return { ok: false, error: 'metadata is too large' };
+  }
+  return { ok: true, value: serialized };
+}
+
 function parseConversionPointCreateBody(raw: unknown): ParsedConversionPointCreateBody {
   if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
 
@@ -103,6 +144,46 @@ function parseConversionPointCreateBody(raw: unknown): ParsedConversionPointCrea
       name: name.value,
       eventType: eventType.value,
       value: value.value ?? null,
+    },
+  };
+}
+
+function parseConversionTrackBody(raw: unknown): ParsedConversionTrackBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const conversionPointId = parseRequiredString(
+    raw.conversionPointId,
+    'conversionPointId',
+    CONVERSION_ID_MAX_LENGTH,
+    CONVERSION_ID_PATTERN,
+  );
+  if (!conversionPointId.ok) return conversionPointId;
+
+  const friendId = parseRequiredString(raw.friendId, 'friendId', CONVERSION_ID_MAX_LENGTH, CONVERSION_ID_PATTERN);
+  if (!friendId.ok) return friendId;
+
+  const userId = parseOptionalNullableString(raw.userId, 'userId', CONVERSION_ID_MAX_LENGTH, CONVERSION_ID_PATTERN);
+  if (!userId.ok) return userId;
+
+  const affiliateCode = parseOptionalNullableString(
+    raw.affiliateCode,
+    'affiliateCode',
+    CONVERSION_ID_MAX_LENGTH,
+    CONVERSION_ID_PATTERN,
+  );
+  if (!affiliateCode.ok) return affiliateCode;
+
+  const metadata = parseOptionalMetadata(raw.metadata);
+  if (!metadata.ok) return metadata;
+
+  return {
+    ok: true,
+    value: {
+      conversionPointId: conversionPointId.value,
+      friendId: friendId.value,
+      userId: userId.value ?? null,
+      affiliateCode: affiliateCode.value ?? null,
+      metadata: metadata.value ?? null,
     },
   };
 }
@@ -281,20 +362,10 @@ conversions.delete('/api/conversions/points/:id', requireRole('owner', 'admin'),
 // POST /api/conversions/track - record conversion
 conversions.post('/api/conversions/track', async (c) => {
   try {
-    const body = await c.req.json<{
-      conversionPointId: string;
-      friendId: string;
-      userId?: string | null;
-      affiliateCode?: string | null;
-      metadata?: Record<string, unknown> | null;
-    }>();
-
-    if (!body.conversionPointId || !body.friendId) {
-      return c.json(
-        { success: false, error: 'conversionPointId and friendId are required' },
-        400,
-      );
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseConversionTrackBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.value;
 
     const denied = await ensureSupportFriendAccess(c, body.friendId);
     if (denied) return denied;
@@ -304,7 +375,7 @@ conversions.post('/api/conversions/track', async (c) => {
       friendId: body.friendId,
       userId: body.userId,
       affiliateCode: body.affiliateCode,
-      metadata: body.metadata ? JSON.stringify(body.metadata) : null,
+      metadata: body.metadata,
     });
 
     return c.json({

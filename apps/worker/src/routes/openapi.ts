@@ -528,7 +528,7 @@ const spec = {
       post: {
         tags: ['Conversions'],
         summary: 'コンバージョン記録',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { conversionPointId: { type: 'string' }, friendId: { type: 'string' }, userId: { type: 'string' }, affiliateCode: { type: 'string' }, metadata: { type: 'object' } }, required: ['conversionPointId', 'friendId'] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { conversionPointId: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }, friendId: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }, userId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true }, affiliateCode: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true }, metadata: { type: 'object', nullable: true } }, required: ['conversionPointId', 'friendId'] } } } },
         responses: { '201': { description: 'Tracked' } },
       },
     },

@@ -37,6 +37,8 @@ interface Submission {
 }
 
 const PAGE_SIZE = 20
+const FORM_LIST_ERROR_MESSAGE = 'フォーム一覧の読み込みに失敗しました。もう一度お試しください。'
+const FORM_SUBMISSIONS_ERROR_MESSAGE = 'フォーム回答の読み込みに失敗しました。もう一度お試しください。'
 
 function formatRelative(iso: string | null): string {
   if (!iso) return '未回答'
@@ -75,15 +77,26 @@ export default function FormSubmissionsPage() {
   const [fieldLabels, setFieldLabels] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [subLoading, setSubLoading] = useState(false)
+  const [formsError, setFormsError] = useState<string | null>(null)
+  const [submissionsError, setSubmissionsError] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [detailSubmission, setDetailSubmission] = useState<Submission | null>(null)
 
   const loadForms = useCallback(async () => {
     setLoading(true)
+    setFormsError(null)
     try {
       const res = await fetchApi<{ success: boolean; data: Form[] }>('/api/forms')
-      if (res.success) setForms(res.data)
-    } catch { /* silent */ }
+      if (res.success) {
+        setForms(res.data)
+      } else {
+        setForms([])
+        setFormsError(FORM_LIST_ERROR_MESSAGE)
+      }
+    } catch {
+      setForms([])
+      setFormsError(FORM_LIST_ERROR_MESSAGE)
+    }
     setLoading(false)
   }, [])
 
@@ -91,6 +104,9 @@ export default function FormSubmissionsPage() {
 
   const loadSubmissions = useCallback(async (formId: string) => {
     setSubLoading(true)
+    setSubmissions([])
+    setFieldLabels({})
+    setSubmissionsError(null)
     setPage(1)
     setDetailSubmission(null)
     try {
@@ -100,6 +116,10 @@ export default function FormSubmissionsPage() {
       // Race-guard: only apply if user hasn't switched away
       setSelectedFormId((current) => {
         if (current !== formId) return current
+        if (!formRes.success || !subRes.success) {
+          setSubmissionsError(FORM_SUBMISSIONS_ERROR_MESSAGE)
+          return current
+        }
         if (formRes.success) {
           const rawFields = (formRes.data as { fields: unknown }).fields
           const fields = typeof rawFields === 'string'
@@ -120,7 +140,12 @@ export default function FormSubmissionsPage() {
         }
         return current
       })
-    } catch { /* silent */ }
+    } catch {
+      setSelectedFormId((current) => {
+        if (current === formId) setSubmissionsError(FORM_SUBMISSIONS_ERROR_MESSAGE)
+        return current
+      })
+    }
     setSelectedFormId((current) => {
       if (current === formId) setSubLoading(false)
       return current
@@ -154,6 +179,11 @@ export default function FormSubmissionsPage() {
 
       {/* Form cards */}
       <section className="mb-6">
+        {formsError && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            {formsError}
+          </div>
+        )}
         {loading ? (
           <div className="text-sm text-gray-400">読み込み中...</div>
         ) : forms.length === 0 ? (
@@ -231,6 +261,7 @@ export default function FormSubmissionsPage() {
               onClick={() => {
                 setSelectedFormId(null)
                 setSubmissions([])
+                setSubmissionsError(null)
                 setDetailSubmission(null)
               }}
               className="text-xs text-gray-400 hover:text-gray-600"
@@ -241,6 +272,10 @@ export default function FormSubmissionsPage() {
 
           {subLoading ? (
             <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">読み込み中...</div>
+          ) : submissionsError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              {submissionsError}
+            </div>
           ) : submissions.length === 0 ? (
             <div className="bg-white rounded-lg border border-gray-200 p-8 text-center text-gray-400 text-sm">回答がありません</div>
           ) : (

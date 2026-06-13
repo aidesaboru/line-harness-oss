@@ -70,6 +70,7 @@ updated: 2026-06-14
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限し、管理payload/query/path IDは副作用前に検証する
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、更新/削除/receive path IDと作成/更新payloadの壊れたJSON、不正なname/sourceType/url/eventTypes/secret/isActiveをDB lookup/write前に400で止め、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
+- Webhook管理/公開incoming receive APIの失敗ログとエラー応答は、webhook ID、sourceType、URL、eventTypes、secret、signature、payload本文、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - Meet Harness完了callback `/api/meet-callback` は `MEET_CALLBACK_SECRET` と `X-Meet-Callback-Signature` のHMAC-SHA256署名検証を必須にし、未設定/未署名/不正署名ではDB lookupやLINE push前に止める
 - Stripe webhook `/api/integrations/stripe/webhook` は署名検証を維持しつつ、1MiB超body、壊れたJSON、必須ID/type/object欠落、巨大metadataをDB記録や自動化副作用前に400/413で止める
 - 公開QR proxy `/api/qr` はQR化する `data` をHTTP(S) URLかつ2048文字以内、`size` を120-512pxの正方形だけに制限し、外部QR rendererの非画像レスポンスを中継しない
@@ -205,6 +206,7 @@ corepack pnpm --filter worker test -- src/routes/automations.test.ts src/routes/
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts # 30 tests
 corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts
 corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webhooks.test.ts src/routes/events.test.ts # webhooks 33 tests
+corepack pnpm --filter worker test -- src/routes/webhooks.test.ts # 36 tests
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
@@ -282,6 +284,7 @@ strict Preflight:
 - Events route tests confirm malformed event admin/LIFF `account_id/liffId/eventId/slotId/bookingId/status/slot_id` query and path values stop before DB access, LIFF auth helpers, availability helpers, or booking mutations while valid IDs and filters are trimmed before lookup.
 - Line account route tests confirm malformed or unsafe LINE account path IDs and create/update/order payloads stop before DB lookup, DB writes, or duplicate Login/LIFF lookup, while valid values are trimmed before persistence.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings, malformed or unsafe management path IDs and payloads stop before DB lookup/writes, and the public incoming receive endpoint remains signature-gated.
+- Webhooks route tests also confirm incoming/outgoing management and public incoming receive failures keep only exception kind or fixed internal error and omit webhook IDs, sourceType, URLs, eventTypes, secrets, signatures, payload text, token-like text, and raw exception messages.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.
 - Operations route tests confirm public Stripe webhook accepts valid signed bounded payloads, rejects malformed signed JSON before DB writes, and rejects oversized payloads before DB writes.
 - QR proxy tests confirm public `/api/qr` rejects missing, non-URL, non-HTTP(S), oversized, malformed-size, rectangular-size, and oversized-size inputs before upstream fetch, and refuses to relay non-image upstream responses.

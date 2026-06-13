@@ -32,6 +32,7 @@ import {
   updateOutgoingWebhook,
   deleteOutgoingWebhook,
 } from '@line-crm/db';
+import { fireEvent } from '../services/event-bus.js';
 import { webhooks } from './webhooks.js';
 
 const VALID_SECRET = 'a'.repeat(32);
@@ -54,10 +55,36 @@ function setupApp(role: StaffRole = 'owner') {
   return app;
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
+async function webhookSignature(secret: string, body: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
+  return Array.from(new Uint8Array(signature))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 const baseEnv = { DB: {} as D1Database } as TestEnv['Bindings'];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(fireEvent).mockResolvedValue(undefined);
 });
 
 describe('webhook management role guards', () => {
@@ -164,6 +191,47 @@ describe('webhook path ID validation', () => {
 // =====================================================
 
 describe('POST /api/webhooks/outgoing — validation', () => {
+  test('create failure logs only the error kind', async () => {
+    vi.mocked(createOutgoingWebhook).mockRejectedValueOnce(
+      new Error('outgoing secret account-token wh-1 https://example.com/hook support.case.created raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request(
+        '/api/webhooks/outgoing',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Outgoing',
+            url: 'https://example.com/hook',
+            eventTypes: ['support.case.created'],
+            secret: VALID_SECRET,
+          }),
+        },
+        baseEnv,
+      );
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/webhooks/outgoing error: Error');
+      expectNoLogLeak(logged, [
+        'outgoing secret',
+        'account-token',
+        'wh-1',
+        'https://example.com/hook',
+        'support.case.created',
+        VALID_SECRET,
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects malformed JSON before create', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -571,6 +639,34 @@ describe('GET /api/webhooks/outgoing — secret exposure', () => {
 // =====================================================
 
 describe('POST /api/webhooks/incoming — validation', () => {
+  test('create failure logs only the error kind', async () => {
+    vi.mocked(createIncomingWebhook).mockRejectedValueOnce(
+      new Error('incoming secret account-token iwh-1 custom raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request(
+        '/api/webhooks/incoming',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Incoming', sourceType: 'custom', secret: VALID_SECRET }),
+        },
+        baseEnv,
+      );
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/webhooks/incoming error: Error');
+      expectNoLogLeak(logged, ['incoming secret', 'account-token', 'iwh-1', 'custom', VALID_SECRET, 'raw-body']);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects malformed JSON before create', async () => {
     const app = setupApp();
     const res = await app.request(
@@ -774,6 +870,57 @@ describe('GET /api/webhooks/incoming — secret exposure', () => {
 // =====================================================
 
 describe('POST /api/webhooks/incoming/:id/receive — signature', () => {
+  test('receive failure after signature verification logs only the error kind', async () => {
+    vi.mocked(getIncomingWebhookById).mockResolvedValue({
+      id: 'iwh-1',
+      name: 'test',
+      source_type: 'custom',
+      secret: VALID_SECRET,
+      is_active: 1,
+      created_at: '2026-05-08T00:00:00.000+09:00',
+      updated_at: '2026-05-08T00:00:00.000+09:00',
+    });
+    vi.mocked(fireEvent).mockRejectedValueOnce(
+      new Error('receive secret account-token iwh-1 custom payload-value raw-body'),
+    );
+    const bodyText = JSON.stringify({ ping: true, value: 'payload-value' });
+    const hexSignature = await webhookSignature(VALID_SECRET, bodyText);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const res = await setupApp().request(
+        '/api/webhooks/incoming/iwh-1/receive',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Webhook-Signature': hexSignature,
+          },
+          body: bodyText,
+        },
+        baseEnv,
+      );
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/webhooks/incoming/:id/receive error: Error');
+      expectNoLogLeak(logged, [
+        'receive secret',
+        'account-token',
+        'iwh-1',
+        'custom',
+        'payload-value',
+        VALID_SECRET,
+        hexSignature,
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('rejects request without X-Webhook-Signature with 401', async () => {
     vi.mocked(getIncomingWebhookById).mockResolvedValue({
       id: 'iwh-1',
@@ -837,18 +984,7 @@ describe('POST /api/webhooks/incoming/:id/receive — signature', () => {
     });
 
     const body = JSON.stringify({ ping: true });
-    const encoder = new TextEncoder();
-    const key = await crypto.subtle.importKey(
-      'raw',
-      encoder.encode(VALID_SECRET),
-      { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign'],
-    );
-    const signature = await crypto.subtle.sign('HMAC', key, encoder.encode(body));
-    const hexSignature = Array.from(new Uint8Array(signature))
-      .map((b) => b.toString(16).padStart(2, '0'))
-      .join('');
+    const hexSignature = await webhookSignature(VALID_SECRET, body);
 
     const app = setupApp();
     const res = await app.request(

@@ -213,6 +213,12 @@ function parseOutgoingUpdateBody(raw: unknown): ParsedOutgoingUpdateBody {
   };
 }
 
+function webhookRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // Constant-time hex-string compare to avoid timing oracles.
 function safeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -256,7 +262,7 @@ webhooks.get('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c) 
       })),
     });
   } catch (err) {
-    console.error('GET /api/webhooks/incoming error:', err);
+    console.error(`GET /api/webhooks/incoming error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -289,7 +295,7 @@ webhooks.post('/api/webhooks/incoming', requireRole('owner', 'admin'), async (c)
       201,
     );
   } catch (err) {
-    console.error('POST /api/webhooks/incoming error:', err);
+    console.error(`POST /api/webhooks/incoming error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -333,7 +339,7 @@ webhooks.put('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), async 
       },
     });
   } catch (err) {
-    console.error('PUT /api/webhooks/incoming/:id error:', err);
+    console.error(`PUT /api/webhooks/incoming/:id error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -345,7 +351,7 @@ webhooks.delete('/api/webhooks/incoming/:id', requireRole('owner', 'admin'), asy
     await deleteIncomingWebhook(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/webhooks/incoming/:id error:', err);
+    console.error(`DELETE /api/webhooks/incoming/:id error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -369,7 +375,7 @@ webhooks.get('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c) 
       })),
     });
   } catch (err) {
-    console.error('GET /api/webhooks/outgoing error:', err);
+    console.error(`GET /api/webhooks/outgoing error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -403,7 +409,7 @@ webhooks.post('/api/webhooks/outgoing', requireRole('owner', 'admin'), async (c)
       201,
     );
   } catch (err) {
-    console.error('POST /api/webhooks/outgoing error:', err);
+    console.error(`POST /api/webhooks/outgoing error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -457,7 +463,7 @@ webhooks.put('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), async 
       },
     });
   } catch (err) {
-    console.error('PUT /api/webhooks/outgoing/:id error:', err);
+    console.error(`PUT /api/webhooks/outgoing/:id error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -469,7 +475,7 @@ webhooks.delete('/api/webhooks/outgoing/:id', requireRole('owner', 'admin'), asy
     await deleteOutgoingWebhook(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/webhooks/outgoing/:id error:', err);
+    console.error(`DELETE /api/webhooks/outgoing/:id error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -515,7 +521,7 @@ webhooks.post('/api/webhooks/incoming/:id/receive', async (c) => {
 
     return c.json({ success: true, data: { received: true, source: wh.source_type } });
   } catch (err) {
-    console.error('POST /api/webhooks/incoming/:id/receive error:', err);
+    console.error(`POST /api/webhooks/incoming/:id/receive error: ${webhookRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

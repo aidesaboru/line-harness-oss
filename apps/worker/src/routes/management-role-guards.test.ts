@@ -593,6 +593,107 @@ describe('management role guards', () => {
     expect(dbMocks.togglePoolAccount).toHaveBeenCalledWith({} as D1Database, 'pool-account-1', false);
   });
 
+  test('traffic pool management failures log only the error kind', async () => {
+    const pool = {
+      id: 'pool-1',
+      slug: 'launch-pool',
+      name: 'Launch Pool',
+      active_account_id: 'acc-1',
+      account_name: 'Main Account',
+      liff_id: null,
+      login_channel_id: null,
+      login_channel_secret: null,
+      channel_access_token: null,
+      channel_id: null,
+      is_active: 1,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+      updated_at: '2026-06-13T00:00:00.000+09:00',
+    };
+    const app = setupApp('admin');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fail = () => new Error('traffic pool secret pool-1 pool-account-1 acc-1 acc-2 launch-pool token-secret raw-body');
+    const expectInternalError = async (res: Response) => {
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { success: boolean; error: string };
+      expect(body).toEqual({ success: false, error: 'Internal server error' });
+    };
+
+    try {
+      dbMocks.getTrafficPools.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/traffic-pools'));
+
+      dbMocks.createTrafficPool.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/traffic-pools', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slug: 'launch-pool', name: 'Launch Pool', activeAccountId: 'acc-1' }),
+        }),
+      );
+
+      dbMocks.updateTrafficPool.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/traffic-pools/pool-1', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'Updated Pool' }),
+        }),
+      );
+
+      dbMocks.getTrafficPoolById.mockResolvedValueOnce(pool);
+      dbMocks.deleteTrafficPool.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/traffic-pools/pool-1', { method: 'DELETE' }));
+
+      dbMocks.getPoolAccounts.mockRejectedValueOnce(fail());
+      await expectInternalError(await app.request('/api/traffic-pools/pool-1/accounts'));
+
+      dbMocks.addPoolAccount.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/traffic-pools/pool-1/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lineAccountId: 'acc-2' }),
+        }),
+      );
+
+      dbMocks.togglePoolAccount.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/traffic-pools/pool-1/accounts/pool-account-1', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isActive: false }),
+        }),
+      );
+
+      dbMocks.removePoolAccount.mockRejectedValueOnce(fail());
+      await expectInternalError(
+        await app.request('/api/traffic-pools/pool-1/accounts/pool-account-1', { method: 'DELETE' }),
+      );
+
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('GET /api/traffic-pools error: Error');
+      expect(logged).toContain('POST /api/traffic-pools error: Error');
+      expect(logged).toContain('PUT /api/traffic-pools/:id error: Error');
+      expect(logged).toContain('DELETE /api/traffic-pools/:id error: Error');
+      expect(logged).toContain('GET /api/traffic-pools/:id/accounts error: Error');
+      expect(logged).toContain('POST /api/traffic-pools/:id/accounts error: Error');
+      expect(logged).toContain('PUT /api/traffic-pools/:id/accounts/:accountId error: Error');
+      expect(logged).toContain('DELETE /api/traffic-pools/:id/accounts/:accountId error: Error');
+      expectNoLogLeak(logged, [
+        'traffic pool secret',
+        'pool-1',
+        'pool-account-1',
+        'acc-1',
+        'acc-2',
+        'launch-pool',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('public traffic pool route rejects malformed slug and forwarded query before DB lookup', async () => {
     const app = setupApp('staff');
     const requests = [

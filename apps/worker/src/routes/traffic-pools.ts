@@ -155,6 +155,12 @@ function parsePoolAccountToggleBody(raw: unknown): ParsedPoolAccountToggleBody {
   return { ok: true, body: { isActive: raw.isActive } };
 }
 
+function trafficPoolErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function serialize(pool: TrafficPoolWithAccount) {
   return {
     id: pool.id,
@@ -198,7 +204,7 @@ trafficPools.get('/api/traffic-pools', requireRole('owner', 'admin'), async (c) 
     const pools = await getTrafficPools(c.env.DB);
     return c.json({ success: true, data: pools.map(serialize) });
   } catch (err) {
-    console.error('GET /api/traffic-pools error:', err);
+    console.error(`GET /api/traffic-pools error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -218,7 +224,7 @@ trafficPools.post('/api/traffic-pools', requireRole('owner', 'admin'), async (c)
     });
     return c.json({ success: true, data: serialize(pool) }, 201);
   } catch (err) {
-    console.error('POST /api/traffic-pools error:', err);
+    console.error(`POST /api/traffic-pools error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -244,7 +250,7 @@ trafficPools.put('/api/traffic-pools/:id', requireRole('owner', 'admin'), async 
     }
     return c.json({ success: true, data: serialize(updated) });
   } catch (err) {
-    console.error('PUT /api/traffic-pools/:id error:', err);
+    console.error(`PUT /api/traffic-pools/:id error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -267,7 +273,7 @@ trafficPools.delete('/api/traffic-pools/:id', requireRole('owner', 'admin'), asy
     await deleteTrafficPool(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/traffic-pools/:id error:', err);
+    console.error(`DELETE /api/traffic-pools/:id error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -292,7 +298,7 @@ trafficPools.get('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin'
     const accounts = await getPoolAccounts(c.env.DB, id.value);
     return c.json({ success: true, data: accounts.map(serializePoolAccount) });
   } catch (err) {
-    console.error('GET /api/traffic-pools/:id/accounts error:', err);
+    console.error(`GET /api/traffic-pools/:id/accounts error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -312,7 +318,7 @@ trafficPools.post('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin
     if (err?.message?.includes('UNIQUE constraint')) {
       return c.json({ success: false, error: 'Account already in this pool' }, 409);
     }
-    console.error('POST /api/traffic-pools/:id/accounts error:', err);
+    console.error(`POST /api/traffic-pools/:id/accounts error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -332,7 +338,7 @@ trafficPools.put('/api/traffic-pools/:id/accounts/:accountId', requireRole('owne
     if (!result) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: result });
   } catch (err) {
-    console.error('PUT /api/traffic-pools/:id/accounts/:accountId error:', err);
+    console.error(`PUT /api/traffic-pools/:id/accounts/:accountId error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -348,7 +354,7 @@ trafficPools.delete('/api/traffic-pools/:id/accounts/:accountId', requireRole('o
     if (!deleted) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true });
   } catch (err) {
-    console.error('DELETE /api/traffic-pools/:id/accounts/:accountId error:', err);
+    console.error(`DELETE /api/traffic-pools/:id/accounts/:accountId error: ${trafficPoolErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import {
   getAutoReplies,
   getAutoReplyById,
@@ -11,6 +11,176 @@ import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 
 const autoReplies = new Hono<Env>();
+
+const AUTO_REPLY_ID_MAX_LENGTH = 128;
+const AUTO_REPLY_KEYWORD_MAX_LENGTH = 200;
+const AUTO_REPLY_CONTENT_MAX_LENGTH = 10000;
+const AUTO_REPLY_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const AUTO_REPLY_MATCH_TYPES = new Set(['exact', 'contains']);
+const AUTO_REPLY_RESPONSE_TYPES = new Set(['text', 'flex', 'image', 'silent']);
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type AutoReplyMatchType = 'exact' | 'contains';
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseVisibleId(raw: unknown, label: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  const value = raw.trim();
+  if (!value || value.length > AUTO_REPLY_ID_MAX_LENGTH || !AUTO_REPLY_VISIBLE_ASCII_PATTERN.test(value)) {
+    return { ok: false, error: `invalid_${label}` };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleId(raw: unknown, label: string): ValueResult<string | null> {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `invalid_${label}` };
+  if (raw.trim() === '') return { ok: true, value: null };
+  return parseVisibleId(raw, label);
+}
+
+function parseKeyword(raw: unknown): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_keyword' };
+  const value = raw.trim();
+  if (!value || value.length > AUTO_REPLY_KEYWORD_MAX_LENGTH) {
+    return { ok: false, error: 'invalid_keyword' };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalMatchType(raw: unknown): ValueResult<AutoReplyMatchType | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'string' || !AUTO_REPLY_MATCH_TYPES.has(raw)) {
+    return { ok: false, error: 'invalid_match_type' };
+  }
+  return { ok: true, value: raw as AutoReplyMatchType };
+}
+
+function parseOptionalResponseType(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'string' || !AUTO_REPLY_RESPONSE_TYPES.has(raw)) {
+    return { ok: false, error: 'invalid_response_type' };
+  }
+  return { ok: true, value: raw };
+}
+
+function parseOptionalContent(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'string' || raw.length > AUTO_REPLY_CONTENT_MAX_LENGTH) {
+    return { ok: false, error: 'invalid_response_content' };
+  }
+  return { ok: true, value: raw.trim() };
+}
+
+function parseOptionalBoolean(raw: unknown, label: string): ValueResult<boolean | undefined> {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== 'boolean') return { ok: false, error: `invalid_${label}` };
+  return { ok: true, value: raw };
+}
+
+type ParsedAutoReplyCreate = {
+  keyword: string;
+  matchType: AutoReplyMatchType | undefined;
+  responseType: string;
+  responseContent: string;
+  templateId: string | null;
+  lineAccountId: string | null;
+};
+
+function parseAutoReplyCreate(body: Record<string, unknown>): ValueResult<ParsedAutoReplyCreate> {
+  const keyword = parseKeyword(body.keyword);
+  if (!keyword.ok) return keyword;
+  const matchType = parseOptionalMatchType(body.matchType);
+  if (!matchType.ok) return matchType;
+  const responseType = parseOptionalResponseType(body.responseType);
+  if (!responseType.ok) return responseType;
+  const responseContent = parseOptionalContent(body.responseContent);
+  if (!responseContent.ok) return responseContent;
+  const templateId = parseOptionalVisibleId(body.templateId, 'template_id');
+  if (!templateId.ok) return templateId;
+  const lineAccountId = parseOptionalVisibleId(body.lineAccountId, 'line_account_id');
+  if (!lineAccountId.ok) return lineAccountId;
+
+  const finalResponseType = responseType.value ?? 'text';
+  const finalResponseContent = responseContent.value ?? '';
+  if (!templateId.value && finalResponseType !== 'silent' && !finalResponseContent) {
+    return { ok: false, error: 'invalid_response_content' };
+  }
+
+  return {
+    ok: true,
+    value: {
+      keyword: keyword.value,
+      matchType: matchType.value,
+      responseType: finalResponseType,
+      responseContent: finalResponseContent,
+      templateId: templateId.value,
+      lineAccountId: lineAccountId.value,
+    },
+  };
+}
+
+function parseAutoReplyUpdate(body: Record<string, unknown>): ValueResult<Record<string, unknown>> {
+  const input: Record<string, unknown> = {};
+
+  if ('keyword' in body) {
+    const keyword = parseKeyword(body.keyword);
+    if (!keyword.ok) return keyword;
+    input.keyword = keyword.value;
+  }
+  if ('matchType' in body) {
+    const matchType = parseOptionalMatchType(body.matchType);
+    if (!matchType.ok) return matchType;
+    input.matchType = matchType.value;
+  }
+  if ('responseType' in body) {
+    const responseType = parseOptionalResponseType(body.responseType);
+    if (!responseType.ok) return responseType;
+    input.responseType = responseType.value;
+  }
+  if ('responseContent' in body) {
+    const responseContent = parseOptionalContent(body.responseContent);
+    if (!responseContent.ok) return responseContent;
+    input.responseContent = responseContent.value;
+  }
+  if ('templateId' in body) {
+    const templateId = parseOptionalVisibleId(body.templateId, 'template_id');
+    if (!templateId.ok) return templateId;
+    input.templateId = templateId.value;
+  }
+  if ('lineAccountId' in body) {
+    const lineAccountId = parseOptionalVisibleId(body.lineAccountId, 'line_account_id');
+    if (!lineAccountId.ok) return lineAccountId;
+    input.lineAccountId = lineAccountId.value;
+  }
+  if ('isActive' in body) {
+    const isActive = parseOptionalBoolean(body.isActive, 'is_active');
+    if (!isActive.ok) return isActive;
+    input.isActive = isActive.value;
+  }
+
+  if (Object.keys(input).length === 0) return { ok: false, error: 'empty_update' };
+  if (
+    'responseContent' in input &&
+    input.responseType !== 'silent' &&
+    !input.templateId &&
+    input.responseContent === ''
+  ) {
+    return { ok: false, error: 'invalid_response_content' };
+  }
+  return { ok: true, value: input };
+}
 
 interface EffectiveAccount {
   accountId: string;
@@ -108,8 +278,9 @@ async function buildAutomationKeywordIndex(db: D1Database): Promise<Map<string, 
 // GET /api/auto-replies — list all auto-replies (optional ?accountId filter)
 autoReplies.get('/api/auto-replies', requireRole('owner', 'admin'), async (c) => {
   try {
-    const accountId = c.req.query('accountId');
-    const items = await getAutoReplies(c.env.DB, accountId || undefined);
+    const accountId = parseOptionalVisibleId(c.req.query('accountId'), 'account_id');
+    if (!accountId.ok) return c.json({ success: false, error: accountId.error }, 400);
+    const items = await getAutoReplies(c.env.DB, accountId.value || undefined);
 
     // active LINE accounts を取得 + automations の keyword -> accounts インデックスを構築
     const accRes = await c.env.DB
@@ -136,8 +307,9 @@ autoReplies.get('/api/auto-replies', requireRole('owner', 'admin'), async (c) =>
 // GET /api/auto-replies/:id — get by ID
 autoReplies.get('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const item = await getAutoReplyById(c.env.DB, id);
+    const id = parseVisibleId(c.req.param('id'), 'auto_reply_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const item = await getAutoReplyById(c.env.DB, id.value);
     if (!item) {
       return c.json({ success: false, error: 'Auto-reply not found' }, 404);
     }
@@ -151,23 +323,11 @@ autoReplies.get('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c
 // POST /api/auto-replies — create
 autoReplies.post('/api/auto-replies', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      keyword: string;
-      matchType?: 'exact' | 'contains';
-      responseType?: string;
-      responseContent?: string;
-      templateId?: string | null;
-      lineAccountId?: string | null;
-    }>();
-
-    if (!body.keyword) {
-      return c.json({ success: false, error: 'keyword is required' }, 400);
-    }
-    // template_id があれば content は空でも OK (template から resolve される)。
-    // silent も content 不要。それ以外は inline content 必須。
-    if (!body.templateId && !body.responseContent && body.responseType !== 'silent') {
-      return c.json({ success: false, error: 'templateId or responseContent required (unless responseType=silent)' }, 400);
-    }
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const parsed = parseAutoReplyCreate(rawBody.value);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.value;
 
     // template_id が来てて content/type が空の場合、template の現在値を inline
     // snapshot として保存する。これがないと ON DELETE SET NULL で template_id が
@@ -202,38 +362,27 @@ autoReplies.post('/api/auto-replies', requireRole('owner', 'admin'), async (c) =
 // PUT /api/auto-replies/:id — update
 autoReplies.put('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      keyword?: string;
-      matchType?: 'exact' | 'contains';
-      responseType?: string;
-      responseContent?: string;
-      templateId?: string | null;
-      lineAccountId?: string | null;
-      isActive?: boolean;
-    }>();
+    const id = parseVisibleId(c.req.param('id'), 'auto_reply_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const parsed = parseAutoReplyUpdate(rawBody.value);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    const input: Record<string, unknown> = {};
-    if (body.keyword !== undefined) input.keyword = body.keyword;
-    if (body.matchType !== undefined) input.matchType = body.matchType;
-    if (body.responseType !== undefined) input.responseType = body.responseType;
-    if (body.responseContent !== undefined) input.responseContent = body.responseContent;
-    if ('templateId' in body) input.templateId = body.templateId;
-    if ('lineAccountId' in body) input.lineAccountId = body.lineAccountId;
-    if (body.isActive !== undefined) input.isActive = body.isActive;
+    const input = parsed.value;
 
     // templateId が新たに set されて responseContent が来てない場合は template の
     // 現在値を inline snapshot として書き込む (ON DELETE SET NULL の fallback 用)。
-    if (body.templateId && body.responseContent === undefined) {
+    if (input.templateId && !('responseContent' in input)) {
       const { getTemplateById } = await import('@line-crm/db');
-      const tpl = await getTemplateById(c.env.DB, body.templateId);
+      const tpl = await getTemplateById(c.env.DB, input.templateId as string);
       if (tpl) {
         input.responseContent = tpl.message_content;
-        if (body.responseType === undefined) input.responseType = tpl.message_type;
+        if (!('responseType' in input)) input.responseType = tpl.message_type;
       }
     }
 
-    const updated = await updateAutoReply(c.env.DB, id, input as Parameters<typeof updateAutoReply>[2]);
+    const updated = await updateAutoReply(c.env.DB, id.value, input as Parameters<typeof updateAutoReply>[2]);
 
     if (!updated) {
       return c.json({ success: false, error: 'Auto-reply not found' }, 404);
@@ -249,12 +398,13 @@ autoReplies.put('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c
 // DELETE /api/auto-replies/:id
 autoReplies.delete('/api/auto-replies/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const item = await getAutoReplyById(c.env.DB, id);
+    const id = parseVisibleId(c.req.param('id'), 'auto_reply_id');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const item = await getAutoReplyById(c.env.DB, id.value);
     if (!item) {
       return c.json({ success: false, error: 'Auto-reply not found' }, 404);
     }
-    await deleteAutoReply(c.env.DB, id);
+    await deleteAutoReply(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/auto-replies/:id error:', err);

@@ -183,6 +183,125 @@ describe('management role guards', () => {
     expect(dbMocks.deleteNotificationRule).not.toHaveBeenCalled();
   });
 
+  test('auto-reply management rejects malformed payloads before DB helpers', async () => {
+    const app = setupApp('admin');
+    const cases: Array<{ method: string; path: string; body?: string }> = [
+      { method: 'GET', path: '/api/auto-replies?accountId=bad account' },
+      { method: 'GET', path: '/api/auto-replies/bad id' },
+      { method: 'POST', path: '/api/auto-replies', body: '{not-json' },
+      {
+        method: 'POST',
+        path: '/api/auto-replies',
+        body: JSON.stringify({ keyword: 'help', responseType: 'video', responseContent: 'hello' }),
+      },
+      {
+        method: 'POST',
+        path: '/api/auto-replies',
+        body: JSON.stringify({ keyword: 'help', responseType: 'text', responseContent: '' }),
+      },
+      {
+        method: 'PUT',
+        path: '/api/auto-replies/reply-1',
+        body: JSON.stringify({}),
+      },
+      {
+        method: 'PUT',
+        path: '/api/auto-replies/reply-1',
+        body: JSON.stringify({ isActive: 1 }),
+      },
+      {
+        method: 'DELETE',
+        path: '/api/auto-replies/bad id',
+      },
+    ];
+
+    for (const item of cases) {
+      const res = await app.request(item.path, {
+        method: item.method,
+        headers: item.body ? { 'Content-Type': 'application/json' } : undefined,
+        body: item.body,
+      });
+      expect(res.status, `${item.method} ${item.path}`).toBe(400);
+    }
+
+    expect(dbMocks.getAutoReplies).not.toHaveBeenCalled();
+    expect(dbMocks.getAutoReplyById).not.toHaveBeenCalled();
+    expect(dbMocks.createAutoReply).not.toHaveBeenCalled();
+    expect(dbMocks.updateAutoReply).not.toHaveBeenCalled();
+    expect(dbMocks.deleteAutoReply).not.toHaveBeenCalled();
+    expect(dbMocks.getTemplateById).not.toHaveBeenCalled();
+  });
+
+  test('auto-reply management trims valid payloads before DB helpers', async () => {
+    const created = {
+      id: 'reply-1',
+      keyword: 'help',
+      match_type: 'contains',
+      response_type: 'text',
+      response_content: 'hello',
+      template_id: null,
+      line_account_id: 'acc-1',
+      is_active: 1,
+      created_at: '2026-06-13T00:00:00.000+09:00',
+    };
+    dbMocks.createAutoReply.mockResolvedValue(created);
+    dbMocks.getTemplateById.mockResolvedValue({
+      id: 'tpl-1',
+      name: 'Flex',
+      message_type: 'flex',
+      message_content: '{"type":"bubble"}',
+    });
+    dbMocks.updateAutoReply.mockResolvedValue({
+      ...created,
+      response_type: 'flex',
+      response_content: '{"type":"bubble"}',
+      template_id: 'tpl-1',
+      line_account_id: null,
+      is_active: 0,
+    });
+
+    const app = setupApp('admin');
+    const createRes = await app.request('/api/auto-replies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: ' help ',
+        matchType: 'contains',
+        responseType: 'text',
+        responseContent: ' hello ',
+        lineAccountId: ' acc-1 ',
+      }),
+    });
+    const updateRes = await app.request('/api/auto-replies/reply-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        templateId: ' tpl-1 ',
+        lineAccountId: '',
+        isActive: false,
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.createAutoReply).toHaveBeenCalledWith({} as D1Database, {
+      keyword: 'help',
+      matchType: 'contains',
+      responseType: 'text',
+      responseContent: 'hello',
+      templateId: null,
+      lineAccountId: 'acc-1',
+    });
+    expect(dbMocks.getTemplateById).toHaveBeenCalledWith({} as D1Database, 'tpl-1');
+    expect(dbMocks.updateAutoReply).toHaveBeenCalledWith({} as D1Database, 'reply-1', {
+      templateId: 'tpl-1',
+      lineAccountId: null,
+      isActive: false,
+      responseContent: '{"type":"bubble"}',
+      responseType: 'flex',
+    });
+  });
+
   test('staff cannot manage traffic pools or pool accounts', async () => {
     const app = setupApp('staff');
     const requests: Array<[string, string, RequestInit?]> = [

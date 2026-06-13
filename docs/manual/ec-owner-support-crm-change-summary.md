@@ -42,7 +42,7 @@ updated: 2026-06-13
 - scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
 - template一覧の `category` queryは、DB helper呼び出し前に長さ検証し、正常値はtrimする
-- automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operatorの管理一覧・変更APIはowner/adminだけに制限し、staffが運用ルールや流入先、担当者マスタを直接参照/変更できないようにした。traffic pool管理payloadは壊れたJSON、不正なslug/name/activeAccountId/lineAccountId/isActiveをDB書き込み前に400で止める
+- automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operatorの管理一覧・変更APIはowner/adminだけに制限し、staffが運用ルールや流入先、担当者マスタを直接参照/変更できないようにした。auto-reply管理payload/query/path IDは壊れたJSON、不正なkeyword/matchType/responseType/ID/isActive、空本文/空updateをDB helper前に400で止め、正常値はtrim/null正規化する。traffic pool管理payloadは壊れたJSON、不正なslug/name/activeAccountId/lineAccountId/isActiveをDB書き込み前に400で止める
 - booking admin APIとevent admin APIはowner/adminだけに制限し、staffが予約メニュー、予約スタッフ、シフト、予約申請、イベント、イベント枠、イベント予約判断へ直接アクセスできないようにした
 - rich menu catalogとrich menu group管理APIはowner/adminだけに制限し、staffのrich menu操作は見えている友だち単位の付け外し/参照に限定した
 - entry route管理、conversion point定義参照/作成/削除、Google Calendar接続管理、account health/migration APIはowner/adminだけに制限し、staffは友だち単位で許可されたcalendar booking/conversion記録だけを使える
@@ -188,6 +188,7 @@ corepack pnpm --filter worker test -- src/routes/staff.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
 corepack pnpm --filter worker test -- src/routes/broadcasts-access.test.ts # 4 tests
+corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts # 17 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build
@@ -290,7 +291,7 @@ strict Preflight:
 - `apps/worker/src/routes/users-grouped.ts` / `services/users-grouped.ts`: staffの顧客統合一覧、フォーム由来メール/電話、複数アカウント情報の可視範囲
 - `apps/worker/src/routes/users.ts`: staffのlegacy users顧客ID一覧、詳細、メール/電話検索、リンク済み友だち、friendリンクの可視範囲
 - `apps/worker/src/routes/account-settings.ts`: staffのテスト送信先取得のfriend可視範囲と、テスト送信先更新のowner/admin制限
-- `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限
+- `apps/worker/src/routes/automations.ts` / `auto-replies.ts` / `notifications.ts` / `traffic-pools.ts` / `chats.ts`: automation、auto-reply、notification ruleの管理参照/変更APIとtraffic pool/operator管理一覧・変更APIのowner/admin制限とauto-reply/traffic pool payload検証
 - `apps/worker/src/routes/booking.ts` / `events.ts`: booking/event admin routeのowner/admin制限とLIFF公開導線の維持
 - `apps/worker/src/routes/rich-menus.ts` / `rich-menu-groups.ts`: LINE rich menu catalog/group管理APIのowner/admin制限とfriend単位操作の維持
 - `apps/worker/src/routes/entry-routes.ts` / `conversions.ts` / `calendar.ts` / `health.ts` / `friends.ts` / `duplicates.ts` / `liff.ts` / `images.ts`: 流入経路、conversion point定義参照/作成/削除、Google Calendar接続、account health/migration、friends ref集計、重複統計、ref分析、LIFFリンクwrap、画像削除APIのowner/admin制限とentry route/conversion point payload検証、calendar query/payload検証

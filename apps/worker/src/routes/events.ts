@@ -67,6 +67,13 @@ function bad(c: Context<Env>, code: string, status = 422): Response {
   return c.json({ error: code }, status as 400 | 401 | 403 | 404 | 409 | 410 | 422 | 429);
 }
 
+function eventRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof SyntaxError) return 'syntax_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 function parseRequiredVisibleId(
   raw: unknown,
   requiredCode: string,
@@ -966,7 +973,7 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
   try {
     return await runBookingFlow();
   } catch (e) {
-    console.error('[event-booking] booking flow threw', e);
+    console.error(`[event-booking] booking flow threw: ${eventRouteErrorKind(e)}`);
     return finalize(500, { error: 'internal_error' });
   }
 
@@ -1179,7 +1186,7 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
       });
     }
   } catch (e) {
-    console.error('[event-booking] notify failed', e);
+    console.error(`[event-booking] notify failed: ${eventRouteErrorKind(e)}`);
   }
 
   return finalize(201, { id, status });
@@ -1346,7 +1353,7 @@ async function notifyBookingFriend(
       },
     });
   } catch (e) {
-    console.error('[event-booking] notify failed', e);
+    console.error(`[event-booking] notify failed: ${eventRouteErrorKind(e)}`);
   }
 }
 

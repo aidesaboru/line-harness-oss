@@ -1530,6 +1530,78 @@ describe('LIFF POST /api/liff/events/:id/bookings', () => {
     );
   });
 
+  test('redacts notification failure details from event booking logs', async () => {
+    const state = {
+      events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1, requires_approval: 0 })],
+      slots: [{ id: 's1', event_id: 'e1', starts_at: '2099-06-01T10:00:00Z', ends_at: '2099-06-01T12:00:00Z', capacity: 5, is_active: 1, sort_order: 0, deleted_at: null }],
+      bookings: [],
+      accounts: [{ id: 'la1', liff_id: 'L1', is_active: 1, channel_access_token: 'tok' }],
+      friends: [{ id: 'f1', line_account_id: 'la1', line_user_id: 'U1' }],
+    };
+    liffAuthMocks.verifyCallerLineUserId.mockResolvedValue('U1');
+    idempotencyMocks.reserveEventIdempotency.mockResolvedValue({ kind: 'inserted' });
+    notifierMocks.sendEventBookingNotification.mockRejectedValue(
+      new Error('external-secret-body U1 tok line-user-secret'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp(state);
+      const res = await app.request('/api/liff/events/e1/bookings?liffId=L1', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'Idempotency-Key': 'k1', 'Authorization': 'Bearer t' },
+        body: JSON.stringify({ slot_id: 's1' }),
+      });
+
+      expect(res.status).toBe(201);
+      const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+      expect(logged).toContain('[event-booking] notify failed: Error');
+      expect(logged).not.toContain('external-secret-body');
+      expect(logged).not.toContain('U1');
+      expect(logged).not.toContain('tok');
+      expect(logged).not.toContain('line-user-secret');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('redacts booking flow exception details from event booking logs', async () => {
+    const state = {
+      events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1, requires_approval: 0 })],
+      slots: [{ id: 's1', event_id: 'e1', starts_at: '2099-06-01T10:00:00Z', ends_at: '2099-06-01T12:00:00Z', capacity: 5, is_active: 1, sort_order: 0, deleted_at: null }],
+      bookings: [],
+      accounts: [{ id: 'la1', liff_id: 'L1', is_active: 1, channel_access_token: 'tok' }],
+      friends: [{ id: 'f1', line_account_id: 'la1', line_user_id: 'U1' }],
+    };
+    liffAuthMocks.verifyCallerLineUserId.mockResolvedValue('U1');
+    idempotencyMocks.reserveEventIdempotency.mockResolvedValue({ kind: 'inserted' });
+    reminderMocks.insertRemindersForBooking.mockRejectedValue(
+      new Error('reminder-external-body U1 tok line-user-secret'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const app = setupApp(state);
+      const res = await app.request('/api/liff/events/e1/bookings?liffId=L1', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'Idempotency-Key': 'k1', 'Authorization': 'Bearer t' },
+        body: JSON.stringify({ slot_id: 's1' }),
+      });
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('internal_error');
+      const logged = errorSpy.mock.calls.flat().map(String).join(' ');
+      expect(logged).toContain('[event-booking] booking flow threw: Error');
+      expect(logged).not.toContain('reminder-external-body');
+      expect(logged).not.toContain('U1');
+      expect(logged).not.toContain('tok');
+      expect(logged).not.toContain('line-user-secret');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('returns idempotent cached response on repeat', async () => {
     const state = {
       events: [baseEvent({ id: 'e1', line_account_id: 'la1', is_published: 1 })],

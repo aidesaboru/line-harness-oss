@@ -312,6 +312,7 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
 - [ ] LIFF OAuth token交換、LINE token refresh、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、LINE account名/ID/access token、tag名、例外本文がconsoleへ出ない
   - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
   - Worker token refresh service testsでは、LINE token API失敗時に外部レスポンス本文/account名/secretをconsoleへ出さず、成功時もaccount ID/name/access tokenをconsoleへ出さないことを確認済み。
+  - Worker event route testsでは、event bookingの予約処理/通知失敗時にraw例外本文、LINE user ID、channel tokenをconsoleへ出さないことを確認済み。
 - [ ] LINE画像payloadのHTTPS検証が送信前に効く
   - Preflightでは、staff可視チャットの `/send/validate` でHTTPS画像payloadが200になり、非HTTPS `originalContentUrl` が400で止まることを確認する。
 - [ ] `corepack pnpm support-crm:fixtures` で出た候補IDを使っている

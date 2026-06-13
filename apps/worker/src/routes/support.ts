@@ -172,6 +172,12 @@ function clampLimit(raw: string | undefined, fallback = 50): number {
   return Math.max(1, Math.min(100, Math.floor(n)));
 }
 
+function clampOffset(raw: string | undefined): number {
+  const n = Number(raw ?? 0);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.floor(n));
+}
+
 function currentStaff(c: Context<Env>) {
   const staff = c.get('staff');
   return staff ?? { id: 'system', name: 'system', role: 'staff' as const };
@@ -480,7 +486,7 @@ support.get('/api/support/cases', async (c) => {
     const escalationAssignee = c.req.query('escalationAssignee');
     const q = c.req.query('q');
     const limit = clampLimit(c.req.query('limit'), 50);
-    const offset = Math.max(0, Number(c.req.query('offset') ?? '0') || 0);
+    const offset = clampOffset(c.req.query('offset'));
     const conditions = ['sc.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId];
     const staff = currentStaff(c);

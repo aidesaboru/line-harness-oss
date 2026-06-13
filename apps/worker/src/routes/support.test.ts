@@ -1217,6 +1217,35 @@ describe('support CRM routes', () => {
     expect(unassignedBody.data.map((item) => item.id)).toEqual(['case-unassigned']);
   });
 
+  test('clamps invalid limit and fractional offset before listing support cases', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-1', title: '1件目' }),
+        baseCase({ id: 'case-2', title: '2件目' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+      .request('/api/support/cases?lineAccountId=acc-1&limit=abc&offset=1.9');
+
+    expect(res.status).toBe(200);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
+    expect(listCall?.binds.slice(-2)).toEqual([50, 1]);
+  });
+
+  test('resets non-finite offset before listing support cases', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [baseCase({ id: 'case-1' })],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+      .request('/api/support/cases?lineAccountId=acc-1&offset=Infinity');
+
+    expect(res.status).toBe(200);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
+    expect(listCall?.binds.slice(-2)).toEqual([50, 0]);
+  });
+
   test('staff can only list and open cases in their support scope', async () => {
     const { db } = makeSupportDb({
       cases: [

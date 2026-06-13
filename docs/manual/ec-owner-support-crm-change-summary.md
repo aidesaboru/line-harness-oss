@@ -15,6 +15,7 @@ updated: 2026-06-13
 ### Worker API
 
 - support案件一覧、詳細、更新、履歴、エスカレーション、マニュアル操作にstaff可視範囲とrole別権限を適用
+- support案件一覧の `limit` / `offset` queryは、SQL bind前に既定値、整数、有限値へ丸める
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
@@ -113,6 +114,7 @@ updated: 2026-06-13
 corepack pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 corepack pnpm --filter web test
 corepack pnpm --filter web test -- src/lib/inbox-pagination.test.ts
+corepack pnpm --filter worker test -- src/routes/support.test.ts
 corepack pnpm --filter worker test -- src/services/unanswered-inbox.test.ts src/routes/inbox.test.ts
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
@@ -140,6 +142,7 @@ strict Preflight:
 - リモートcleanup確認: synthetic fixtureのLINEアカウント、staff、案件、イベント、メッセージ、友だち、チャットがすべて0。一時owner行も `residual_count: 0`
 - Remote browser cookie login/session check: Pages originとデプロイ済みWorkerでstaff sessionを確認済み
 - support-crm-preflight tests cover HTTPS image payload pass and non-HTTPS image payload rejection through `/send/validate`.
+- support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 
 ローカル画面応答:
 

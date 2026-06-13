@@ -29,6 +29,12 @@ interface RankedRow {
   ident_key: string;
 }
 
+function dedupBroadcastErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 /**
  * Compute the per-account dedup preview for a multi-account broadcast.
  * Same function called from preview API and send executor — guarantees that
@@ -313,7 +319,7 @@ export async function processMultiAccountDedupBroadcast(
   for (const accountResult of preview.perAccount) {
     const account = await getLineAccountById(db, accountResult.accountId);
     if (!account || !account.is_active) {
-      console.log(`[multi-account-dedup] skipping inactive/missing account ${accountResult.accountId}`);
+      console.log('[multi-account-dedup] skipping inactive/missing account');
       continue;
     }
 
@@ -383,7 +389,7 @@ export async function processMultiAccountDedupBroadcast(
         await db.batch(stmts);
       }
     } catch (err) {
-      console.error(`[multi-account-dedup] account ${account.id} failed:`, err);
+      console.error(`[multi-account-dedup] account failed: ${dedupBroadcastErrorKind(err)}`);
       failedAccountIds.push(account.id);
     }
   }

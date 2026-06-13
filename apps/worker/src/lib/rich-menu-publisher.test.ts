@@ -70,6 +70,10 @@ describe('resolveSwitcherActions', () => {
   });
 });
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 type MockLineClient = LineRichMenuClient & { calls: string[]; currentDefault: string | null };
 
 function makeMockLineClient(opts: { currentDefault?: string | null } = {}): MockLineClient {
@@ -229,23 +233,34 @@ describe('publishRichMenuGroup', () => {
   it('isDefaultForAll=false で getCurrentDefaultRichMenuId が throw しても publish 成功 (Round 3 P2-3)', async () => {
     const line = makeMockLineClient();
     line.getCurrentDefaultRichMenuId = vi.fn(async () => {
-      throw new Error('LINE 5xx transient');
+      throw new Error('LINE 5xx transient token-abc rich-menu-secret');
     });
     const r2 = makeMockR2();
-    const result = await publishRichMenuGroup(
-      {
-        id: 'gid12345-aaaa', size: 'large', chatBarText: 'm', isDefaultForAll: false,
-        pages: [{
-          id: 'p1', orderIndex: 0, name: 'p1',
-          imageR2Key: 'a.png', imageContentType: 'image/png',
-          lineRichMenuId: null, areas: [],
-        }],
-      },
-      line,
-      r2,
-    );
-    // publish 自体は成功 (alias swap 完了済み、status 更新を呼出側に任せられる)
-    expect(result.pages[0].newRichMenuId).toBe('lm-1');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await publishRichMenuGroup(
+        {
+          id: 'gid12345-aaaa', size: 'large', chatBarText: 'm', isDefaultForAll: false,
+          pages: [{
+            id: 'p1', orderIndex: 0, name: 'p1',
+            imageR2Key: 'a.png', imageContentType: 'image/png',
+            lineRichMenuId: null, areas: [],
+          }],
+        },
+        line,
+        r2,
+      );
+      // publish 自体は成功 (alias swap 完了済み、status 更新を呼出側に任せられる)
+      expect(result.pages[0].newRichMenuId).toBe('lm-1');
+      const logged = loggedText(warnSpy);
+      expect(logged).toContain('[publishRichMenuGroup] default lookup/clear failed (non-fatal): Error');
+      expect(logged).not.toContain('LINE 5xx transient');
+      expect(logged).not.toContain('token-abc');
+      expect(logged).not.toContain('rich-menu-secret');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('画像が R2 にないと throw', async () => {
@@ -324,6 +339,27 @@ describe('unpublishRichMenuGroup', () => {
       line,
     );
     expect(line.calls).not.toContain('clear-default');
+  });
+
+  it('default lookup が失敗しても raw 例外本文を warning に返さない', async () => {
+    const line = makeMockLineClient();
+    line.getCurrentDefaultRichMenuId = vi.fn(async () => {
+      throw new Error('LINE default secret token-abc lm-mine');
+    });
+    const result = await unpublishRichMenuGroup(
+      {
+        id: 'gid12345-aaaa', size: 'large', chatBarText: 'm', isDefaultForAll: false,
+        pages: [
+          { id: 'p1', orderIndex: 0, name: 'p1', imageR2Key: null, imageContentType: null, lineRichMenuId: 'lm-mine', areas: [] },
+        ],
+      },
+      line,
+    );
+
+    expect(result.warnings).toContain('default lookup/clear failed (non-fatal): Error');
+    expect(result.warnings.join(' ')).not.toContain('LINE default secret');
+    expect(result.warnings.join(' ')).not.toContain('token-abc');
+    expect(result.warnings.join(' ')).not.toContain('lm-mine');
   });
 
   it('richmenuId なし page でも alias 削除は行う (404 OK)', async () => {

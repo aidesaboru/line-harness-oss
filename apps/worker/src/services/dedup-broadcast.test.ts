@@ -331,6 +331,10 @@ class MockLineClient {
   }
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
 // fakeDb for send-side: handles `db.prepare(...).bind(...).run()` for the
 // failed_account_ids UPDATE and `db.batch(...)` for messages_log INSERTs.
 // Also handles the SQL fingerprints from computeDedupBroadcastPreview (which
@@ -470,22 +474,33 @@ describe('processMultiAccountDedupBroadcast', () => {
       if (token === 'tok1') c.throwOn = { method: 'multicast' };
       return c as unknown as LineClient;
     };
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const result = await processMultiAccountDedupBroadcast(
-      db,
-      {
-        id: 'b2',
-        account_ids: '["acc1","acc2"]',
-        dedup_priority: '["acc1","acc2"]',
-        message_type: 'text',
-        message_content: 'hello',
-      },
-      factory,
-    );
+    try {
+      const result = await processMultiAccountDedupBroadcast(
+        db,
+        {
+          id: 'b2',
+          account_ids: '["acc1","acc2"]',
+          dedup_priority: '["acc1","acc2"]',
+          message_type: 'text',
+          message_content: 'hello',
+        },
+        factory,
+      );
 
-    expect(result.failedAccountIds).toEqual(['acc1']);
-    expect(result.successCount).toBe(1); // only acc2 succeeded
-    expect(updates.failed_account_ids).toBe(JSON.stringify(['acc1']));
+      expect(result.failedAccountIds).toEqual(['acc1']);
+      expect(result.successCount).toBe(1); // only acc2 succeeded
+      expect(updates.failed_account_ids).toBe(JSON.stringify(['acc1']));
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('[multi-account-dedup] account failed: Error');
+      expect(logged).not.toContain('mock multicast failure');
+      expect(logged).not.toContain('acc1');
+      expect(logged).not.toContain('tok1');
+      expect(logged).not.toContain('u1');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('inactive account skipped, not in failedAccountIds', async () => {
@@ -511,24 +526,32 @@ describe('processMultiAccountDedupBroadcast', () => {
     });
 
     const factory = (token: string) => new MockLineClient(token) as unknown as LineClient;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    const result = await processMultiAccountDedupBroadcast(
-      db,
-      {
-        id: 'b3',
-        account_ids: '["acc1","acc2"]',
-        dedup_priority: '["acc1","acc2"]',
-        message_type: 'text',
-        message_content: 'hello',
-      },
-      factory,
-    );
+    try {
+      const result = await processMultiAccountDedupBroadcast(
+        db,
+        {
+          id: 'b3',
+          account_ids: '["acc1","acc2"]',
+          dedup_priority: '["acc1","acc2"]',
+          message_type: 'text',
+          message_content: 'hello',
+        },
+        factory,
+      );
 
-    expect(result.failedAccountIds).toEqual([]);
-    expect(result.successCount).toBe(1); // only acc2 sent (1 friend)
-    expect(result.totalCount).toBe(1);
-    // 失敗ゼロでも明示的に NULL 上書きする (resume 時の stale 失敗マーク消去用)
-    expect(updates.failed_account_ids).toBeNull();
+      expect(result.failedAccountIds).toEqual([]);
+      expect(result.successCount).toBe(1); // only acc2 sent (1 friend)
+      expect(result.totalCount).toBe(1);
+      // 失敗ゼロでも明示的に NULL 上書きする (resume 時の stale 失敗マーク消去用)
+      expect(updates.failed_account_ids).toBeNull();
+      const logged = loggedText(logSpy);
+      expect(logged).toContain('[multi-account-dedup] skipping inactive/missing account');
+      expect(logged).not.toContain('acc1');
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('persists progress per batch and clears dedup_progress at end', async () => {

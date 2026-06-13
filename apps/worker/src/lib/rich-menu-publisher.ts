@@ -58,6 +58,12 @@ export interface R2Like {
   get(key: string): Promise<{ body: Uint8Array | ReadableStream } | null>;
 }
 
+function richMenuPublisherErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 const SIZE_DIMENSIONS = {
   large: { width: 2500, height: 1686 },
   compact: { width: 2500, height: 843 },
@@ -182,7 +188,7 @@ export async function publishRichMenuGroup(
         }
       }
     } catch (e) {
-      console.warn(`[publishRichMenuGroup] default lookup/clear failed (non-fatal):`, e);
+      console.warn(`[publishRichMenuGroup] default lookup/clear failed (non-fatal): ${richMenuPublisherErrorKind(e)}`);
     }
   }
 
@@ -240,16 +246,14 @@ export async function unpublishRichMenuGroup(
     try {
       await line.deleteRichMenuAlias(aliasId);
     } catch (e) {
-      warnings.push(`delete alias ${aliasId} failed: ${e instanceof Error ? e.message : String(e)}`);
+      warnings.push(`delete alias failed: ${richMenuPublisherErrorKind(e)}`);
     }
     // richmenu 削除
     if (page.lineRichMenuId) {
       try {
         await line.deleteRichMenu(page.lineRichMenuId);
       } catch (e) {
-        warnings.push(
-          `delete richmenu ${page.lineRichMenuId} failed: ${e instanceof Error ? e.message : String(e)}`,
-        );
+        warnings.push(`delete richmenu failed: ${richMenuPublisherErrorKind(e)}`);
       }
     }
     pages.push({ pageId: page.id, clearedRichMenuId: page.lineRichMenuId });
@@ -268,9 +272,7 @@ export async function unpublishRichMenuGroup(
       }
     }
   } catch (e) {
-    warnings.push(
-      `default lookup/clear failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-    );
+    warnings.push(`default lookup/clear failed (non-fatal): ${richMenuPublisherErrorKind(e)}`);
   }
 
   return { pages, warnings };

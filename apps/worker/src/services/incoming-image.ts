@@ -24,6 +24,12 @@ export interface IncomingImageRefs {
   previewImageUrl: string;
 }
 
+function incomingImageErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 /**
  * LINE Content API から incoming 画像バイナリを取得し R2 に保存して URL を返す。
  * 失敗時は null を返し、呼び出し元は `[画像]` ラベルフォールバックを使う。
@@ -39,19 +45,19 @@ export async function fetchAndStoreIncomingImage(
       headers: { Authorization: `Bearer ${opts.channelAccessToken}` },
     });
   } catch (err) {
-    console.error('incoming-image: fetch failed', { err, messageId: opts.messageId, accountId: opts.accountId });
+    console.error(`incoming-image: fetch failed: ${incomingImageErrorKind(err)}`);
     return null;
   }
 
   if (!res.ok) {
-    console.error('incoming-image: non-200', { status: res.status, messageId: opts.messageId, accountId: opts.accountId });
+    console.error(`incoming-image: non-200: status=${res.status}`);
     return null;
   }
 
   const contentType = res.headers.get('Content-Type')?.split(';')[0].trim() ?? 'application/octet-stream';
   const ext = CONTENT_TYPE_TO_EXT[contentType];
   if (!ext) {
-    console.error('incoming-image: unsupported content-type', { contentType, messageId: opts.messageId, accountId: opts.accountId });
+    console.error('incoming-image: unsupported content-type');
     return null;
   }
   // accountId / messageId は実質 UUID / LINE 数字 ID で安全だが、念のため
@@ -64,14 +70,14 @@ export async function fetchAndStoreIncomingImage(
   try {
     data = await res.arrayBuffer();
   } catch (err) {
-    console.error('incoming-image: arrayBuffer failed', { err, messageId: opts.messageId, accountId: opts.accountId });
+    console.error(`incoming-image: arrayBuffer failed: ${incomingImageErrorKind(err)}`);
     return null;
   }
 
   try {
     await opts.r2.put(key, data, { httpMetadata: { contentType } });
   } catch (err) {
-    console.error('incoming-image: R2 put failed', { err, messageId: opts.messageId, accountId: opts.accountId });
+    console.error(`incoming-image: R2 put failed: ${incomingImageErrorKind(err)}`);
     return null;
   }
 

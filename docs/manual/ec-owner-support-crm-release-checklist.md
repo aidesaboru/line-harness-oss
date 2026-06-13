@@ -213,6 +213,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker broadcasts access route testsでは、壊れたJSON、空accountIds、不正ID、不正targetTagIdがdedup preview計算前に400で止まり、正常payloadはtrim/dedupeされ、dedupPriorityはaccountIds内へfilterされることを確認済み。
 - [ ] broadcast管理APIのquery/path/create/update/segment payloadがDB/LINE副作用前に検証される
   - Worker broadcasts access route testsでは、不正なlineAccountId query、broadcast path ID、messageType/targetType/Flex/image JSON/HTTPS画像URL/segment条件/IDがDB helper、SQL bind、LINE送信、対象計算前に400で止まり、正常payloadはtrim/dedupeされることを確認済み。
+- [ ] multi-account broadcastの失敗/skipログに、LINE account ID、channel token、LINE user ID、raw例外本文が出ない
+  - Worker dedup-broadcast service testsでは、multicast失敗時のconsoleは例外種別だけにし、inactive/missing account skipログにもaccount IDを出さず、failedAccountIdsの戻り値/DB記録は維持されることを確認済み。
 - [ ] friends APIのquery/path/tag/metadata/direct message payloadがfriend可視範囲check、DB/LINE副作用前に検証される
   - Worker friends route testsでは、不正なlineAccountId/tagId/search/metadata query、friend/tag path ID、metadata更新payload、messageType/Flex/image JSON/HTTPS画像URLがfriend可視範囲check、DB helper、SQL bind、LINE送信、tag scenario副作用前に400で止まり、正常値はtrimされることを確認済み。
 - [ ] auto-replies管理APIのaccountId query、auto-reply path ID、create/update payloadがDB helper前に検証される
@@ -289,6 +291,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker management role guard testsでは、staffがbooking/event admin routeへ直接アクセスしても403で止まり、DBへ到達しないことを確認済み。Events route testsではowner文脈の既存admin操作が引き続き通ることを確認済み。
 - [ ] rich menu catalog/group管理APIがowner/adminだけに制限される
   - Worker rich-menu group/support-friend access route testsでは、staffがLINE rich menu catalogやrich menu group管理APIへ直接アクセスしても403で止まり、見えている友だち単位のrich menu参照は引き続き通ることを確認済み。
+- [ ] rich menu publish/unpublishの非致命LINE API失敗ログ/warningsに、channel token、richMenu ID、raw例外本文が出ない
+  - Worker rich-menu publisher testsでは、default lookup/clear失敗時のconsole/warningsが例外種別だけを残し、channel-token-like text、richMenu ID、raw LINE error messageを出さないことを確認済み。
 - [ ] rich menu editor画像とLINE外部画像proxyが認証なしで読めない
   - Worker auth middleware testsでは、`/api/rich-menu-images/...` と `/api/rich-menu-groups/external/:richMenuId/image` が未認証では401になり、session cookie付きGETでは通ることを確認済み。
 - [ ] rich menu catalog/friend操作APIのquery/path/payload/imageがDB/LINE副作用前に検証される
@@ -309,6 +313,8 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
   - Worker friends/duplicates/LIFF/image access route testsでは、staffがfriends ref集計、重複統計、ref summary/detail、LIFFリンクwrap、画像削除へ直接アクセスしても403で止まり、画像アップロードはstaffのチャット返信用に維持されることを確認済み。
 - [ ] 画像upload/公開表示/削除APIのpayloadとR2 keyがR2 put/get/delete前に検証される
   - Worker image access route testsでは、壊れたJSON、不正base64/mimeType/filename、空/過大画像、不正R2 keyがR2 put/get/delete前に400/404で止まり、正常filename/keyはtrimされることを確認済み。
+- [ ] LINE incoming画像の取得/保存失敗時に、channel token、LINE message ID、LINE account ID、raw例外本文がconsoleへ出ない
+  - Worker incoming-image service testsでは、LINE Content API非200、fetch失敗、R2保存失敗時にHTTP statusや例外種別だけを残し、channel token、messageId、accountId、raw例外本文をconsoleへ出さないことを確認済み。
 - [ ] LIFF OAuth token交換、LINE token refresh、IG Harness notify、X Harness action失敗時に、外部レスポンス本文、LINE friend UUID、LINE account名/ID/access token、tag名、例外本文がconsoleへ出ない
   - Webhook/webhooks/events route tests、Worker typecheck、Worker buildで、公開導線に近いLIFF/外部連携ログ匿名化後も動作が壊れていないことを確認済み。
   - Worker token refresh service testsでは、LINE token API失敗時に外部レスポンス本文/account名/secretをconsoleへ出さず、成功時もaccount ID/name/access tokenをconsoleへ出さないことを確認済み。

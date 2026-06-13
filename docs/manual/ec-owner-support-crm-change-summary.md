@@ -20,6 +20,7 @@ updated: 2026-06-13
 - calendar空き枠/予約一覧の `connectionId` / `date` / `friendId` queryは、Calendar接続lookup、予約範囲lookup、friend可視範囲check、SQL bind前に検証し、正常値はtrimする
 - conversation一覧/詳細の `lineAccountId` / `minHoursSince` / `maxHoursSince` / `before` / `friendId` query/pathは、friend可視範囲checkやSQL bind前に検証し、`limit` / `offset` は安全な範囲へ丸める
 - Stripe eventsの `friendId` / `eventType` queryは、DB helper呼び出し前に検証し、正常値はtrimする
+- affiliate reportの `id` / `startDate` / `endDate` path/queryは、DB helper呼び出し前に検証し、正常値はtrimする
 - Google Calendar接続作成、予約作成、予約status更新payloadは、壊れたJSON、不正な `calendarId/authType/token/connectionId/friendId/title/startAt/endAt/metadata/status` をDB書き込み、friend可視範囲check、Google Calendar API呼び出し前に400で止める
 - automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの `limit` / `offset` / `days` queryも既定値、上限、整数へ正規化し、Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` を残さない
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
@@ -196,7 +197,7 @@ strict Preflight:
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion event/report filters reject malformed IDs or date ranges before friend access checks or SQL bind, valid filters are trimmed, conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops, invalid time windows stop before calendar lookup, malformed or nonexistent calendar date filters are rejected, valid calendar slot/booking query values are trimmed, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
 - conversations route tests confirm malformed or unsafe conversation queue/detail query values stop before friend access checks or SQL bind, while valid IDs/cursors are trimmed and paging values are clamped.
-- Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind. Operations route tests also confirm malformed Stripe events `friendId/eventType` filters stop before DB helper calls while valid filters are trimmed.
+- Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind. Operations route tests also confirm malformed Stripe events `friendId/eventType` and affiliate report `id/startDate/endDate` filters stop before DB helper calls while valid filters are trimmed.
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
 - Form access route tests confirm public submit ignores `_skipWebhook`, rechecks the webhook gate server-side, does not run reward tag/scenario side effects when the gate rejects, stores redacted webhook fetch errors, and never trusts caller-supplied `lineUserId` / `friendId` for partial metadata writes or submit side effects.
@@ -275,7 +276,7 @@ strict Preflight:
 - `apps/worker/src/routes/webhooks.ts`: webhook管理APIのowner/admin制限とincoming receive署名検証の維持
 - `apps/worker/src/index.ts`: 公開QR proxyの入力制限と外部QR rendererレスポンス検証
 - `apps/worker/src/middleware/auth.ts` / `routes/forms.ts`: フォーム定義公開GETとフォーム管理APIのowner/admin制限
-- `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events query検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
+- `apps/worker/src/routes/stripe.ts` / `ad-platforms.ts` / `affiliates.ts` / `tracked-links.ts` / `liff.ts`: 売上・広告・計測運用APIのowner/admin制限、Stripe events/affiliate report query検証、公開affiliate click入力境界、公開エンドポイント維持、tracked-linkの検証済みLIFF attribution
 - `apps/worker/src/routes/conversions.ts`: staffのconversion記録、履歴一覧、集計レポートのfriend可視範囲とconversion記録payload/query検証
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲

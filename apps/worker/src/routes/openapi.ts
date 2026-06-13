@@ -796,15 +796,23 @@ const spec = {
         tags: ['Affiliates'],
         summary: 'アフィリエイトレポート（owner/admin）',
         parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'startDate', in: 'query', schema: { type: 'string' } },
-          { name: 'endDate', in: 'query', schema: { type: 'string' } },
+          { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'startDate', in: 'query', schema: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' } },
+          { name: 'endDate', in: 'query', schema: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' } },
         ],
-        responses: { '200': { description: 'Report' }, '403': { description: 'Requires owner/admin' } },
+        responses: { '200': { description: 'Report' }, '400': { description: 'Invalid affiliate report query' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/affiliates-report': {
-      get: { tags: ['Affiliates'], summary: '全アフィリエイトレポート（owner/admin）', responses: { '200': { description: 'Report' }, '403': { description: 'Requires owner/admin' } } },
+      get: {
+        tags: ['Affiliates'],
+        summary: '全アフィリエイトレポート（owner/admin）',
+        parameters: [
+          { name: 'startDate', in: 'query', schema: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' } },
+          { name: 'endDate', in: 'query', schema: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' } },
+        ],
+        responses: { '200': { description: 'Report' }, '400': { description: 'Invalid affiliate report query' }, '403': { description: 'Requires owner/admin' } },
+      },
     },
     '/api/affiliates/click': {
       post: {

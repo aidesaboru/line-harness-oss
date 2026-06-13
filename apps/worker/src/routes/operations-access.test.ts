@@ -321,6 +321,53 @@ describe('operations API role guards', () => {
     });
   });
 
+  test('owner affiliate reports reject unsafe id and date filters before DB helper calls', async () => {
+    const app = setupApp('owner');
+    const paths = [
+      '/api/affiliates/bad%20affiliate/report',
+      '/api/affiliates/affiliate-1/report?startDate=not-a-date',
+      '/api/affiliates/affiliate-1/report?startDate=2026-06-30&endDate=2026-06-01',
+      '/api/affiliates-report?endDate=bad%20date',
+    ];
+
+    for (const path of paths) {
+      const res = await app.request(path);
+
+      expect(res.status, path).toBe(400);
+      expect(dbMocks.getAffiliateReport, path).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner affiliate reports trim valid id and date filters before DB helper calls', async () => {
+    dbMocks.getAffiliateReport.mockResolvedValue([
+      {
+        affiliateId: 'affiliate-1',
+        affiliateName: 'Partner',
+        code: 'partner',
+        commissionRate: 0.1,
+        totalClicks: 1,
+        totalConversions: 1,
+        totalRevenue: 1200,
+      },
+    ]);
+
+    const detail = await setupApp('owner')
+      .request('/api/affiliates/%20affiliate-1%20/report?startDate=%202026-06-01%20&endDate=%202026-06-30%20');
+    const summary = await setupApp('owner')
+      .request('/api/affiliates-report?startDate=%202026-06-01%20&endDate=%202026-06-30%20');
+
+    expect(detail.status).toBe(200);
+    expect(summary.status).toBe(200);
+    expect(dbMocks.getAffiliateReport).toHaveBeenNthCalledWith(1, {} as D1Database, 'affiliate-1', {
+      startDate: '2026-06-01',
+      endDate: '2026-06-30',
+    });
+    expect(dbMocks.getAffiliateReport).toHaveBeenNthCalledWith(2, {} as D1Database, undefined, {
+      startDate: '2026-06-01',
+      endDate: '2026-06-30',
+    });
+  });
+
   test('public Stripe webhook accepts valid signed bounded payloads', async () => {
     const secret = 'whsec_test_secret';
     const rawBody = JSON.stringify({

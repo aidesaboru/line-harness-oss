@@ -18,6 +18,9 @@ const AFFILIATE_CLICK_CODE_MAX_LENGTH = 128;
 const AFFILIATE_CLICK_URL_MAX_LENGTH = 2048;
 const AFFILIATE_CLICK_IP_MAX_LENGTH = 128;
 const AFFILIATE_CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
+const AFFILIATE_ID_MAX_LENGTH = 128;
+const AFFILIATE_DATE_MAX_LENGTH = 64;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type ParsedAffiliateClickBody =
   | { ok: true; code: string; url: string | null }
@@ -28,6 +31,7 @@ type ParsedCreateAffiliateBody =
 type ParsedUpdateAffiliateBody =
   | { ok: true; body: { name?: string; commissionRate?: number; isActive?: boolean } }
   | { ok: false; error: string };
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function serializeAffiliate(row: { id: string; name: string; code: string; commission_rate: number; is_active: number; created_at: string }) {
   return {
@@ -65,6 +69,44 @@ function parseAffiliateCode(raw: unknown): { ok: true; value: string } | { ok: f
   if (value.length > AFFILIATE_CLICK_CODE_MAX_LENGTH) return { ok: false, error: 'code is too long' };
   if (!AFFILIATE_CODE_PATTERN.test(value)) return { ok: false, error: 'code must be URL-safe' };
   return { ok: true, value };
+}
+
+function parseVisibleString(raw: unknown, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalDateQuery(raw: string | undefined, label: string): ValueResult<string | undefined> {
+  if (raw == null) return { ok: true, value: undefined };
+  const parsed = parseVisibleString(raw, label, AFFILIATE_DATE_MAX_LENGTH);
+  if (!parsed.ok && parsed.error === `${label} is required`) return { ok: true, value: undefined };
+  if (!parsed.ok) return parsed;
+  if (!Number.isFinite(new Date(parsed.value).getTime())) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return parsed;
+}
+
+function parseAffiliateReportDateRange(
+  startRaw: string | undefined,
+  endRaw: string | undefined,
+): ValueResult<{ startDate?: string; endDate?: string }> {
+  const startDate = parseOptionalDateQuery(startRaw, 'startDate');
+  if (!startDate.ok) return startDate;
+  const endDate = parseOptionalDateQuery(endRaw, 'endDate');
+  if (!endDate.ok) return endDate;
+  if (
+    startDate.value &&
+    endDate.value &&
+    new Date(startDate.value).getTime() > new Date(endDate.value).getTime()
+  ) {
+    return { ok: false, error: 'startDate must be before or equal to endDate' };
+  }
+  return { ok: true, value: { startDate: startDate.value, endDate: endDate.value } };
 }
 
 function parseCommissionRate(raw: unknown, required = false): { ok: true; value?: number } | { ok: false; error: string } {
@@ -234,10 +276,11 @@ affiliates.delete('/api/affiliates/:id', requireRole('owner', 'admin'), async (c
 // GET /api/affiliates/:id/report - affiliate performance report
 affiliates.get('/api/affiliates/:id/report', requireRole('owner', 'admin'), async (c) => {
   try {
-    const report = await getAffiliateReport(c.env.DB, c.req.param('id')!, {
-      startDate: c.req.query('startDate'),
-      endDate: c.req.query('endDate'),
-    });
+    const affiliateId = parseVisibleString(c.req.param('id'), 'id', AFFILIATE_ID_MAX_LENGTH);
+    if (!affiliateId.ok) return c.json({ success: false, error: affiliateId.error }, 400);
+    const dates = parseAffiliateReportDateRange(c.req.query('startDate'), c.req.query('endDate'));
+    if (!dates.ok) return c.json({ success: false, error: dates.error }, 400);
+    const report = await getAffiliateReport(c.env.DB, affiliateId.value, dates.value);
 
     if (report.length === 0) {
       return c.json({ success: false, error: 'Affiliate not found' }, 404);
@@ -273,10 +316,9 @@ affiliates.post('/api/affiliates/click', async (c) => {
 // GET /api/affiliates/report - all affiliates report
 affiliates.get('/api/affiliates-report', requireRole('owner', 'admin'), async (c) => {
   try {
-    const report = await getAffiliateReport(c.env.DB, undefined, {
-      startDate: c.req.query('startDate'),
-      endDate: c.req.query('endDate'),
-    });
+    const dates = parseAffiliateReportDateRange(c.req.query('startDate'), c.req.query('endDate'));
+    if (!dates.ok) return c.json({ success: false, error: dates.error }, 400);
+    const report = await getAffiliateReport(c.env.DB, undefined, dates.value);
     return c.json({ success: true, data: report });
   } catch (err) {
     console.error('GET /api/affiliates-report error:', err);

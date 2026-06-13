@@ -191,6 +191,7 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
 - [ ] 検索、ステータス絞り込み、並び替えが使える
 - Local list-control browser smokeでは、APIが別順で返しても「更新が新しい順」は `updatedAt` 降順になり、初回詳細も一覧先頭に一致し、期限超過キュー、完了ステータス、検索 `q=Gamma` が期待通り切り替わることを確認済み。
 - [ ] 選択中の案件が絞り込み外にある場合、画面に理由と戻り操作が出る
+- Local outside-list browser smokeでは、完了案件をURL直指定して未完了一覧の外に置いた場合に理由と `完了案件を表示` が出て `status=resolved` の一覧へ戻れること、未完了案件をステータス絞り込みで外に置いた場合に `絞り込みをリセット` で `queue=unresolved` の一覧へ戻れることを確認済み。
 - [ ] 長いチャットで過去メッセージを読み込める
 - [ ] サポート案件から「チャットで返信」を押すと、チャット入力欄に返信案が入る
 - [ ] sessionStorageが使えない環境でも、URLの `supportCase` で案件紐付けが残る
@@ -278,6 +279,7 @@ N/A
 - Browser smoke with owner/admin/staff mock sessions confirms `/support` role UI: owner/admin show one `新規案件` button; staff shows zero `新規案件` buttons. Staff mock sidebar only shows 友だち管理, 個別チャット, サポートCRM, and 未対応 while hiding management menus; direct staff access to `/broadcasts` returns to `/support`; direct admin access to `/staff` also returns to `/support`.
 - Browser smoke with empty staff-name mock session confirms `/support` shows the staff-name warning, does not render the dummy case/manual/staff suggestion/unanswered badge, and does not call `/api/support/summary`, `/api/support/cases`, `/api/support/manuals`, `/api/chats`, `/api/staff`, or `/api/inbox/unanswered/count`.
 - Browser smoke with list-control mock session confirms updated sort is `updatedAt` desc even when API order differs, initial detail matches the first displayed case, priority sort reorders locally, overdue queue sends `queue=overdue`, status selection clears queue, and search sends `q=Gamma`.
+- Browser smoke with outside-list mock session confirms hidden selected cases keep the detail panel with an explanatory banner; resolved hidden cases reveal the completed list with `status=resolved`, while unresolved hidden cases reset to `queue=unresolved`.
 - Browser smoke with chat mock session confirms `/chats?friend=friend-visible&supportCase=case-visible` shows the support-case link banner without a sessionStorage draft.
 - `corepack pnpm preflight:support-crm:dry-run` success path: strict release env shape passes with secrets redacted.
 - `corepack pnpm preflight:support-crm:dry-run` failure path: missing admin origin, staff key, staff fixture IDs, and disabled staff mutation guard are reported before network calls.

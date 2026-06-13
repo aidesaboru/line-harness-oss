@@ -145,6 +145,7 @@ strict Preflight:
 - owner/admin/staff mock sessionで `/support` を開き、owner/adminは「新規案件」ボタン1件、staffは0件であることを確認
 - empty staff-name mock sessionで `/support` を開き、スタッフ名警告が出ること、ダミー案件/マニュアル/スタッフ候補/未対応99件バッジが表示されないこと、案件/マニュアル/チャット候補/スタッフ一覧/未対応件数APIが呼ばれないことを確認
 - list-control mock sessionで `/support` を開き、APIが優先度/期限寄りの順で返しても初期一覧は更新日時降順になり、詳細欄も先頭案件に一致すること、優先度順、期限超過キュー、完了ステータス、検索 `q=Gamma` が切り替わることを確認
+- outside-list mock sessionで `/support` を開き、完了案件が未完了一覧の外にある場合は理由表示と `完了案件を表示` で `status=resolved` の一覧へ戻れること、未完了案件がステータス絞り込みの外にある場合は `絞り込みをリセット` で `queue=unresolved` の一覧へ戻れることを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

@@ -34,6 +34,7 @@ updated: 2026-06-13
 - staffに見えているサポート案件へ紐づく友だちだけ、チャット一覧とチャット詳細で表示
 - staffが `/api/friends`、未対応インボックス一覧/件数、users-grouped顧客統合、legacy users顧客ID API、account-settingsテスト送信先、conversion履歴/集計、calendar予約、direct message履歴、conversation一覧/詳細、scenario手動登録、score、reminder、rich-menu APIを使っても、自分に見えるサポート案件へ紐づく友だちだけに制限
 - scenario、reminder、scoring rule、template、message templateの定義参照/作成/更新/削除とtag定義の作成/削除はowner/adminだけに制限し、staffは見えている友だちへの手動登録やscore/reminder操作だけを可視範囲内で使える
+- reminder/scoring rule定義payloadとfriend score/reminder操作payloadは、壊れたJSON、不正なID、空/過大なname/description/reason/messageContent、不正なmessageType/Flex/image JSON、不正date、不正score/offsetをDB helperやfriend reminder SQL前に400で止め、正常値はtrimする
 - scenario定義/step/reorder payloadは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderをDB lookup/write前に400で止め、正常payloadはtrimして保存する。step更新とreorderはpath上のscenarioに属するstepだけを対象にする
 - tag/template/message-template定義payloadは、壊れたJSON、不正なname/color/category/messageType/messageContent、壊れたFlex/image JSON、空updateをDB書き込み前に400で止め、正常payloadはtrimして保存する
 - template一覧の `category` queryは、DB helper呼び出し前に長さ検証し、正常値はtrimする
@@ -176,6 +177,7 @@ corepack pnpm --filter worker test -- src/routes/webhook.test.ts src/routes/webh
 corepack pnpm --filter worker test -- src/routes/liff-access.test.ts src/routes/forms-access.test.ts src/middleware/auth.test.ts
 corepack pnpm --filter worker test -- src/routes/operations-access.test.ts src/routes/liff-access.test.ts
 corepack pnpm --filter worker test -- src/routes/booking-liff-access.test.ts # 18 tests
+corepack pnpm --filter worker test -- src/routes/support-friend-access-routes.test.ts # 15 tests
 corepack pnpm test:scripts
 corepack pnpm --filter worker typecheck
 corepack pnpm --filter worker build

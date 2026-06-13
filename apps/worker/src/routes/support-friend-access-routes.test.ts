@@ -114,6 +114,25 @@ function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMocks.createScoringRule.mockResolvedValue({
+    id: 'rule-1',
+    name: 'Hot lead',
+    event_type: 'url_click',
+    score_value: 10,
+    is_active: 1,
+    created_at: '2026-06-12T10:00:00.000',
+    updated_at: '2026-06-12T10:00:00.000',
+  });
+  dbMocks.updateScoringRule.mockResolvedValue(undefined);
+  dbMocks.getScoringRuleById.mockResolvedValue({
+    id: 'rule-1',
+    name: 'Hot lead',
+    event_type: 'url_click',
+    score_value: 10,
+    is_active: 1,
+    created_at: '2026-06-12T10:00:00.000',
+    updated_at: '2026-06-12T10:00:00.000',
+  });
   dbMocks.getFriendScore.mockResolvedValue(42);
   dbMocks.getFriendScoreHistory.mockResolvedValue([
     {
@@ -125,6 +144,31 @@ beforeEach(() => {
     },
   ]);
   dbMocks.addScore.mockResolvedValue(undefined);
+  dbMocks.createReminder.mockResolvedValue({
+    id: 'reminder-1',
+    name: 'Follow up',
+    description: 'Ping later',
+    is_active: 1,
+    created_at: '2026-06-12T10:00:00.000',
+    updated_at: '2026-06-12T10:00:00.000',
+  });
+  dbMocks.updateReminder.mockResolvedValue(undefined);
+  dbMocks.getReminderById.mockResolvedValue({
+    id: 'reminder-1',
+    name: 'Follow up',
+    description: 'Ping later',
+    is_active: 1,
+    created_at: '2026-06-12T10:00:00.000',
+    updated_at: '2026-06-12T10:00:00.000',
+  });
+  dbMocks.createReminderStep.mockResolvedValue({
+    id: 'step-1',
+    reminder_id: 'reminder-1',
+    offset_minutes: -60,
+    message_type: 'text',
+    message_content: 'ping',
+    created_at: '2026-06-12T10:00:00.000',
+  });
   dbMocks.enrollFriendInReminder.mockResolvedValue({
     id: 'friend-reminder-visible',
     friend_id: 'friend-visible',
@@ -205,6 +249,184 @@ describe('friend-scoped support visibility guards', () => {
     expect(dbMocks.deleteReminder).not.toHaveBeenCalled();
     expect(dbMocks.createReminderStep).not.toHaveBeenCalled();
     expect(dbMocks.deleteReminderStep).not.toHaveBeenCalled();
+  });
+
+  test('owner scoring and reminder definition payloads reject invalid input before DB helpers', async () => {
+    const requests: Array<[string, string, string]> = [
+      ['POST', '/api/scoring-rules', '{'],
+      ['POST', '/api/scoring-rules', JSON.stringify({ name: ' ', eventType: 'url_click', scoreValue: 10 })],
+      ['POST', '/api/scoring-rules', JSON.stringify({ name: 'Hot', eventType: 'bad event', scoreValue: 10 })],
+      ['POST', '/api/scoring-rules', JSON.stringify({ name: 'Hot', eventType: 'url_click', scoreValue: 1.5 })],
+      ['PUT', '/api/scoring-rules/rule-1', JSON.stringify({ isActive: 'yes' })],
+      ['POST', '/api/reminders', '{'],
+      ['POST', '/api/reminders', JSON.stringify({ name: ' ', description: 'Ping' })],
+      ['POST', '/api/reminders', JSON.stringify({ name: 'Follow up', lineAccountId: 'bad account' })],
+      ['PUT', '/api/reminders/reminder-1', JSON.stringify({ isActive: 'yes' })],
+      ['POST', '/api/reminders/reminder-1/steps', JSON.stringify({
+        offsetMinutes: 1.5,
+        messageType: 'text',
+        messageContent: 'ping',
+      })],
+      ['POST', '/api/reminders/reminder-1/steps', JSON.stringify({
+        offsetMinutes: -60,
+        messageType: 'video',
+        messageContent: 'ping',
+      })],
+      ['POST', '/api/reminders/reminder-1/steps', JSON.stringify({
+        offsetMinutes: -60,
+        messageType: 'flex',
+        messageContent: '{',
+      })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      vi.clearAllMocks();
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+      const res = await setupApp(db, 'owner').request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, `${method} ${path} ${body}`).toBe(400);
+      expect(dbMocks.createScoringRule).not.toHaveBeenCalled();
+      expect(dbMocks.updateScoringRule).not.toHaveBeenCalled();
+      expect(dbMocks.createReminder).not.toHaveBeenCalled();
+      expect(dbMocks.updateReminder).not.toHaveBeenCalled();
+      expect(dbMocks.createReminderStep).not.toHaveBeenCalled();
+    }
+  });
+
+  test('owner scoring and reminder definition payloads trim valid values before DB helpers', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'owner');
+
+    const scoringCreate = await app.request('/api/scoring-rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Hot lead ', eventType: ' url_click ', scoreValue: 10 }),
+    });
+    expect(scoringCreate.status).toBe(201);
+    expect(dbMocks.createScoringRule).toHaveBeenCalledWith(db, {
+      name: 'Hot lead',
+      eventType: 'url_click',
+      scoreValue: 10,
+    });
+
+    const scoringUpdate = await app.request('/api/scoring-rules/%20rule-1%20', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ eventType: ' manual ', isActive: 0 }),
+    });
+    expect(scoringUpdate.status).toBe(200);
+    expect(dbMocks.updateScoringRule).toHaveBeenCalledWith(db, 'rule-1', {
+      eventType: 'manual',
+      isActive: false,
+    });
+
+    const reminderCreate = await app.request('/api/reminders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' Follow up ',
+        description: ' Ping later ',
+        lineAccountId: ' acc-1 ',
+      }),
+    });
+    expect(reminderCreate.status).toBe(201);
+    expect(dbMocks.createReminder).toHaveBeenCalledWith(db, {
+      name: 'Follow up',
+      description: 'Ping later',
+    });
+
+    const reminderUpdate = await app.request('/api/reminders/%20reminder-1%20', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Renewal ', description: ' ', isActive: 1 }),
+    });
+    expect(reminderUpdate.status).toBe(200);
+    expect(dbMocks.updateReminder).toHaveBeenCalledWith(db, 'reminder-1', {
+      name: 'Renewal',
+      description: null,
+      isActive: true,
+    });
+
+    const stepCreate = await app.request('/api/reminders/%20reminder-1%20/steps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        offsetMinutes: -60,
+        messageType: ' text ',
+        messageContent: ' ping ',
+      }),
+    });
+    expect(stepCreate.status).toBe(201);
+    expect(dbMocks.createReminderStep).toHaveBeenCalledWith(db, {
+      reminderId: 'reminder-1',
+      offsetMinutes: -60,
+      messageType: 'text',
+      messageContent: 'ping',
+    });
+  });
+
+  test('visible friend score and reminder enrollment payloads reject invalid input before DB helpers', async () => {
+    const requests: Array<[string, string, string]> = [
+      ['POST', '/api/friends/friend-visible/score', '{'],
+      ['POST', '/api/friends/friend-visible/score', JSON.stringify({ scoreChange: 1.5 })],
+      ['POST', '/api/friends/friend-visible/score', JSON.stringify({
+        scoreChange: 5,
+        reason: 'x'.repeat(1001),
+      })],
+      ['POST', '/api/reminders/reminder-1/enroll/friend-visible', JSON.stringify({ targetDate: '2026-02-31' })],
+      ['POST', '/api/reminders/reminder-1/enroll/friend-visible', JSON.stringify({ targetDate: 'bad date' })],
+    ];
+
+    for (const [method, path, body] of requests) {
+      vi.clearAllMocks();
+      const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+      const res = await setupApp(db, 'staff').request(path, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, `${method} ${path} ${body}`).toBe(400);
+      expect(dbMocks.addScore).not.toHaveBeenCalled();
+      expect(dbMocks.enrollFriendInReminder).not.toHaveBeenCalled();
+    }
+  });
+
+  test('visible friend score and reminder enrollment payloads trim valid values', async () => {
+    const db = makeDb({ visibleFriendIds: ['friend-visible'] });
+    const app = setupApp(db, 'staff');
+
+    const scoreRes = await app.request('/api/friends/%20friend-visible%20/score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scoreChange: -5, reason: ' manual update ' }),
+    });
+
+    expect(scoreRes.status).toBe(201);
+    expect(dbMocks.addScore).toHaveBeenCalledWith(db, {
+      friendId: 'friend-visible',
+      scoreChange: -5,
+      reason: 'manual update',
+    });
+
+    const enrollRes = await app.request('/api/reminders/%20reminder-1%20/enroll/%20friend-visible%20', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetDate: ' 2026-06-13 ' }),
+    });
+
+    expect(enrollRes.status).toBe(201);
+    expect(dbMocks.enrollFriendInReminder).toHaveBeenCalledWith(db, {
+      friendId: 'friend-visible',
+      reminderId: 'reminder-1',
+      targetDate: '2026-06-13',
+    });
   });
 
   test('staff cannot read a hidden friend score', async () => {

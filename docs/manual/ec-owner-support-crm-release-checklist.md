@@ -241,6 +241,8 @@ corepack pnpm preflight:support-crm:summary --file support-crm-preflight.log
   - Worker QR proxy testsでは、`data` がHTTP(S) URLではない、長すぎる、`size` が正方形ではない/大きすぎる/形式不正、外部QR rendererが画像以外を返す場合に拒否することを確認済み。
 - [ ] scenario/reminder/scoring/template/message-templateの定義参照・変更APIとtag定義変更APIがowner/adminだけに制限される
   - Worker scenario/support-friend/content-management route testsでは、staffがscenario/step、reminder/step、scoring rule、reusable template、message-templateの一覧/詳細/作成/更新/削除を実行できず、tag定義の作成/削除もできず、friend単位の操作は見えるsupport case友だちの範囲に残ることを確認済み。
+- [ ] reminder/scoring rule定義payloadとfriend score/reminder操作payloadが副作用前に検証される
+  - Worker support-friend access route testsでは、壊れたJSON、不正なID、空/過大なname/description/reason/messageContent、不正なmessageType/Flex/image JSON、不正date、不正score/offsetがDB helperやfriend reminder SQL前に400で止まり、正常payload/path IDはtrimされることを確認済み。
 - [ ] scenario定義/step/reorder payloadがDB lookup/write前に検証される
   - Worker scenarios route testsでは、壊れたJSON、不正なname/triggerType/deliveryMode/isActive/stepOrder/messageType/messageContent/condition/reorderがDB lookupやwrite前に400で止まり、正常payloadはtrimされることを確認済み。step更新とreorderはpath上のscenarioに属するstepだけを対象にする。
 - [ ] tag/template/message-template定義payloadがDB書き込み前に検証される

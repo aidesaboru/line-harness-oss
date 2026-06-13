@@ -42,7 +42,7 @@ export async function getReminderById(db: D1Database, id: string): Promise<Remin
 
 export async function createReminder(
   db: D1Database,
-  input: { name: string; description?: string },
+  input: { name: string; description?: string | null },
 ): Promise<ReminderRow> {
   const id = crypto.randomUUID();
   const now = jstNow();
@@ -54,7 +54,7 @@ export async function createReminder(
 export async function updateReminder(
   db: D1Database,
   id: string,
-  updates: Partial<{ name: string; description: string; isActive: boolean }>,
+  updates: Partial<{ name: string; description: string | null; isActive: boolean }>,
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [];

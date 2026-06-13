@@ -790,6 +790,28 @@ describe('conversion point payload validation', () => {
       value: null,
     });
   });
+
+  test('owner conversion point delete rejects malformed path IDs before DB helpers', async () => {
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/conversions/points/bad%20point', {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(400);
+    expect(dbMocks.deleteConversionPoint).not.toHaveBeenCalled();
+  });
+
+  test('owner conversion point delete trims valid path IDs before DB helpers', async () => {
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/conversions/points/%20point-1%20', {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.deleteConversionPoint).toHaveBeenCalledWith(expect.anything(), 'point-1');
+  });
 });
 
 describe('entry route payload validation', () => {

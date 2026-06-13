@@ -87,6 +87,10 @@ function parseRequiredString(
   return { ok: true, value };
 }
 
+function parseConversionPathId(raw: unknown, label: string): ValueResult<string> {
+  return parseRequiredString(raw, label, CONVERSION_ID_MAX_LENGTH, CONVERSION_ID_PATTERN);
+}
+
 function parseOptionalNullableValue(raw: unknown): ValueResult<number | null | undefined> {
   if (raw === undefined) return { ok: true, value: undefined };
   if (raw === null) return { ok: true, value: null };
@@ -439,7 +443,9 @@ conversions.post('/api/conversions/points', requireRole('owner', 'admin'), async
 // DELETE /api/conversions/points/:id - delete
 conversions.delete('/api/conversions/points/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    await deleteConversionPoint(c.env.DB, c.req.param('id')!);
+    const id = parseConversionPathId(c.req.param('id'), 'conversionPointId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    await deleteConversionPoint(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/conversions/points/:id error:', err);

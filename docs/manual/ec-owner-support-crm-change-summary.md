@@ -76,6 +76,7 @@ updated: 2026-06-14
 - 重複統計、friends ref集計、流入ref分析、LIFFリンクwrap、画像削除APIはowner/adminだけに制限し、staffのチャット画像アップロードと公開画像表示は維持
 - 重複統計APIの失敗ログとエラー応答は、LINE account ID、friend ID、LINE user ID、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - 画像upload/公開表示/削除APIは、壊れたJSON、不正なbase64/mimeType/filename、空/過大な画像、不正なR2 keyをR2 put/get/delete前に止め、正常key/filenameはtrimする
+- 画像upload/削除APIの失敗ログとエラー応答は、filename、R2 key、token-like text、raw例外本文を出さず、例外種別と固定エラーだけにする
 - broadcast管理API（一覧、詳細、作成、更新、削除、preview-count、dedup-preview、本送信、segment送信、test-send、insight取得、progress、segment count）はowner/adminだけに制限し、管理payload/query/path IDは副作用前に検証する
 - admin診断/repair API（プロフィール再取得、broadcast reset、タグ/配信漏れチェック、recent messages、friend debugなど `/api/admin/*`）はowner/adminだけに制限
 - Webhook管理API（incoming/outgoingの一覧、作成、更新、削除）はowner/adminだけに制限し、更新/削除/receive path IDと作成/更新payloadの壊れたJSON、不正なname/sourceType/url/eventTypes/secret/isActiveをDB lookup/write前に400で止め、外部システムからのincoming receive公開エンドポイントは署名検証付きで維持
@@ -229,7 +230,7 @@ corepack pnpm --filter worker test -- src/routes/staff.test.ts # 12 tests
 corepack pnpm --filter worker test -- src/routes/users.test.ts # 14 tests
 corepack pnpm --filter worker test -- src/routes/duplicates-access.test.ts # 3 tests
 corepack pnpm --filter worker test -- src/routes/account-settings.test.ts # 7 tests
-corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 7 tests
+corepack pnpm --filter worker test -- src/routes/images-access.test.ts # 8 tests
 corepack pnpm --filter worker test -- src/routes/broadcasts-access.test.ts # 6 tests
 corepack pnpm --filter worker test -- src/routes/management-role-guards.test.ts # 35 tests
 corepack pnpm --filter worker test -- src/routes/notifications.test.ts # 4 tests

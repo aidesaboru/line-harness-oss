@@ -32,6 +32,16 @@ function setupApp(role: StaffRole = 'staff', bucket = createImagesBucket()) {
   return { app, bucket };
 }
 
+function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
+  return spy.mock.calls.flat().map(String).join(' ');
+}
+
+function expectNoLogLeak(logged: string, values: string[]): void {
+  for (const value of values) {
+    expect(logged).not.toContain(value);
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -130,5 +140,50 @@ describe('image upload and delete role guard', () => {
 
     expect(res.status).toBe(200);
     expect(bucket.delete).toHaveBeenCalledWith('uploaded.png');
+  });
+
+  test('image upload and delete failures log only the error kind', async () => {
+    const uploadBucket = createImagesBucket();
+    vi.mocked(uploadBucket.put).mockRejectedValueOnce(
+      new Error('image upload secret reply.png uploaded.png token-secret raw-body'),
+    );
+    const deleteBucket = createImagesBucket();
+    vi.mocked(deleteBucket.delete).mockRejectedValueOnce(
+      new Error('image delete secret reply.png uploaded.png token-secret raw-body'),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const uploadRes = await setupApp('staff', uploadBucket).app.request('/api/images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: 'iVBORw0KGgo=',
+          mimeType: 'image/png',
+          filename: 'reply.png',
+        }),
+      });
+      const deleteRes = await setupApp('admin', deleteBucket).app.request('/api/images/uploaded.png', {
+        method: 'DELETE',
+      });
+
+      expect(uploadRes.status).toBe(500);
+      expect(await uploadRes.json()).toEqual({ success: false, error: 'Internal server error' });
+      expect(deleteRes.status).toBe(500);
+      expect(await deleteRes.json()).toEqual({ success: false, error: 'Internal server error' });
+      const logged = loggedText(errorSpy);
+      expect(logged).toContain('POST /api/images error: Error');
+      expect(logged).toContain('DELETE /api/images/:key error: Error');
+      expectNoLogLeak(logged, [
+        'image upload secret',
+        'image delete secret',
+        'reply.png',
+        'uploaded.png',
+        'token-secret',
+        'raw-body',
+      ]);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

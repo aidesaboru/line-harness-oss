@@ -70,6 +70,12 @@ function decodeBase64Image(raw: unknown): ValueResult<ArrayBuffer> {
   }
 }
 
+function imageRouteErrorKind(err: unknown): string {
+  if (err instanceof TypeError) return 'network_error';
+  if (err instanceof Error) return err.name || 'error';
+  return typeof err;
+}
+
 // POST /api/images — upload image (base64 or binary)
 images.post('/api/images', async (c) => {
   try {
@@ -133,7 +139,7 @@ images.post('/api/images', async (c) => {
       data: { id, key, url, mimeType, size: data.byteLength },
     }, 201);
   } catch (err) {
-    console.error('POST /api/images error:', err);
+    console.error(`POST /api/images error: ${imageRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -164,7 +170,7 @@ images.delete('/api/images/:key', requireRole('owner', 'admin'), async (c) => {
     await c.env.IMAGES.delete(key.value);
     return c.json({ success: true, data: null });
   } catch (err) {
-    console.error('DELETE /api/images/:key error:', err);
+    console.error(`DELETE /api/images/:key error: ${imageRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

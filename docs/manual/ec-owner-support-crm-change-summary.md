@@ -18,6 +18,7 @@ updated: 2026-06-13
 - support案件一覧、友だち一覧、conversionイベント一覧の `limit` / `offset` queryは、SQL bind前に既定値、整数、有限値へ丸める
 - calendar空き枠取得の `slotMinutes` / `startHour` / `endHour` queryは、0以下、範囲外、非数値を既定値へ戻し、開始時刻が終了時刻以上なら400で止める
 - calendar空き枠/予約一覧の `connectionId` / `date` / `friendId` queryは、Calendar接続lookup、予約範囲lookup、friend可視範囲check、SQL bind前に検証し、正常値はtrimする
+- conversation一覧/詳細の `lineAccountId` / `minHoursSince` / `maxHoursSince` / `before` / `friendId` query/pathは、friend可視範囲checkやSQL bind前に検証し、`limit` / `offset` は安全な範囲へ丸める
 - Google Calendar接続作成、予約作成、予約status更新payloadは、壊れたJSON、不正な `calendarId/authType/token/connectionId/friendId/title/startAt/endAt/metadata/status` をDB書き込み、friend可視範囲check、Google Calendar API呼び出し前に400で止める
 - automations logs、notifications、Stripe events、ad conversion logs、admin diagnosticsの `limit` / `offset` / `days` queryも既定値、上限、整数へ正規化し、Worker routes/services内の生の `Number(c.req.query(...))` / `parseInt(c.req.query(...))` を残さない
 - staffは自分が作成、担当、エスカレ先になっている案件だけを扱う
@@ -193,6 +194,7 @@ strict Preflight:
 - support route tests confirm support case list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind.
 - friends route tests confirm friend list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope.
 - conversion/calendar access tests confirm conversion event list query values fall back from invalid `limit`, floor fractional `offset`, and reset non-finite `offset` before SQL bind while keeping staff friend visibility scope. They also confirm conversion event/report filters reject malformed IDs or date ranges before friend access checks or SQL bind, valid filters are trimmed, conversion tracking rejects malformed or unsafe payloads before friend access checks or DB writes, valid tracking payloads are trimmed/null-normalized/metadata-serialized, calendar slot query values cannot create zero-minute/negative loops, invalid time windows stop before calendar lookup, malformed or nonexistent calendar date filters are rejected, valid calendar slot/booking query values are trimmed, and malformed or unsafe Calendar connection/booking/status payloads stop before DB writes, friend access checks, or Google Calendar lookup.
+- conversations route tests confirm malformed or unsafe conversation queue/detail query values stop before friend access checks or SQL bind, while valid IDs/cursors are trimmed and paging values are clamped.
 - Automations, operations, admin diagnostics, and notifications route tests confirm invalid, fractional, oversized, and non-finite `limit` / `offset` / `days` values are normalized before DB helper calls or SQL bind.
 - `rg -n "Number\\(c\\.req\\.query|parseInt\\(c\\.req\\.query|Number\\.parseInt\\(c\\.req\\.query" apps/worker/src/routes apps/worker/src/services` returns no matches.
 - `rg -n "Form reply|console\\.log" apps/worker/src/client/form.ts apps/worker/src/routes/forms.ts` returns no matches, and Worker typecheck/build confirm the public form client and submit route still compile.
@@ -277,7 +279,7 @@ strict Preflight:
 - `apps/worker/src/routes/calendar.ts`: staffのcalendar予約一覧、予約作成、予約ステータス更新のfriend可視範囲
 - `apps/worker/src/routes/friends.ts`: staffのfriend一覧、詳細、direct履歴、direct送信の可視範囲
 - `apps/worker/src/routes/support-friend-access.ts`: friend単位APIで共有するstaff可視範囲guard
-- `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲
+- `apps/worker/src/routes/conversations.ts`: staffのconversation queue、conversation詳細の可視範囲とquery/path検証
 - `apps/worker/src/routes/scenarios.ts`: scenario定義/step管理のowner/admin制限、scenario payload検証、staffのscenario手動登録で使うfriend可視範囲
 - `apps/worker/src/routes/scoring.ts` / `reminders.ts`: scoring rule/reminder定義管理のowner/admin制限と、staffのfriend score/reminder操作の可視範囲
 - `apps/worker/src/routes/tags.ts` / `templates.ts` / `message-templates.ts`: tag/template/message template定義管理のowner/admin制限

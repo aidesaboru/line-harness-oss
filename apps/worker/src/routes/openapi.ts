@@ -583,6 +583,33 @@ const spec = {
         responses: { '200': { description: 'Calendar bookings' }, '400': { description: 'Invalid calendar booking query' } },
       },
     },
+    // ── Conversations ──────────────────────────────────────────────────────
+    '/api/conversations': {
+      get: {
+        tags: ['Conversations'],
+        summary: '要対応conversation一覧',
+        parameters: [
+          { name: 'lineAccountId', in: 'query', schema: { type: 'string', maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'minHoursSince', in: 'query', schema: { type: 'number', minimum: 0, maximum: 1000000, default: 0 } },
+          { name: 'maxHoursSince', in: 'query', schema: { type: 'number', minimum: 0, maximum: 1000000 } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+          { name: 'offset', in: 'query', schema: { type: 'integer', minimum: 0, maximum: 100000, default: 0 } },
+        ],
+        responses: { '200': { description: 'Conversation queue' }, '400': { description: 'Invalid conversation query' } },
+      },
+    },
+    '/api/conversations/{friendId}': {
+      get: {
+        tags: ['Conversations'],
+        summary: 'conversation詳細',
+        parameters: [
+          { name: 'friendId', in: 'path', required: true, schema: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[!-~]+$' } },
+          { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 200, default: 50 } },
+          { name: 'before', in: 'query', schema: { type: 'string', maxLength: 64, pattern: '^[!-~]+$' } },
+        ],
+        responses: { '200': { description: 'Conversation detail' }, '400': { description: 'Invalid conversation query' }, '404': { description: 'Friend not found' } },
+      },
+    },
     // ── Operations / Measurement ───────────────────────────────────────────
     '/api/integrations/stripe/events': {
       get: {
@@ -849,6 +876,7 @@ const spec = {
     { name: 'LINE Accounts', description: 'マルチLINEアカウント管理' },
     { name: 'Conversions', description: 'コンバージョン計測' },
     { name: 'Calendar', description: 'Google Calendar連携' },
+    { name: 'Conversations', description: '要対応conversation' },
     { name: 'Operations', description: '売上・広告・計測運用管理' },
     { name: 'Affiliates', description: 'アフィリエイト管理' },
     { name: 'Webhook', description: 'LINE Webhook' },

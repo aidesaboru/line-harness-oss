@@ -5,16 +5,117 @@ import { currentSupportStaff, ensureSupportFriendAccess } from './support-friend
 
 const conversations = new Hono<Env>();
 
+const CONVERSATION_ID_MAX_LENGTH = 128;
+const CONVERSATION_CURSOR_MAX_LENGTH = 64;
+const CONVERSATION_HOURS_MAX = 1_000_000;
+const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+
+type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function clampInteger(raw: string | null, fallback: number, min: number, max: number): number {
+  const value = raw?.trim();
+  const n = Number(value || fallback);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(n)));
+}
+
+function parseRequiredVisibleString(raw: string | null | undefined, label: string, maxLength: number): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: `${label} is required` };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (!VISIBLE_ASCII_PATTERN.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseOptionalVisibleString(raw: string | null, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw === null) return { ok: true, value: undefined };
+  const parsed = parseRequiredVisibleString(raw, label, maxLength);
+  if (!parsed.ok && parsed.error === `${label} is required`) return { ok: true, value: undefined };
+  return parsed;
+}
+
+function parseNonNegativeHours(raw: string | null, label: string, fallback?: number): ValueResult<number | null> {
+  if (raw === null) {
+    return fallback === undefined ? { ok: true, value: null } : { ok: true, value: fallback };
+  }
+  const value = raw.trim();
+  if (!value) {
+    return fallback === undefined ? { ok: true, value: null } : { ok: true, value: fallback };
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > CONVERSATION_HOURS_MAX) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return { ok: true, value: n };
+}
+
+function parseOptionalCursor(raw: string | null): ValueResult<string | undefined> {
+  if (raw === null) return { ok: true, value: undefined };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > CONVERSATION_CURSOR_MAX_LENGTH) return { ok: false, error: 'before is too long' };
+  if (!value.includes('T') || !Number.isFinite(new Date(value).getTime())) {
+    return { ok: false, error: 'before is invalid' };
+  }
+  return { ok: true, value };
+}
+
+function parseConversationQueueQuery(searchParams: URLSearchParams): ValueResult<{
+  accountId?: string;
+  minHoursSince: number;
+  maxHoursSince: number | null;
+  limit: number;
+  offset: number;
+}> {
+  const accountId = parseOptionalVisibleString(
+    searchParams.get('lineAccountId'),
+    'lineAccountId',
+    CONVERSATION_ID_MAX_LENGTH,
+  );
+  if (!accountId.ok) return accountId;
+  const minHoursSince = parseNonNegativeHours(searchParams.get('minHoursSince'), 'minHoursSince', 0);
+  if (!minHoursSince.ok) return minHoursSince;
+  const minHoursSinceValue = minHoursSince.value ?? 0;
+  const maxHoursSince = parseNonNegativeHours(searchParams.get('maxHoursSince'), 'maxHoursSince');
+  if (!maxHoursSince.ok) return maxHoursSince;
+  if (maxHoursSince.value !== null && maxHoursSince.value < minHoursSinceValue) {
+    return { ok: false, error: 'maxHoursSince must be greater than or equal to minHoursSince' };
+  }
+  return {
+    ok: true,
+    value: {
+      accountId: accountId.value,
+      minHoursSince: minHoursSinceValue,
+      maxHoursSince: maxHoursSince.value,
+      limit: clampInteger(searchParams.get('limit'), 50, 1, 200),
+      offset: clampInteger(searchParams.get('offset'), 0, 0, 100_000),
+    },
+  };
+}
+
+function parseConversationDetailQuery(searchParams: URLSearchParams): ValueResult<{
+  limit: number;
+  before?: string;
+}> {
+  const before = parseOptionalCursor(searchParams.get('before'));
+  if (!before.ok) return before;
+  return {
+    ok: true,
+    value: {
+      limit: clampInteger(searchParams.get('limit'), 50, 1, 200),
+      before: before.value,
+    },
+  };
+}
+
 // GET /api/conversations?lineAccountId=&minHoursSince=&maxHoursSince=&limit=&offset=
 conversations.get('/api/conversations', async (c) => {
   try {
     const url = new URL(c.req.url);
-    const accountId = url.searchParams.get('lineAccountId') ?? undefined;
-    const minHoursSince = Number(url.searchParams.get('minHoursSince') ?? '0');
-    const maxHoursSinceParam = url.searchParams.get('maxHoursSince');
-    const maxHoursSince = maxHoursSinceParam !== null ? Number(maxHoursSinceParam) : null;
-    const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), 200);
-    const offset = Number(url.searchParams.get('offset') ?? '0');
+    const parsed = parseConversationQueueQuery(url.searchParams);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const { accountId, minHoursSince, maxHoursSince, limit, offset } = parsed.value;
 
     const whereAccount = accountId ? 'AND f.line_account_id = ?' : '';
     const whereMaxHours =
@@ -170,13 +271,20 @@ conversations.get('/api/conversations', async (c) => {
 // GET /api/conversations/:friendId?limit=&before=
 conversations.get('/api/conversations/:friendId', async (c) => {
   try {
-    const friendId = c.req.param('friendId');
+    const parsedFriendId = parseRequiredVisibleString(
+      c.req.param('friendId'),
+      'friendId',
+      CONVERSATION_ID_MAX_LENGTH,
+    );
+    if (!parsedFriendId.ok) return c.json({ success: false, error: parsedFriendId.error }, 400);
+    const friendId = parsedFriendId.value;
+    const url = new URL(c.req.url);
+    const parsedQuery = parseConversationDetailQuery(url.searchParams);
+    if (!parsedQuery.ok) return c.json({ success: false, error: parsedQuery.error }, 400);
+    const { limit, before } = parsedQuery.value;
+
     const denied = await ensureSupportFriendAccess(c, friendId, 'friend not found');
     if (denied) return denied;
-
-    const url = new URL(c.req.url);
-    const limit = Math.min(Number(url.searchParams.get('limit') ?? '50'), 200);
-    const before = url.searchParams.get('before');
 
     const friend = await c.env.DB.prepare(
       `SELECT f.id, f.line_user_id, f.display_name, f.is_following, f.line_account_id, la.name AS line_account_name

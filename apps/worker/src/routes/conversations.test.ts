@@ -122,6 +122,72 @@ describe('GET /api/conversations support visibility', () => {
     ]);
   });
 
+  test('conversation queue rejects unsafe filters before SQL bind', async () => {
+    const queries = [
+      'lineAccountId=bad%20account',
+      'minHoursSince=NaN',
+      'maxHoursSince=oops',
+      'minHoursSince=12&maxHoursSince=1',
+    ];
+
+    for (const query of queries) {
+      const { db, calls } = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request(`/api/conversations?${query}`);
+
+      expect(res.status, query).toBe(400);
+      expect(calls, query).toEqual([]);
+    }
+  });
+
+  test('conversation queue trims valid filters and normalizes paging before SQL bind', async () => {
+    const { db, calls } = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/conversations?lineAccountId=%20acc-1%20&minHoursSince=1.5&maxHoursSince=12&limit=999&offset=-5');
+
+    expect(res.status).toBe(200);
+    const queueCall = calls.find((call) => call.sql.includes('latest_msg'));
+    expect(queueCall?.binds).toEqual([
+      1.5,
+      12,
+      'acc-1',
+      'staff-1',
+      '%田島%',
+      '%田島%',
+      '%田島%',
+      200,
+      0,
+    ]);
+    const countCall = calls.find((call) => call.sql.includes('SELECT COUNT(*) AS total'));
+    expect(countCall?.binds).toEqual([
+      1.5,
+      12,
+      'acc-1',
+      'staff-1',
+      '%田島%',
+      '%田島%',
+      '%田島%',
+    ]);
+  });
+
+  test('conversation queue falls back from invalid paging before SQL bind', async () => {
+    const { db, calls } = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/conversations?limit=abc&offset=Infinity');
+
+    expect(res.status).toBe(200);
+    const queueCall = calls.find((call) => call.sql.includes('latest_msg'));
+    expect(queueCall?.binds).toEqual([
+      0,
+      'staff-1',
+      '%田島%',
+      '%田島%',
+      '%田島%',
+      50,
+      0,
+    ]);
+  });
+
   test('owner conversation queue is not narrowed by staff support scope', async () => {
     const { db, calls } = makeDb();
 
@@ -142,6 +208,21 @@ describe('GET /api/conversations support visibility', () => {
     expect(calls.some((call) => call.sql.includes('SELECT f.id, f.line_user_id'))).toBe(false);
   });
 
+  test('conversation detail rejects unsafe friend or cursor values before access checks or SQL bind', async () => {
+    const cases = [
+      '/api/conversations/bad%20friend',
+      '/api/conversations/friend-visible?before=not-a-date',
+    ];
+
+    for (const path of cases) {
+      const { db, calls } = makeDb({ visibleFriendIds: ['friend-visible'] });
+      const res = await setupApp(db, 'staff').request(path);
+
+      expect(res.status, path).toBe(400);
+      expect(calls, path).toEqual([]);
+    }
+  });
+
   test('staff can open a visible friend conversation', async () => {
     const { db } = makeDb({ visibleFriendIds: ['friend-visible'] });
 
@@ -153,5 +234,21 @@ describe('GET /api/conversations support visibility', () => {
     };
     expect(body.data.friend).toMatchObject({ friendId: 'friend-visible', tags: ['VIP'] });
     expect(body.data.messages).toMatchObject([{ id: 'message-1', source: 'user' }]);
+  });
+
+  test('conversation detail trims valid friend and cursor values before SQL bind', async () => {
+    const { db, calls } = makeDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff')
+      .request('/api/conversations/%20friend-visible%20?before=%202026-06-13T10:00:00.000%2B09:00%20&limit=999');
+
+    expect(res.status).toBe(200);
+    expect(calls[0]).toMatchObject({ binds: ['friend-visible', 'staff-1', '%田島%', '%田島%', '%田島%'] });
+    const messageCall = calls.find((call) => call.sql.includes('FROM messages_log WHERE friend_id'));
+    expect(messageCall?.binds).toEqual([
+      'friend-visible',
+      '2026-06-13T10:00:00.000+09:00',
+      200,
+    ]);
   });
 });

@@ -388,6 +388,40 @@ describe('management role guards', () => {
     expect(dbMocks.togglePoolAccount).not.toHaveBeenCalled();
   });
 
+  test('traffic pool management rejects malformed path IDs before DB helpers', async () => {
+    const app = setupApp('admin');
+    const requests: Array<[string, string, RequestInit?]> = [
+      ['PUT', '/api/traffic-pools/bad%20pool', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Updated' }),
+      }],
+      ['DELETE', '/api/traffic-pools/bad%20pool'],
+      ['GET', '/api/traffic-pools/bad%20pool/accounts'],
+      ['POST', '/api/traffic-pools/bad%20pool/accounts', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-2' }),
+      }],
+      ['PUT', '/api/traffic-pools/pool-1/accounts/bad%20account', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ isActive: false }),
+      }],
+      ['DELETE', '/api/traffic-pools/pool-1/accounts/bad%20account'],
+    ];
+
+    for (const [method, path, init] of requests) {
+      const res = await app.request(path, { ...init, method });
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+
+    expect(dbMocks.updateTrafficPool).not.toHaveBeenCalled();
+    expect(dbMocks.getTrafficPoolById).not.toHaveBeenCalled();
+    expect(dbMocks.deleteTrafficPool).not.toHaveBeenCalled();
+    expect(dbMocks.getPoolAccounts).not.toHaveBeenCalled();
+    expect(dbMocks.addPoolAccount).not.toHaveBeenCalled();
+    expect(dbMocks.togglePoolAccount).not.toHaveBeenCalled();
+    expect(dbMocks.removePoolAccount).not.toHaveBeenCalled();
+  });
+
   test('traffic pool management trims valid payloads before DB writes', async () => {
     const pool = {
       id: 'pool-1',
@@ -427,17 +461,17 @@ describe('management role guards', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug: ' main-pool ', name: ' Main ', activeAccountId: ' acc-1 ' }),
     });
-    await app.request('/api/traffic-pools/pool-1', {
+    await app.request('/api/traffic-pools/%20pool-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: ' Renamed ', activeAccountId: ' acc-2 ', isActive: true }),
     });
-    await app.request('/api/traffic-pools/pool-1/accounts', {
+    await app.request('/api/traffic-pools/%20pool-1%20/accounts', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ lineAccountId: ' acc-2 ' }),
     });
-    await app.request('/api/traffic-pools/pool-1/accounts/pool-account-1', {
+    await app.request('/api/traffic-pools/pool-1/accounts/%20pool-account-1%20', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ isActive: false }),

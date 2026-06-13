@@ -68,6 +68,10 @@ function parseOptionalString(
   return parseRequiredString(raw, label, maxLength, pattern);
 }
 
+function parseTrafficPoolPathId(raw: unknown, label: string): { ok: true; value: string } | { ok: false; error: string } {
+  return parseRequiredString(raw, label, TRAFFIC_POOL_ID_MAX_LENGTH, TRAFFIC_POOL_ID_PATTERN);
+}
+
 function parseOptionalBoolean(raw: unknown, label: string): { ok: true; value?: boolean } | { ok: false; error: string } {
   if (raw === undefined) return { ok: true };
   if (typeof raw !== 'boolean') return { ok: false, error: `${label} must be a boolean` };
@@ -198,13 +202,14 @@ trafficPools.post('/api/traffic-pools', requireRole('owner', 'admin'), async (c)
 // PUT /api/traffic-pools/:id — update (switch account here)
 trafficPools.put('/api/traffic-pools/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parseTrafficPoolUpdateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
 
-    const updated = await updateTrafficPool(c.env.DB, id, {
+    const updated = await updateTrafficPool(c.env.DB, id.value, {
       name: body.name,
       activeAccountId: body.activeAccountId,
       isActive: body.isActive,
@@ -223,8 +228,9 @@ trafficPools.put('/api/traffic-pools/:id', requireRole('owner', 'admin'), async 
 // DELETE /api/traffic-pools/:id
 trafficPools.delete('/api/traffic-pools/:id', requireRole('owner', 'admin'), async (c) => {
   try {
-    const id = c.req.param('id')!;
-    const existing = await getTrafficPoolById(c.env.DB, id);
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const existing = await getTrafficPoolById(c.env.DB, id.value);
     if (!existing) {
       return c.json({ success: false, error: 'Traffic pool not found' }, 404);
     }
@@ -234,7 +240,7 @@ trafficPools.delete('/api/traffic-pools/:id', requireRole('owner', 'admin'), asy
     if (existing.slug === 'main') {
       return c.json({ success: false, error: 'main pool cannot be deleted' }, 400);
     }
-    await deleteTrafficPool(c.env.DB, id);
+    await deleteTrafficPool(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error('DELETE /api/traffic-pools/:id error:', err);
@@ -257,7 +263,9 @@ function serializePoolAccount(pa: PoolAccountWithDetails) {
 // GET /api/traffic-pools/:id/accounts — list pool accounts
 trafficPools.get('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin'), async (c) => {
   try {
-    const accounts = await getPoolAccounts(c.env.DB, c.req.param('id')!);
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const accounts = await getPoolAccounts(c.env.DB, id.value);
     return c.json({ success: true, data: accounts.map(serializePoolAccount) });
   } catch (err) {
     console.error('GET /api/traffic-pools/:id/accounts error:', err);
@@ -268,11 +276,13 @@ trafficPools.get('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin'
 // POST /api/traffic-pools/:id/accounts — add account to pool
 trafficPools.post('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin'), async (c) => {
   try {
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parsePoolAccountCreateBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
-    const account = await addPoolAccount(c.env.DB, c.req.param('id')!, body.lineAccountId);
+    const account = await addPoolAccount(c.env.DB, id.value, body.lineAccountId);
     return c.json({ success: true, data: account }, 201);
   } catch (err: any) {
     if (err?.message?.includes('UNIQUE constraint')) {
@@ -286,11 +296,15 @@ trafficPools.post('/api/traffic-pools/:id/accounts', requireRole('owner', 'admin
 // PUT /api/traffic-pools/:id/accounts/:accountId — toggle active
 trafficPools.put('/api/traffic-pools/:id/accounts/:accountId', requireRole('owner', 'admin'), async (c) => {
   try {
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const accountId = parseTrafficPoolPathId(c.req.param('accountId'), 'poolAccountId');
+    if (!accountId.ok) return c.json({ success: false, error: accountId.error }, 400);
     const rawBody = await readJsonBody(c);
     const parsed = parsePoolAccountToggleBody(rawBody);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
     const body = parsed.body;
-    const result = await togglePoolAccount(c.env.DB, c.req.param('accountId')!, body.isActive);
+    const result = await togglePoolAccount(c.env.DB, accountId.value, body.isActive);
     if (!result) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true, data: result });
   } catch (err) {
@@ -302,7 +316,11 @@ trafficPools.put('/api/traffic-pools/:id/accounts/:accountId', requireRole('owne
 // DELETE /api/traffic-pools/:id/accounts/:accountId — remove account from pool
 trafficPools.delete('/api/traffic-pools/:id/accounts/:accountId', requireRole('owner', 'admin'), async (c) => {
   try {
-    const deleted = await removePoolAccount(c.env.DB, c.req.param('accountId')!);
+    const id = parseTrafficPoolPathId(c.req.param('id'), 'poolId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const accountId = parseTrafficPoolPathId(c.req.param('accountId'), 'poolAccountId');
+    if (!accountId.ok) return c.json({ success: false, error: accountId.error }, 400);
+    const deleted = await removePoolAccount(c.env.DB, accountId.value);
     if (!deleted) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({ success: true });
   } catch (err) {

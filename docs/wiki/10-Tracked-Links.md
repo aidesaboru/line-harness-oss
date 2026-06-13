@@ -196,6 +196,8 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/tracked-links" 
   }'
 ```
 
+入力制約: `name` は1-160文字、`originalUrl` はHTTP(S) URLかつ2048文字以内、`tagId` / `scenarioId` / `introTemplateId` / `rewardTemplateId` は空なら未設定、指定する場合は128文字以内の可視ASCII。
+
 **レスポンス (201):**
 
 ```json

@@ -13,12 +13,20 @@ import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 
 const affiliates = new Hono<Env>();
+const AFFILIATE_NAME_MAX_LENGTH = 120;
 const AFFILIATE_CLICK_CODE_MAX_LENGTH = 128;
 const AFFILIATE_CLICK_URL_MAX_LENGTH = 2048;
 const AFFILIATE_CLICK_IP_MAX_LENGTH = 128;
+const AFFILIATE_CODE_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 type ParsedAffiliateClickBody =
   | { ok: true; code: string; url: string | null }
+  | { ok: false; error: string };
+type ParsedCreateAffiliateBody =
+  | { ok: true; body: { name: string; code: string; commissionRate?: number } }
+  | { ok: false; error: string };
+type ParsedUpdateAffiliateBody =
+  | { ok: true; body: { name?: string; commissionRate?: number; isActive?: boolean } }
   | { ok: false; error: string };
 
 function serializeAffiliate(row: { id: string; name: string; code: string; commission_rate: number; is_active: number; created_at: string }) {
@@ -36,22 +44,93 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
+function parseAffiliateName(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) {
+    return required ? { ok: false, error: 'name is required' } : { ok: true };
+  }
+  if (typeof raw !== 'string') return { ok: false, error: 'name must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'name is required' };
+  if (value.length > AFFILIATE_NAME_MAX_LENGTH) return { ok: false, error: 'name is too long' };
+  return { ok: true, value };
+}
+
+function parseAffiliateCode(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!value) return { ok: false, error: 'code is required' };
+  if (value.length > AFFILIATE_CLICK_CODE_MAX_LENGTH) return { ok: false, error: 'code is too long' };
+  if (!AFFILIATE_CODE_PATTERN.test(value)) return { ok: false, error: 'code must be URL-safe' };
+  return { ok: true, value };
+}
+
+function parseCommissionRate(raw: unknown, required = false): { ok: true; value?: number } | { ok: false; error: string } {
+  if (raw == null) {
+    return required ? { ok: false, error: 'commissionRate is required' } : { ok: true };
+  }
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || raw > 1) {
+    return { ok: false, error: 'commissionRate must be between 0 and 1' };
+  }
+  return { ok: true, value: raw };
+}
+
+function parseCreateAffiliateBody(raw: unknown): ParsedCreateAffiliateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const name = parseAffiliateName(raw.name, true);
+  if (!name.ok) return name;
+  const code = parseAffiliateCode(raw.code);
+  if (!code.ok) return code;
+  const commissionRate = parseCommissionRate(raw.commissionRate);
+  if (!commissionRate.ok) return commissionRate;
+
+  return {
+    ok: true,
+    body: {
+      name: name.value!,
+      code: code.value,
+      commissionRate: commissionRate.value,
+    },
+  };
+}
+
+function parseUpdateAffiliateBody(raw: unknown): ParsedUpdateAffiliateBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const name = parseAffiliateName(raw.name, false);
+  if (!name.ok) return name;
+  const commissionRate = parseCommissionRate(raw.commissionRate);
+  if (!commissionRate.ok) return commissionRate;
+  if (raw.isActive !== undefined && typeof raw.isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be boolean' };
+  }
+
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      commissionRate: commissionRate.value,
+      isActive: raw.isActive,
+    },
+  };
+}
+
 function parseAffiliateClickBody(raw: unknown): ParsedAffiliateClickBody {
   if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
 
-  const code = typeof raw.code === 'string' ? raw.code.trim() : '';
-  if (!code) return { ok: false, error: 'code is required' };
-  if (code.length > AFFILIATE_CLICK_CODE_MAX_LENGTH) {
-    return { ok: false, error: 'code is too long' };
-  }
+  const code = parseAffiliateCode(raw.code);
+  if (!code.ok) return code;
 
   if (raw.url == null || raw.url === '') {
-    return { ok: true, code, url: null };
+    return { ok: true, code: code.value, url: null };
   }
   if (typeof raw.url !== 'string') return { ok: false, error: 'url must be a string' };
 
   const url = raw.url.trim();
-  if (!url) return { ok: true, code, url: null };
+  if (!url) return { ok: true, code: code.value, url: null };
   if (url.length > AFFILIATE_CLICK_URL_MAX_LENGTH) {
     return { ok: false, error: 'url is too long' };
   }
@@ -65,7 +144,7 @@ function parseAffiliateClickBody(raw: unknown): ParsedAffiliateClickBody {
     return { ok: false, error: 'url must be valid' };
   }
 
-  return { ok: true, code, url };
+  return { ok: true, code: code.value, url };
 }
 
 function getClientIp(c: { req: { header(name: string): string | undefined } }): string | null {
@@ -104,17 +183,11 @@ affiliates.get('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) =
 // POST /api/affiliates - create
 affiliates.post('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      name: string;
-      code: string;
-      commissionRate?: number;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseCreateAffiliateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    if (!body.name || !body.code) {
-      return c.json({ success: false, error: 'name and code are required' }, 400);
-    }
-
-    const item = await createAffiliate(c.env.DB, body);
+    const item = await createAffiliate(c.env.DB, parsed.body);
     return c.json({ success: true, data: serializeAffiliate(item) }, 201);
   } catch (err) {
     console.error('POST /api/affiliates error:', err);
@@ -126,11 +199,10 @@ affiliates.post('/api/affiliates', requireRole('owner', 'admin'), async (c) => {
 affiliates.put('/api/affiliates/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      name?: string;
-      commissionRate?: number;
-      isActive?: boolean;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseUpdateAffiliateBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     const updated = await updateAffiliate(c.env.DB, id, {
       name: body.name,
@@ -180,7 +252,7 @@ affiliates.get('/api/affiliates/:id/report', requireRole('owner', 'admin'), asyn
 // POST /api/affiliates/click - record click (public endpoint tracked by ref param)
 affiliates.post('/api/affiliates/click', async (c) => {
   try {
-    const rawBody = await c.req.json().catch(() => null);
+    const rawBody = await readJsonBody(c);
     const body = parseAffiliateClickBody(rawBody);
     if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 

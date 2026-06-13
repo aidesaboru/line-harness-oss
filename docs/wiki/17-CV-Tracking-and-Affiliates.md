@@ -247,6 +247,8 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/affiliates" \
 必須: `name`, `code`
 オプション: `commissionRate` (デフォルト 0)
 
+入力制約: `name` は1-120文字、`code` は1-128文字のURL-safe文字 (`A-Z`, `a-z`, `0-9`, `_`, `-`)、`commissionRate` は0-1。
+
 #### アフィリエイト更新
 ```bash
 curl -X PUT "https://your-worker.your-subdomain.workers.dev/api/affiliates/{id}" \
@@ -279,6 +281,7 @@ curl -X POST "https://your-worker.your-subdomain.workers.dev/api/affiliates/clic
 ```
 
 必須: `code`
+入力制約: `code` は1-128文字のURL-safe文字、`url` はHTTP(S) URLかつ2048文字以内。
 IPアドレスは `CF-Connecting-IP` / `X-Forwarded-For` ヘッダーから自動取得。
 
 ### アフィリエイトレポート

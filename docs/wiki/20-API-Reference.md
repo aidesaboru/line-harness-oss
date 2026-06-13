@@ -146,8 +146,11 @@ status: `draft`, `scheduled`, `sending`, `sent`
 | GET | `/api/tracked-links` | トラッキングリンク一覧 | - |
 | GET | `/api/tracked-links/:id` | 詳細 (クリック履歴含む) | - |
 | POST | `/api/tracked-links` | リンク作成 | `{ name, originalUrl, tagId?, scenarioId? }` |
+| PATCH | `/api/tracked-links/:id` | リンク更新 | `{ name?, tagId?, scenarioId?, introTemplateId?, rewardTemplateId?, isActive? }` |
 | DELETE | `/api/tracked-links/:id` | リンク削除 | - |
 | GET | `/t/:linkId` | リダイレクト (認証不要) | query: `f` (friendId) |
+
+入力制約: `name` は1-160文字、`originalUrl` はHTTP(S) URLかつ2048文字以内、関連IDは128文字以内の可視ASCII、`isActive` はboolean。
 
 ### /api/forms/*
 
@@ -260,6 +263,8 @@ fields の type: `text`, `email`, `tel`, `number`, `textarea`, `select`, `radio`
 | POST | `/api/affiliates/click` | クリック記録 (認証不要) | `{ code, url? }` |
 | GET | `/api/affiliates/:id/report` | 個別レポート | query: `startDate`, `endDate` |
 | GET | `/api/affiliates-report` | 全体レポート | query: `startDate`, `endDate` |
+
+入力制約: `name` は1-120文字、`code` は1-128文字のURL-safe文字 (`A-Z`, `a-z`, `0-9`, `_`, `-`)、`commissionRate` は0-1、`url` はHTTP(S) URLかつ2048文字以内。
 
 ### /api/users/*
 

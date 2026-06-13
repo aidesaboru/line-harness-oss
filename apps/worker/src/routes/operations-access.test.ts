@@ -118,7 +118,49 @@ beforeEach(() => {
     is_active: 1,
     created_at: '2026-06-13T10:00:00.000',
   });
+  dbMocks.createAffiliate.mockResolvedValue({
+    id: 'affiliate-new',
+    name: 'Partner',
+    code: 'partner-1',
+    commission_rate: 0.25,
+    is_active: 1,
+    created_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.updateAffiliate.mockResolvedValue({
+    id: 'affiliate-1',
+    name: 'Partner New',
+    code: 'partner',
+    commission_rate: 0.2,
+    is_active: 0,
+    created_at: '2026-06-13T10:00:00.000',
+  });
   dbMocks.recordAffiliateClick.mockResolvedValue(undefined);
+  dbMocks.createTrackedLink.mockResolvedValue({
+    id: 'link-new',
+    name: 'LP',
+    original_url: 'https://example.com/lp',
+    tag_id: null,
+    scenario_id: null,
+    intro_template_id: null,
+    reward_template_id: null,
+    is_active: 1,
+    click_count: 0,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
+  dbMocks.updateTrackedLink.mockResolvedValue({
+    id: 'link-1',
+    name: 'LP New',
+    original_url: 'https://example.com/lp',
+    tag_id: null,
+    scenario_id: null,
+    intro_template_id: null,
+    reward_template_id: null,
+    is_active: 0,
+    click_count: 0,
+    created_at: '2026-06-13T10:00:00.000',
+    updated_at: '2026-06-13T10:00:00.000',
+  });
 });
 
 describe('operations API role guards', () => {
@@ -315,6 +357,152 @@ describe('operations API role guards', () => {
     expect(dbMocks.getAdConversionLogs).toHaveBeenNthCalledWith(3, {} as D1Database, 'platform-1', 500);
   });
 
+  test('owner affiliate management rejects malformed or invalid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/affiliates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const unsafeCode = await app.request('/api/affiliates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Partner', code: 'bad code' }),
+    });
+    const oversizedName = await app.request('/api/affiliates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'P'.repeat(121), code: 'partner' }),
+    });
+    const invalidRate = await app.request('/api/affiliates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Partner', code: 'partner', commissionRate: 1.5 }),
+    });
+    const invalidUpdate = await app.request('/api/affiliates/affiliate-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 'yes' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(unsafeCode.status).toBe(400);
+    expect(oversizedName.status).toBe(400);
+    expect(invalidRate.status).toBe(400);
+    expect(invalidUpdate.status).toBe(400);
+    expect(dbMocks.createAffiliate).not.toHaveBeenCalled();
+    expect(dbMocks.updateAffiliate).not.toHaveBeenCalled();
+  });
+
+  test('owner affiliate management trims valid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const created = await app.request('/api/affiliates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Partner ', code: ' partner-1 ', commissionRate: 0.25 }),
+    });
+    const updated = await app.request('/api/affiliates/affiliate-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' Partner New ', commissionRate: 0.2, isActive: false }),
+    });
+
+    expect(created.status).toBe(201);
+    expect(updated.status).toBe(200);
+    expect(dbMocks.createAffiliate).toHaveBeenCalledWith({} as D1Database, {
+      name: 'Partner',
+      code: 'partner-1',
+      commissionRate: 0.25,
+    });
+    expect(dbMocks.updateAffiliate).toHaveBeenCalledWith({} as D1Database, 'affiliate-1', {
+      name: 'Partner New',
+      commission_rate: 0.2,
+      is_active: 0,
+    });
+  });
+
+  test('owner tracked-link management rejects malformed or invalid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const malformed = await app.request('/api/tracked-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not-json',
+    });
+    const unsafeUrl = await app.request('/api/tracked-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'LP', originalUrl: 'javascript:alert(1)' }),
+    });
+    const oversizedUrl = await app.request('/api/tracked-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'LP', originalUrl: `https://example.com/${'a'.repeat(2048)}` }),
+    });
+    const invalidRef = await app.request('/api/tracked-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'LP', originalUrl: 'https://example.com/lp', tagId: 'bad id' }),
+    });
+    const invalidUpdate = await app.request('/api/tracked-links/link-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: 'no' }),
+    });
+
+    expect(malformed.status).toBe(400);
+    expect(unsafeUrl.status).toBe(400);
+    expect(oversizedUrl.status).toBe(400);
+    expect(invalidRef.status).toBe(400);
+    expect(invalidUpdate.status).toBe(400);
+    expect(dbMocks.createTrackedLink).not.toHaveBeenCalled();
+    expect(dbMocks.updateTrackedLink).not.toHaveBeenCalled();
+  });
+
+  test('owner tracked-link management trims and normalizes valid payloads before writes', async () => {
+    const app = setupApp('owner');
+
+    const created = await app.request('/api/tracked-links', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: ' LP ',
+        originalUrl: ' https://example.com/lp ',
+        tagId: '',
+        scenarioId: 'scenario-1',
+        introTemplateId: null,
+        rewardTemplateId: 'reward_1',
+      }),
+    });
+    const updated = await app.request('/api/tracked-links/link-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: ' LP New ', tagId: null, isActive: false }),
+    });
+
+    expect(created.status).toBe(201);
+    expect(updated.status).toBe(200);
+    expect(dbMocks.createTrackedLink).toHaveBeenCalledWith({} as D1Database, {
+      name: 'LP',
+      originalUrl: 'https://example.com/lp',
+      tagId: null,
+      scenarioId: 'scenario-1',
+      introTemplateId: null,
+      rewardTemplateId: 'reward_1',
+    });
+    expect(dbMocks.updateTrackedLink).toHaveBeenCalledWith(
+      {} as D1Database,
+      'link-1',
+      expect.objectContaining({
+        name: 'LP New',
+        tagId: null,
+        isActive: false,
+      }),
+    );
+  });
+
   test('public affiliate click endpoint remains unguarded', async () => {
     const res = await setupApp('staff').request('/api/affiliates/click', {
       method: 'POST',
@@ -348,6 +536,11 @@ describe('operations API role guards', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: 'p'.repeat(129), url: 'https://example.com/lp' }),
     });
+    const unsafeCode = await app.request('/api/affiliates/click', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: 'bad code', url: 'https://example.com/lp' }),
+    });
     const unsafeUrl = await app.request('/api/affiliates/click', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -361,6 +554,7 @@ describe('operations API role guards', () => {
 
     expect(malformed.status).toBe(400);
     expect(oversizedCode.status).toBe(400);
+    expect(unsafeCode.status).toBe(400);
     expect(unsafeUrl.status).toBe(400);
     expect(oversizedUrl.status).toBe(400);
     expect(dbMocks.getAffiliateByCode).not.toHaveBeenCalled();

@@ -48,7 +48,8 @@ updated: 2026-06-13
 - LIFF OAuth token交換、IG Harness notify、X Harness action失敗ログは、外部レスポンス本文、LINE friend UUID、tag名、例外本文をconsoleへ出さず、HTTP statusや例外種別だけにする
 - Webhookプロフィール取得、profile refresh、broadcast test-sendの失敗ログは、LINE user IDやfriend IDを含めない
 - 売上・広告・計測運用API（Stripe events、ad-platforms、affiliates管理/レポート、tracked-links管理）はowner/adminだけに制限し、公開Webhook/クリック/リダイレクトは維持
-- 公開affiliate click `/api/affiliates/click` は壊れたJSON、空/128文字超の `code`、HTTP(S)以外または2048文字超の `url` をDB lookupやクリック保存前に400で止める
+- affiliates/tracked-links管理APIの作成/更新payloadは、壊れたJSON、空/長すぎる名前、URL-safeではないaffiliate code、不正なcommissionRate、HTTP(S)以外または2048文字超のoriginalUrl、不正な関連ID、不正なisActiveをDB書き込み前に400で止める
+- 公開affiliate click `/api/affiliates/click` は壊れたJSON、空/128文字超またはURL-safeではない `code`、HTTP(S)以外または2048文字超の `url` をDB lookupやクリック保存前に400で止める
 - 完了済み案件からの顧客返信をLINE送信前に拒否
 - チャット送信APIで `text`、`flex`、`image` 以外のmessageTypeや壊れた画像/Flex payloadをLINE送信前、DB記録前に拒否
 - チャット送信後に案件ステータスを「顧客返信待ち」へ更新し、案件履歴に顧客返信イベントを残す
@@ -193,7 +194,8 @@ strict Preflight:
 - LIFF access route tests confirm `/api/liff/send-form-link` rejects missing ID tokens and ID tokens whose subject does not match the caller-supplied `lineUserId` before friend lookup or form-link push.
 - LIFF access route tests confirm `/api/liff/link` and `/api/liff/send-form-link` reject malformed or oversized public payloads before LINE ID token verification, DB lookup, or LINE push.
 - Operations and LIFF access route tests confirm `/t/:linkId` rejects malformed or oversized link IDs before lookup/click recording, ignores caller-supplied `f` / `lu`, routes LINE in-app clicks through LIFF with `ref`, skips duplicate anonymous recording after verified LIFF return, and records tracked-link clicks with a friend only after `/api/liff/link` verifies the LINE ID token.
-- Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
+- Operations route tests confirm public `/api/affiliates/click` rejects malformed JSON, oversized or URL-unsafe affiliate codes, and unsafe or oversized URLs before affiliate lookup or click recording.
+- Operations route tests confirm owner/admin affiliate and tracked-link management create/update payloads reject malformed JSON, unsafe codes/URLs, invalid rates/IDs, and invalid booleans before DB writes, while valid payloads are trimmed and normalized before persistence.
 - Events route tests confirm LIFF event booking rejects malformed or oversized `Idempotency-Key` before LINE ID token verification or idempotency reservation.
 - Webhooks route tests confirm staff cannot manage incoming/outgoing webhook settings while the public incoming receive endpoint remains signature-gated.
 - Meet callback route tests confirm the public `/api/meet-callback` fails closed when `MEET_CALLBACK_SECRET` is missing, rejects missing/malformed/invalid HMAC signatures before DB lookup or LINE push, and accepts a valid signed callback.

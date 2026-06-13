@@ -576,11 +576,55 @@ const spec = {
     },
     '/api/tracked-links': {
       get: { tags: ['Operations'], summary: 'トラッキングリンク一覧（owner/admin）', responses: { '200': { description: 'Tracked links' }, '403': { description: 'Requires owner/admin' } } },
-      post: { tags: ['Operations'], summary: 'トラッキングリンク作成（owner/admin）', responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } } },
+      post: {
+        tags: ['Operations'],
+        summary: 'トラッキングリンク作成（owner/admin）',
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', minLength: 1, maxLength: 160 },
+                  originalUrl: { type: 'string', format: 'uri', maxLength: 2048 },
+                  tagId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  scenarioId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  introTemplateId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  rewardTemplateId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                },
+                required: ['name', 'originalUrl'],
+              },
+            },
+          },
+        },
+        responses: { '201': { description: 'Created' }, '400': { description: 'Invalid tracked-link payload' }, '403': { description: 'Requires owner/admin' } },
+      },
     },
     '/api/tracked-links/{id}': {
       get: { tags: ['Operations'], summary: 'トラッキングリンク詳細（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Tracked link' }, '403': { description: 'Requires owner/admin' } } },
-      patch: { tags: ['Operations'], summary: 'トラッキングリンク更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      patch: {
+        tags: ['Operations'],
+        summary: 'トラッキングリンク更新（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', minLength: 1, maxLength: 160 },
+                  tagId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  scenarioId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  introTemplateId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  rewardTemplateId: { type: 'string', maxLength: 128, pattern: '^[!-~]+$', nullable: true },
+                  isActive: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid tracked-link payload' }, '403': { description: 'Requires owner/admin' } },
+      },
       delete: { tags: ['Operations'], summary: 'トラッキングリンク削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
     },
     // ── Affiliates ──────────────────────────────────────────────────────────
@@ -589,13 +633,19 @@ const spec = {
       post: {
         tags: ['Affiliates'],
         summary: 'アフィリエイト作成（owner/admin）',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string' }, code: { type: 'string' }, commissionRate: { type: 'number' } }, required: ['name', 'code'] } } } },
-        responses: { '201': { description: 'Created' }, '403': { description: 'Requires owner/admin' } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, code: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' }, commissionRate: { type: 'number', minimum: 0, maximum: 1 } }, required: ['name', 'code'] } } } },
+        responses: { '201': { description: 'Created' }, '400': { description: 'Invalid affiliate payload' }, '403': { description: 'Requires owner/admin' } },
       },
     },
     '/api/affiliates/{id}': {
       get: { tags: ['Affiliates'], summary: 'アフィリエイト詳細（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Affiliate' }, '403': { description: 'Requires owner/admin' } } },
-      put: { tags: ['Affiliates'], summary: 'アフィリエイト更新（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Updated' }, '403': { description: 'Requires owner/admin' } } },
+      put: {
+        tags: ['Affiliates'],
+        summary: 'アフィリエイト更新（owner/admin）',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { name: { type: 'string', minLength: 1, maxLength: 120 }, commissionRate: { type: 'number', minimum: 0, maximum: 1 }, isActive: { type: 'boolean' } } } } } },
+        responses: { '200': { description: 'Updated' }, '400': { description: 'Invalid affiliate payload' }, '403': { description: 'Requires owner/admin' } },
+      },
       delete: { tags: ['Affiliates'], summary: 'アフィリエイト削除（owner/admin）', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { '200': { description: 'Deleted' }, '403': { description: 'Requires owner/admin' } } },
     },
     '/api/affiliates/{id}/report': {
@@ -617,7 +667,7 @@ const spec = {
       post: {
         tags: ['Affiliates'],
         summary: 'クリック記録',
-        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string', maxLength: 128 }, url: { type: 'string', format: 'uri', maxLength: 2048, nullable: true } }, required: ['code'] } } } },
+        requestBody: { content: { 'application/json': { schema: { type: 'object', properties: { code: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' }, url: { type: 'string', format: 'uri', maxLength: 2048, nullable: true } }, required: ['code'] } } } },
         responses: { '201': { description: 'Recorded' }, '400': { description: 'Invalid click payload' } },
       },
     },

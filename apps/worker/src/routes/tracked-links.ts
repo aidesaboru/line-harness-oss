@@ -16,6 +16,35 @@ const trackedLinks = new Hono<Env>();
 const LIFF_TRACKED_LINK_RETURN_PARAM = 'lh_liff';
 const TRACKED_LINK_ID_MAX_LENGTH = 128;
 const TRACKED_LINK_ID_PATTERN = /^[!-~]+$/;
+const TRACKED_LINK_NAME_MAX_LENGTH = 160;
+const TRACKED_LINK_ORIGINAL_URL_MAX_LENGTH = 2048;
+
+type ParsedCreateTrackedLinkBody =
+  | {
+      ok: true;
+      body: {
+        name: string;
+        originalUrl: string;
+        tagId: string | null;
+        scenarioId: string | null;
+        introTemplateId: string | null;
+        rewardTemplateId: string | null;
+      };
+    }
+  | { ok: false; error: string };
+type ParsedUpdateTrackedLinkBody =
+  | {
+      ok: true;
+      body: {
+        name?: string;
+        tagId?: string | null;
+        scenarioId?: string | null;
+        introTemplateId?: string | null;
+        rewardTemplateId?: string | null;
+        isActive?: boolean;
+      };
+    }
+  | { ok: false; error: string };
 
 function serializeTrackedLink(row: TrackedLink, baseUrl: string) {
   const trackingUrl = `${baseUrl}/t/${row.id}`;
@@ -40,12 +69,117 @@ function getBaseUrl(c: { req: { url: string } }): string {
   return `${url.protocol}//${url.host}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function readJsonBody(c: { req: { json(): Promise<unknown> } }): Promise<unknown | null> {
+  return c.req.json().catch(() => null);
+}
+
 function parsePublicTrackedLinkId(raw: string | undefined): string | null {
   const linkId = raw?.trim() ?? '';
   if (!linkId) return null;
   if (linkId.length > TRACKED_LINK_ID_MAX_LENGTH) return null;
   if (!TRACKED_LINK_ID_PATTERN.test(linkId)) return null;
   return linkId;
+}
+
+function parseTrackedLinkName(raw: unknown, required: boolean): { ok: true; value?: string } | { ok: false; error: string } {
+  if (raw == null) return required ? { ok: false, error: 'name is required' } : { ok: true };
+  if (typeof raw !== 'string') return { ok: false, error: 'name must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'name is required' };
+  if (value.length > TRACKED_LINK_NAME_MAX_LENGTH) return { ok: false, error: 'name is too long' };
+  return { ok: true, value };
+}
+
+function parseTrackedLinkOriginalUrl(raw: unknown): { ok: true; value: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: 'originalUrl is required' };
+  const value = raw.trim();
+  if (!value) return { ok: false, error: 'originalUrl is required' };
+  if (value.length > TRACKED_LINK_ORIGINAL_URL_MAX_LENGTH) return { ok: false, error: 'originalUrl is too long' };
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, error: 'originalUrl must be http(s)' };
+    }
+  } catch {
+    return { ok: false, error: 'originalUrl must be valid' };
+  }
+  return { ok: true, value };
+}
+
+function parseOptionalTrackedLinkRef(raw: unknown, key: string): { ok: true; value?: string | null } | { ok: false; error: string } {
+  if (raw === undefined) return { ok: true };
+  if (raw === null || raw === '') return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: `${key} must be a string` };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > TRACKED_LINK_ID_MAX_LENGTH || !TRACKED_LINK_ID_PATTERN.test(value)) {
+    return { ok: false, error: `${key} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseCreateTrackedLinkBody(raw: unknown): ParsedCreateTrackedLinkBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const name = parseTrackedLinkName(raw.name, true);
+  if (!name.ok) return name;
+  const originalUrl = parseTrackedLinkOriginalUrl(raw.originalUrl);
+  if (!originalUrl.ok) return originalUrl;
+
+  const tagId = parseOptionalTrackedLinkRef(raw.tagId, 'tagId');
+  if (!tagId.ok) return tagId;
+  const scenarioId = parseOptionalTrackedLinkRef(raw.scenarioId, 'scenarioId');
+  if (!scenarioId.ok) return scenarioId;
+  const introTemplateId = parseOptionalTrackedLinkRef(raw.introTemplateId, 'introTemplateId');
+  if (!introTemplateId.ok) return introTemplateId;
+  const rewardTemplateId = parseOptionalTrackedLinkRef(raw.rewardTemplateId, 'rewardTemplateId');
+  if (!rewardTemplateId.ok) return rewardTemplateId;
+
+  return {
+    ok: true,
+    body: {
+      name: name.value!,
+      originalUrl: originalUrl.value,
+      tagId: tagId.value ?? null,
+      scenarioId: scenarioId.value ?? null,
+      introTemplateId: introTemplateId.value ?? null,
+      rewardTemplateId: rewardTemplateId.value ?? null,
+    },
+  };
+}
+
+function parseUpdateTrackedLinkBody(raw: unknown): ParsedUpdateTrackedLinkBody {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+
+  const name = parseTrackedLinkName(raw.name, false);
+  if (!name.ok) return name;
+  const tagId = parseOptionalTrackedLinkRef(raw.tagId, 'tagId');
+  if (!tagId.ok) return tagId;
+  const scenarioId = parseOptionalTrackedLinkRef(raw.scenarioId, 'scenarioId');
+  if (!scenarioId.ok) return scenarioId;
+  const introTemplateId = parseOptionalTrackedLinkRef(raw.introTemplateId, 'introTemplateId');
+  if (!introTemplateId.ok) return introTemplateId;
+  const rewardTemplateId = parseOptionalTrackedLinkRef(raw.rewardTemplateId, 'rewardTemplateId');
+  if (!rewardTemplateId.ok) return rewardTemplateId;
+  if (raw.isActive !== undefined && typeof raw.isActive !== 'boolean') {
+    return { ok: false, error: 'isActive must be boolean' };
+  }
+
+  return {
+    ok: true,
+    body: {
+      name: name.value,
+      tagId: tagId.value,
+      scenarioId: scenarioId.value,
+      introTemplateId: introTemplateId.value,
+      rewardTemplateId: rewardTemplateId.value,
+      isActive: raw.isActive,
+    },
+  };
 }
 
 // GET /api/tracked-links — list all
@@ -91,18 +225,10 @@ trackedLinks.get('/api/tracked-links/:id', requireRole('owner', 'admin'), async 
 // POST /api/tracked-links — create
 trackedLinks.post('/api/tracked-links', requireRole('owner', 'admin'), async (c) => {
   try {
-    const body = await c.req.json<{
-      name: string;
-      originalUrl: string;
-      tagId?: string | null;
-      scenarioId?: string | null;
-      introTemplateId?: string | null;
-      rewardTemplateId?: string | null;
-    }>();
-
-    if (!body.name || !body.originalUrl) {
-      return c.json({ success: false, error: 'name and originalUrl are required' }, 400);
-    }
+    const rawBody = await readJsonBody(c);
+    const parsed = parseCreateTrackedLinkBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const body = parsed.body;
 
     const link = await createTrackedLink(c.env.DB, {
       name: body.name,
@@ -125,16 +251,11 @@ trackedLinks.post('/api/tracked-links', requireRole('owner', 'admin'), async (c)
 trackedLinks.patch('/api/tracked-links/:id', requireRole('owner', 'admin'), async (c) => {
   try {
     const id = c.req.param('id')!;
-    const body = await c.req.json<{
-      name?: string;
-      tagId?: string | null;
-      scenarioId?: string | null;
-      introTemplateId?: string | null;
-      rewardTemplateId?: string | null;
-      isActive?: boolean;
-    }>();
+    const rawBody = await readJsonBody(c);
+    const parsed = parseUpdateTrackedLinkBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
 
-    const link = await updateTrackedLink(c.env.DB, id, body);
+    const link = await updateTrackedLink(c.env.DB, id, parsed.body);
     if (!link) {
       return c.json({ success: false, error: 'Tracked link not found' }, 404);
     }

@@ -29,6 +29,7 @@ const ccPrompts = [
 ]
 
 const PAGE_SIZE = 20
+const FRIENDS_LOAD_ERROR_MESSAGE = '友だち一覧の読み込みに失敗しました。もう一度お試しください。'
 
 type SortMode = 'recent' | 'oldest'
 type ResponseFilter = 'all' | 'unhandled'
@@ -76,10 +77,10 @@ export default function FriendsPage() {
         setTotal(res.data.total)
         setHasNextPage(res.data.hasNextPage)
       } else {
-        setError(res.error)
+        setError(FRIENDS_LOAD_ERROR_MESSAGE)
       }
     } catch {
-      setError('友だちの読み込みに失敗しました。もう一度お試しください。')
+      setError(FRIENDS_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }

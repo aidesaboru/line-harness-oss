@@ -35,13 +35,22 @@ booking.use('/api/booking/admin/*', requireRole('owner', 'admin'));
 // Helpers
 
 const BOOKING_VISIBLE_ID_MAX_LENGTH = 128;
+const BOOKING_IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 const BOOKING_DATE_QUERY_MAX_LENGTH = 32;
+const BOOKING_STARTS_AT_MAX_LENGTH = 64;
+const BOOKING_CUSTOMER_NOTE_MAX_LENGTH = 1000;
 const BOOKING_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const BOOKING_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const JST_OFFSET_MS = 9 * 3600_000;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type BookingRequestInput = {
+  menuId: string;
+  staffId: string;
+  startsAt: string;
+  customerNote: string | null;
+};
 
 function startsAtJst(utcIso: string): string {
   const jst = new Date(new Date(utcIso).getTime() + JST_OFFSET_MS).toISOString();
@@ -73,6 +82,65 @@ function parseBookingDateQuery(raw: string | undefined, label: string): ValueRes
     return { ok: false, error: `${label} is invalid` };
   }
   return parsed;
+}
+
+function parseBookingIdempotencyKey(raw: string | undefined): ValueResult<string> {
+  const parsed = parseVisibleString(raw, 'idempotency_key', BOOKING_IDEMPOTENCY_KEY_MAX_LENGTH);
+  if (!parsed.ok) return { ok: false, error: 'invalid_idempotency_key' };
+  return parsed;
+}
+
+async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
+  try {
+    const body = await c.req.json<unknown>();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, error: 'invalid_payload' };
+    }
+    return { ok: true, value: body as Record<string, unknown> };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseOptionalCustomerNote(raw: unknown): ValueResult<string | null> {
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_customer_note' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: null };
+  if (value.length > BOOKING_CUSTOMER_NOTE_MAX_LENGTH) {
+    return { ok: false, error: 'invalid_customer_note' };
+  }
+  return { ok: true, value };
+}
+
+function parseBookingRequestInput(body: Record<string, unknown>): ValueResult<BookingRequestInput> {
+  if (
+    typeof body.menu_id !== 'string' ||
+    typeof body.staff_id !== 'string' ||
+    typeof body.starts_at !== 'string'
+  ) {
+    return { ok: false, error: 'missing_params' };
+  }
+  const menuId = parseVisibleString(body.menu_id, 'menu_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!menuId.ok) return { ok: false, error: 'invalid_menu_id' };
+  const staffId = parseVisibleString(body.staff_id, 'staff_id', BOOKING_VISIBLE_ID_MAX_LENGTH);
+  if (!staffId.ok) return { ok: false, error: 'invalid_staff_id' };
+  const startsAt = parseVisibleString(body.starts_at, 'starts_at', BOOKING_STARTS_AT_MAX_LENGTH);
+  if (!startsAt.ok) return { ok: false, error: 'invalid_starts_at' };
+  if (Number.isNaN(new Date(startsAt.value).getTime())) {
+    return { ok: false, error: 'invalid_starts_at' };
+  }
+  const customerNote = parseOptionalCustomerNote(body.customer_note);
+  if (!customerNote.ok) return customerNote;
+  return {
+    ok: true,
+    value: {
+      menuId: menuId.value,
+      staffId: staffId.value,
+      startsAt: startsAt.value,
+      customerNote: customerNote.value,
+    },
+  };
 }
 
 async function resolveAccountIdFromLiff(c: Context<Env>): Promise<string | null> {
@@ -305,29 +373,26 @@ booking.get('/api/liff/booking/availability', async (c) => {
 booking.post('/api/liff/booking/requests', async (c) => {
   const accountId = await resolveAccountIdFromLiff(c);
   if (!accountId) return c.json({ error: 'unknown_liff' }, 404);
-  const idemKey = c.req.header('Idempotency-Key');
-  if (!idemKey) return c.json({ error: 'missing_idempotency_key' }, 400);
+  const rawIdemKey = c.req.header('Idempotency-Key');
+  if (!rawIdemKey) return c.json({ error: 'missing_idempotency_key' }, 400);
+  const idemKey = parseBookingIdempotencyKey(rawIdemKey);
+  if (!idemKey.ok) return c.json({ error: idemKey.error }, 400);
+  const rawBody = await readJsonObject(c);
+  if (!rawBody.ok) return c.json({ error: rawBody.error }, 400);
+  const body = parseBookingRequestInput(rawBody.value);
+  if (!body.ok) return c.json({ error: body.error }, 400);
 
   // 認証済み caller の LINE userId を Authorization: Bearer <id_token> から取得。
   const callerLineUserId = await verifyCallerLineUserId(c);
   if (!callerLineUserId) return c.json({ error: 'unauthorized' }, 401);
 
-  const body = await c.req.json<{
-    menu_id: string;
-    staff_id: string;
-    starts_at: string; // UTC ISO8601
-    customer_note?: string;
-  }>();
-  if (!body.menu_id || !body.staff_id || !body.starts_at) {
-    return c.json({ error: 'missing_params' }, 400);
-  }
   const friendId = await resolveFriendId(c, callerLineUserId, accountId);
   if (!friendId) return c.json({ error: 'friend_not_found' }, 404);
 
   // Idempotency lookup は account+friend スコープ。同じ key を別 caller が送っても
   // それぞれの caller のキャッシュを返す（=cross-tenant leak 防止）。
   const cached = await findIdempotencyResponse(c.env.DB, {
-    key: idemKey,
+    key: idemKey.value,
     lineAccountId: accountId,
     friendId,
     now: new Date(),
@@ -357,16 +422,13 @@ booking.post('/api/liff/booking/requests', async (c) => {
         WHERE m.id = ?1 AND m.line_account_id = ?3
           AND m.deleted_at IS NULL AND m.is_active = 1`,
     )
-    .bind(body.menu_id, body.staff_id, accountId)
+    .bind(body.value.menuId, body.value.staffId, accountId)
     .first<{ duration_minutes: number; buffer_after_minutes: number; dur: number; price: number; is_offered: number | null }>();
   if (!menuRow || menuRow.is_offered !== 1) {
     return c.json({ error: 'menu_not_offered' }, 422);
   }
 
-  const startsAt = new Date(body.starts_at);
-  if (Number.isNaN(startsAt.getTime())) {
-    return c.json({ error: 'invalid_starts_at' }, 422);
-  }
+  const startsAt = new Date(body.value.startsAt);
   if (startsAt < new Date()) {
     return c.json({ error: 'past_datetime' }, 422);
   }
@@ -379,7 +441,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
   const startJstHHMM = new Date(startsAt.getTime() + 9 * 3600_000).toISOString().slice(11, 16);
   const shift = await c.env.DB
     .prepare(`SELECT start_time, end_time FROM staff_shifts WHERE staff_id = ? AND work_date = ?`)
-    .bind(body.staff_id, startJstDate)
+    .bind(body.value.staffId, startJstDate)
     .first<{ start_time: string; end_time: string }>();
   if (!shift) return c.json({ error: 'out_of_shift' }, 422);
   const existingBookings = await c.env.DB
@@ -389,7 +451,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
           AND starts_at < ? AND block_ends_at > ?`,
     )
     .bind(
-      body.staff_id,
+      body.value.staffId,
       `${startJstDate}T15:00:00Z`,
       `${startJstDate}T-09:00:00.000Z`.replace('-09', '00'),
     )
@@ -433,17 +495,17 @@ booking.post('/api/liff/booking/requests', async (c) => {
       bookingId,
       accountId,
       friendId,
-      body.staff_id,
-      body.menu_id,
+      body.value.staffId,
+      body.value.menuId,
       startsAt.toISOString(),
       endsAt.toISOString(),
       blockEndsAt.toISOString(),
       'requested' satisfies BookingStatus,
-      body.customer_note ?? null,
+      body.value.customerNote,
       menuRow.price,
       nowIso,
       // NOT EXISTS subquery params
-      body.staff_id,
+      body.value.staffId,
       blockEndsAt.toISOString(),
       startsAt.toISOString(),
     )
@@ -451,7 +513,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
   if ((insertResult.meta?.changes ?? 0) === 0) {
     const err = { error: 'slot_conflict' };
     await saveIdempotencyResponse(c.env.DB, {
-      key: idemKey,
+      key: idemKey.value,
       lineAccountId: accountId,
       friendId,
       status: 409,
@@ -471,7 +533,7 @@ booking.post('/api/liff/booking/requests', async (c) => {
 
   const responseBody = { booking_id: bookingId, status: 'requested' };
   await saveIdempotencyResponse(c.env.DB, {
-    key: idemKey,
+    key: idemKey.value,
     lineAccountId: accountId,
     friendId,
     status: 201,

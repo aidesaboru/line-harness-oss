@@ -92,19 +92,17 @@ export function ProgressModal({
           setFinal(f as FinalState)
         },
       )
-      es.onerror = (err) => {
+      es.onerror = () => {
         // EventSource fires onerror both for "couldn't connect" (real failure
         // → polling fallback) and for "stream closed normally after complete"
         // (the orchestrator finished, we should NOT degrade to polling).
         // The `completed` flag distinguishes them.
         if (cancelled || completed) return
-        console.warn('[update] SSE failed, falling back to polling', err)
         es?.close()
         es = null
         startPolling()
       }
-    } catch (e) {
-      console.warn('[update] EventSource not available, polling', e)
+    } catch {
       startPolling()
     }
 

@@ -95,8 +95,8 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
         await api.autoReplies.create(body)
       }
       onSaved()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '保存に失敗しました')
+    } catch {
+      setError('自動返信ルールの保存に失敗しました。時間をおいて再度お試しください。')
     }
     setSaving(false)
   }

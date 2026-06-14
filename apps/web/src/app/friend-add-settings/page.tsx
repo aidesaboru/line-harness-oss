@@ -20,6 +20,12 @@ interface AccountRow {
   loadError: string | null
 }
 
+const FRIEND_ADD_ACCOUNTS_ERROR_MESSAGE = 'LINEアカウントの取得に失敗しました。もう一度お試しください。'
+const FRIEND_ADD_SCENARIOS_ERROR_MESSAGE = '友だち追加シナリオの読み込みに失敗しました。もう一度お試しください。'
+const FRIEND_ADD_ACCOUNT_SCENARIOS_ERROR_MESSAGE = 'このアカウントのシナリオ読み込みに失敗しました。もう一度お試しください。'
+const FRIEND_ADD_CREATE_ERROR_MESSAGE = '友だち追加シナリオの作成に失敗しました。もう一度お試しください。'
+const FRIEND_ADD_UPDATE_ERROR_MESSAGE = '友だち追加シナリオの更新に失敗しました。もう一度お試しください。'
+
 export default function FriendAddSettingsPage() {
   const router = useRouter()
   const { setSelectedAccountId } = useAccount()
@@ -38,7 +44,9 @@ export default function FriendAddSettingsPage() {
       // to a deleted account); orphans are dropped instead of being shown under every account.
       const accountsRes = await api.lineAccounts.list()
       if (!accountsRes.success) {
-        setError('LINEアカウントの取得に失敗しました')
+        setRows([])
+        setOrphanScenarios([])
+        setError(FRIEND_ADD_ACCOUNTS_ERROR_MESSAGE)
         setLoading(false)
         return
       }
@@ -55,9 +63,7 @@ export default function FriendAddSettingsPage() {
       if (allSettled.status === 'rejected' || (allRes && !allRes.success)) {
         // Surface this as a banner — silent failure here would hide globals/orphans and
         // make per-account active counts under-report.
-        setError(
-          'シナリオの全件取得に失敗しました。「全アカ共通」シナリオと孤児シナリオの検出が反映されていない可能性があります。',
-        )
+        setError(FRIEND_ADD_SCENARIOS_ERROR_MESSAGE)
       }
 
       const accountScopedByAccount = new Map<string, ScenarioWithCount[]>()
@@ -70,7 +76,7 @@ export default function FriendAddSettingsPage() {
         }
         const res = slot.value
         if (!res.success) {
-          accountErrors.set(account.id, res.error)
+          accountErrors.set(account.id, FRIEND_ADD_ACCOUNT_SCENARIOS_ERROR_MESSAGE)
           return
         }
         accountScopedByAccount.set(
@@ -104,7 +110,9 @@ export default function FriendAddSettingsPage() {
       setRows(results)
       setOrphanScenarios(orphans)
     } catch {
-      setError('読み込みに失敗しました')
+      setRows([])
+      setOrphanScenarios([])
+      setError(FRIEND_ADD_SCENARIOS_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -128,14 +136,14 @@ export default function FriendAddSettingsPage() {
         lineAccountId: accountId,
       })
       if (!res.success) {
-        setError(`シナリオ作成に失敗しました: ${res.error}`)
+        setError(FRIEND_ADD_CREATE_ERROR_MESSAGE)
         return
       }
       // Pre-select the account so the editor stays in the right context, then jump to the new scenario's editor.
       setSelectedAccountId(accountId)
       router.push(`/scenarios/detail?id=${res.data.id}`)
     } catch {
-      setError('シナリオ作成に失敗しました')
+      setError(FRIEND_ADD_CREATE_ERROR_MESSAGE)
     }
   }
 
@@ -166,11 +174,11 @@ export default function FriendAddSettingsPage() {
       const res = await api.scenarios.update(scenarioId, { isActive: !current })
       if (!res.success) {
         patch(current)
-        setError(`シナリオの更新に失敗しました: ${res.error}`)
+        setError(FRIEND_ADD_UPDATE_ERROR_MESSAGE)
       }
     } catch {
       patch(current)
-      setError('シナリオの更新に失敗しました')
+      setError(FRIEND_ADD_UPDATE_ERROR_MESSAGE)
     } finally {
       setTogglingId(null)
     }

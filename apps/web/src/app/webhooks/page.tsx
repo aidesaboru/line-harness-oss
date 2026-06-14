@@ -9,6 +9,11 @@ import type { IncomingWebhook, OutgoingWebhook } from '@line-crm/shared'
 type Tab = 'incoming' | 'outgoing'
 
 const MIN_SECRET_LENGTH = 32
+const WEBHOOK_LIST_ERROR_MESSAGE = 'Webhook一覧の読み込みに失敗しました。もう一度お試しください。'
+const WEBHOOK_UPDATE_ERROR_MESSAGE = 'Webhookの更新に失敗しました。もう一度お試しください。'
+const WEBHOOK_DELETE_ERROR_MESSAGE = 'Webhookの削除に失敗しました。もう一度お試しください。'
+const WEBHOOK_CREATE_ERROR_MESSAGE = 'Webhookの作成に失敗しました。もう一度お試しください。'
+const WEBHOOK_SECRET_UPDATE_ERROR_MESSAGE = 'Webhookシークレットの更新に失敗しました。もう一度お試しください。'
 
 const ccPrompts = [
   {
@@ -81,11 +86,19 @@ export default function WebhooksPage() {
         api.webhooks.outgoing.list(),
       ])
       if (inRes.success) setIncoming(inRes.data)
-      else setError(inRes.error)
+      else {
+        setIncoming([])
+        setError(WEBHOOK_LIST_ERROR_MESSAGE)
+      }
       if (outRes.success) setOutgoing(outRes.data)
-      else setError(outRes.error)
+      else {
+        setOutgoing([])
+        setError(WEBHOOK_LIST_ERROR_MESSAGE)
+      }
     } catch {
-      setError('データの読み込みに失敗しました。もう一度お試しください。')
+      setIncoming([])
+      setOutgoing([])
+      setError(WEBHOOK_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -95,39 +108,55 @@ export default function WebhooksPage() {
 
   const handleToggleIncoming = async (id: string, currentActive: boolean) => {
     try {
-      await api.webhooks.incoming.update(id, { isActive: !currentActive })
+      const res = await api.webhooks.incoming.update(id, { isActive: !currentActive })
+      if (!res.success) {
+        setError(WEBHOOK_UPDATE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('更新に失敗しました')
+      setError(WEBHOOK_UPDATE_ERROR_MESSAGE)
     }
   }
 
   const handleToggleOutgoing = async (id: string, currentActive: boolean) => {
     try {
-      await api.webhooks.outgoing.update(id, { isActive: !currentActive })
+      const res = await api.webhooks.outgoing.update(id, { isActive: !currentActive })
+      if (!res.success) {
+        setError(WEBHOOK_UPDATE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('更新に失敗しました')
+      setError(WEBHOOK_UPDATE_ERROR_MESSAGE)
     }
   }
 
   const handleDeleteIncoming = async (id: string) => {
     if (!confirm('この受信Webhookを削除しますか？')) return
     try {
-      await api.webhooks.incoming.delete(id)
+      const res = await api.webhooks.incoming.delete(id)
+      if (!res.success) {
+        setError(WEBHOOK_DELETE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('削除に失敗しました')
+      setError(WEBHOOK_DELETE_ERROR_MESSAGE)
     }
   }
 
   const handleDeleteOutgoing = async (id: string) => {
     if (!confirm('この送信Webhookを削除しますか？')) return
     try {
-      await api.webhooks.outgoing.delete(id)
+      const res = await api.webhooks.outgoing.delete(id)
+      if (!res.success) {
+        setError(WEBHOOK_DELETE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('削除に失敗しました')
+      setError(WEBHOOK_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -146,7 +175,7 @@ export default function WebhooksPage() {
         secret: inForm.secret,
       })
       if (!res.success) {
-        setError(res.error)
+        setError(WEBHOOK_CREATE_ERROR_MESSAGE)
         return
       }
       setCreatedSecret({ name: res.data.name, secret: res.data.secret })
@@ -155,7 +184,7 @@ export default function WebhooksPage() {
       setShowCreate(false)
       load()
     } catch {
-      setError('作成に失敗しました')
+      setError(WEBHOOK_CREATE_ERROR_MESSAGE)
     }
   }
 
@@ -183,7 +212,7 @@ export default function WebhooksPage() {
         secret: outForm.secret,
       })
       if (!res.success) {
-        setError(res.error)
+        setError(WEBHOOK_CREATE_ERROR_MESSAGE)
         return
       }
       setCreatedSecret({ name: res.data.name, secret: res.data.secret })
@@ -192,7 +221,7 @@ export default function WebhooksPage() {
       setShowCreate(false)
       load()
     } catch {
-      setError('作成に失敗しました')
+      setError(WEBHOOK_CREATE_ERROR_MESSAGE)
     }
   }
 
@@ -220,14 +249,14 @@ export default function WebhooksPage() {
           ? await api.webhooks.incoming.update(rotateTarget.id, payload)
           : await api.webhooks.outgoing.update(rotateTarget.id, payload)
       if (!res.success) {
-        setError(res.error)
+        setError(WEBHOOK_SECRET_UPDATE_ERROR_MESSAGE)
         return
       }
       setRotateTarget(null)
       setRotateSecretValue('')
       load()
     } catch {
-      setError('シークレットの更新に失敗しました')
+      setError(WEBHOOK_SECRET_UPDATE_ERROR_MESSAGE)
     }
   }
 

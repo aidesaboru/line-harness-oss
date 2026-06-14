@@ -29,6 +29,8 @@ interface Props {
   onSaved: () => void
 }
 
+const ENTRY_ROUTE_SAVE_ERROR_MESSAGE = 'リファラルリンクの保存に失敗しました。もう一度お試しください。'
+
 export default function EditRouteModal({
   route,
   pools,
@@ -94,12 +96,17 @@ export default function EditRouteModal({
   const doSave = async () => {
     setSubmitting(true)
     setError('')
-    const res = isNew
-      ? await api.entryRoutes.create(form)
-      : await api.entryRoutes.update(route!.id, form)
-    setSubmitting(false)
-    if (res.success) onSaved()
-    else setError(res.error ?? '保存に失敗しました')
+    try {
+      const res = isNew
+        ? await api.entryRoutes.create(form)
+        : await api.entryRoutes.update(route!.id, form)
+      if (res.success) onSaved()
+      else setError(ENTRY_ROUTE_SAVE_ERROR_MESSAGE)
+    } catch {
+      setError(ENTRY_ROUTE_SAVE_ERROR_MESSAGE)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const onSubmit = async () => {

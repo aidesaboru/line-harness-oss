@@ -19,6 +19,8 @@ interface Props {
   onSaved: () => void
 }
 
+const LINE_ACCOUNT_EDIT_SAVE_ERROR_MESSAGE = 'LINEアカウントの保存に失敗しました。もう一度お試しください。'
+
 // Edit modal — reads current secrets from the secrets-allowed GET endpoint
 // (so the user can see "is the secret set?" without exposing it in the list).
 // On save, only fields the user actually modified are sent. Empty messaging
@@ -104,10 +106,10 @@ export default function AccountEditModal({
         onSaved()
         onClose()
       } else {
-        setError(res.error || '保存に失敗しました')
+        setError(LINE_ACCOUNT_EDIT_SAVE_ERROR_MESSAGE)
       }
     } catch {
-      setError('保存に失敗しました')
+      setError(LINE_ACCOUNT_EDIT_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

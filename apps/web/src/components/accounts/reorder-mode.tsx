@@ -34,6 +34,8 @@ interface Props {
   onSaved: () => void
 }
 
+const ACCOUNT_REORDER_SAVE_ERROR_MESSAGE = 'アカウントの並び順保存に失敗しました。もう一度お試しください。'
+
 function SortableRow({ account }: { account: AccountItem }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: account.id })
   const style = {
@@ -61,6 +63,7 @@ function SortableRow({ account }: { account: AccountItem }) {
 export default function ReorderMode({ accounts, onClose, onSaved }: Props) {
   const [items, setItems] = useState<AccountItem[]>(accounts)
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
 
   const sensors = useSensors(
     useSensor(PointerSensor),
@@ -79,14 +82,20 @@ export default function ReorderMode({ accounts, onClose, onSaved }: Props) {
 
   const handleSave = async () => {
     setSaving(true)
+    setError('')
     const ordered = items.map((a, idx) => ({ id: a.id, displayOrder: idx }))
-    const res = await api.lineAccounts.updateOrder(ordered)
-    setSaving(false)
-    if (res.success) {
-      onSaved()
-      onClose()
-    } else {
-      alert('保存失敗: ' + (res.error || 'unknown'))
+    try {
+      const res = await api.lineAccounts.updateOrder(ordered)
+      if (res.success) {
+        onSaved()
+        onClose()
+      } else {
+        setError(ACCOUNT_REORDER_SAVE_ERROR_MESSAGE)
+      }
+    } catch {
+      setError(ACCOUNT_REORDER_SAVE_ERROR_MESSAGE)
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -95,6 +104,11 @@ export default function ReorderMode({ accounts, onClose, onSaved }: Props) {
       <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-5 max-h-[80vh] overflow-y-auto">
         <h2 className="text-sm font-bold mb-4">並び替えモード</h2>
         <p className="text-xs text-gray-500 mb-4">ドラッグで順序変更。サイドバーの並びにも反映されます。</p>
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
+            {error}
+          </div>
+        )}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
             <div className="space-y-2">

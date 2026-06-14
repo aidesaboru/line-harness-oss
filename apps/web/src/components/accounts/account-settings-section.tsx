@@ -11,6 +11,8 @@ interface Props {
   onUpdated: () => void
 }
 
+const ACCOUNT_SETTINGS_SAVE_ERROR_MESSAGE = 'アカウント設定の保存に失敗しました。もう一度お試しください。'
+
 export default function AccountSettingsSection({
   accountId, initialCountry, initialRole, onUpdated,
 }: Props) {
@@ -38,16 +40,17 @@ export default function AccountSettingsSection({
   }
 
   const handleSave = async () => {
-    setSaving(true); setError('')
+    setSaving(true)
+    setError('')
     try {
       const res = await api.lineAccounts.update(accountId, {
         country: computedCountry(),
         role: role.trim() === '' ? null : role.trim(),
       })
       if (res.success) onUpdated()
-      else setError(res.error || '保存に失敗しました')
+      else setError(ACCOUNT_SETTINGS_SAVE_ERROR_MESSAGE)
     } catch {
-      setError('保存に失敗しました')
+      setError(ACCOUNT_SETTINGS_SAVE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }

@@ -5,6 +5,12 @@ import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
 import type { TrafficPool, PoolAccount, LineAccount } from '@line-crm/shared'
 
+const POOLS_LOAD_ERROR_MESSAGE = 'プール情報の読み込みに失敗しました。もう一度お試しください。'
+const POOL_DELETE_ERROR_MESSAGE = 'プールの削除に失敗しました。もう一度お試しください。'
+const POOL_MEMBERS_LOAD_ERROR_MESSAGE = 'プール所属アカウントの読み込みに失敗しました。もう一度お試しください。'
+const POOL_MEMBER_UPDATE_ERROR_MESSAGE = 'プール所属アカウントの更新に失敗しました。もう一度お試しください。'
+const POOL_CREATE_ERROR_MESSAGE = 'プールの作成に失敗しました。もう一度お試しください。'
+
 export default function PoolsPage() {
   const [pools, setPools] = useState<TrafficPool[]>([])
   const [accounts, setAccounts] = useState<LineAccount[]>([])
@@ -15,11 +21,25 @@ export default function PoolsPage() {
   const load = async () => {
     setLoading(true)
     setError('')
-    const [poolsRes, accRes] = await Promise.all([api.pools.list(), api.lineAccounts.list()])
-    if (poolsRes.success) setPools(poolsRes.data)
-    else setError('プール一覧の取得に失敗しました')
-    if (accRes.success) setAccounts(accRes.data)
-    setLoading(false)
+    try {
+      const [poolsRes, accRes] = await Promise.all([api.pools.list(), api.lineAccounts.list()])
+      if (poolsRes.success) setPools(poolsRes.data)
+      else {
+        setPools([])
+        setError(POOLS_LOAD_ERROR_MESSAGE)
+      }
+      if (accRes.success) setAccounts(accRes.data)
+      else {
+        setAccounts([])
+        setError(POOLS_LOAD_ERROR_MESSAGE)
+      }
+    } catch {
+      setPools([])
+      setAccounts([])
+      setError(POOLS_LOAD_ERROR_MESSAGE)
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -93,6 +113,7 @@ function PoolCard({
   const apiBase = process.env.NEXT_PUBLIC_API_URL ?? ''
   const publicUrl = `${apiBase}/pool/${pool.slug}`
   const [copied, setCopied] = useState(false)
+  const [error, setError] = useState('')
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(publicUrl)
@@ -105,9 +126,14 @@ function PoolCard({
   const onDelete = async () => {
     if (isMain) return
     if (!confirm(`プール「${pool.name}」を削除しますか?`)) return
-    const res = await api.pools.delete(pool.id)
-    if (res.success) onChange()
-    else alert(res.error ?? '削除に失敗しました')
+    setError('')
+    try {
+      const res = await api.pools.delete(pool.id)
+      if (res.success) onChange()
+      else setError(POOL_DELETE_ERROR_MESSAGE)
+    } catch {
+      setError(POOL_DELETE_ERROR_MESSAGE)
+    }
   }
 
   return (
@@ -141,6 +167,11 @@ function PoolCard({
           )}
         </div>
       </div>
+      {error && (
+        <div className="mb-3 p-2 rounded bg-red-50 border border-red-200 text-red-700 text-xs">
+          {error}
+        </div>
+      )}
       <PoolAccountList poolId={pool.id} accounts={accounts} onChange={onChange} />
     </div>
   )
@@ -156,10 +187,21 @@ function PoolAccountList({
   onChange: () => void
 }) {
   const [members, setMembers] = useState<PoolAccount[]>([])
+  const [error, setError] = useState('')
 
   const reload = async () => {
-    const res = await api.pools.accounts.list(poolId)
-    if (res.success) setMembers(res.data)
+    setError('')
+    try {
+      const res = await api.pools.accounts.list(poolId)
+      if (res.success) setMembers(res.data)
+      else {
+        setMembers([])
+        setError(POOL_MEMBERS_LOAD_ERROR_MESSAGE)
+      }
+    } catch {
+      setMembers([])
+      setError(POOL_MEMBERS_LOAD_ERROR_MESSAGE)
+    }
   }
 
   useEffect(() => {
@@ -170,24 +212,43 @@ function PoolAccountList({
   const candidates = accounts.filter((a) => !memberAccountIds.has(a.id))
 
   const onAdd = async (lineAccountId: string) => {
-    const res = await api.pools.accounts.add(poolId, lineAccountId)
-    if (res.success) {
-      await reload()
-      onChange()
+    setError('')
+    try {
+      const res = await api.pools.accounts.add(poolId, lineAccountId)
+      if (res.success) {
+        await reload()
+        onChange()
+      } else {
+        setError(POOL_MEMBER_UPDATE_ERROR_MESSAGE)
+      }
+    } catch {
+      setError(POOL_MEMBER_UPDATE_ERROR_MESSAGE)
     }
   }
 
   const onRemove = async (poolAccountId: string) => {
     if (!confirm('このアカウントをプールから外しますか?')) return
-    const res = await api.pools.accounts.remove(poolId, poolAccountId)
-    if (res.success) {
-      await reload()
-      onChange()
+    setError('')
+    try {
+      const res = await api.pools.accounts.remove(poolId, poolAccountId)
+      if (res.success) {
+        await reload()
+        onChange()
+      } else {
+        setError(POOL_MEMBER_UPDATE_ERROR_MESSAGE)
+      }
+    } catch {
+      setError(POOL_MEMBER_UPDATE_ERROR_MESSAGE)
     }
   }
 
   return (
     <div className="mt-2">
+      {error && (
+        <div className="mb-2 p-2 rounded bg-red-50 border border-red-200 text-red-700 text-xs">
+          {error}
+        </div>
+      )}
       <ul className="text-sm space-y-1">
         {members.map((m) => {
           const acc = accounts.find((a) => a.id === m.lineAccountId)
@@ -254,10 +315,15 @@ function CreatePoolModal({
     if (!slug || !name || !activeAccountId) return
     setSubmitting(true)
     setError('')
-    const res = await api.pools.create({ slug, name, activeAccountId })
-    setSubmitting(false)
-    if (res.success) onCreated()
-    else setError(res.error ?? '作成に失敗しました')
+    try {
+      const res = await api.pools.create({ slug, name, activeAccountId })
+      if (res.success) onCreated()
+      else setError(POOL_CREATE_ERROR_MESSAGE)
+    } catch {
+      setError(POOL_CREATE_ERROR_MESSAGE)
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (

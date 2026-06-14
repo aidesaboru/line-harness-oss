@@ -353,7 +353,7 @@ strict Preflight:
 - image+text mock sessionでLINE画像のHTTPS URL直接入力とテキストを同時に入れて送信し、画像payloadだけに `supportCaseId`/`lineAccountId` が入り、続くテキストpayloadには案件紐付けが二重に入らないことを確認
 - worker chat route testsで、テキスト返信と画像返信が `customer_reply_sent` 案件履歴イベントを残し、案件を `customer_reply` へ更新すること、完了済み案件への `/send` と `/send/validate` はLINE送信/DB記録前に拒否されることを確認
 - support-meta/clipboard/staff-form testsで、マニュアル保存前検証、コピーfallback、スタッフ作成payload検証、スタッフ管理の固定エラー文、未知のsupport API rawエラーをfallbackに落とすことを確認
-- raw chat/staff/friends/forms/booking/event/rich-menu/reminder/scoring/scenario/broadcast/template/automation/webhook/friend-add/inflow UI error searchesで、チャット一覧/詳細/過去読み込み/送信/ローディング/ステータス/メモ保存、友だち詳細サイドバー、友だち一覧、フォーム回答、予約管理、イベント予約管理、予約スタッフ、シフト、予約メニュー、メニュー割当、イベント一覧、イベントフォーム、予約枠操作、共有画像アップロード、リッチメニュー一覧/新規/編集/適用、リマインダー一覧/詳細/作成/ステップ/ステータス/削除、スコアリング一覧/作成/ステータス/削除、シナリオ一覧/作成/詳細/ステップ/並び替え/プレビュー、配信一覧/作成/削除/インサイト/重複除外プレビュー/テスト送信、テンプレート一覧/詳細/作成/更新/削除、オートメーション一覧/作成/ステータス/削除、Webhook一覧/作成/更新/削除/シークレット更新、友だち追加設定一覧/作成/更新、流入リンク保存、スタッフ管理がAPI応答文字列やraw exceptionを直接表示しないことを確認
+- raw chat/staff/friends/forms/booking/event/rich-menu/reminder/scoring/scenario/broadcast/template/automation/webhook/friend-add/inflow/accounts/pools UI error searchesで、チャット一覧/詳細/過去読み込み/送信/ローディング/ステータス/メモ保存、友だち詳細サイドバー、友だち一覧、フォーム回答、予約管理、イベント予約管理、予約スタッフ、シフト、予約メニュー、メニュー割当、イベント一覧、イベントフォーム、予約枠操作、共有画像アップロード、リッチメニュー一覧/新規/編集/適用、リマインダー一覧/詳細/作成/ステップ/ステータス/削除、スコアリング一覧/作成/ステータス/削除、シナリオ一覧/作成/詳細/ステップ/並び替え/プレビュー、配信一覧/作成/削除/インサイト/重複除外プレビュー/テスト送信、テンプレート一覧/詳細/作成/更新/削除、オートメーション一覧/作成/ステータス/削除、Webhook一覧/作成/更新/削除/シークレット更新、友だち追加設定一覧/作成/更新、流入リンク保存、LINEアカウント一覧/登録/編集/設定/並び替え/削除/有効化、プール一覧/作成/削除/所属追加/解除、スタッフ管理がAPI応答文字列やraw exceptionを直接表示しないことを確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

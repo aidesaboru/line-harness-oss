@@ -53,6 +53,11 @@ const ccPrompts = [
   },
 ]
 
+const LINE_ACCOUNT_LIST_ERROR_MESSAGE = 'LINEアカウント一覧の読み込みに失敗しました。もう一度お試しください。'
+const LINE_ACCOUNT_CREATE_ERROR_MESSAGE = 'LINEアカウントの登録に失敗しました。もう一度お試しください。'
+const LINE_ACCOUNT_DELETE_ERROR_MESSAGE = 'LINEアカウントの削除に失敗しました。もう一度お試しください。'
+const LINE_ACCOUNT_UPDATE_ERROR_MESSAGE = 'LINEアカウントの更新に失敗しました。もう一度お試しください。'
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<LineAccountListItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -73,10 +78,12 @@ export default function AccountsPage() {
       if (res.success) {
         setAccounts(res.data as unknown as LineAccountListItem[])
       } else {
-        setError('アカウント情報の取得に失敗しました')
+        setAccounts([])
+        setError(LINE_ACCOUNT_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('APIに接続できませんでした。サーバーが起動しているか確認してください。')
+      setAccounts([])
+      setError(LINE_ACCOUNT_LIST_ERROR_MESSAGE)
     }
     setLoading(false)
   }
@@ -110,10 +117,10 @@ export default function AccountsPage() {
         setShowCreate(false)
         load()
       } else {
-        setCreateError(res.error || '登録に失敗しました')
+        setCreateError(LINE_ACCOUNT_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setCreateError('登録に失敗しました')
+      setCreateError(LINE_ACCOUNT_CREATE_ERROR_MESSAGE)
     } finally {
       setSubmitting(false)
     }
@@ -121,13 +128,31 @@ export default function AccountsPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('このLINEアカウントを削除しますか？')) return
-    await api.lineAccounts.delete(id)
-    load()
+    setError('')
+    try {
+      const res = await api.lineAccounts.delete(id)
+      if (!res.success) {
+        setError(LINE_ACCOUNT_DELETE_ERROR_MESSAGE)
+        return
+      }
+      load()
+    } catch {
+      setError(LINE_ACCOUNT_DELETE_ERROR_MESSAGE)
+    }
   }
 
   const handleToggle = async (id: string, currentActive: boolean) => {
-    await api.lineAccounts.update(id, { isActive: !currentActive })
-    load()
+    setError('')
+    try {
+      const res = await api.lineAccounts.update(id, { isActive: !currentActive })
+      if (!res.success) {
+        setError(LINE_ACCOUNT_UPDATE_ERROR_MESSAGE)
+        return
+      }
+      load()
+    } catch {
+      setError(LINE_ACCOUNT_UPDATE_ERROR_MESSAGE)
+    }
   }
 
   return (

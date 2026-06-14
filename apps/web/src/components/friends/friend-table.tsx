@@ -186,8 +186,8 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                     <td colSpan={5} className="px-6 py-4">
                       <div className="space-y-3">
                         <div>
-                          <p className="text-xs font-semibold text-gray-500 mb-1">LINE ユーザーID</p>
-                          <p className="text-xs text-gray-600 font-mono">{friend.lineUserId}</p>
+                          <p className="text-xs font-semibold text-gray-500 mb-1">LINE連携</p>
+                          <p className="text-xs text-gray-600">連携済み</p>
                         </div>
 
                         {/* Tag management */}

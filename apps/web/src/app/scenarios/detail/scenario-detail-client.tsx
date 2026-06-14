@@ -793,12 +793,12 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
                     })()}
                     {step.templateId && (
                       <p className="mt-2 text-xs text-amber-700">
-                        📋 テンプレ: {templates.find((t) => t.id === step.templateId)?.name ?? step.templateId}
+                        📋 テンプレ: {templates.find((t) => t.id === step.templateId)?.name ?? '削除済みテンプレート'}
                       </p>
                     )}
                     {step.onReachTagId && (
                       <p className="mt-1 text-xs text-green-700">
-                        🏷 到達タグ: {tags.find((t) => t.id === step.onReachTagId)?.name ?? step.onReachTagId}
+                        🏷 到達タグ: {tags.find((t) => t.id === step.onReachTagId)?.name ?? '削除済みタグ'}
                       </p>
                     )}
                   </div>

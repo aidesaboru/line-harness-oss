@@ -79,7 +79,7 @@ export default function AutoRepliesPage() {
       // 古い shape の fallback (effectiveAccounts 計算前)
       if (!r.lineAccountId) return <span className="text-gray-400 italic">全アカウント</span>
       const acc = accountById.get(r.lineAccountId)
-      return <span className="text-gray-700">{acc?.displayName ?? acc?.name ?? r.lineAccountId.slice(0, 8)}</span>
+      return <span className="text-gray-700">{acc?.displayName ?? acc?.name ?? '不明なアカウント'}</span>
     }
     return (
       <div className="flex flex-wrap gap-1">

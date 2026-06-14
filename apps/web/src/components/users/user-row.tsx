@@ -17,6 +17,12 @@ const ACCOUNT_BADGE_COLORS = [
   'bg-slate-100 text-slate-700',
 ]
 
+const IDENTITY_KIND_LABELS: Record<UserRowData['identityKeyKind'], string> = {
+  url_token: 'URL経由',
+  uid: 'LINE UID',
+  solo: '単独登録',
+}
+
 export interface UserRowData {
   identityKey: string
   identityKeyKind: 'url_token' | 'uid' | 'solo'
@@ -44,8 +50,7 @@ interface Props {
 
 export default function UserRow({ row, accountColorMap }: Props) {
   const [expanded, setExpanded] = useState(false)
-  const idShort =
-    row.identityKey.length > 12 ? `${row.identityKey.slice(0, 8)}...` : row.identityKey
+  const identityKindLabel = IDENTITY_KIND_LABELS[row.identityKeyKind] ?? '識別元不明'
 
   return (
     <>
@@ -53,7 +58,7 @@ export default function UserRow({ row, accountColorMap }: Props) {
         className="cursor-pointer border-b border-gray-100 hover:bg-gray-50"
         onClick={() => setExpanded((v) => !v)}
       >
-        <td className="px-4 py-3 font-mono text-xs text-gray-500">{idShort}</td>
+        <td className="px-4 py-3 text-xs text-gray-500">{identityKindLabel}</td>
         <td className="px-4 py-3 text-sm font-medium text-gray-900">
           {row.displayName || <span className="text-gray-400">—</span>}
         </td>
@@ -102,7 +107,7 @@ export default function UserRow({ row, accountColorMap }: Props) {
                         className={`h-2 w-2 rounded-full ${a.isFollowing ? 'bg-emerald-500' : 'bg-gray-300'}`}
                       />
                       <span className="font-medium">{a.accountName}</span>
-                      <span className="font-mono text-xs text-gray-400">{a.lineUserId}</span>
+                      <span className="text-xs text-gray-400">LINE連携済み</span>
                       <span className="text-xs text-gray-400">
                         登録: {fmt.format(new Date(a.joinedAt))}
                       </span>
@@ -124,11 +129,11 @@ export default function UserRow({ row, accountColorMap }: Props) {
                   </div>
                 )}
                 <div>
-                  <p className="text-xs font-medium text-gray-500">識別子</p>
-                  <p className="break-all font-mono text-xs text-gray-500">
-                    {row.identityKey}
-                    <span className="ml-2 rounded bg-gray-200 px-1 text-[10px] text-gray-600">
-                      {row.identityKeyKind}
+                  <p className="text-xs font-medium text-gray-500">識別元</p>
+                  <p className="text-xs text-gray-500">
+                    {identityKindLabel}
+                    <span className="ml-2 text-gray-400">
+                      統合キーは管理画面では非表示です
                     </span>
                   </p>
                 </div>

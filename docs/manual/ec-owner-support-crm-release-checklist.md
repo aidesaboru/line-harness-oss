@@ -416,7 +416,7 @@ corepack pnpm preflight:support-crm | corepack pnpm preflight:support-crm:summar
 - イベント予約の拒否理由入力と友だち追加シナリオ作成名入力は、ブラウザ標準 `prompt` ではなく共通の画面内入力ダイアログ (`useTextInputDialog`) を使う。イベント予約URLコピーは共通copy helperでtextarea fallbackまで試し、失敗時は画面内エラーで選択コピーを案内する。Web全体の `prompt(` / `confirm(` / `alert(` 検索は0件。
 - LIFFイベント予約のキャンセルは、ブラウザ標準 `confirm` ではなく予約名を表示する画面内確認を使う。LIFFサロン/イベント予約導線の起動失敗、メニュー/空き枠/イベント詳細/予約作成/予約履歴エラーはraw API本文、LIFF初期化例外、token-like textを表示しない。`apps/liff/src`、`apps/worker/src/client/event-booking`、`apps/worker/src/client/salon-booking` の `prompt(` / `confirm(` / `alert(`、raw `String(err/e)`、raw `err.message`、raw console warn/error検索は0件。
 - 更新進捗モーダル/更新バナーのbest-effort失敗はraw例外をconsoleへ出さず、自動返信ルール保存失敗もraw exception messageではなく固定の再試行案内を表示する。更新履歴/進捗モーダルのロールバック/事前確認/データ移行系ラベルは日本語の運用者向け表記に寄せる。
-- ログイン失敗、リッチメニュー画像アップロード失敗、旧埋め込み予約slot取得失敗はraw API error/body/statusやconsole errorを表示/出力せず、固定の公開メッセージまたは静かな再描画に寄せる。ログイン接続設定未完了、自動返信の必須入力、スタッフシフトのスタッフ未指定、自動返信/友だち追加/配信条件/イベント予約の補助表示、非テキストメッセージのプレビューも、環境変数名、内部ID名、DB列名、raw message typeではなくユーザー向け文言で表示する。
+- ログイン失敗、リッチメニュー画像アップロード失敗、旧埋め込み予約slot取得失敗はraw API error/body/statusやconsole errorを表示/出力せず、固定の公開メッセージまたは静かな再描画に寄せる。ログイン接続設定未完了、自動返信の必須入力、スタッフシフトのスタッフ未指定、自動返信/友だち追加/配信条件/イベント予約/顧客統合/友だち詳細の補助表示、非テキストメッセージのプレビューも、環境変数名、内部ID名、DB列名、LINE user ID、raw message typeではなくユーザー向け文言で表示する。
 - [ ] クリップボードAPIが使えない環境でも、コピー失敗時の案内が表示される
 - Web clipboard helper testでは、Clipboard API成功、textarea fallback成功、Clipboard API拒否後のfallback、コピー手段なしの失敗報告を確認済み。Staff画面とSupport画面は失敗時に「表示内容を選択コピーしてください」系の案内を出す。
 

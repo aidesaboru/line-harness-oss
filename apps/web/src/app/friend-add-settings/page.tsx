@@ -264,7 +264,7 @@ function OrphanSection({
               <Link href={`/scenarios/detail?id=${scenario.id}`} className="block">
                 <div className="font-medium text-gray-900 truncate">{scenario.name}</div>
                 <div className="text-xs text-gray-400 mt-1">
-                  元のアカウントID: {scenario.lineAccountId} ・ 更新 {scenario.updatedAt.slice(0, 10)}
+                  元のアカウント: 削除済み ・ 更新 {scenario.updatedAt.slice(0, 10)}
                 </div>
               </Link>
             </div>

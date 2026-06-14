@@ -52,7 +52,7 @@ export default function UsersTable({
         <table className="min-w-full">
           <thead className="bg-gray-50 text-left text-xs font-medium uppercase text-gray-500">
             <tr>
-              <th className="px-4 py-3">識別子</th>
+              <th className="px-4 py-3">識別元</th>
               <th className="px-4 py-3">表示名</th>
               <th className="px-4 py-3">登録アカウント</th>
               <th className="px-4 py-3">X</th>

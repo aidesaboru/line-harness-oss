@@ -145,7 +145,7 @@ updated: 2026-06-14
 - コピー、スタッフフォーム、認証キャッシュ、確認ダイアログをhelper化し、失敗時の案内を画面に出す
 - LIFFのイベント予約/サロン予約導線は、予約キャンセルをブラウザ標準confirmではなく画面内確認にし、起動失敗、メニュー/空き枠/イベント詳細/予約作成/予約履歴エラーでraw API本文やLIFF初期化例外を表示しない
 - 更新進捗モーダル/更新バナーのbest-effort失敗はraw例外をconsoleへ出さず、自動返信ルール保存失敗もraw exception messageではなく固定の再試行案内を表示する。更新履歴/進捗モーダルのロールバック/事前確認/データ移行系ラベルは日本語の運用者向け表記に寄せる
-- ログイン失敗、リッチメニュー画像アップロード失敗、旧埋め込み予約slot取得失敗もraw API error/body/statusやconsole errorを出さず、固定の公開メッセージまたは静かな再描画に寄せる。ログイン接続設定未完了、自動返信の必須入力、スタッフシフトのスタッフ未指定、自動返信/友だち追加/配信条件/イベント予約の補助表示、非テキストメッセージのプレビューも、環境変数名、内部ID名、DB列名、raw message typeではなくユーザー向け文言で表示する
+- ログイン失敗、リッチメニュー画像アップロード失敗、旧埋め込み予約slot取得失敗もraw API error/body/statusやconsole errorを出さず、固定の公開メッセージまたは静かな再描画に寄せる。ログイン接続設定未完了、自動返信の必須入力、スタッフシフトのスタッフ未指定、自動返信/友だち追加/配信条件/イベント予約/顧客統合/友だち詳細の補助表示、非テキストメッセージのプレビューも、環境変数名、内部ID名、DB列名、LINE user ID、raw message typeではなくユーザー向け文言で表示する
 - マニュアル編集はタイトル、本文、URL形式を保存前に検査し、マニュアル無効化、スタッフ削除、APIキー再生成は画面内確認ダイアログを通してから実行する
 - アップデート履歴画面のRollbackボタンは未実装alertではなく、`/admin/update/rollback/:id` を呼び、既存の進捗モーダルでrollback進行を確認できる
 
@@ -362,7 +362,7 @@ strict Preflight:
 - イベント予約の拒否理由入力と友だち追加シナリオ作成名入力はブラウザ標準promptではなく共有のアプリ内入力ダイアログを使う。イベント予約URLコピーも共通copy helperへ寄せ、コピー失敗時はブラウザpromptではなく画面内エラーで選択コピーを案内する。Web全体の `prompt(` / `confirm(` / `alert(` 検索は0件
 - LIFFイベント予約/サロン予約導線の `apps/liff/src`、`apps/worker/src/client/event-booking`、`apps/worker/src/client/salon-booking` に対する `prompt(` / `confirm(` / `alert(`、raw `String(err/e)`、raw `err.message`、raw console warn/error検索は0件。LIFF起動失敗画面のBrowser smokeでは固定案内だけが表示され、`channel not found` やtoken系文字列は表示されない
 - 更新進捗モーダル/更新バナー/自動返信編集のraw error検索で、consoleへ例外オブジェクトを渡さず、保存失敗時も固定公開メッセージを表示することを確認。更新履歴/進捗モーダルの英語工程ラベルも日本語化済み
-- ログイン、リッチメニュー画像アップロードhelper、旧埋め込み予約slot取得のraw `data.error` / `body.error` / `upload failed` / console error検索は0件。ログイン接続設定未完了、自動返信必須入力、スタッフシフト未選択、自動返信/友だち追加/配信条件/イベント予約補助表示、非テキストメッセージプレビューの内部語表示も0件。Web tests、Web production build、Worker typecheck/buildで確認
+- ログイン、リッチメニュー画像アップロードhelper、旧埋め込み予約slot取得のraw `data.error` / `body.error` / `upload failed` / console error検索は0件。ログイン接続設定未完了、自動返信必須入力、スタッフシフト未選択、自動返信/友だち追加/配信条件/イベント予約/顧客統合/友だち詳細補助表示、非テキストメッセージプレビューの内部語表示も0件。Web tests、Web production build、Worker typecheck/buildで確認
 - コンソールエラーは0件
 
 ## 3. 運用ドキュメント

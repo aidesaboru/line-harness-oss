@@ -212,7 +212,7 @@ function BookingsInner() {
                     return (
                     <tr key={b.id} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="px-4 py-3 text-gray-800">
-                        {b.friend_display_name ?? b.friend_id.slice(0, 8)}
+                        {b.friend_display_name ?? '不明な友だち'}
                       </td>
                       <td className="px-4 py-3 text-gray-700 text-xs">{accountLabel}</td>
                       <td className="px-4 py-3 text-gray-700">{formatJp(b.slot_starts_at)}</td>

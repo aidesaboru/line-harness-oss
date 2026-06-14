@@ -49,7 +49,7 @@ function renderValue(value: unknown): string {
   try {
     return JSON.stringify(value)
   } catch {
-    return '[unparseable]'
+    return '表示できない値'
   }
 }
 

@@ -469,7 +469,7 @@ export default function BroadcastDetail({ broadcastId }: BroadcastDetailProps) {
                   const acc = accounts.find((a) => a.id === p.accountId)
                   return {
                     accountId: p.accountId,
-                    accountName: acc?.displayName ?? acc?.name ?? p.accountId,
+                    accountName: acc?.displayName ?? acc?.name ?? '不明なアカウント',
                     sendCount: p.sendCount,
                   }
                 })

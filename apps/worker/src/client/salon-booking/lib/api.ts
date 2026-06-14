@@ -54,7 +54,15 @@ function withLiff(path: string, ctx: SalonBookingContext): string {
 
 async function get<T>(path: string, ctx: SalonBookingContext): Promise<T> {
   const res = await fetch(withLiff(path, ctx), { headers: authHeaders(ctx) });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(text); } catch { /* keep raw */ }
+    const err = new Error(`API ${res.status}`) as Error & { status: number; body: unknown };
+    err.status = res.status;
+    err.body = parsed ?? text;
+    throw err;
+  }
   return res.json();
 }
 

@@ -69,7 +69,7 @@ export default function DateTimePicker({
           }
         }
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch(() => setError('空き枠を読み込めませんでした。時間をおいて再度お試しください。'));
     // selected は初回 mount 時の値だけ使う（毎回再マウント前提）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx, menuId, staffId, from, to, today, maxOffset]);

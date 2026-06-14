@@ -12,7 +12,7 @@ export default function MenuList({ onSelect }: { onSelect: (m: MenuItem) => void
     createApi(ctx)
       .menus()
       .then((r) => setMenus(r.menus))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch(() => setError('メニュー情報を読み込めませんでした。時間をおいて再度お試しください。'));
   }, [ctx]);
 
   if (error) {

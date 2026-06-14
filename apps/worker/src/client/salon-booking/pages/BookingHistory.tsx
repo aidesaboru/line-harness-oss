@@ -16,7 +16,7 @@ export default function BookingHistory() {
     createApi(ctx)
       .me()
       .then(setData)
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch(() => setError('予約履歴を読み込めませんでした。時間をおいて再度お試しください。'));
   }, [ctx]);
 
   if (error) {

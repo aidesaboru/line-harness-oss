@@ -22,7 +22,7 @@ export default function StaffList({
     createApi(ctx)
       .staffOf(menuId)
       .then((r) => setList(r.staff))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch(() => setError('スタッフ情報を読み込めませんでした。時間をおいて再度お試しください。'));
   }, [ctx, menuId]);
 
   if (error) {

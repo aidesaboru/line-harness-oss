@@ -161,7 +161,7 @@ export default function StaffShiftsPage() {
             <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
               <h2 className="text-sm font-semibold">曜日テンプレから一括生成</h2>
               <p className="text-xs text-gray-500 mt-1">
-                既に同じ日のシフトがあれば skip されます
+                既に同じ日のシフトがあればスキップされます
               </p>
             </div>
             <div className="p-4 space-y-2">

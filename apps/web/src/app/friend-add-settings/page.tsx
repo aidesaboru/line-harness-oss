@@ -254,7 +254,7 @@ function OrphanSection({
       <div className="px-4 py-3 border-b border-amber-200 bg-amber-50">
         <h2 className="font-semibold text-amber-900">⚠ 孤児シナリオ (削除済みアカウント所属)</h2>
         <p className="text-xs text-amber-700 mt-1">
-          所属していた LINE アカウントが削除されたシナリオです。webhook は元の line_account_id でしか発火しないため実質配信されません。残しておく理由がなければ削除推奨。
+          所属していたLINEアカウントが削除されたシナリオです。元のアカウントでしか反応しないため、実質配信されません。残しておく理由がなければ削除推奨です。
         </p>
       </div>
       <ul className="divide-y divide-gray-100">
@@ -264,7 +264,7 @@ function OrphanSection({
               <Link href={`/scenarios/detail?id=${scenario.id}`} className="block">
                 <div className="font-medium text-gray-900 truncate">{scenario.name}</div>
                 <div className="text-xs text-gray-400 mt-1">
-                  元 line_account_id: {scenario.lineAccountId} ・ 更新 {scenario.updatedAt.slice(0, 10)}
+                  元のアカウントID: {scenario.lineAccountId} ・ 更新 {scenario.updatedAt.slice(0, 10)}
                 </div>
               </Link>
             </div>
@@ -336,7 +336,7 @@ function AccountSection({
                     {scenario.name}
                     {scenario.isGlobal && (
                       <span
-                        title="このシナリオは line_account_id=NULL のため全アカウント共通で発火します"
+                        title="このシナリオは全アカウント共通で反応します"
                         className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium"
                       >
                         全アカ共通

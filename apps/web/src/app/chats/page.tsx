@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { api, fetchApi, type ChatMessageCursor } from '@/lib/api'
+import { messageTypePreview } from '@/lib/message-type-label'
 import {
   buildSupportChatRecoveryNotice,
   buildSupportChatSendCasePayload,
@@ -343,13 +344,13 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
           }
         }
         collectText(parsed)
-        return texts.slice(0, 4).join('\n') || '[Flex Message]'
-      } catch { return '[Flex Message]' }
+        return texts.slice(0, 4).join('\n') || messageTypePreview('flex')
+      } catch { return messageTypePreview('flex') }
     }
     if (msg.messageType === 'sticker') {
       return <StickerMessageImage content={msg.content} />
     }
-    return `[${msg.messageType}]`
+    return messageTypePreview(msg.messageType)
   }
 
   return (

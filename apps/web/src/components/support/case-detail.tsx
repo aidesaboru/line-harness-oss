@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import type { SupportCaseDetail, SupportCaseStatus } from '@/lib/api'
+import { textOrMessageTypePreview } from '@/lib/message-type-label'
 import {
   categoryLabel,
   categoryOptions,
@@ -608,7 +609,7 @@ export default function CaseDetail({
                       <span>{formatDateTime(message.createdAt)}</span>
                     </div>
                     <p className="whitespace-pre-wrap break-words">
-                      {message.messageType === 'text' ? message.content : `[${message.messageType}]`}
+                      {textOrMessageTypePreview(message.messageType, message.content, 400)}
                     </p>
                   </div>
                 ))}

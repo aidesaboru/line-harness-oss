@@ -420,8 +420,8 @@ export default function AutomationsPage() {
                   <div className="flex items-center gap-4 text-xs text-gray-400 mb-3">
                     <span>アクション: {automation.actions.length}件</span>
                     {sendMsgWithTpl > 0 && (
-                      <a href="/templates" className="text-blue-600 hover:underline" title="template_id 参照を含む send_message action あり">
-                        🔗 template×{sendMsgWithTpl}
+                      <a href="/templates" className="text-blue-600 hover:underline" title="テンプレートを使うメッセージ送信アクションがあります">
+                        🔗 テンプレート×{sendMsgWithTpl}
                       </a>
                     )}
                     <span>優先度: {automation.priority}</span>

@@ -91,7 +91,7 @@ export default function AutoRepliesPage() {
               <span
                 key={ea.accountId}
                 className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] bg-gray-50 text-gray-300 line-through"
-                title={`${label}: 適用外 (line_account_id 別アカ固定)`}
+                title={`${label}: 適用外。別のアカウント専用ルールです`}
               >
                 {label}
               </span>
@@ -102,7 +102,7 @@ export default function AutoRepliesPage() {
               <span
                 key={ea.accountId}
                 className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-green-100 text-green-700 font-medium"
-                title={`${label}: 返信あり (${ea.via === 'automation' ? 'automation 経由' : 'inline'})`}
+                title={`${label}: ${ea.via === 'automation' ? 'オートメーション経由で返信' : '直接返信あり'}`}
               >
                 ✓ {label}{ea.via === 'automation' && <span className="text-green-500">⚙</span>}
               </span>
@@ -113,7 +113,7 @@ export default function AutoRepliesPage() {
             <span
               key={ea.accountId}
               className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] bg-amber-50 text-amber-700"
-              title={`${label}: silent (match するが返信なし — automation rule 未登録)`}
+              title={`${label}: 返信しないルールのみ。同じキーワードのオートメーションルールが未登録です`}
             >
               ⚠ {label}
             </span>
@@ -124,18 +124,18 @@ export default function AutoRepliesPage() {
   }
 
   const renderResponseCell = (r: AutoReply) => {
-    if (r.responseType === 'silent') return <span className="text-gray-400 text-xs">silent</span>
-    if (r.responseType === 'flex') return <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-medium">📋 flex</span>
-    if (r.responseType === 'image') return <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-medium">🖼️ image</span>
-    return <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-medium">📝 text</span>
+    if (r.responseType === 'silent') return <span className="text-gray-400 text-xs">返信なし</span>
+    if (r.responseType === 'flex') return <span className="px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 text-[10px] font-medium">📋 Flex</span>
+    if (r.responseType === 'image') return <span className="px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 text-[10px] font-medium">🖼 画像</span>
+    return <span className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-700 text-[10px] font-medium">📝 テキスト</span>
   }
 
   const renderTemplateCell = (r: AutoReply) => {
-    if (!r.templateId) return <span className="text-[11px] text-gray-400 italic">(inline)</span>
+    if (!r.templateId) return <span className="text-[11px] text-gray-400 italic">直接入力</span>
     const tpl = templateById.get(r.templateId)
     return (
       <a href="/templates" className="text-blue-600 hover:underline text-xs">
-        🔗 {tpl?.name ?? `(未知 ${r.templateId.slice(0, 6)})`}
+        🔗 {tpl?.name ?? '削除済みテンプレート'}
       </a>
     )
   }
@@ -190,9 +190,9 @@ export default function AutoRepliesPage() {
       )}
 
       <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 space-y-1">
-        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ アカ名</span> 返信あり (inline) / <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ アカ名 ⚙</span> automation 経由</p>
-        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-700">⚠ アカ名</span> silent rule のみ — match するが返信しない (同 keyword の automation rule 未登録)</p>
-        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-50 text-gray-300 line-through">アカ名</span> 適用外 (line_account_id が別アカに固定)</p>
+        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ アカ名</span> 直接返信あり / <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-green-100 text-green-700">✓ アカ名 ⚙</span> オートメーション経由</p>
+        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-amber-50 text-amber-700">⚠ アカ名</span> 返信しないルールのみ。同じキーワードのオートメーションルールが未登録です。</p>
+        <p><span className="inline-flex items-center px-1.5 py-0.5 rounded bg-gray-50 text-gray-300 line-through">アカ名</span> 適用外。別のアカウント専用ルールです。</p>
       </div>
 
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
@@ -200,10 +200,10 @@ export default function AutoRepliesPage() {
           <table className="w-full min-w-[860px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">keyword</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">match</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">response</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">template</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">キーワード</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">一致条件</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">返信内容</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">テンプレート</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">適用アカウント</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase">状態</th>
                 <th className="px-4 py-3" />

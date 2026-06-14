@@ -118,14 +118,14 @@ export default function SegmentBuilder({ tags, accountId, initialConditions, onA
               <>
                 <input
                   type="text"
-                  placeholder="key"
+                  placeholder="項目名"
                   value={typeof rule.value === 'object' && rule.value !== null ? (rule.value as { key: string }).key : ''}
                   onChange={(e) => updateRule(i, { value: { key: e.target.value, value: typeof rule.value === 'object' && rule.value !== null ? (rule.value as { value: string }).value : '' } })}
                   className="text-xs border border-gray-300 rounded px-2 py-1 w-24"
                 />
                 <input
                   type="text"
-                  placeholder="value"
+                  placeholder="値"
                   value={typeof rule.value === 'object' && rule.value !== null ? (rule.value as { value: string }).value : ''}
                   onChange={(e) => updateRule(i, { value: { key: typeof rule.value === 'object' && rule.value !== null ? (rule.value as { key: string }).key : '', value: e.target.value } })}
                   className="text-xs border border-gray-300 rounded px-2 py-1 w-24"

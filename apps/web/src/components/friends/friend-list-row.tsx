@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import type { FriendListItem } from '@/lib/api'
+import { textOrMessageTypePreview } from '@/lib/message-type-label'
 import TagBadge from './tag-badge'
 
 interface Props {
@@ -104,7 +105,7 @@ export default function FriendListRow({ friend, onTagEditClick }: Props) {
         {incoming ? (
           <>
             <p className="text-xs text-gray-700 line-clamp-2 break-all">
-              {incoming.messageType === 'text' ? incoming.content : `[${incoming.messageType}]`}
+              {textOrMessageTypePreview(incoming.messageType, incoming.content)}
             </p>
             <p className="text-[10px] text-gray-400 mt-1">
               ({formatJstTimestamp(incoming.createdAt)})

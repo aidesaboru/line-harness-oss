@@ -208,7 +208,7 @@ function BookingsInner() {
                     const acct = accounts.find((a) => a.id === b.line_account_id)
                     const accountLabel = acct
                       ? `${acct.country ? acct.country + ' ' : ''}${acct.name}`
-                      : (b.line_account_id ?? '').slice(0, 8)
+                      : '不明なアカウント'
                     return (
                     <tr key={b.id} className="border-t border-gray-100 hover:bg-gray-50">
                       <td className="px-4 py-3 text-gray-800">

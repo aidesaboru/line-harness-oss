@@ -4,6 +4,7 @@ import type {
   SupportEscalationStatus,
   SupportPriority,
 } from '@/lib/api'
+import { textOrMessageTypePreview } from '../../lib/message-type-label'
 
 export const STALE_MS = 24 * 60 * 60 * 1000
 
@@ -893,7 +894,7 @@ interface ShareMessage {
 
 function formatMessageForShare(message: ShareMessage): string {
   const speaker = message.direction === 'incoming' ? '顧客' : '運営'
-  const content = message.messageType === 'text' ? message.content : `[${message.messageType}]`
+  const content = textOrMessageTypePreview(message.messageType, message.content, 220)
   return `- ${formatDateTime(message.createdAt)} ${speaker}: ${content.replace(/\n+/g, ' ').slice(0, 220)}`
 }
 

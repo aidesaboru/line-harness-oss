@@ -266,7 +266,7 @@ export default function EventForm({ accountId, eventId }: EventFormProps) {
           return (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4 space-y-4">
               <div>
-                <div className="text-sm font-medium text-blue-900 mb-2">broadcast 用テンプレ URL</div>
+                <div className="text-sm font-medium text-blue-900 mb-2">配信用テンプレートURL</div>
                 <div className="flex gap-2 items-center">
                   <input
                     readOnly
@@ -283,7 +283,7 @@ export default function EventForm({ accountId, eventId }: EventFormProps) {
                   </button>
                 </div>
                 <p className="text-xs text-blue-700 mt-2">
-                  broadcast 編集で「リンクするイベント」から選ぶと自動挿入。
+                  配信編集で「リンクするイベント」から選ぶと自動挿入。
                   {'{{liff_id}}'} は配信時に各友だちのアカに対応した値に置換されます。
                 </p>
               </div>

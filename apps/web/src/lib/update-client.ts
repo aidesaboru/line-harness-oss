@@ -74,8 +74,7 @@ export async function startUpdate(): Promise<{ updateId: string }> {
     headers: { 'x-admin-api-key': adminKey() },
   })
   if (!r.ok) {
-    const body = await r.text()
-    throw new Error(`start failed ${r.status}: ${body}`)
+    throw new Error(`start failed ${r.status}`)
   }
   return r.json() as Promise<{ updateId: string }>
 }

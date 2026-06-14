@@ -115,12 +115,12 @@ export interface UpdateHandle {
  *   8. On success: emit `complete`, status=success, `done` resolves with
  *      updateId.
  *
- * Error policy (inside `done`): catch every failure, write a stack trace
- * to `error`, emit `rollback running` with the original error message,
- * then run the rollback phase. If rollback succeeds → status=rolled_back.
- * If rollback throws too → record both errors and status=failed. Always
- * rethrow the ORIGINAL error via `done` so callers can observe it even
- * if rollback was clean.
+ * Error policy (inside `done`): catch every failure, write only a bounded
+ * error kind/status summary to `error`, emit `rollback running` with the same
+ * safe summary, then run the rollback phase. If rollback succeeds →
+ * status=rolled_back. If rollback throws too → record bounded summaries for
+ * both failures and status=failed. Always rethrow the ORIGINAL error via
+ * `done` so callers can observe it even if rollback was clean.
  */
 export async function runUpdate(opts: RunUpdateOpts): Promise<UpdateHandle> {
   const { ctx, d1, workerHealthUrl, adminUrl, liffUrl, currentWorkerBundleUrl, onEvent } = opts;
@@ -203,12 +203,12 @@ export async function runUpdate(opts: RunUpdateOpts): Promise<UpdateHandle> {
       return updateId;
     } catch (e) {
       const original = e instanceof Error ? e : new Error(String(e));
-      const originalStack = original.stack ?? String(original);
-      await setError(d1, updateId, originalStack);
+      const originalSummary = safeUpdateFailureSummary('update failed', original);
+      await setError(d1, updateId, originalSummary);
       await ev.emit({
         step: 'rollback',
         status: 'running',
-        error: original.message,
+        error: originalSummary,
       });
       try {
         const snap = await getSnapshot(d1, updateId);
@@ -232,11 +232,11 @@ export async function runUpdate(opts: RunUpdateOpts): Promise<UpdateHandle> {
           await updateStatus(d1, updateId, 'failed');
         }
       } catch (rbErr) {
-        const rbMessage = rbErr instanceof Error ? rbErr.message : String(rbErr);
+        const rollbackSummary = safeUpdateFailureSummary('rollback', rbErr);
         await setError(
           d1,
           updateId,
-          `original: ${original.message}\nrollback: ${rbMessage}`,
+          `${safeUpdateFailureSummary('original', original)}\n${rollbackSummary}`,
         );
         await updateStatus(d1, updateId, 'failed');
       }
@@ -246,4 +246,27 @@ export async function runUpdate(opts: RunUpdateOpts): Promise<UpdateHandle> {
   })();
 
   return { updateId, done };
+}
+
+function safeUpdateFailureSummary(label: string, err: unknown): string {
+  const kind = updateFailureKind(err);
+  const status = updateFailureHttpStatus(err);
+  return status ? `${label}: ${kind} HTTP ${status}` : `${label}: ${kind}`;
+}
+
+function updateFailureKind(err: unknown): string {
+  if (!(err instanceof Error)) return typeof err;
+  const name = err.name.trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name) ? name : 'Error';
+}
+
+function updateFailureHttpStatus(err: unknown): string | null {
+  const message = err instanceof Error
+    ? err.message
+    : typeof err === 'string'
+      ? err
+      : '';
+  return message.match(/\bHTTP\s+(\d{3})\b/i)?.[1]
+    ?? message.match(/\bstatus\s+(\d{3})\b/i)?.[1]
+    ?? null;
 }

@@ -33,6 +33,8 @@ interface FinalState {
   error: string | null
 }
 
+const UPDATE_FAILURE_DETAILS_MESSAGE = '詳細は安全のため画面に表示していません。Workerログと更新履歴を確認してください。'
+
 export function ProgressModal({
   updateId,
   onClose,
@@ -132,7 +134,7 @@ export function ProgressModal({
               <span>
                 {labelFor(e.step)}
                 {e.name ? ` — ${e.name}` : ''}
-                {e.error ? ` (${e.error})` : ''}
+                {e.error ? ` (${UPDATE_FAILURE_DETAILS_MESSAGE})` : ''}
               </span>
             </li>
           ))}
@@ -147,7 +149,7 @@ export function ProgressModal({
                 失敗。前バージョンに復旧済み。
                 {final.error && (
                   <span className="block text-xs mt-1 text-gray-600">
-                    {final.error}
+                    {UPDATE_FAILURE_DETAILS_MESSAGE}
                   </span>
                 )}
               </p>
@@ -157,7 +159,7 @@ export function ProgressModal({
                 失敗 + 復旧失敗。手動対応が必要です。
                 {final.error && (
                   <span className="block text-xs mt-1 text-gray-600">
-                    {final.error}
+                    {UPDATE_FAILURE_DETAILS_MESSAGE}
                   </span>
                 )}
               </p>

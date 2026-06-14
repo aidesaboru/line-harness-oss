@@ -523,7 +523,10 @@ describe('runUpdate orchestrator', () => {
     expect(rows.length).toBe(1);
     const row = (await getSnapshot(d1, rows[0].id)) as SnapshotRow;
     expect(row.status).toBe('rolled_back');
-    expect(row.error).not.toBeNull();
+    expect(row.error).toBe('update failed: Error HTTP 403');
+    expect(row.error).not.toContain('bad token');
+    expect(row.error).not.toContain(ACCOUNT_ID);
+    expect(row.error).not.toContain(API_TOKEN);
 
     // Rollback events emitted.
     expect(events.some((e) => e.step === 'rollback' && e.status === 'running')).toBe(true);
@@ -531,7 +534,8 @@ describe('runUpdate orchestrator', () => {
     const rollbackRun = events.find(
       (e) => e.step === 'rollback' && e.status === 'running',
     );
-    expect(rollbackRun.error).toBeDefined();
+    expect(rollbackRun.error).toBe('update failed: Error HTTP 403');
+    expect(rollbackRun.error).not.toContain('bad token');
   });
 
   it('apply fails (D1 migration error) → rollback runs, status = rolled_back', async () => {
@@ -640,8 +644,9 @@ describe('runUpdate orchestrator', () => {
     const rows = rawDb.prepare('SELECT id FROM update_history').all() as Array<{ id: string }>;
     const row = (await getSnapshot(d1, rows[0].id)) as SnapshotRow;
     expect(row.status).toBe('failed');
-    expect(row.error).toMatch(/original:/);
-    expect(row.error).toMatch(/rollback:/);
+    expect(row.error).toBe('original: Error HTTP 500\nrollback: Error HTTP 404');
+    expect(row.error).not.toContain('put failed');
+    expect(row.error).not.toContain(SNAPSHOT_WORKER_URL);
   });
 
   it('bundle hash mismatch (tampered) → throws via assertHashesMatch, rollback runs', async () => {

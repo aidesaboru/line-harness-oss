@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, type EventDetail, type EventSlot } from '../lib/api.js';
 
+const EVENT_CONFIRM_LOAD_ERROR = '予約内容の読み込みに失敗しました。時間をおいて再度お試しください。';
+const EVENT_BOOKING_SUBMIT_ERROR = '予約リクエストの送信に失敗しました。時間をおいて再度お試しください。';
+
 function formatJp(iso: string): string {
   return new Date(iso).toLocaleString('ja-JP', {
     year: 'numeric', month: '2-digit', day: '2-digit',
@@ -11,6 +14,22 @@ function formatJp(iso: string): string {
 
 function nanoid(): string {
   return crypto.randomUUID();
+}
+
+function getEventBookingSubmitErrorMessage(err: unknown): string {
+  const e = err as { body?: { error?: string } };
+  switch (e.body?.error) {
+    case 'slot_full': return 'すでに満員になりました。別の日時をお選びください。';
+    case 'over_friend_limit': return 'このイベントへの予約上限に達しています。';
+    case 'slot_started': return 'この枠は既に開始されています。';
+    case 'slot_inactive': return 'この枠は受付を締め切りました。';
+    case 'event_unpublished': return 'このイベントは現在受付を停止しています。';
+    case 'unauthorized':
+    case 'friend_not_found':
+      return 'LINE 認証に失敗しました。一度 LINE のトークルームに戻り、友だち追加が完了していることを確認してから再度お試しください。';
+    case 'idempotent_in_progress': return '前回のリクエストを処理中です。少しお待ちください。';
+    default: return EVENT_BOOKING_SUBMIT_ERROR;
+  }
 }
 
 export default function EventConfirm() {
@@ -46,7 +65,7 @@ export default function EventConfirm() {
         }
         setSlot(found);
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(EVENT_CONFIRM_LOAD_ERROR);
       }
     }
     void load();
@@ -65,23 +84,7 @@ export default function EventConfirm() {
       const res = await api.createEventBooking(id, { slot_id: slotId, customer_note: note || null }, idemKey);
       navigate(`/events/${id}/done?bookingId=${res.id}&status=${res.status}`);
     } catch (err) {
-      const e = err as { status?: number; body?: { error?: string } };
-      const code = e.body?.error;
-      const msg = (() => {
-        switch (code) {
-          case 'slot_full': return 'すでに満員になりました。別の日時をお選びください。';
-          case 'over_friend_limit': return 'このイベントへの予約上限に達しています。';
-          case 'slot_started': return 'この枠は既に開始されています。';
-          case 'slot_inactive': return 'この枠は受付を締め切りました。';
-          case 'event_unpublished': return 'このイベントは現在受付を停止しています。';
-          case 'unauthorized':
-          case 'friend_not_found':
-            return 'LINE 認証に失敗しました。一度 LINE のトークルームに戻り、友だち追加が完了していることを確認してから再度お試しください。';
-          case 'idempotent_in_progress': return '前回のリクエストを処理中です。少しお待ちください。';
-          default: return err instanceof Error ? err.message : String(err);
-        }
-      })();
-      setError(msg);
+      setError(getEventBookingSubmitErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

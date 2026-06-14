@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, type EventDetail, type EventSlot, type EventBookingMine } from '../lib/api.js';
 
+const EVENT_NOT_AVAILABLE_MESSAGE = 'このイベントは現在受付を停止しています、または、ご利用中の LINE アカウントでは予約できません。';
+const EVENT_LOAD_ERROR_MESSAGE = 'イベント情報の読み込みに失敗しました。時間をおいて再度お試しください。';
+
 function formatJp(iso: string): string {
   return new Date(iso).toLocaleString('ja-JP', {
     year: 'numeric',
@@ -11,6 +14,13 @@ function formatJp(iso: string): string {
     minute: '2-digit',
     weekday: 'short',
   });
+}
+
+function getEventLoadErrorMessage(err: unknown): string {
+  const status = (err as { status?: number } | undefined)?.status;
+  const bodyError = (err as { body?: { error?: string } } | undefined)?.body?.error;
+  if (status === 404 || bodyError === 'not_found') return EVENT_NOT_AVAILABLE_MESSAGE;
+  return EVENT_LOAD_ERROR_MESSAGE;
 }
 
 export default function Event() {
@@ -53,12 +63,11 @@ export default function Event() {
               (b) => b.event_id === e.id && (b.status === 'requested' || b.status === 'confirmed'),
             ),
           );
-        } catch (authErr) {
+        } catch {
           // 認証なし → 自分の予約数バッジを出さずに通常表示で続行。
-          console.warn('[event] me bookings unavailable:', authErr);
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(getEventLoadErrorMessage(err));
       } finally {
         if (!cancelled) setLoading(false);
       }

@@ -19,11 +19,24 @@ const statusLabel: Record<string, { text: string; cls: string }> = {
   no_show: { text: '不参加', cls: 'bg-red-100 text-red-700' },
 };
 
+const EVENT_BOOKINGS_LOAD_ERROR = 'イベント予約の読み込みに失敗しました。時間をおいて再度お試しください。';
+const EVENT_BOOKING_CANCEL_ERROR = 'イベント予約のキャンセルに失敗しました。時間をおいて再度お試しください。';
+
 function canCancel(b: EventBookingMine): boolean {
   if (b.status !== 'requested' && b.status !== 'confirmed') return false;
   if (b.cancel_deadline_hours_before == null) return false;
   const deadlineMs = new Date(b.slot_starts_at).getTime() - b.cancel_deadline_hours_before * 3600_000;
   return deadlineMs > Date.now();
+}
+
+function getCancelErrorMessage(err: unknown): string {
+  const e = err as { body?: { error?: string } };
+  switch (e.body?.error) {
+    case 'cancel_deadline_passed': return 'キャンセル期限を過ぎています。';
+    case 'cancel_not_allowed': return 'このイベントは LIFF からのキャンセルに対応していません。LINE で運営にご連絡ください。';
+    case 'invalid_state': return 'この予約は既にキャンセル済 / 確定外のためキャンセルできません。';
+    default: return EVENT_BOOKING_CANCEL_ERROR;
+  }
 }
 
 export default function EventBookings() {
@@ -32,6 +45,7 @@ export default function EventBookings() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<EventBookingMine | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -40,7 +54,7 @@ export default function EventBookings() {
       const res = await api.myEventBookings(tab);
       setItems(res.items);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(EVENT_BOOKINGS_LOAD_ERROR);
     } finally {
       setLoading(false);
     }
@@ -51,25 +65,16 @@ export default function EventBookings() {
   }, [refresh]);
 
   async function cancel(b: EventBookingMine) {
-    if (!confirm(`「${b.event_name}」の予約をキャンセルしますか？`)) return;
     setBusy(true);
     setError(null);
     try {
       await api.cancelMyEventBooking(b.id);
       await refresh();
     } catch (err) {
-      const e = err as { body?: { error?: string } };
-      const msg = (() => {
-        switch (e.body?.error) {
-          case 'cancel_deadline_passed': return 'キャンセル期限を過ぎています。';
-          case 'cancel_not_allowed': return 'このイベントは LIFF からのキャンセルに対応していません。LINE で運営にご連絡ください。';
-          case 'invalid_state': return 'この予約は既にキャンセル済 / 確定外のためキャンセルできません。';
-          default: return err instanceof Error ? err.message : String(err);
-        }
-      })();
-      setError(msg);
+      setError(getCancelErrorMessage(err));
     } finally {
       setBusy(false);
+      setPendingCancel(null);
     }
   }
 
@@ -119,7 +124,7 @@ export default function EventBookings() {
                 {canCancel(b) && (
                   <div className="border-t p-2 text-right">
                     <button
-                      onClick={() => cancel(b)}
+                      onClick={() => setPendingCancel(b)}
                       disabled={busy}
                       className="text-sm text-red-600 hover:underline disabled:opacity-50"
                     >
@@ -135,6 +140,34 @@ export default function EventBookings() {
       <div className="text-center mt-4">
         <Link to="/booking" className="text-xs text-gray-500 underline">サロン予約はこちら</Link>
       </div>
+      {pendingCancel && (
+        <div className="fixed inset-0 z-20 flex items-end bg-black/40 px-3 py-4 sm:items-center">
+          <div className="mx-auto w-full max-w-md rounded-lg bg-white p-4 shadow-lg">
+            <h2 className="text-base font-bold text-gray-900">予約をキャンセルしますか？</h2>
+            <p className="mt-2 text-sm leading-6 text-gray-600">
+              「{pendingCancel.event_name}」の予約をキャンセルします。この操作は運営に通知されます。
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingCancel(null)}
+                disabled={busy}
+                className="rounded border border-gray-300 px-3 py-3 text-sm font-semibold text-gray-700 disabled:opacity-50"
+              >
+                戻る
+              </button>
+              <button
+                type="button"
+                onClick={() => void cancel(pendingCancel)}
+                disabled={busy}
+                className="rounded bg-red-600 px-3 py-3 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {busy ? 'キャンセル中...' : 'キャンセルする'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -50,7 +50,15 @@ async function get<T>(path: string): Promise<T> {
   const url = new URL(`${BASE}${path}`, window.location.origin);
   url.searchParams.set('liffId', getLiffId());
   const res = await fetch(url.toString(), { headers: authHeaders() });
-  if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const text = await res.text();
+    let parsed: unknown = null;
+    try { parsed = JSON.parse(text); } catch { /* keep raw */ }
+    const err = new Error(`API ${res.status}`) as Error & { status: number; body: unknown };
+    err.status = res.status;
+    err.body = parsed ?? text;
+    throw err;
+  }
   return res.json();
 }
 

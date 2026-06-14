@@ -29,7 +29,7 @@ export default function DateTimePicker({
         for (const s of slots) (grouped[s.date] ??= []).push(s.start);
         setByDate(grouped);
       })
-      .catch((e) => setError(String(e)));
+      .catch(() => setError('空き枠の読み込みに失敗しました。時間をおいて再度お試しください。'));
   }, [menuId, staffId, from, to]);
 
   if (error) return <p className="text-red-600">{error}</p>;

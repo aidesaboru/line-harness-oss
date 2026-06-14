@@ -8,6 +8,10 @@ import './styles.css';
 
 let _root: Root | null = null;
 
+const EVENT_NOT_AVAILABLE_MESSAGE = 'このイベントは現在受付を停止しています、または、ご利用中の LINE アカウントでは予約できません。';
+const EVENT_LOAD_ERROR_MESSAGE = 'イベント情報の読み込みに失敗しました。時間をおいて再度お試しください。';
+const EVENT_BOOKING_SUBMIT_ERROR = '予約リクエストの送信に失敗しました。時間をおいて再度お試しください。';
+
 export interface EventBookingContext {
   liffId: string;
   lineUserId: string;
@@ -127,6 +131,34 @@ function uid(): string {
   return crypto.randomUUID();
 }
 
+function getEventLoadErrorMessage(err: unknown): string {
+  const status = (err as { status?: number } | undefined)?.status;
+  const bodyError = (err as { body?: { error?: string } } | undefined)?.body?.error;
+  if (status === 404 || bodyError === 'not_found') return EVENT_NOT_AVAILABLE_MESSAGE;
+  return EVENT_LOAD_ERROR_MESSAGE;
+}
+
+function getEventBookingSubmitErrorMessage(err: unknown): string {
+  const e = err as { body?: { error?: string } };
+  switch (e.body?.error) {
+    case 'slot_full': return 'すでに満員になりました。別の日時をお選びください。';
+    case 'over_friend_limit': return 'このイベントへの予約上限に達しています。';
+    case 'slot_started': return 'この枠は既に開始されています。';
+    case 'slot_inactive': return 'この枠は受付を締め切りました。';
+    case 'event_unpublished': return 'このイベントは現在受付を停止しています。';
+    case 'unauthorized':
+    case 'friend_not_found':
+      return 'LINE 認証に失敗しました。一度トークルームに戻り、友だち追加が完了していることを確認してください。';
+    case 'idempotent_in_progress': return '前回のリクエストを処理中です。少しお待ちください。';
+    case 'duplicate_friend_booking': {
+      const existing = (e.body as { existing?: { slot_starts_at?: string } } | undefined)?.existing;
+      const when = existing?.slot_starts_at ? formatJp(existing.slot_starts_at) : '';
+      return `このイベントは既に予約済みです${when ? `（${when}）` : ''}。予約履歴から確認できます。`;
+    }
+    default: return EVENT_BOOKING_SUBMIT_ERROR;
+  }
+}
+
 // ─── Loading ──────────────────────────────────────────────
 
 function Spinner() {
@@ -181,7 +213,7 @@ function EventDetailScreen({
           /* best-effort */
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(getEventLoadErrorMessage(err));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -192,15 +224,10 @@ function EventDetailScreen({
 
   if (loading) return <Spinner />;
   if (error || !event) {
-    // 404 / not_found / アカウント対象外を friendly に表示
-    const isNotFound = error?.includes('404') || error?.includes('not_found');
-    const friendly = isNotFound
-      ? 'このイベントは現在受付を停止しています、または、ご利用中の LINE アカウントでは予約できません。'
-      : (error ?? 'イベントが見つかりません');
     return (
       <div className="px-4 py-6 eb-fade-in">
         <div className="eb-card text-center">
-          <p className="text-sm text-gray-700">{friendly}</p>
+          <p className="text-sm text-gray-700">{error ?? EVENT_LOAD_ERROR_MESSAGE}</p>
         </div>
       </div>
     );
@@ -364,28 +391,7 @@ function ConfirmScreen({
       );
       onDone(res.status);
     } catch (err) {
-      const e = err as { status?: number; body?: { error?: string } };
-      const code = e.body?.error;
-      const msg = (() => {
-        switch (code) {
-          case 'slot_full': return 'すでに満員になりました。別の日時をお選びください。';
-          case 'over_friend_limit': return 'このイベントへの予約上限に達しています。';
-          case 'slot_started': return 'この枠は既に開始されています。';
-          case 'slot_inactive': return 'この枠は受付を締め切りました。';
-          case 'event_unpublished': return 'このイベントは現在受付を停止しています。';
-          case 'unauthorized':
-          case 'friend_not_found':
-            return 'LINE 認証に失敗しました。一度トークルームに戻り、友だち追加が完了していることを確認してください。';
-          case 'idempotent_in_progress': return '前回のリクエストを処理中です。少しお待ちください。';
-          case 'duplicate_friend_booking': {
-            const existing = (e.body as { existing?: { slot_starts_at?: string } } | undefined)?.existing;
-            const when = existing?.slot_starts_at ? formatJp(existing.slot_starts_at) : '';
-            return `このイベントは既に予約済みです${when ? `（${when}）` : ''}。予約履歴から確認できます。`;
-          }
-          default: return err instanceof Error ? err.message : String(err);
-        }
-      })();
-      setError(msg);
+      setError(getEventBookingSubmitErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -489,11 +495,24 @@ const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
   no_show: { text: '不参加', cls: 'bg-red-100 text-red-700' },
 };
 
+const HISTORY_LOAD_ERROR = 'イベント予約の読み込みに失敗しました。時間をおいて再度お試しください。';
+const HISTORY_CANCEL_ERROR = 'イベント予約のキャンセルに失敗しました。時間をおいて再度お試しください。';
+
 function canCancel(b: MyBooking): boolean {
   if (b.status !== 'requested' && b.status !== 'confirmed') return false;
   if (b.cancel_deadline_hours_before == null) return false;
   const deadlineMs = new Date(b.slot_starts_at).getTime() - b.cancel_deadline_hours_before * 3600_000;
   return deadlineMs > Date.now();
+}
+
+function getHistoryCancelErrorMessage(err: unknown): string {
+  const e = err as { body?: { error?: string } };
+  switch (e.body?.error) {
+    case 'cancel_deadline_passed': return 'キャンセル期限を過ぎています。';
+    case 'cancel_not_allowed': return 'このイベントは LIFF からのキャンセル不可です。LINE で運営にご連絡ください。';
+    case 'invalid_state': return 'この予約はキャンセルできない状態です。';
+    default: return HISTORY_CANCEL_ERROR;
+  }
 }
 
 function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
@@ -502,6 +521,7 @@ function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<MyBooking | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -510,7 +530,7 @@ function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
       const res = await apiGet<{ items: MyBooking[] }>(`/api/liff/events/me?tab=${tab}`, ctx);
       setItems(res.items);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(HISTORY_LOAD_ERROR);
     } finally {
       setLoading(false);
     }
@@ -522,25 +542,16 @@ function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
   }, [tab]);
 
   async function cancel(b: MyBooking) {
-    if (!confirm(`「${b.event_name}」の予約をキャンセルしますか？`)) return;
     setBusy(true);
     setError(null);
     try {
       await apiPost(`/api/liff/events/me/${b.id}/cancel`, {}, ctx);
       await refresh();
     } catch (err) {
-      const e = err as { body?: { error?: string } };
-      const msg = (() => {
-        switch (e.body?.error) {
-          case 'cancel_deadline_passed': return 'キャンセル期限を過ぎています。';
-          case 'cancel_not_allowed': return 'このイベントは LIFF からのキャンセル不可です。LINE で運営にご連絡ください。';
-          case 'invalid_state': return 'この予約はキャンセルできない状態です。';
-          default: return err instanceof Error ? err.message : String(err);
-        }
-      })();
-      setError(msg);
+      setError(getHistoryCancelErrorMessage(err));
     } finally {
       setBusy(false);
+      setPendingCancel(null);
     }
   }
 
@@ -592,7 +603,7 @@ function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
                 {canCancel(b) && (
                   <div className="border-t border-gray-100 px-3 py-2 text-right">
                     <button
-                      onClick={() => cancel(b)}
+                      onClick={() => setPendingCancel(b)}
                       disabled={busy}
                       className="text-sm text-red-600 disabled:opacity-50"
                     >
@@ -605,6 +616,34 @@ function HistoryScreen({ ctx }: { ctx: EventBookingContext }) {
           })
         )}
       </div>
+      {pendingCancel && (
+        <div className="fixed inset-0 z-30 flex items-end bg-black/40 px-4 py-5 sm:items-center">
+          <div className="eb-card mx-auto w-full max-w-md">
+            <h2 className="text-base font-bold text-gray-900">予約をキャンセルしますか？</h2>
+            <p className="mt-2 text-sm leading-6 text-gray-600">
+              「{pendingCancel.event_name}」の予約をキャンセルします。この操作は運営に通知されます。
+            </p>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingCancel(null)}
+                disabled={busy}
+                className="eb-secondary-btn"
+              >
+                戻る
+              </button>
+              <button
+                type="button"
+                onClick={() => void cancel(pendingCancel)}
+                disabled={busy}
+                className="rounded-xl bg-red-600 px-3 py-3 text-sm font-bold text-white disabled:opacity-50"
+              >
+                {busy ? 'キャンセル中...' : 'キャンセルする'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

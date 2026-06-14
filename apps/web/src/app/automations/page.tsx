@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 type AutomationEventType = "friend_add" | "tag_change" | "score_threshold" | "cv_fire" | "message_received" | "calendar_booked"
 
@@ -104,6 +105,7 @@ export default function AutomationsPage() {
   const [form, setForm] = useState<CreateFormState>({ ...initialForm })
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const loadAutomations = useCallback(async () => {
     setLoading(true)
@@ -219,7 +221,13 @@ export default function AutomationsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このオートメーションを削除してもよいですか？')) return
+    const ok = await requestConfirm({
+      title: 'オートメーションを削除しますか？',
+      message: 'このルールの自動処理が止まります。関連するタグ付与やシナリオ開始の影響を確認してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.automations.delete(id)
       if (!res.success) {
@@ -435,6 +443,7 @@ export default function AutomationsPage() {
         </div>
       )}
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

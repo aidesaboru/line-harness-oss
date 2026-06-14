@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface ScoringRule {
   id: string
@@ -57,6 +58,7 @@ export default function ScoringPage() {
   })
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const loadRules = useCallback(async () => {
     setLoading(true)
@@ -130,7 +132,13 @@ export default function ScoringPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このスコアリングルールを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: 'スコアリングルールを削除しますか？',
+      message: 'このルールによる今後のスコア付与が止まります。既存スコアや履歴への影響を確認してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.scoring.deleteRule(id)
       if (!res.success) {
@@ -300,6 +308,7 @@ export default function ScoringPage() {
         </div>
       )}
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

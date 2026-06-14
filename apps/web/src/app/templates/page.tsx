@@ -6,6 +6,7 @@ import Header from '@/components/layout/header'
 import FlexPreviewComponent from '@/components/flex-preview'
 import CcPromptButton from '@/components/cc-prompt-button'
 import ImageUploader from '@/components/shared/image-uploader'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface Template {
   id: string
@@ -99,6 +100,7 @@ export default function TemplatesPage() {
   const [editContent, setEditContent] = useState<string | null>(null)
   const [editName, setEditName] = useState<string | null>(null)
   const [savingEdit, setSavingEdit] = useState(false)
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -218,11 +220,15 @@ export default function TemplatesPage() {
   }
 
   const handleDelete = async (id: string, usageCount: number) => {
-    if (usageCount > 0) {
-      if (!confirm(`このテンプレートは ${usageCount} 箇所で使用されています。削除すると参照がクリアされます。続行しますか？`)) return
-    } else {
-      if (!confirm('このテンプレートを削除しますか？')) return
-    }
+    const ok = await requestConfirm({
+      title: 'テンプレートを削除しますか？',
+      message: usageCount > 0
+        ? `このテンプレートは ${usageCount} 箇所で使用されています。削除すると参照がクリアされます。`
+        : 'このテンプレートを削除します。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.templates.delete(id)
       if (!res.success) {
@@ -618,6 +624,7 @@ export default function TemplatesPage() {
       )}
 
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

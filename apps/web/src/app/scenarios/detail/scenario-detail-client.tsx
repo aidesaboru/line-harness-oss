@@ -14,6 +14,7 @@ import ScheduleInput, {
   type ScheduleValue,
 } from '@/components/scenarios/schedule-input'
 import BulkPreviewModal from '@/components/scenarios/bulk-preview-modal'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 type ScenarioWithSteps = Scenario & { steps: ScenarioStep[] }
 
@@ -163,6 +164,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   const [stats, setStats] = useState<ScenarioStats | null>(null)
   const [templates, setTemplates] = useState<TemplateOpt[]>([])
   const [tags, setTags] = useState<TagOpt[]>([])
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const deliveryMode: DeliveryMode = (scenario?.deliveryMode ?? 'relative') as DeliveryMode
 
@@ -358,7 +360,13 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
   }
 
   const handleDeleteStep = async (stepId: string) => {
-    if (!confirm('このステップを削除してもよいですか？')) return
+    const ok = await requestConfirm({
+      title: 'シナリオステップを削除しますか？',
+      message: 'この配信ステップを削除します。前後の配信順と条件を確認してから実行してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.scenarios.deleteStep(id, stepId)
       if (!res.success) {
@@ -838,6 +846,7 @@ export default function ScenarioDetailClient({ scenarioId }: { scenarioId: strin
         scenarioId={id}
         onClose={() => setPreviewOpen(false)}
       />
+      {confirmDialog}
     </div>
   )
 }

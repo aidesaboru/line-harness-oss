@@ -1,3 +1,6 @@
+'use client'
+
+import { useConfirmDialog } from '@/components/support/support-ui'
 import Link from 'next/link'
 import type { Scenario, DeliveryMode } from '@line-crm/shared'
 
@@ -32,6 +35,18 @@ interface ScenarioListProps {
 }
 
 export default function ScenarioList({ scenarios, onToggleActive, onDelete, loading }: ScenarioListProps) {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
+
+  const handleDeleteClick = async (id: string, name: string) => {
+    const ok = await requestConfirm({
+      title: 'シナリオを削除しますか？',
+      message: `「${name}」を削除します。配信ステップと手動登録の影響を確認してください。`,
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (ok) onDelete(id)
+  }
+
   if (scenarios.length === 0) {
     return (
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
@@ -105,11 +120,7 @@ export default function ScenarioList({ scenarios, onToggleActive, onDelete, load
               {scenario.isActive ? '無効にする' : '有効にする'}
             </button>
             <button
-              onClick={() => {
-                if (confirm(`「${scenario.name}」を削除してもよいですか？`)) {
-                  onDelete(scenario.id)
-                }
-              }}
+              onClick={() => { void handleDeleteClick(scenario.id, scenario.name) }}
               disabled={loading}
               className="flex-1 text-xs font-medium text-red-500 hover:text-red-700 py-1 min-h-[44px] flex items-center justify-center rounded-md hover:bg-red-50 transition-colors disabled:opacity-40"
             >
@@ -118,6 +129,7 @@ export default function ScenarioList({ scenarios, onToggleActive, onDelete, load
           </div>
         </div>
       ))}
+      {confirmDialog}
     </div>
   )
 }

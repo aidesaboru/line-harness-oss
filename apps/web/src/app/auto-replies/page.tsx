@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import EditDialog, { type AutoReplyDraft } from '@/components/auto-replies/edit-dialog'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface EffectiveAccount {
   accountId: string
@@ -34,6 +35,8 @@ interface TemplateLite {
 }
 
 const matchTypeLabel: Record<'exact' | 'contains', string> = { exact: '完全一致', contains: '包含' }
+const AUTO_REPLY_LOAD_ERROR_MESSAGE = '自動返信ルールの読み込みに失敗しました。もう一度お試しください。'
+const AUTO_REPLY_DELETE_ERROR_MESSAGE = '自動返信ルールの削除に失敗しました。もう一度お試しください。'
 
 export default function AutoRepliesPage() {
   const { selectedAccountId, accounts } = useAccount()
@@ -42,6 +45,7 @@ export default function AutoRepliesPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [editing, setEditing] = useState<AutoReplyDraft | null>(null)
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -59,7 +63,7 @@ export default function AutoRepliesPage() {
         messageContent: t.messageContent,
       })))
     } catch {
-      setError('読み込みに失敗しました')
+      setError(AUTO_REPLY_LOAD_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -137,12 +141,22 @@ export default function AutoRepliesPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このルールを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: '自動返信ルールを削除しますか？',
+      message: 'このキーワードに対する自動返信が止まります。関連するオートメーションとの役割分担を確認してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
-      await api.autoReplies.delete(id)
+      const res = await api.autoReplies.delete(id)
+      if (!res.success) {
+        setError(AUTO_REPLY_DELETE_ERROR_MESSAGE)
+        return
+      }
       load()
     } catch {
-      setError('削除に失敗しました')
+      setError(AUTO_REPLY_DELETE_ERROR_MESSAGE)
     }
   }
 
@@ -252,6 +266,7 @@ export default function AutoRepliesPage() {
           onSaved={() => { setEditing(null); load() }}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

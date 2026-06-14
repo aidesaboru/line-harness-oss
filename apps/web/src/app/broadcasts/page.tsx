@@ -9,6 +9,7 @@ import Header from '@/components/layout/header'
 import BroadcastForm from '@/components/broadcasts/broadcast-form'
 import BroadcastDetail from '@/components/broadcasts/broadcast-detail'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 const ccPrompts = [
   {
@@ -78,6 +79,7 @@ function BroadcastList() {
   const [insights, setInsights] = useState<Record<string, BroadcastInsight>>({})
   const [fetchingInsight, setFetchingInsight] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<BroadcastTab>('all')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const loadInsight = async (id: string) => {
     try {
@@ -134,7 +136,13 @@ function BroadcastList() {
   }, [broadcasts])
 
   const handleDelete = async (id: string) => {
-    if (!confirm('この配信を削除してもよいですか？')) return
+    const ok = await requestConfirm({
+      title: '配信を削除しますか？',
+      message: '下書きまたは予約中の配信を削除します。予約配信の場合は送信されなくなります。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.broadcasts.delete(id)
       if (!res.success) {
@@ -393,6 +401,7 @@ function BroadcastList() {
       )}
 
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

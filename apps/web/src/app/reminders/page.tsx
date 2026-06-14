@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface Reminder {
   id: string
@@ -115,6 +116,7 @@ export default function RemindersPage() {
   })
   const [stepSaving, setStepSaving] = useState(false)
   const [stepFormError, setStepFormError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const loadReminders = useCallback(async () => {
     setLoading(true)
@@ -214,7 +216,13 @@ export default function RemindersPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このリマインダーを削除してもよいですか？')) return
+    const ok = await requestConfirm({
+      title: 'リマインダーを削除しますか？',
+      message: 'このリマインダーと配信ステップを削除します。今後の自動リマインドは送られなくなります。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.reminders.delete(id)
       if (!res.success) {
@@ -261,7 +269,13 @@ export default function RemindersPage() {
 
   const handleDeleteStep = async (stepId: string) => {
     if (!expandedId) return
-    if (!confirm('このステップを削除してもよいですか？')) return
+    const ok = await requestConfirm({
+      title: 'リマインダーステップを削除しますか？',
+      message: 'このタイミングの配信だけを削除します。ほかのステップは残ります。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.reminders.deleteStep(expandedId, stepId)
       if (!res.success) {
@@ -555,6 +569,7 @@ export default function RemindersPage() {
         </div>
       )}
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

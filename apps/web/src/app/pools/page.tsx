@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import Header from '@/components/layout/header'
+import { useConfirmDialog } from '@/components/support/support-ui'
 import type { TrafficPool, PoolAccount, LineAccount } from '@line-crm/shared'
 
 const POOLS_LOAD_ERROR_MESSAGE = 'プール情報の読み込みに失敗しました。もう一度お試しください。'
@@ -114,6 +115,7 @@ function PoolCard({
   const publicUrl = `${apiBase}/pool/${pool.slug}`
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const onCopy = async () => {
     try {
       await navigator.clipboard.writeText(publicUrl)
@@ -125,7 +127,13 @@ function PoolCard({
   }
   const onDelete = async () => {
     if (isMain) return
-    if (!confirm(`プール「${pool.name}」を削除しますか?`)) return
+    const ok = await requestConfirm({
+      title: 'プールを削除しますか？',
+      message: `「${pool.name}」を削除します。公開URLや流入リンクの利用状況を確認してから実行してください。`,
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     setError('')
     try {
       const res = await api.pools.delete(pool.id)
@@ -173,6 +181,7 @@ function PoolCard({
         </div>
       )}
       <PoolAccountList poolId={pool.id} accounts={accounts} onChange={onChange} />
+      {confirmDialog}
     </div>
   )
 }
@@ -188,6 +197,7 @@ function PoolAccountList({
 }) {
   const [members, setMembers] = useState<PoolAccount[]>([])
   const [error, setError] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const reload = async () => {
     setError('')
@@ -227,7 +237,13 @@ function PoolAccountList({
   }
 
   const onRemove = async (poolAccountId: string) => {
-    if (!confirm('このアカウントをプールから外しますか?')) return
+    const ok = await requestConfirm({
+      title: '所属アカウントを外しますか？',
+      message: 'このプール経由の新規流入先から外れます。既存の友だちや履歴は削除されません。',
+      confirmLabel: '外す',
+      tone: 'warning',
+    })
+    if (!ok) return
     setError('')
     try {
       const res = await api.pools.accounts.remove(poolId, poolAccountId)
@@ -292,6 +308,7 @@ function PoolAccountList({
           </select>
         </div>
       )}
+      {confirmDialog}
     </div>
   )
 }

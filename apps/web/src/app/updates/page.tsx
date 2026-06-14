@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useConfirmDialog } from '@/components/support/support-ui'
 import { ProgressModal } from '@/components/update/progress-modal'
 import { startRollback } from '@/lib/update-client'
 
@@ -34,6 +35,7 @@ export default function UpdatesPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [rollbackUpdateId, setRollbackUpdateId] = useState<string | null>(null)
   const [rollingBackId, setRollingBackId] = useState<string | null>(null)
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   async function loadHistory() {
     try {
@@ -49,9 +51,13 @@ export default function UpdatesPage() {
   }, [])
 
   async function onRollback(row: Row) {
-    if (!confirm(`v${row.to_version} から v${row.from_version} へ戻しますか？`)) {
-      return
-    }
+    const ok = await requestConfirm({
+      title: 'Rollbackを開始しますか？',
+      message: `v${row.to_version} から v${row.from_version} へ戻します。更新中は進捗モーダルを閉じずに確認してください。`,
+      confirmLabel: 'Rollback開始',
+      tone: 'warning',
+    })
+    if (!ok) return
     setActionError(null)
     setRollingBackId(row.id)
     try {
@@ -145,6 +151,7 @@ export default function UpdatesPage() {
           }}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

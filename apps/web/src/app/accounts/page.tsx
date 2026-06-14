@@ -14,6 +14,7 @@ import {
 } from '@/components/accounts/account-form-fields'
 import AccountSetupUrls from '@/components/accounts/account-setup-urls'
 import AccountEditModal from '@/components/accounts/account-edit-modal'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface LineAccountListItem {
   id: string
@@ -69,6 +70,7 @@ export default function AccountsPage() {
   const [createError, setCreateError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [justCreated, setJustCreated] = useState<{ liffId: string | null } | null>(null)
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const load = async () => {
     setLoading(true)
@@ -127,7 +129,13 @@ export default function AccountsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このLINEアカウントを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: 'LINEアカウントを削除しますか？',
+      message: 'この操作は元に戻せません。関連する設定や流入先を確認してから削除してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     setError('')
     try {
       const res = await api.lineAccounts.delete(id)
@@ -385,6 +393,7 @@ export default function AccountsPage() {
           onSaved={load}
         />
       )}
+      {confirmDialog}
     </div>
   )
 }

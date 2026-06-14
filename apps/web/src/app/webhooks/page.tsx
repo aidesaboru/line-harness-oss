@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 import type { IncomingWebhook, OutgoingWebhook } from '@line-crm/shared'
 
 type Tab = 'incoming' | 'outgoing'
@@ -76,6 +77,7 @@ export default function WebhooksPage() {
     | null
   >(null)
   const [rotateSecretValue, setRotateSecretValue] = useState('')
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -133,7 +135,13 @@ export default function WebhooksPage() {
   }
 
   const handleDeleteIncoming = async (id: string) => {
-    if (!confirm('この受信Webhookを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: '受信Webhookを削除しますか？',
+      message: '外部システムからの受信URLが使えなくなります。連携先の設定を確認してから削除してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.webhooks.incoming.delete(id)
       if (!res.success) {
@@ -147,7 +155,13 @@ export default function WebhooksPage() {
   }
 
   const handleDeleteOutgoing = async (id: string) => {
-    if (!confirm('この送信Webhookを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: '送信Webhookを削除しますか？',
+      message: 'イベント通知先への送信が止まります。連携先で不要になっていることを確認してから削除してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
       const res = await api.webhooks.outgoing.delete(id)
       if (!res.success) {
@@ -277,6 +291,7 @@ export default function WebhooksPage() {
           </button>
         }
       />
+      {confirmDialog}
 
       {/* Rotate-secret modal — used to recover legacy webhooks or rotate. */}
       {rotateTarget && (

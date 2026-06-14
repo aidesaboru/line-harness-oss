@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import type { ConversionPoint } from '@line-crm/shared'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 interface ConversionReportItem {
   conversionPointId: string
@@ -34,6 +35,7 @@ const ccPrompts = [
 ]
 
 export default function ConversionsPage() {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const [points, setPoints] = useState<ConversionPoint[]>([])
   const [report, setReport] = useState<ConversionReportItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -71,7 +73,13 @@ export default function ConversionsPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!confirm('このCVポイントを削除しますか？')) return
+    const ok = await requestConfirm({
+      title: 'CVポイントを削除しますか？',
+      message: '削除すると、このCVポイント設定は元に戻せません。過去の計測レポートへの影響も確認してから実行してください。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     await api.conversions.deletePoint(id)
     load()
   }
@@ -221,6 +229,7 @@ export default function ConversionsPage() {
         </div>
       )}
       <CcPromptButton prompts={ccPrompts} />
+      {confirmDialog}
     </div>
   )
 }

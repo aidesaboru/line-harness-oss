@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Header from '@/components/layout/header'
 import { bookingApi, type BookingRequest } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
   { key: 'requested', label: '未承認' },
@@ -57,6 +58,7 @@ function formatJpDateTime(iso: string): string {
 }
 
 export default function BookingsPage() {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const { selectedAccountId } = useAccount()
   const [tab, setTab] = useState<string>('requested')
   const [items, setItems] = useState<BookingRequest[]>([])
@@ -86,7 +88,13 @@ export default function BookingsPage() {
 
   async function handleDecide(id: string, action: 'approve' | 'reject' | 'cancel' | 'no_show' | 'complete') {
     if (!selectedAccountId) return
-    if (!confirm(`この予約を「${actionLabel[action]}」しますか？`)) return
+    const ok = await requestConfirm({
+      title: `予約を「${actionLabel[action]}」にしますか？`,
+      message: '予約ステータスを更新します。顧客対応や通知内容に影響するため、対象の予約を確認してから実行してください。',
+      confirmLabel: actionLabel[action],
+      tone: action === 'reject' || action === 'cancel' || action === 'no_show' ? 'warning' : 'default',
+    })
+    if (!ok) return
     try {
       await bookingApi.decideRequest(selectedAccountId, id, action)
       await load()
@@ -177,6 +185,7 @@ export default function BookingsPage() {
           </div>
         </div>
       )}
+      {confirmDialog}
     </div>
   )
 }

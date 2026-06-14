@@ -6,6 +6,7 @@ import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { eventsApi, type EventBookingItem, type EventDetail } from '@/lib/api'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
   { key: 'requested', label: '承認待ち' },
@@ -42,6 +43,7 @@ function formatJp(iso: string): string {
 }
 
 function BookingsInner() {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const params = useSearchParams()
   const eventId = params.get('id')
   const { selectedAccountId, accounts } = useAccount()
@@ -101,7 +103,13 @@ function BookingsInner() {
 
   async function adminCancel(id: string) {
     if (!selectedAccountId || !eventId) return
-    if (!confirm('運営側でキャンセルしますか？友だちにLINE通知が送られます。')) return
+    const ok = await requestConfirm({
+      title: '運営側でキャンセルしますか？',
+      message: '友だちにLINE通知が送られます。対象の予約を確認してから実行してください。',
+      confirmLabel: 'キャンセル実行',
+      tone: 'warning',
+    })
+    if (!ok) return
     setBusy(true)
     try {
       await eventsApi.adminCancelBooking(selectedAccountId, eventId, id)
@@ -260,6 +268,7 @@ function BookingsInner() {
           )}
         </div>
       </div>
+      {confirmDialog}
     </>
   )
 }

@@ -71,6 +71,11 @@ const initialForm: CreateFormState = {
   priority: 0,
 }
 
+const AUTOMATION_LIST_ERROR_MESSAGE = 'オートメーション一覧の読み込みに失敗しました。もう一度お試しください。'
+const AUTOMATION_CREATE_ERROR_MESSAGE = 'オートメーションの作成に失敗しました。もう一度お試しください。'
+const AUTOMATION_STATUS_ERROR_MESSAGE = 'オートメーションのステータス変更に失敗しました。もう一度お試しください。'
+const AUTOMATION_DELETE_ERROR_MESSAGE = 'オートメーションの削除に失敗しました。もう一度お試しください。'
+
 const ccPrompts = [
   {
     title: 'オートメーションルール作成',
@@ -108,10 +113,12 @@ export default function AutomationsPage() {
       if (res.success) {
         setAutomations(res.data)
       } else {
-        setError(res.error)
+        setAutomations([])
+        setError(AUTOMATION_LIST_ERROR_MESSAGE)
       }
     } catch {
-      setError('オートメーションの読み込みに失敗しました。もう一度お試しください。')
+      setAutomations([])
+      setError(AUTOMATION_LIST_ERROR_MESSAGE)
     } finally {
       setLoading(false)
     }
@@ -131,11 +138,13 @@ export default function AutomationsPage() {
         if (res.success) {
           setAutomations(res.data)
         } else {
-          setError(res.error)
+          setAutomations([])
+          setError(AUTOMATION_LIST_ERROR_MESSAGE)
         }
       } catch {
         if (cancelled) return
-        setError('オートメーションの読み込みに失敗しました。もう一度お試しください。')
+        setAutomations([])
+        setError(AUTOMATION_LIST_ERROR_MESSAGE)
       } finally {
         if (!cancelled) {
           setLoading(false)
@@ -187,10 +196,10 @@ export default function AutomationsPage() {
         setForm({ ...initialForm })
         loadAutomations()
       } else {
-        setFormError(res.error)
+        setFormError(AUTOMATION_CREATE_ERROR_MESSAGE)
       }
     } catch {
-      setFormError('作成に失敗しました')
+      setFormError(AUTOMATION_CREATE_ERROR_MESSAGE)
     } finally {
       setSaving(false)
     }
@@ -198,20 +207,28 @@ export default function AutomationsPage() {
 
   const handleToggleActive = async (id: string, current: boolean) => {
     try {
-      await api.automations.update(id, { isActive: !current })
+      const res = await api.automations.update(id, { isActive: !current })
+      if (!res.success) {
+        setError(AUTOMATION_STATUS_ERROR_MESSAGE)
+        return
+      }
       loadAutomations()
     } catch {
-      setError('ステータスの変更に失敗しました')
+      setError(AUTOMATION_STATUS_ERROR_MESSAGE)
     }
   }
 
   const handleDelete = async (id: string) => {
     if (!confirm('このオートメーションを削除してもよいですか？')) return
     try {
-      await api.automations.delete(id)
+      const res = await api.automations.delete(id)
+      if (!res.success) {
+        setError(AUTOMATION_DELETE_ERROR_MESSAGE)
+        return
+      }
       loadAutomations()
     } catch {
-      setError('削除に失敗しました')
+      setError(AUTOMATION_DELETE_ERROR_MESSAGE)
     }
   }
 

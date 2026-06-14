@@ -82,7 +82,7 @@ export default function StaffShiftsPage() {
     // staff_id 不在ガード: 古いブックマークや URL 手編集での POST `/staff//shifts/generate`
     // を防ぐ。エラーを表示してユーザーに staff 一覧へ戻るよう促す。
     if (!id) {
-      setError('staff_id が指定されていません。スタッフ一覧から開き直してください。')
+      setError('スタッフが指定されていません。スタッフ一覧から開き直してください。')
       return
     }
     setGenerating(true)
@@ -148,7 +148,7 @@ export default function StaffShiftsPage() {
         </div>
       ) : !id ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center text-sm text-gray-500">
-          staff_id が指定されていません。
+          スタッフが指定されていません。
           <a href="/booking/staff" className="ml-1 text-blue-600 underline">
             スタッフ一覧
           </a>

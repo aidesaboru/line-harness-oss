@@ -52,9 +52,9 @@ export default function UpdatesPage() {
 
   async function onRollback(row: Row) {
     const ok = await requestConfirm({
-      title: 'Rollbackを開始しますか？',
+      title: 'ロールバックを開始しますか？',
       message: `v${row.to_version} から v${row.from_version} へ戻します。更新中は進捗モーダルを閉じずに確認してください。`,
-      confirmLabel: 'Rollback開始',
+      confirmLabel: 'ロールバック開始',
       tone: 'warning',
     })
     if (!ok) return
@@ -64,7 +64,7 @@ export default function UpdatesPage() {
       const result = await startRollback(row.id)
       setRollbackUpdateId(result.updateId)
     } catch {
-      setActionError('Rollbackを開始できませんでした。時間をおいて再試行してください。')
+      setActionError('ロールバックを開始できませんでした。時間をおいて再試行してください。')
     } finally {
       setRollingBackId(null)
     }
@@ -92,9 +92,9 @@ export default function UpdatesPage() {
             <thead className="text-left text-gray-600 border-b">
               <tr>
                 <th className="py-2 pr-4">開始</th>
-                <th className="py-2 pr-4">From → To</th>
-                <th className="py-2 pr-4">Status</th>
-                <th className="py-2">Rollback</th>
+                <th className="py-2 pr-4">更新前 → 更新後</th>
+                <th className="py-2 pr-4">状態</th>
+                <th className="py-2">ロールバック</th>
               </tr>
             </thead>
             <tbody>
@@ -116,7 +116,7 @@ export default function UpdatesPage() {
                     <span
                       className={`text-xs px-2 py-0.5 rounded ${statusClass(r.status)}`}
                     >
-                      {r.status}
+                      {statusLabel(r.status)}
                     </span>
                   </td>
                   <td className="py-2">
@@ -130,7 +130,7 @@ export default function UpdatesPage() {
                         disabled={rollingBackId === r.id}
                         className="underline text-blue-600 text-xs disabled:text-gray-400 disabled:no-underline"
                       >
-                        {rollingBackId === r.id ? 'Starting...' : 'Rollback'}
+                        {rollingBackId === r.id ? '開始中...' : 'ロールバック'}
                       </button>
                     ) : (
                       <span className="text-gray-400 text-xs">—</span>
@@ -162,4 +162,12 @@ function statusClass(s: string): string {
   if (s === 'failed') return 'bg-red-100 text-red-800'
   if (s === 'running') return 'bg-blue-100 text-blue-800'
   return 'bg-gray-100 text-gray-800'
+}
+
+function statusLabel(s: string): string {
+  if (s === 'success') return '成功'
+  if (s === 'rolled_back') return 'ロールバック済み'
+  if (s === 'failed') return '失敗'
+  if (s === 'running') return '進行中'
+  return s
 }

@@ -47,8 +47,8 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
   const imageTemplates = templates.filter((t) => t.messageType === 'image')
 
   const handleSave = async () => {
-    if (!keyword.trim()) { setError('keyword を入力してください'); return }
-    if (mode === 'template' && !templateId) { setError('template を選んでください'); return }
+    if (!keyword.trim()) { setError('キーワードを入力してください'); return }
+    if (mode === 'template' && !templateId) { setError('テンプレートを選んでください'); return }
     if ((mode === 'inline-text' || mode === 'inline-flex' || mode === 'inline-image') && !responseContent.trim()) {
       setError('内容を入力してください'); return
     }
@@ -109,7 +109,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
         </div>
         <div className="p-5 space-y-4">
           <div>
-            <label className="block text-xs text-gray-600 mb-1">keyword</label>
+            <label className="block text-xs text-gray-600 mb-1">キーワード</label>
             <input
               type="text"
               value={keyword}
@@ -137,11 +137,11 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
             <label className="block text-xs text-gray-600 mb-1">応答方法</label>
             <div className="flex flex-wrap gap-2">
               {([
-                { key: 'silent', label: 'silent (返信なし)' },
+                { key: 'silent', label: '返信しない' },
                 { key: 'template', label: 'テンプレートから' },
-                { key: 'inline-text', label: 'テキスト直書き' },
-                { key: 'inline-flex', label: 'Flex JSON 直書き' },
-                { key: 'inline-image', label: '画像 (image JSON)' },
+                { key: 'inline-text', label: 'テキスト入力' },
+                { key: 'inline-flex', label: 'Flex JSON入力' },
+                { key: 'inline-image', label: '画像を指定' },
               ] as const).map(({ key, label }) => (
                 <button
                   key={key}
@@ -156,7 +156,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
           </div>
           {mode === 'template' && (
             <div>
-              <label className="block text-xs text-gray-600 mb-1">template</label>
+              <label className="block text-xs text-gray-600 mb-1">テンプレート</label>
               <select
                 value={templateId ?? ''}
                 onChange={(e) => setTemplateId(e.target.value || null)}
@@ -187,7 +187,7 @@ export default function EditDialog({ draft, templates, onClose, onSaved }: Props
               </select>
               {templates.length === 0 && (
                 <p className="text-[11px] text-amber-600 mt-1">
-                  テンプレートがありません。<a href="/templates" className="underline">/templates</a> で作成してください。
+                  テンプレートがありません。<a href="/templates" className="underline">テンプレート管理</a> で作成してください。
                 </p>
               )}
             </div>

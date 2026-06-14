@@ -18,7 +18,7 @@ export default function LoginPage() {
     try {
       const apiUrl = process.env.NEXT_PUBLIC_API_URL
       if (!apiUrl) {
-        setError('NEXT_PUBLIC_API_URL is not set in build env')
+        setError('ログイン画面の接続設定が未完了です。管理者に確認してください。')
         setLoading(false)
         return
       }

@@ -185,13 +185,13 @@ function iconFor(s: UpdateEvent['status']): string {
 
 function labelFor(step: UpdateEvent['step']): string {
   const map: Record<UpdateEvent['step'], string> = {
-    preflight: 'Pre-flight',
-    migration: 'Migration',
-    worker: 'Worker デプロイ',
-    admin: 'Admin デプロイ',
-    liff: 'LIFF デプロイ',
+    preflight: '事前確認',
+    migration: 'データ移行',
+    worker: 'Workerデプロイ',
+    admin: '管理画面デプロイ',
+    liff: 'LIFFデプロイ',
     verify: 'ヘルスチェック',
-    rollback: 'Rollback',
+    rollback: 'ロールバック',
     complete: '完了',
   }
   return map[step] ?? step

@@ -46,15 +46,7 @@ export default function LoginPage() {
       } else if (res.status === 401) {
         setError('APIキーが正しくありません')
       } else {
-        // Surface topology / configuration errors (e.g. cross-site cookie guard).
-        let message = 'ログインに失敗しました'
-        try {
-          const data = await res.json()
-          if (data?.error) message = data.error
-        } catch {
-          // keep default message
-        }
-        setError(message)
+        setError('ログインに失敗しました。設定を確認して時間をおいて再度お試しください。')
       }
     } catch {
       setError('接続に失敗しました')

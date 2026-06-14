@@ -1460,7 +1460,7 @@ export const api = {
         size: 'large' | 'compact';
       }>;
       if (!body.success) {
-        throw new Error(body.error ?? `upload failed: ${res.status}`);
+        throw new Error('リッチメニュー画像のアップロードに失敗しました。もう一度お試しください。');
       }
       return body;
     },

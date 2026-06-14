@@ -67,12 +67,6 @@ function apiCall(path: string, options?: RequestInit): Promise<Response> {
   });
 }
 
-function bookingClientErrorKind(err: unknown): string {
-  if (err instanceof TypeError) return 'network_error';
-  if (err instanceof Error) return err.name || 'error';
-  return typeof err;
-}
-
 function formatTime(isoString: string): string {
   const d = new Date(isoString);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
@@ -380,7 +374,6 @@ async function fetchSlots(date: string): Promise<void> {
     state.slots = json.data;
   } catch (err) {
     state.slots = [];
-    console.error(`fetchSlots error: ${bookingClientErrorKind(err)}`);
   } finally {
     state.loading = false;
     render();

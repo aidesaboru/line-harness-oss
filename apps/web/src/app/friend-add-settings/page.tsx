@@ -7,6 +7,7 @@ import type { Scenario, LineAccount } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
+import { useTextInputDialog } from '@/components/support/support-ui'
 
 type ScenarioWithCount = Scenario & {
   stepCount?: number
@@ -28,6 +29,7 @@ const FRIEND_ADD_UPDATE_ERROR_MESSAGE = '友だち追加シナリオの更新に
 
 export default function FriendAddSettingsPage() {
   const router = useRouter()
+  const { requestTextInput, textInputDialog } = useTextInputDialog()
   const { setSelectedAccountId } = useAccount()
   const [rows, setRows] = useState<AccountRow[]>([])
   const [orphanScenarios, setOrphanScenarios] = useState<ScenarioWithCount[]>([])
@@ -119,10 +121,16 @@ export default function FriendAddSettingsPage() {
   }
 
   const handleCreateForAccount = async (accountId: string, accountName: string) => {
-    const name = window.prompt(
-      `${accountName} の friend_add シナリオの名前を入力してください`,
-      `${accountName} ウェルカム`,
-    )
+    const name = await requestTextInput({
+      title: '友だち追加シナリオを作成',
+      message: `${accountName} の friend_add シナリオ名を入力してください。`,
+      initialValue: `${accountName} ウェルカム`,
+      placeholder: '例: ウェルカム配信',
+      confirmLabel: '作成',
+      required: true,
+      requiredMessage: 'シナリオ名を入力してください。',
+      maxLength: 255,
+    })
     if (!name || !name.trim()) return
 
     setError('')
@@ -227,6 +235,7 @@ export default function FriendAddSettingsPage() {
           </>
         )}
       </div>
+      {textInputDialog}
     </div>
   )
 }

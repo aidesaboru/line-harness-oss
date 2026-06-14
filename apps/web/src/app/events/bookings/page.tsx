@@ -6,7 +6,7 @@ import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { eventsApi, type EventBookingItem, type EventDetail } from '@/lib/api'
-import { useConfirmDialog } from '@/components/support/support-ui'
+import { useConfirmDialog, useTextInputDialog } from '@/components/support/support-ui'
 
 const STATUS_TABS: Array<{ key: string; label: string }> = [
   { key: 'requested', label: '承認待ち' },
@@ -44,6 +44,7 @@ function formatJp(iso: string): string {
 
 function BookingsInner() {
   const { requestConfirm, confirmDialog } = useConfirmDialog()
+  const { requestTextInput, textInputDialog } = useTextInputDialog()
   const params = useSearchParams()
   const eventId = params.get('id')
   const { selectedAccountId, accounts } = useAccount()
@@ -86,9 +87,16 @@ function BookingsInner() {
     if (!selectedAccountId || !eventId) return
     let reason: string | undefined
     if (action === 'reject') {
-      const r = window.prompt('拒否理由（任意・admin内部メモ。友だちには固定文面）')
+      const r = await requestTextInput({
+        title: '拒否理由を入力しますか？',
+        message: '任意入力です。ここに書いた内容はadmin内部メモとして扱い、友だちには固定文面を送ります。',
+        placeholder: '例: 定員超過のため',
+        confirmLabel: '拒否する',
+        multiline: true,
+        maxLength: 500,
+      })
       if (r === null) return
-      reason = r || undefined
+      reason = r.trim() || undefined
     }
     setBusy(true)
     try {
@@ -269,6 +277,7 @@ function BookingsInner() {
         </div>
       </div>
       {confirmDialog}
+      {textInputDialog}
     </>
   )
 }

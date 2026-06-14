@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { dueTimePresets, dueUrgency, formatDateTime, formatRelativeDue } from './support-meta'
 
 // ─── 入力スタイル (画面全体で統一) ───
@@ -278,6 +278,144 @@ export function useConfirmDialog() {
   const confirmDialog = options ? <ConfirmDialog options={options} onResolve={close} /> : null
 
   return { requestConfirm, confirmDialog }
+}
+
+// ─── 文字入力ダイアログ ───
+
+export interface TextInputDialogOptions {
+  title: string
+  message: string
+  initialValue?: string
+  placeholder?: string
+  confirmLabel?: string
+  cancelLabel?: string
+  required?: boolean
+  requiredMessage?: string
+  multiline?: boolean
+  maxLength?: number
+}
+
+function TextInputDialog({
+  options,
+  onResolve,
+}: {
+  options: TextInputDialogOptions
+  onResolve: (value: string | null) => void
+}) {
+  const titleId = useId()
+  const messageId = useId()
+  const [value, setValue] = useState(options.initialValue ?? '')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onResolve(null)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onResolve])
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (options.required && value.trim().length === 0) {
+      setError(options.requiredMessage ?? '入力してください。')
+      return
+    }
+    onResolve(value)
+  }
+
+  const inputCls =
+    'mt-3 w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 placeholder:text-gray-400 focus:border-green-500 focus:outline-none focus:ring-2 focus:ring-green-500/30'
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      aria-describedby={messageId}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onResolve(null)
+      }}
+    >
+      <form onSubmit={submit} className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-4 shadow-xl">
+        <h2 id={titleId} className="text-base font-semibold text-gray-900">{options.title}</h2>
+        <p id={messageId} className="mt-2 whitespace-pre-wrap text-sm leading-6 text-gray-600">{options.message}</p>
+        {options.multiline ? (
+          <textarea
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value)
+              setError(null)
+            }}
+            placeholder={options.placeholder}
+            maxLength={options.maxLength}
+            autoFocus
+            rows={4}
+            className={`${inputCls} resize-y`}
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => {
+              setValue(e.target.value)
+              setError(null)
+            }}
+            placeholder={options.placeholder}
+            maxLength={options.maxLength}
+            autoFocus
+            className={inputCls}
+          />
+        )}
+        {error && <p className="mt-2 text-sm text-red-700">{error}</p>}
+        {options.maxLength && (
+          <p className="mt-1 text-right text-[11px] text-gray-400">
+            {value.length}/{options.maxLength}
+          </p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => onResolve(null)}
+            className={btnSecondaryCls}
+          >
+            {options.cancelLabel ?? 'キャンセル'}
+          </button>
+          <button
+            type="submit"
+            className="inline-flex items-center justify-center gap-1.5 rounded-md bg-gray-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-500"
+          >
+            {options.confirmLabel ?? '実行'}
+          </button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
+export function useTextInputDialog() {
+  const [options, setOptions] = useState<TextInputDialogOptions | null>(null)
+  const resolverRef = useRef<((value: string | null) => void) | null>(null)
+
+  const close = useCallback((value: string | null) => {
+    resolverRef.current?.(value)
+    resolverRef.current = null
+    setOptions(null)
+  }, [])
+
+  const requestTextInput = useCallback((nextOptions: TextInputDialogOptions) => {
+    resolverRef.current?.(null)
+    return new Promise<string | null>((resolve) => {
+      resolverRef.current = resolve
+      setOptions(nextOptions)
+    })
+  }, [])
+
+  useEffect(() => () => resolverRef.current?.(null), [])
+
+  const textInputDialog = options ? <TextInputDialog options={options} onResolve={close} /> : null
+
+  return { requestTextInput, textInputDialog }
 }
 
 // ─── トースト通知 ───

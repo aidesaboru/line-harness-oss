@@ -7,6 +7,7 @@ import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
 import { CanvasEditor, type Area } from '@/components/rich-menus/canvas-editor'
 import { AreaProperties } from '@/components/rich-menus/area-properties'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 type Page = {
   id: string
@@ -43,6 +44,8 @@ const RICH_MENU_PUBLISH_ERROR_MESSAGE = 'リッチメニューの保存または
 const RICH_MENU_UNPUBLISH_ERROR_MESSAGE = 'リッチメニューの取り下げに失敗しました。もう一度お試しください。'
 const RICH_MENU_DELETE_ERROR_MESSAGE = 'リッチメニューの削除に失敗しました。もう一度お試しください。'
 const RICH_MENU_IMAGE_UPLOAD_ERROR_MESSAGE = 'リッチメニュー画像のアップロードに失敗しました。もう一度お試しください。'
+const RICH_MENU_MIN_PAGE_ERROR_MESSAGE = '最低 1 ページは必要です。'
+const RICH_MENU_SAVE_DRAFT_BEFORE_IMAGE_MESSAGE = 'まず下書き保存でページを保存してから画像をアップロードしてください。'
 
 export default function RichMenuEditPage() {
   return (
@@ -83,9 +86,11 @@ function Editor({
   groupId: string
   router: ReturnType<typeof useRouter>
 }) {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const [group, setGroup] = useState<Group | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ kind: 'success' | 'warning' | 'info'; message: string } | null>(null)
   const [activePageId, setActivePageId] = useState<string | null>(null)
 
   // フォーム編集用 (group が読めたら反映)
@@ -103,8 +108,16 @@ function Editor({
   const [unpublishing, setUnpublishing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [imageVersion, setImageVersion] = useState(0)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deleteConfirmName, setDeleteConfirmName] = useState('')
+  const [deleteConfirmError, setDeleteConfirmError] = useState<string | null>(null)
 
   const fileInput = useRef<HTMLInputElement>(null)
+
+  function showNotice(kind: 'success' | 'warning' | 'info', message: string) {
+    setNotice({ kind, message })
+    setError(null)
+  }
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -187,9 +200,10 @@ function Editor({
     setSelectedAreaId(null)
   }
 
-  function removePage(pageId: string) {
+  async function removePage(pageId: string) {
     if (pages.length <= 1) {
-      alert('最低 1 ページは必要です。')
+      setNotice(null)
+      setError(RICH_MENU_MIN_PAGE_ERROR_MESSAGE)
       return
     }
     // 削除しようとしているページが他 page の richmenuswitch から参照されてないか確認。
@@ -204,12 +218,20 @@ function Editor({
         ),
       )
     if (referrers.length > 0) {
-      alert(
+      setNotice(null)
+      setError(
         `このページは ${referrers.map((p) => `「${p.name}」`).join(', ')} のタブ切替アクションから参照されています。先に各 area の遷移先を変更してから削除してください。`,
       )
       return
     }
-    if (!confirm('このページを削除しますか？')) return
+    const pageName = pages.find((p) => p.id === pageId)?.name ?? 'このページ'
+    const ok = await requestConfirm({
+      title: 'ページを削除しますか？',
+      message: `「${pageName}」を削除します。元には戻せません。`,
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     const remaining = pages
       .filter((p) => p.id !== pageId)
       .map((p, i) => ({ ...p, orderIndex: i }))
@@ -247,6 +269,7 @@ function Editor({
   async function handleSave() {
     setSaving(true)
     setError(null)
+    setNotice(null)
     try {
       await persistDraft()
       await reload()
@@ -258,19 +281,24 @@ function Editor({
   }
 
   async function handlePublish() {
-    if (!confirm(
-      'このリッチメニューを LINE 公式アカウントに登録します。\n\n' +
+    const ok = await requestConfirm({
+      title: 'LINEに登録しますか？',
+      message:
+        'このリッチメニューを LINE 公式アカウントに登録します。\n\n' +
         '※ この操作だけでは友だちのトーク画面にはまだ表示されません。\n' +
-        '友だちに見せるには、登録後に一覧画面の「友だちに表示」を実行してください。\n\n' +
-        '続行しますか？',
-    )) return
+        '友だちに見せるには、登録後に一覧画面の「友だちに表示」を実行してください。',
+      confirmLabel: '登録',
+      tone: 'warning',
+    })
+    if (!ok) return
     setPublishing(true)
     setError(null)
+    setNotice(null)
     try {
       await persistDraft()
       const res = await api.richMenuGroups.publish(groupId)
       if (!res.success) throw new Error(RICH_MENU_PUBLISH_ERROR_MESSAGE)
-      alert('LINE への登録が完了しました。\n\n友だちに表示するには、一覧画面の「友だちに表示」を実行してください。')
+      showNotice('success', 'LINE への登録が完了しました。友だちに表示するには、一覧画面の「友だちに表示」を実行してください。')
       await reload()
     } catch {
       setError(RICH_MENU_PUBLISH_ERROR_MESSAGE)
@@ -280,22 +308,28 @@ function Editor({
   }
 
   async function handleUnpublish() {
-    if (!confirm(
-      'このリッチメニューを LINE から取り下げます。\n\n' +
+    const ok = await requestConfirm({
+      title: 'LINEから取り下げますか？',
+      message:
+        'このリッチメニューを LINE から取り下げます。\n\n' +
         '・LINE 公式アカウント上のメニュー登録 (alias / richmenu) をすべて削除\n' +
         '・現在このメニューを見ている友だちのトーク画面からも消えます\n\n' +
-        '取り下げ後はもう一度「LINE に登録」すれば再公開できます。\n\n続行しますか？',
-    )) return
+        '取り下げ後はもう一度「LINE に登録」すれば再公開できます。',
+      confirmLabel: '取り下げる',
+      tone: 'danger',
+    })
+    if (!ok) return
     setUnpublishing(true)
     setError(null)
+    setNotice(null)
     try {
       const res = await api.richMenuGroups.unpublish(groupId)
       if (!res.success) throw new Error(RICH_MENU_UNPUBLISH_ERROR_MESSAGE)
       const warnings = res.data?.warnings ?? []
       if (warnings.length > 0) {
-        alert('LINE 上のメニュー登録を取り下げました。一部の反映に時間がかかる可能性があります。')
+        showNotice('warning', 'LINE 上のメニュー登録を取り下げました。一部の反映に時間がかかる可能性があります。')
       } else {
-        alert('LINE 上のメニュー登録を取り下げました。')
+        showNotice('success', 'LINE 上のメニュー登録を取り下げました。')
       }
       await reload()
     } catch {
@@ -308,37 +342,44 @@ function Editor({
   async function handleDelete() {
     if (!group) return
     if (group.status === 'published') {
-      alert(
-        'このリッチメニューは LINE に登録中です。\n\n' +
-          '先に「LINE から取り下げ」を実行してから削除してください。',
-      )
+      showNotice('warning', 'このリッチメニューは LINE に登録中です。先に「LINE から取り下げ」を実行してから削除してください。')
       return
     }
-    // 二重確認: メニュー名を入力してもらう
-    const typed = prompt(
-      `この操作は元に戻せません。\n\n削除を確定するには、リッチメニュー名「${group.name}」を入力してください。`,
-    )
-    if (typed === null) return
-    if (typed !== group.name) {
-      alert('入力が一致しませんでした。削除をキャンセルしました。')
+    setDeleteConfirmName('')
+    setDeleteConfirmError(null)
+    setDeleteConfirmOpen(true)
+  }
+
+  async function confirmDeleteGroup() {
+    if (!group) return
+    if (deleteConfirmName !== group.name) {
+      setDeleteConfirmError('入力が一致しません。リッチメニュー名を正確に入力してください。')
       return
     }
+    setBusy(true)
+    setError(null)
+    setNotice(null)
+    setDeleteConfirmError(null)
     try {
       const res = await api.richMenuGroups.delete(groupId)
       if (!res.success) throw new Error(RICH_MENU_DELETE_ERROR_MESSAGE)
       router.push('/rich-menus')
     } catch {
-      alert(RICH_MENU_DELETE_ERROR_MESSAGE)
+      setDeleteConfirmError(RICH_MENU_DELETE_ERROR_MESSAGE)
+    } finally {
+      setBusy(false)
     }
   }
 
   async function handleImageUpload(pageId: string, file: File) {
     if (pageId.startsWith('tmp-')) {
-      alert('まず Save Draft でページを保存してから画像を upload してください。')
+      setNotice(null)
+      setError(RICH_MENU_SAVE_DRAFT_BEFORE_IMAGE_MESSAGE)
       return
     }
     setBusy(true)
     setError(null)
+    setNotice(null)
     try {
       const res = await api.richMenuGroups.uploadImage(groupId, pageId, file)
       updatePage(pageId, {
@@ -347,7 +388,7 @@ function Editor({
       })
       setImageVersion((v) => v + 1)
     } catch {
-      alert(RICH_MENU_IMAGE_UPLOAD_ERROR_MESSAGE)
+      setError(RICH_MENU_IMAGE_UPLOAD_ERROR_MESSAGE)
     } finally {
       setBusy(false)
     }
@@ -433,6 +474,20 @@ function Editor({
         </div>
       )}
 
+      {notice && (
+        <div
+          className={`border text-sm p-3 rounded mb-4 whitespace-pre-wrap ${
+            notice.kind === 'success'
+              ? 'bg-green-50 border-green-200 text-green-800'
+              : notice.kind === 'warning'
+                ? 'bg-amber-50 border-amber-200 text-amber-800'
+                : 'bg-blue-50 border-blue-200 text-blue-800'
+          }`}
+        >
+          {notice.message}
+        </div>
+      )}
+
       {/* タブバー */}
       <div className="flex items-center gap-1.5 mb-5 flex-wrap">
         {pages.map((p) => {
@@ -479,6 +534,10 @@ function Editor({
               onAddArea={(area) => addArea(activePage.id, area)}
               onUpdateArea={(id, patch) => updateArea(activePage.id, id, patch)}
               onDeleteArea={(id) => deleteArea(activePage.id, id)}
+              onError={(message) => {
+                setNotice(null)
+                setError(message)
+              }}
               preview={preview}
               onPreviewAction={(area) => {
                 if (area.actionType === 'uri') {
@@ -491,7 +550,7 @@ function Editor({
                     setSelectedAreaId(null)
                   }
                 } else {
-                  alert(`action: ${area.actionType}\n${JSON.stringify(area.actionData)}`)
+                  showNotice('info', `action: ${area.actionType}\n${JSON.stringify(area.actionData)}`)
                 }
               }}
             />
@@ -660,6 +719,59 @@ function Editor({
           </div>
         </div>
       </section>
+      {deleteConfirmOpen && group && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="rich-menu-delete-title"
+          aria-describedby="rich-menu-delete-message"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !busy) setDeleteConfirmOpen(false)
+          }}
+        >
+          <div className="w-full max-w-sm rounded-lg border border-gray-200 bg-white p-4 shadow-xl">
+            <h2 id="rich-menu-delete-title" className="text-base font-semibold text-gray-900">
+              リッチメニューを削除しますか？
+            </h2>
+            <p id="rich-menu-delete-message" className="mt-2 text-sm leading-6 text-gray-600">
+              この操作は元に戻せません。削除を確定するには、リッチメニュー名「{group.name}」を入力してください。
+            </p>
+            <input
+              value={deleteConfirmName}
+              onChange={(e) => {
+                setDeleteConfirmName(e.target.value)
+                setDeleteConfirmError(null)
+              }}
+              autoFocus
+              disabled={busy}
+              className="mt-3 w-full rounded-md border border-gray-300 px-3 py-2 text-sm focus:border-red-500 focus:outline-none focus:ring-2 focus:ring-red-500/30 disabled:bg-gray-50"
+            />
+            {deleteConfirmError && (
+              <p className="mt-2 text-sm text-red-700">{deleteConfirmError}</p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmOpen(false)}
+                disabled={busy}
+                className="inline-flex items-center justify-center rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={confirmDeleteGroup}
+                disabled={busy}
+                className="inline-flex items-center justify-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {busy ? '削除中...' : '削除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {confirmDialog}
     </main>
   )
 }

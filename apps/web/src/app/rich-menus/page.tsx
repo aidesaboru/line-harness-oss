@@ -6,6 +6,7 @@ import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { api } from '@/lib/api'
 import { ApplyToTagModal } from '@/components/rich-menus/apply-to-tag-modal'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 type RichMenuGroupListItem = {
   id: string
@@ -53,6 +54,7 @@ type LineMenu = {
 }
 
 export default function RichMenusListPage() {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const { selectedAccount } = useAccount()
   const [groups, setGroups] = useState<RichMenuGroupListItem[]>([])
   const [external, setExternal] = useState<{
@@ -62,12 +64,14 @@ export default function RichMenusListPage() {
   const [loading, setLoading] = useState(true)
   const [externalError, setExternalError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ kind: 'success' | 'warning'; message: string } | null>(null)
   const [applyTo, setApplyTo] = useState<RichMenuGroupListItem | null>(null)
 
   const reload = useCallback(async () => {
     if (!selectedAccount?.id) return
     setLoading(true)
     setError(null)
+    setNotice(null)
     setExternalError(null)
     try {
       // 並列に: D1 管理 group の一覧と、LINE 上の現状
@@ -107,56 +111,74 @@ export default function RichMenusListPage() {
 
   async function handleDelete(group: RichMenuGroupListItem) {
     if (group.status === 'published') {
-      alert(
-        `「${group.name}」は LINE に登録されています。\n\n` +
-          '編集画面の「危険な操作」から「LINE から取り下げ」を実行してから、改めて削除してください。',
-      )
+      setError(null)
+      setNotice({
+        kind: 'warning',
+        message: `「${group.name}」は LINE に登録されています。編集画面の「危険な操作」から「LINE から取り下げ」を実行してから、改めて削除してください。`,
+      })
       return
     }
-    if (!confirm(`「${group.name}」を削除します。元には戻せません。`)) return
+    const ok = await requestConfirm({
+      title: 'リッチメニューを削除しますか？',
+      message: `「${group.name}」を削除します。元には戻せません。`,
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
+      setError(null)
+      setNotice(null)
       const res = await api.richMenuGroups.delete(group.id)
       if (!res.success) throw new Error(RICH_MENU_DELETE_ERROR_MESSAGE)
       await reload()
     } catch {
-      alert(RICH_MENU_DELETE_ERROR_MESSAGE)
+      setError(RICH_MENU_DELETE_ERROR_MESSAGE)
     }
   }
 
   async function handleDeleteExternal(menu: LineMenu) {
     if (!selectedAccount?.id) return
-    if (
-      !confirm(
+    const ok = await requestConfirm({
+      title: 'LINE上のリッチメニューを削除しますか？',
+      message:
         `LINE 上のリッチメニュー「${menu.name}」(richMenuId: ${menu.richMenuId.slice(0, 14)}...) を削除します。\n\n` +
-          'この管理画面外で作成されたメニューを LINE 公式アカウントから消します。元に戻せません。\n\n続行しますか？',
-      )
-    )
-      return
+        'この管理画面外で作成されたメニューを LINE 公式アカウントから消します。元に戻せません。',
+      confirmLabel: '削除',
+      tone: 'danger',
+    })
+    if (!ok) return
     try {
+      setError(null)
+      setNotice(null)
       const res = await api.richMenuGroups.deleteExternal(menu.richMenuId, selectedAccount.id)
       if (!res.success) throw new Error(RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE)
       await reload()
     } catch {
-      alert(RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE)
+      setError(RICH_MENU_EXTERNAL_DELETE_ERROR_MESSAGE)
     }
   }
 
   async function handleImport(menu: LineMenu) {
     if (!selectedAccount?.id) return
-    if (
-      !confirm(
+    const ok = await requestConfirm({
+      title: '管理画面に取り込みますか？',
+      message:
         `「${menu.name}」を管理画面に取り込みます。\n\n` +
-          '取り込み後は「管理画面で作成・編集するメニュー」セクションに表示され、編集や友だちへの再適用が可能になります。\n\n続行しますか？',
-      )
-    )
-      return
+        '取り込み後は「管理画面で作成・編集するメニュー」セクションに表示され、編集や友だちへの再適用が可能になります。',
+      confirmLabel: '取り込む',
+      tone: 'warning',
+    })
+    if (!ok) return
     try {
+      setError(null)
+      setNotice(null)
       const res = await api.richMenuGroups.importFromLine(menu.richMenuId, selectedAccount.id)
       if (!res.success) throw new Error(RICH_MENU_IMPORT_ERROR_MESSAGE)
-      alert(`取り込みました: ${res.data?.name ?? menu.name}`)
+      const importedName = res.data?.name ?? menu.name
       await reload()
+      setNotice({ kind: 'success', message: `取り込みました: ${importedName}` })
     } catch {
-      alert(RICH_MENU_IMPORT_ERROR_MESSAGE)
+      setError(RICH_MENU_IMPORT_ERROR_MESSAGE)
     }
   }
 
@@ -189,6 +211,18 @@ export default function RichMenusListPage() {
       {selectedAccount && !loading && error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded mb-4">
           {error}
+        </div>
+      )}
+
+      {selectedAccount && !loading && notice && (
+        <div
+          className={`border text-sm p-3 rounded mb-4 ${
+            notice.kind === 'success'
+              ? 'bg-green-50 border-green-200 text-green-800'
+              : 'bg-amber-50 border-amber-200 text-amber-800'
+          }`}
+        >
+          {notice.message}
         </div>
       )}
 
@@ -313,6 +347,7 @@ export default function RichMenusListPage() {
           onClose={() => setApplyTo(null)}
         />
       )}
+      {confirmDialog}
     </main>
   )
 }

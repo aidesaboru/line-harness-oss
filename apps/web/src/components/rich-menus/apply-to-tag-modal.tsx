@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import { useConfirmDialog } from '@/components/support/support-ui'
 
 type Tag = { id: string; name: string; color: string }
 
@@ -19,6 +20,7 @@ type Mode =
 const RICH_MENU_APPLY_ERROR_MESSAGE = 'リッチメニューの適用に失敗しました。もう一度お試しください。'
 
 export function ApplyToTagModal({ groupId, groupName, onClose }: Props) {
+  const { requestConfirm, confirmDialog } = useConfirmDialog()
   const [tags, setTags] = useState<Tag[]>([])
   const [mode, setMode] = useState<Mode>({ kind: 'all-followers' })
   const [phase, setPhase] = useState<'config' | 'running' | 'done' | 'error'>(
@@ -46,15 +48,16 @@ export function ApplyToTagModal({ groupId, groupName, onClose }: Props) {
   async function apply() {
     // 「全員のデフォルト」は影響範囲が大きいので強い確認。
     if (mode.kind === 'set-default') {
-      if (
-        !confirm(
+      const ok = await requestConfirm({
+        title: '全員のデフォルトに設定しますか？',
+        message:
           'このリッチメニューを「LINE 公式アカウントの全員のデフォルト」に設定します。\n\n' +
-            '・新規友だちも含め、特別な設定をしていない全員に表示されます\n' +
-            '・同アカウント内で他のメニューがデフォルトに設定されていた場合、そちらは解除されます\n\n' +
-            '続行しますか？',
-        )
-      )
-        return
+          '・新規友だちも含め、特別な設定をしていない全員に表示されます\n' +
+          '・同アカウント内で他のメニューがデフォルトに設定されていた場合、そちらは解除されます',
+        confirmLabel: '設定する',
+        tone: 'warning',
+      })
+      if (!ok) return
     }
     setPhase('running')
     setError(null)
@@ -206,6 +209,7 @@ export function ApplyToTagModal({ groupId, groupName, onClose }: Props) {
           )}
         </div>
       </div>
+      {confirmDialog}
     </div>
   )
 }

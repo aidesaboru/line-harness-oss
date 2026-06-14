@@ -50,7 +50,10 @@ type Props = {
   onDeleteArea: (id: string) => void
   preview?: boolean
   onPreviewAction?: (area: Area) => void
+  onError?: (message: string) => void
 }
+
+const RICH_MENU_AREA_LIMIT_MESSAGE = '1 ページあたり areas は最大 20 個までです (LINE 仕様)。'
 
 function snap(value: number, others: number[]): number {
   for (const o of others) {
@@ -82,6 +85,7 @@ export function CanvasEditor({
   onDeleteArea,
   preview = false,
   onPreviewAction,
+  onError,
 }: Props) {
   const canvasRef = useRef<HTMLDivElement>(null)
   const dims = SIZE_DIMS[size]
@@ -198,7 +202,7 @@ export function CanvasEditor({
           // LINE の上限 (1 page あたり area 20 個) を事前にブロック。
           // 上限を超えて追加させると Save Draft / Publish が 400 になる。
           if (areas.length >= 20) {
-            alert('1 ページあたり areas は最大 20 個までです (LINE 仕様)。')
+            onError?.(RICH_MENU_AREA_LIMIT_MESSAGE)
           } else {
             onAddArea({
               id: typeof crypto !== 'undefined' && 'randomUUID' in crypto

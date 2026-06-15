@@ -997,7 +997,7 @@ export default function SupportPage() {
         />
       )}
 
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(280px,340px)_minmax(0,1fr)] xl:grid-cols-[minmax(280px,340px)_minmax(0,1fr)_360px]">
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
         <CaseList
           cases={displayCases}
           loading={loading}
@@ -1039,7 +1039,7 @@ export default function SupportPage() {
           onResetFilters={revealSelectedCaseInList}
         />
 
-        <aside className="space-y-4 lg:col-span-2 xl:col-span-1">
+        <aside className="grid gap-4 lg:col-span-2 xl:grid-cols-2">
           <EscalationPanel
             detail={detail}
             caseForm={caseForm}

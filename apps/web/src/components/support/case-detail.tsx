@@ -149,6 +149,106 @@ function CompletionPanel({
   )
 }
 
+function compactValue(value: string | null | undefined): string {
+  return value?.trim() || ''
+}
+
+function customerDisplayName(detail: SupportCaseDetail, caseForm: CaseFormState): string {
+  const company = compactValue(caseForm.companyName) || compactValue(detail.companyName)
+  const store = compactValue(caseForm.storeName) || compactValue(detail.storeName)
+  const contact = compactValue(caseForm.contactName) || compactValue(detail.contactName)
+  const lineName = compactValue(detail.friendName)
+  const parts = [company, store, contact].filter(Boolean)
+  if (parts.length > 0) return parts.join(' / ')
+  return lineName || '顧客未紐付け'
+}
+
+function getWorkFocus(input: {
+  status: SupportCaseStatus
+  overdue: boolean
+  stale: boolean
+  unassigned: boolean
+  canEditRouting: boolean
+  showChatReplyAction: boolean
+  hasReplyDraft: boolean
+  hasChat: boolean
+}): { title: string; description: string; className: string; labelClassName: string } {
+  if (input.status === 'resolved') {
+    return {
+      title: '対応完了済み',
+      description: '追加連絡が来た場合は再オープンして、会話と履歴を確認してください。',
+      className: 'border-green-200 bg-green-50 text-green-900',
+      labelClassName: 'text-green-700',
+    }
+  }
+  if (input.overdue) {
+    return {
+      title: '期限超過を先に処理',
+      description: '返信・社内確認・期限再設定のどれが止まっているか確認してください。',
+      className: 'border-red-200 bg-red-50 text-red-900',
+      labelClassName: 'text-red-700',
+    }
+  }
+  if (input.unassigned) {
+    return {
+      title: input.canEditRouting ? '一次担当を決める' : '担当者設定を依頼',
+      description: input.canEditRouting
+        ? '担当が空のままだと対応漏れになりやすいので、先に一次担当を入れてください。'
+        : '担当者が未設定です。owner/adminに担当者設定を依頼してください。',
+      className: 'border-amber-200 bg-amber-50 text-amber-900',
+      labelClassName: 'text-amber-700',
+    }
+  }
+  if (input.showChatReplyAction) {
+    return {
+      title: '返信案をチャットへ送る',
+      description: '返信案が用意されています。内容を確認して顧客チャットへ引き継げます。',
+      className: 'border-green-200 bg-green-50 text-green-900',
+      labelClassName: 'text-green-700',
+    }
+  }
+  if (input.status === 'open' || input.status === 'reopened') {
+    return {
+      title: '対応を開始する',
+      description: '問い合わせ要約を確認し、対応開始にして担当メモを残してください。',
+      className: 'border-amber-200 bg-amber-50 text-amber-900',
+      labelClassName: 'text-amber-700',
+    }
+  }
+  if (input.status === 'escalated' || input.status === 'waiting_secondary') {
+    return {
+      title: '二次対応の回答を確認',
+      description: 'エスカレ内容と回答状況を確認し、顧客返信案に落とし込んでください。',
+      className: 'border-indigo-200 bg-indigo-50 text-indigo-900',
+      labelClassName: 'text-indigo-700',
+    }
+  }
+  if (input.status === 'customer_reply') {
+    return {
+      title: '顧客からの返信待ち',
+      description: '必要なら次回確認を設定し、期限切れになる前に再確認してください。',
+      className: 'border-blue-200 bg-blue-50 text-blue-900',
+      labelClassName: 'text-blue-700',
+    }
+  }
+  if (input.stale) {
+    return {
+      title: '24時間以上止まっています',
+      description: '内部メモ、返信案、次回確認のどれかを更新して対応を前に進めてください。',
+      className: 'border-orange-200 bg-orange-50 text-orange-900',
+      labelClassName: 'text-orange-700',
+    }
+  }
+  return {
+    title: input.hasReplyDraft && !input.hasChat ? '返信案を保存' : '対応内容を整理',
+    description: input.hasReplyDraft && !input.hasChat
+      ? '会話に紐づかない案件です。返信案をコピーして別経路で送れる状態にしてください。'
+      : '要約、内部メモ、返信案を更新して、次の状態へ進められるようにしてください。',
+    className: 'border-gray-200 bg-gray-50 text-gray-900',
+    labelClassName: 'text-gray-500',
+  }
+}
+
 export default function CaseDetail({
   detail,
   detailLoading,
@@ -202,6 +302,18 @@ export default function CaseDetail({
     hasDraft: Boolean(caseForm.customerReplyDraft.trim()),
     hasChat: Boolean(chatHref),
   })
+  const workFocus = getWorkFocus({
+    status: caseForm.status,
+    overdue,
+    stale,
+    unassigned,
+    canEditRouting,
+    showChatReplyAction,
+    hasReplyDraft: Boolean(caseForm.customerReplyDraft.trim()),
+    hasChat: Boolean(chatHref),
+  })
+  const summaryText = compactValue(caseForm.customerSummary) || '問い合わせ要約は未記入です'
+  const replyDraftText = compactValue(caseForm.customerReplyDraft)
 
   const handleConfirmComplete = async () => {
     const ok = await onQuickStatus('resolved', '対応を完了しました')
@@ -331,9 +443,41 @@ export default function CaseDetail({
           </div>
         )}
 
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
+          <div className={`rounded-lg border px-4 py-3 ${workFocus.className}`}>
+            <p className={`text-xs font-semibold ${workFocus.labelClassName}`}>次の一手</p>
+            <p className="mt-1 text-base font-semibold">{workFocus.title}</p>
+            <p className="mt-1 text-sm leading-6 opacity-80">{workFocus.description}</p>
+          </div>
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <dl className="grid gap-3 text-sm sm:grid-cols-2">
+              <div className="min-w-0">
+                <dt className="text-xs font-medium text-gray-400">顧客</dt>
+                <dd className="mt-0.5 break-words font-semibold text-gray-900">{customerDisplayName(detail, caseForm)}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-xs font-medium text-gray-400">一次担当</dt>
+                <dd className={`mt-0.5 break-words font-semibold ${unassigned ? 'text-amber-700' : 'text-gray-900'}`}>
+                  {caseForm.primaryAssignee.trim() || '担当者なし'}
+                </dd>
+              </div>
+              <div className="min-w-0 sm:col-span-2">
+                <dt className="text-xs font-medium text-gray-400">問い合わせ要約</dt>
+                <dd className="mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words text-gray-700">{summaryText}</dd>
+              </div>
+              <div className="min-w-0 sm:col-span-2">
+                <dt className="text-xs font-medium text-gray-400">顧客向け返信案</dt>
+                <dd className={`mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words ${replyDraftText ? 'text-gray-700' : 'text-gray-400'}`}>
+                  {replyDraftText || '返信案は未作成です'}
+                </dd>
+              </div>
+            </dl>
+          </div>
+        </div>
+
         {/* キーファクト: まず確認する4点 (ステータス / 優先度 / 一次担当 / 期限) */}
         <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-400">
+          <p className="mb-2 text-xs font-semibold text-gray-500">
             まず確認する4点
           </p>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

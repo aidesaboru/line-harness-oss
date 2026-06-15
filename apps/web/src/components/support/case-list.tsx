@@ -69,6 +69,9 @@ function CaseRow({
   const overdue = isOverdueCase(item)
   const stale = isStaleCase(item)
   const urgency = dueUrgency(item.dueAt)
+  const customerName = item.friendName || item.companyName || item.contactName || '顧客未紐付け'
+  const assigneeName = item.primaryAssignee || '担当者なし'
+  const summary = item.customerSummary?.trim() || item.internalNote?.trim() || item.customerReplyDraft?.trim()
   const dueTone =
     item.status === 'resolved'
       ? 'text-gray-400'
@@ -83,19 +86,31 @@ function CaseRow({
       onClick={() => onSelect(item.id)}
       disabled={disabled}
       aria-current={selected ? 'true' : undefined}
-      className={`block w-full border-b border-l-4 border-gray-100 px-4 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500 ${
+      className={`block w-full border-b border-l-4 border-gray-100 px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500 ${
         overdue
           ? 'border-l-red-500 bg-red-50/70 hover:bg-red-50'
           : stale
             ? 'border-l-orange-500 bg-orange-50/70 hover:bg-orange-50'
             : 'border-l-transparent hover:bg-gray-50'
-      } ${selected ? 'bg-green-50 ring-1 ring-inset ring-green-300' : ''} disabled:cursor-not-allowed disabled:opacity-60`}
+      } ${selected ? 'border-l-green-600 bg-green-50 ring-1 ring-inset ring-green-300' : ''} disabled:cursor-not-allowed disabled:opacity-60`}
     >
       <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900">{item.title}</p>
-        <Pill className={priorityClass[item.priority]}>{priorityLabel[item.priority]}</Pill>
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+          <Pill className={statusClass[item.status]}>{statusLabel[item.status]}</Pill>
+          <Pill className={priorityClass[item.priority]}>{priorityLabel[item.priority]}</Pill>
+        </div>
+        <span className="shrink-0 text-[11px] text-gray-400">更新 {formatElapsed(item.updatedAt)}</span>
       </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+
+      <p className="mt-2 break-words text-sm font-semibold leading-5 text-gray-900">{item.title}</p>
+
+      {summary && (
+        <p className="mt-1 max-h-10 overflow-hidden break-words text-xs leading-5 text-gray-500">
+          {summary}
+        </p>
+      )}
+
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {overdue && <Pill className="border-red-200 bg-red-100 text-red-700">期限超過</Pill>}
         {stale && !overdue && (
           <Pill className="border-orange-200 bg-white text-orange-700">
@@ -106,17 +121,24 @@ function CaseRow({
         {!item.primaryAssignee && item.status !== 'resolved' && (
           <Pill className="border-amber-200 bg-amber-50 text-amber-700">担当者なし</Pill>
         )}
-        <Pill className={statusClass[item.status]}>{statusLabel[item.status]}</Pill>
         <Pill className="border-gray-200 bg-gray-50 text-gray-600">{categoryLabel[item.category] || item.category}</Pill>
       </div>
-      <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-gray-500">
-        <span className="min-w-0 truncate">
-          {item.friendName || item.companyName || '顧客未紐付け'}
-          <span className="mx-1 text-gray-300">·</span>
-          {item.primaryAssignee || '担当者なし'}
+
+      <div className="mt-2 grid gap-1.5 text-xs text-gray-500 sm:grid-cols-2">
+        <span className="min-w-0 rounded-md bg-white/70 px-2 py-1">
+          <span className="mr-1 text-gray-400">顧客</span>
+          <span className="font-medium text-gray-700">{customerName}</span>
         </span>
+        <span className="min-w-0 rounded-md bg-white/70 px-2 py-1">
+          <span className="mr-1 text-gray-400">担当</span>
+          <span className={`font-medium ${item.primaryAssignee ? 'text-gray-700' : 'text-amber-700'}`}>{assigneeName}</span>
+        </span>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-2 text-xs text-gray-500">
+        <span className="min-w-0 truncate">{item.storeName || item.contractType || ''}</span>
         {item.dueAt && (
-          <span className={`shrink-0 ${dueTone}`}>{formatRelativeDue(item.dueAt)}</span>
+          <span className={`shrink-0 rounded-md bg-white/80 px-2 py-1 ${dueTone}`}>期限 {formatRelativeDue(item.dueAt)}</span>
         )}
       </div>
     </button>
@@ -143,8 +165,14 @@ export default function CaseList({
   onResetFilters,
 }: CaseListProps) {
   return (
-    <section className="flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white" aria-label="案件一覧">
+    <section className="flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white shadow-sm" aria-label="案件一覧">
       <div className="border-b border-gray-200 p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-gray-900">案件一覧</h2>
+          <span className="rounded-md bg-gray-100 px-2 py-1 text-xs font-semibold text-gray-600">
+            {loading ? '更新中' : `${cases.length}件`}
+          </span>
+        </div>
         <div className="relative">
           <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
           <input
@@ -189,12 +217,12 @@ export default function CaseList({
           </select>
         </div>
         <div className="mt-2 flex items-center justify-between text-[11px] text-gray-400">
-          <span>{loading ? '読み込み中…' : `${cases.length}件`}</span>
+          <span>{loading ? '読み込み中…' : '未完了を優先表示'}</span>
           <span className="hidden xl:inline">↑↓キーで移動</span>
         </div>
       </div>
 
-      <div className="max-h-[480px] overflow-y-auto overscroll-contain lg:max-h-[calc(100vh-400px)] lg:min-h-[320px]">
+      <div className="max-h-[520px] overflow-y-auto overscroll-contain lg:max-h-[calc(100vh-360px)] lg:min-h-[380px]">
         {loading && cases.length === 0 ? (
           <CaseListSkeleton />
         ) : cases.length === 0 ? (

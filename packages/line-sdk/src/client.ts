@@ -11,6 +11,18 @@ import type {
 
 const LINE_API_BASE = 'https://api.line.me';
 
+let lineMutationsDisabled = false;
+
+export function setLineMutationsDisabled(disabled: boolean): void {
+  lineMutationsDisabled = disabled;
+}
+
+function assertLineMutationsAllowed(): void {
+  if (lineMutationsDisabled) {
+    throw new Error('LINE mutations are disabled by LINE_CAPTURE_ONLY');
+  }
+}
+
 export class LineClient {
   constructor(private readonly channelAccessToken: string) {}
 
@@ -21,6 +33,10 @@ export class LineClient {
     path: string,
     body?: unknown,
   ): Promise<{ data: unknown; headers: Headers }> {
+    if (method !== 'GET') {
+      assertLineMutationsAllowed();
+    }
+
     const url = `${LINE_API_BASE}${path}`;
 
     const options: RequestInit = {
@@ -215,6 +231,8 @@ export class LineClient {
     imageData: ArrayBuffer,
     contentType: 'image/png' | 'image/jpeg' = 'image/png',
   ): Promise<void> {
+    assertLineMutationsAllowed();
+
     const url = `https://api-data.line.me/v2/bot/richmenu/${encodeURIComponent(richMenuId)}/content`;
     const res = await fetch(url, {
       method: 'POST',

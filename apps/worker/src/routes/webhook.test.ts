@@ -1,6 +1,12 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
+const lineClientMethods = vi.hoisted(() => ({
+  getProfile: vi.fn(),
+  pushMessage: vi.fn(),
+  replyMessage: vi.fn(),
+}));
+
 // Stub the DB graph — these tests only exercise the size guard and
 // signature-verify-before-parse path; webhook event handling is out of scope.
 vi.mock('@line-crm/db', () => ({
@@ -27,15 +33,7 @@ vi.mock('@line-crm/line-sdk', async () => {
   return {
     ...actual,
     verifySignature: vi.fn(),
-    LineClient: vi.fn().mockImplementation(() => ({
-      getProfile: vi.fn().mockResolvedValue({
-        displayName: 'Test User',
-        pictureUrl: 'https://example.com/profile.png',
-        statusMessage: 'hello',
-      }),
-      pushMessage: vi.fn().mockResolvedValue(undefined),
-      replyMessage: vi.fn().mockResolvedValue(undefined),
-    })),
+    LineClient: vi.fn().mockImplementation(() => lineClientMethods),
   };
 });
 
@@ -49,6 +47,7 @@ vi.mock('../services/step-delivery.js', () => ({
 }));
 
 import {
+  getScenarios,
   getFriendByLineUserId,
   getLineAccounts,
   jstNow,
@@ -56,6 +55,7 @@ import {
   upsertFriend,
 } from '@line-crm/db';
 import { verifySignature } from '@line-crm/line-sdk';
+import { fireEvent } from '../services/event-bus.js';
 import { webhook } from './webhook.js';
 
 function setupApp() {
@@ -78,6 +78,13 @@ const baseExecutionCtx = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  lineClientMethods.getProfile.mockResolvedValue({
+    displayName: 'Test User',
+    pictureUrl: 'https://example.com/profile.png',
+    statusMessage: 'hello',
+  });
+  lineClientMethods.pushMessage.mockResolvedValue(undefined);
+  lineClientMethods.replyMessage.mockResolvedValue(undefined);
   vi.mocked(getLineAccounts).mockResolvedValue([]);
   vi.mocked(jstNow).mockReturnValue('2026-06-11T17:45:17.000+09:00');
 });
@@ -303,6 +310,115 @@ describe('POST /webhook — message intake', () => {
             expect.any(String),
             'friend-1',
             'テスト4',
+            'acc-1',
+            '2026-06-11T17:45:17.000+09:00',
+          ],
+        }),
+      ]),
+    );
+  });
+
+  test('capture-only mode logs text messages without replies, scenarios, or automations', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue(null);
+    vi.mocked(upsertFriend).mockResolvedValue({
+      id: 'friend-1',
+      line_user_id: 'Urealuser',
+      display_name: 'Test User',
+      picture_url: 'https://example.com/profile.png',
+      status_message: 'hello',
+      is_following: 1,
+      user_id: null,
+      line_account_id: null,
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-06-11T17:45:17.000+09:00',
+      updated_at: '2026-06-11T17:45:17.000+09:00',
+    });
+    vi.mocked(upsertChatOnMessage).mockResolvedValue(undefined);
+
+    const { db, statements } = createDbMock();
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const body = JSON.stringify({
+      destination: 'Ubot',
+      events: [
+        {
+          type: 'message',
+          mode: 'active',
+          timestamp: 1781167517000,
+          source: { type: 'user', userId: 'Urealuser' },
+          webhookEventId: '01JXCAPTUREONLY',
+          deliveryContext: { isRedelivery: false },
+          replyToken: 'reply-token',
+          message: {
+            id: 'msg-1',
+            type: 'text',
+            quoteToken: 'quote-token',
+            text: '体験を完了する',
+          },
+        },
+      ],
+    });
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body,
+      },
+      {
+        ...baseEnv,
+        DB: db,
+        LINE_CAPTURE_ONLY: '1',
+      },
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    const processingPromise = vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>;
+    await processingPromise;
+
+    expect(lineClientMethods.replyMessage).not.toHaveBeenCalled();
+    expect(lineClientMethods.pushMessage).not.toHaveBeenCalled();
+    expect(getScenarios).not.toHaveBeenCalled();
+    expect(fireEvent).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: expect.stringContaining('INSERT INTO messages_log'),
+          binds: [
+            expect.any(String),
+            'friend-1',
+            '体験を完了する',
             'acc-1',
             '2026-06-11T17:45:17.000+09:00',
           ],

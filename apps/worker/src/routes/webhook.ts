@@ -23,6 +23,7 @@ import {
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
+import { isLineCaptureOnly } from '../services/line-capture-only.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -133,12 +134,17 @@ webhook.post('/webhook', async (c) => {
   }
 
   const lineClient = new LineClient(channelAccessToken);
+  const captureOnly = isLineCaptureOnly(c.env);
 
   // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        if (captureOnly) {
+          await handleCaptureOnlyEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.IMAGES);
+        } else {
+          await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        }
       } catch (err) {
         console.error(`Error handling webhook event: ${webhookErrorKind(err)}`);
       }
@@ -149,6 +155,123 @@ webhook.post('/webhook', async (c) => {
 
   return c.json({ status: 'ok' }, 200);
 });
+
+async function handleCaptureOnlyEvent(
+  db: D1Database,
+  lineClient: LineClient,
+  event: WebhookEvent,
+  lineAccessToken: string,
+  lineAccountId: string | null = null,
+  workerUrl?: string,
+  r2?: R2Bucket,
+): Promise<void> {
+  if (event.type === 'follow') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only follow');
+    await updateFriendFollowStatus(db, friend.line_user_id, true);
+    return;
+  }
+
+  if (event.type === 'unfollow') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    await updateFriendFollowStatus(db, userId, false);
+    return;
+  }
+
+  if (event.type === 'postback') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only postback');
+    const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'postback', ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), friend.id, postbackData, lineAccountId ?? null, jstNow())
+      .run();
+    await upsertChatOnMessage(db, friend.id);
+    return;
+  }
+
+  if (event.type === 'message' && event.message.type === 'text') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only text message');
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, jstNow())
+      .run();
+    await upsertChatOnMessage(db, friend.id);
+    return;
+  }
+
+  if (event.type === 'message') {
+    const userId = event.source.type === 'user' ? event.source.userId : undefined;
+    if (!userId) return;
+
+    const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only non-text message');
+    const msg = event.message as {
+      id: string;
+      type: string;
+      fileName?: string;
+      title?: string;
+      packageId?: string | number;
+      package_id?: string | number;
+      stickerId?: string | number;
+      sticker_id?: string | number;
+      stickerResourceType?: string | number;
+      sticker_resource_type?: string | number;
+    };
+    const labels: Record<string, string> = {
+      sticker: '[スタンプ]',
+      image: '[画像]',
+      audio: '[音声]',
+      video: '[動画]',
+      file: msg.fileName ? `[ファイル: ${msg.fileName}]` : '[ファイル]',
+      location: msg.title ? `[位置情報: ${msg.title}]` : '[位置情報]',
+    };
+    let finalContent = labels[msg.type] ?? `[${msg.type}]`;
+
+    if (msg.type === 'sticker') {
+      const stickerContent = createStickerMessageContent(msg);
+      if (stickerContent) {
+        finalContent = JSON.stringify(stickerContent);
+      }
+    }
+    if (msg.type === 'image' && r2 && workerUrl) {
+      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
+      const refs = await fetchAndStoreIncomingImage({
+        r2,
+        workerUrl,
+        channelAccessToken: lineAccessToken,
+        accountId: lineAccountId ?? 'unknown',
+        messageId: msg.id,
+      });
+      if (refs) {
+        finalContent = JSON.stringify(refs);
+      }
+    }
+
+    await db
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, jstNow())
+      .run();
+    await upsertChatOnMessage(db, friend.id);
+  }
+}
 
 async function handleEvent(
   db: D1Database,

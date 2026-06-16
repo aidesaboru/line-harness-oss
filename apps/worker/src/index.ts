@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { LineClient } from '@line-crm/line-sdk';
+import { LineClient, setLineMutationsDisabled } from '@line-crm/line-sdk';
 import {
   getLineAccounts,
   getTrafficPoolBySlug,
@@ -76,6 +76,7 @@ import { richMenuGroups } from './routes/rich-menu-groups.js';
 import { support } from './routes/support.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
+import { isLineCaptureOnly } from './services/line-capture-only.js';
 
 function scheduledErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
@@ -121,6 +122,10 @@ export type Env = {
     WORKER_PUBLIC_URL?: string;
     ADMIN_PUBLIC_URL?: string;
     LIFF_PUBLIC_URL?: string;
+    // When enabled, the Worker can receive and store LINE webhooks, but LINE
+    // mutation APIs such as reply, push, broadcast, rich-menu changes, and
+    // scheduled deliveries are disabled for safe pre-operation capture.
+    LINE_CAPTURE_ONLY?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
@@ -262,6 +267,11 @@ function parseOptionalShortLinkLiffTarget(raw: unknown): ValueResult<string | un
 // same-origin requests and origins on the ADMIN_ORIGIN allowlist; everything
 // else gets no Access-Control-Allow-Origin header (browser blocks it). Bearer
 // SDK/MCP callers send no Origin header and are unaffected.
+app.use('*', async (c, next) => {
+  setLineMutationsDisabled(isLineCaptureOnly(c.env));
+  await next();
+});
+
 app.use('*', credentialedCors((origin, c) => resolveCorsOrigin(c.env, origin, c.req.url)));
 
 // Rate limiting — runs before auth to block abuse early
@@ -709,6 +719,9 @@ async function scheduled(
   env: Env['Bindings'],
   _ctx: ExecutionContext,
 ): Promise<void> {
+  const captureOnly = isLineCaptureOnly(env);
+  setLineMutationsDisabled(captureOnly);
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
@@ -720,6 +733,11 @@ async function scheduled(
     }
   }
   const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+
+  if (captureOnly) {
+    console.log('[line-capture-only] skipping scheduled LINE delivery jobs');
+    return;
+  }
 
   // 配信系は1回だけ実行（内部でfriendのline_account_idから正しいlineClientを動的解決）
   // 以前はアカウントごとにループしていたが、アカウントフィルタなしのDBクエリで

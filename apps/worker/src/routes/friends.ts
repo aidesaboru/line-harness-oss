@@ -20,6 +20,11 @@ import {
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import { requireRole } from '../middleware/role-guard.js';
+import {
+  canUseManualLineSend,
+  isLineCaptureOnly,
+  isLineManualSendEnabled,
+} from '../services/line-capture-only.js';
 
 const friends = new Hono<Env>();
 
@@ -762,6 +767,9 @@ friends.get('/api/friends/:id/messages', async (c) => {
 // POST /api/friends/:id/messages - send message to friend
 friends.post('/api/friends/:id/messages', async (c) => {
   try {
+    if (!canUseManualLineSend(c.env)) {
+      return c.json({ success: false, error: 'Manual LINE sending is disabled' }, 403);
+    }
     const friendId = parseSafeId(c.req.param('id'), 'friend_id');
     if (!friendId.ok) return c.json({ success: false, error: friendId.error }, 400);
     const body = await readJsonObject(c);
@@ -785,7 +793,9 @@ friends.post('/api/friends/:id/messages', async (c) => {
       const account = await getLineAccountById(db, (friend as unknown as Record<string, unknown>).line_account_id as string);
       if (account) accessToken = account.channel_access_token;
     }
-    const lineClient = new LineClient(accessToken);
+    const lineClient = new LineClient(accessToken, {
+      allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
+    });
     const messageType = messageBody.value.messageType;
 
     // Auto-wrap URLs with tracking links (text with URLs → Flex with button)

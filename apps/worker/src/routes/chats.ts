@@ -23,6 +23,11 @@ import {
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import { requireRole } from '../middleware/role-guard.js';
+import {
+  canUseManualLineSend,
+  isLineCaptureOnly,
+  isLineManualSendEnabled,
+} from '../services/line-capture-only.js';
 
 const chats = new Hono<Env>();
 
@@ -98,6 +103,7 @@ type ChatSendBody = {
   content: string;
   supportCaseId?: string;
   lineAccountId?: string | null;
+  markAsRead?: boolean;
 };
 
 type OperatorCreateBody = { name: string; email: string; role?: string };
@@ -124,6 +130,14 @@ function chatRouteErrorKind(err: unknown): string {
   return typeof err;
 }
 
+function initialMarkAsReadResult(requested: boolean): MarkAsReadResult {
+  return {
+    requested,
+    marked: false,
+    reason: requested ? 'no_token' : 'not_requested',
+  };
+}
+
 function lineHttpError(status: number): ChatRouteError {
   const err = new Error('line_http_error') as ChatRouteError;
   err.name = 'LineHttpError';
@@ -148,6 +162,12 @@ type NormalizedChatSendPayload =
 type ChatSendFriend = {
   id: string;
   line_account_id?: string | null;
+};
+
+type MarkAsReadResult = {
+  requested: boolean;
+  marked: boolean;
+  reason: 'not_requested' | 'no_token' | 'line_error' | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -367,6 +387,9 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
     return { ok: false, error: 'messageType must be a string' };
   }
   if (typeof raw.content !== 'string') return { ok: false, error: 'content must be a string' };
+  if (raw.markAsRead !== undefined && typeof raw.markAsRead !== 'boolean') {
+    return { ok: false, error: 'markAsRead must be a boolean' };
+  }
   const supportCaseId = parseOptionalVisibleString(raw.supportCaseId, 'supportCaseId', CHAT_ID_MAX_LENGTH);
   if (!supportCaseId.ok) return supportCaseId;
   const lineAccountId = parseOptionalNullableVisibleString(raw.lineAccountId, 'lineAccountId', CHAT_ID_MAX_LENGTH);
@@ -378,6 +401,7 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
       content: raw.content,
       supportCaseId: supportCaseId.value,
       lineAccountId: lineAccountId.value ?? undefined,
+      markAsRead: raw.markAsRead === true,
     },
   };
 }
@@ -650,6 +674,47 @@ async function resolveFriendAndAccessToken(
   }
 
   return { friend, accessToken: account.channel_access_token };
+}
+
+async function getLatestMarkAsReadToken(
+  db: D1Database,
+  friendId: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare(
+      `SELECT mark_as_read_token
+       FROM messages_log
+       WHERE friend_id = ?
+         AND direction = 'incoming'
+         AND mark_as_read_token IS NOT NULL
+         AND mark_as_read_token != ''
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .bind(friendId)
+    .first<{ mark_as_read_token: string | null }>();
+  return row?.mark_as_read_token ?? null;
+}
+
+async function markLatestIncomingAsRead(
+  db: D1Database,
+  lineClient: { markMessagesAsRead(markAsReadToken: string): Promise<unknown> },
+  friendId: string,
+  requested: boolean | undefined,
+): Promise<MarkAsReadResult> {
+  const result = initialMarkAsReadResult(requested === true);
+  if (!result.requested) return result;
+
+  const token = await getLatestMarkAsReadToken(db, friendId);
+  if (!token) return result;
+
+  try {
+    await lineClient.markMessagesAsRead(token);
+    return { requested: true, marked: true, reason: null };
+  } catch (err) {
+    console.error(`mark-as-read failed: ${chatRouteErrorKind(err)}`);
+    return { requested: true, marked: false, reason: 'line_error' };
+  }
 }
 
 // ========== オペレーターCRUD ==========
@@ -1055,6 +1120,9 @@ chats.put('/api/chats/:id', async (c) => {
 // オペレーター入力中のローディング表示を開始
 chats.post('/api/chats/:id/loading', async (c) => {
   try {
+    if (!canUseManualLineSend(c.env)) {
+      return c.json({ success: false, error: 'Manual LINE sending is disabled' }, 403);
+    }
     const chatId = parseChatPathId(c.req.param('id'));
     if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
     const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
@@ -1134,6 +1202,9 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
 // オペレーターからメッセージ送信
 chats.post('/api/chats/:id/send', async (c) => {
   try {
+    if (!canUseManualLineSend(c.env)) {
+      return c.json({ success: false, error: 'Manual LINE sending is disabled' }, 403);
+    }
     const chatId = parseChatPathId(c.req.param('id'));
     if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
     const body = parseChatSendBody(await readJsonBody(c));
@@ -1160,7 +1231,9 @@ chats.post('/api/chats/:id/send', async (c) => {
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
-    const lineClient = new LineClient(accessToken);
+    const lineClient = new LineClient(accessToken, {
+      allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
+    });
     const { messageType, content } = normalized.payload;
 
     if (messageType === 'text') {
@@ -1176,6 +1249,13 @@ chats.post('/api/chats/:id/send', async (c) => {
         parsed.previewImageUrl,
       );
     }
+
+    const markAsRead = await markLatestIncomingAsRead(
+      c.env.DB,
+      lineClient,
+      friend.id,
+      body.value.markAsRead,
+    );
 
     // メッセージログに記録
     const logId = crypto.randomUUID();
@@ -1220,7 +1300,15 @@ chats.post('/api/chats/:id/send', async (c) => {
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
     await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: now });
 
-    return c.json({ success: true, data: { sent: true, messageId: logId, supportCase: supportCaseResult } });
+    return c.json({
+      success: true,
+      data: {
+        sent: true,
+        messageId: logId,
+        supportCase: supportCaseResult,
+        markAsRead,
+      },
+    });
   } catch (err) {
     console.error(`POST /api/chats/:id/send error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);

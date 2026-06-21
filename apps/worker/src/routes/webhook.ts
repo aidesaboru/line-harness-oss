@@ -33,6 +33,7 @@ const webhook = new Hono<Env>();
 // bursty batched deliveries (~100 events × ~5 KB) while still well below the
 // 128 MB Cloudflare Workers memory ceiling.
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
+const MARK_AS_READ_TOKEN_MAX_LENGTH = 4096;
 
 function webhookLineErrorStatus(err: unknown): number | null {
   if (!(err instanceof Error)) return null;
@@ -46,6 +47,15 @@ function webhookErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function eventMarkAsReadToken(event: WebhookEvent): string | null {
+  if (event.type !== 'message') return null;
+  const token = event.message.markAsReadToken;
+  if (typeof token !== 'string') return null;
+  const value = token.trim();
+  if (!value || value.length > MARK_AS_READ_TOKEN_MAX_LENGTH) return null;
+  return value;
 }
 
 webhook.post('/webhook', async (c) => {
@@ -204,12 +214,13 @@ async function handleCaptureOnlyEvent(
     if (!userId) return;
 
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only text message');
+    const markAsReadToken = eventMarkAsReadToken(event);
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, jstNow())
+      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, markAsReadToken, jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
     return;
@@ -223,6 +234,7 @@ async function handleCaptureOnlyEvent(
     const msg = event.message as {
       id: string;
       type: string;
+      markAsReadToken?: string;
       fileName?: string;
       title?: string;
       packageId?: string | number;
@@ -264,10 +276,10 @@ async function handleCaptureOnlyEvent(
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, jstNow())
+      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, eventMarkAsReadToken(event), jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
   }
@@ -553,6 +565,7 @@ async function handleEvent(
     const msg = event.message as {
       id: string;
       type: string;
+      markAsReadToken?: string;
       fileName?: string;
       title?: string;
       packageId?: string | number;
@@ -598,10 +611,10 @@ async function handleEvent(
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, jstNow())
+      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, eventMarkAsReadToken(event), jstNow())
       .run();
     return;
   }
@@ -621,10 +634,10 @@ async function handleEvent(
     // 受信メッセージをログに記録
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, lineAccountId ?? null, now)
+      .bind(logId, friend.id, incomingText, lineAccountId ?? null, eventMarkAsReadToken(event), now)
       .run();
 
     // Cross-account trigger: send message from another account via UUID

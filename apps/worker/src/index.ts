@@ -126,6 +126,9 @@ export type Env = {
     // mutation APIs such as reply, push, broadcast, rich-menu changes, and
     // scheduled deliveries are disabled for safe pre-operation capture.
     LINE_CAPTURE_ONLY?: string;
+    // Allows explicitly triggered operator sends while LINE_CAPTURE_ONLY keeps
+    // automated replies, scheduled deliveries, and other mutation paths stopped.
+    LINE_MANUAL_SEND_ENABLED?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };

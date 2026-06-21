@@ -42,6 +42,10 @@ WORKER_PUBLIC_URL = "https://ec-owner-line-harness.wayway-dev.workers.dev"
 ADMIN_PUBLIC_URL = "https://ec-owner-line-harness-admin.pages.dev"
 LIFF_PUBLIC_URL = "https://ec-owner-line-harness-liff.pages.dev"
 CF_ACCOUNT_ID = "fd23c99ff238478f219c521454f26f43"
+# Keep automated LINE mutations suppressed while this account is in intake mode.
+LINE_CAPTURE_ONLY = "1"
+# Allow only explicitly triggered operator chat sends from the CRM.
+LINE_MANUAL_SEND_ENABLED = "1"
 
 # ═══════════════════════════════════════════════════════════════
 # 本番環境

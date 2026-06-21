@@ -80,6 +80,7 @@ const sortOptions: { value: ChatSortMode; label: string }[] = [
 
 const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
 const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
+const MARK_AS_READ_ON_SEND_PREF_KEY = 'lh_chat_mark_as_read_on_send'
 const LOADING_REFRESH_INTERVAL_MS = 4000
 
 function StickerMessageImage({ content }: { content: string }) {
@@ -205,6 +206,14 @@ function FlameIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
       <path d="M8.5 14.5A4.5 4.5 0 0 0 13 19a5 5 0 0 0 5-5c0-4-4-5.5-4-9-2.5 1.5-4 3.5-4 6a4 4 0 0 1-2-3c-2 1.5-3 3.5-3 6a8 8 0 0 0 8 8" />
     </svg>
   )
+}
+
+function markAsReadFailureMessage(result?: { requested: boolean; marked: boolean; reason: string | null }): string {
+  if (!result?.requested || result.marked) return ''
+  if (result.reason === 'no_token') {
+    return '送信は完了しましたが、LINE公式側の既読化に必要なトークンがまだ保存されていません。次回以降の受信メッセージから既読化できます。'
+  }
+  return '送信は完了しましたが、LINE公式側の既読化に失敗しました。'
 }
 
 function sameYmd(aIso: string, bIso: string): boolean {
@@ -486,6 +495,7 @@ export default function ChatsPage() {
   const [savingNotes, setSavingNotes] = useState(false)
   const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
   const [loadingSeconds, setLoadingSeconds] = useState(5)
+  const [markAsReadOnSend, setMarkAsReadOnSend] = useState(false)
   const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
   const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
   const isComposingRef = useRef(false)
@@ -497,7 +507,9 @@ export default function ChatsPage() {
     try {
       const rawEnabled = localStorage.getItem(SHOW_LOADING_PREF_KEY)
       const rawSeconds = localStorage.getItem(LOADING_SECONDS_PREF_KEY)
+      const rawMarkAsRead = localStorage.getItem(MARK_AS_READ_ON_SEND_PREF_KEY)
       if (rawEnabled !== null) setShowLoadingIndicator(rawEnabled === '1')
+      if (rawMarkAsRead !== null) setMarkAsReadOnSend(rawMarkAsRead === '1')
       if (rawSeconds) {
         const n = Number.parseInt(rawSeconds, 10)
         if (Number.isFinite(n) && n >= 5 && n <= 60) setLoadingSeconds(n)
@@ -511,10 +523,11 @@ export default function ChatsPage() {
     try {
       localStorage.setItem(SHOW_LOADING_PREF_KEY, showLoadingIndicator ? '1' : '0')
       localStorage.setItem(LOADING_SECONDS_PREF_KEY, String(loadingSeconds))
+      localStorage.setItem(MARK_AS_READ_ON_SEND_PREF_KEY, markAsReadOnSend ? '1' : '0')
     } catch {
       // localStorage unavailable
     }
-  }, [showLoadingIndicator, loadingSeconds])
+  }, [showLoadingIndicator, loadingSeconds, markAsReadOnSend])
 
   useEffect(() => {
     try { localStorage.setItem('chat.sortMode', sortMode) } catch { /* ignore */ }
@@ -809,6 +822,7 @@ export default function ChatsPage() {
         const imageResult = await api.chats.send(sendingChatId, {
           messageType: 'image',
           content: imgPayload,
+          markAsRead: markAsReadOnSend,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
         })
         if (!imageResult.success) {
@@ -823,6 +837,8 @@ export default function ChatsPage() {
           }
           setSupportDraftContext(null)
         }
+        const markAsReadNotice = markAsReadFailureMessage(imageResult.data.markAsRead)
+        if (markAsReadNotice) setError(markAsReadNotice)
         setPendingImage(null)
         // Optimistic update for image
         setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
@@ -870,6 +886,7 @@ export default function ChatsPage() {
         const content = textContent
         const sendResult = await api.chats.send(sendingChatId, {
           content,
+          markAsRead: markAsReadOnSend,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
         })
         if (!sendResult.success) {
@@ -881,6 +898,8 @@ export default function ChatsPage() {
           setSupportRecoveryNotice(recoveryNotice)
           setError('')
         }
+        const markAsReadNotice = markAsReadFailureMessage(sendResult.data.markAsRead)
+        if (markAsReadNotice) setError(markAsReadNotice)
         setMessageContent('')
         if (supportContext) setSupportDraftContext(null)
         // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
@@ -1451,6 +1470,15 @@ export default function ChatsPage() {
                       className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
                     />
                     入力中ローディングを表示
+                  </label>
+                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={markAsReadOnSend}
+                      onChange={(e) => setMarkAsReadOnSend(e.target.checked)}
+                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                    />
+                    送信時にLINE公式側も既読にする
                   </label>
                   <select
                     value={loadingSeconds}

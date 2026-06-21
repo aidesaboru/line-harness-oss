@@ -24,12 +24,14 @@ export type Source = UserSource | GroupSource | RoomSource;
 export interface TextEventMessage {
   type: 'text';
   id: string;
+  markAsReadToken?: string;
   text: string;
 }
 
 export interface ImageEventMessage {
   type: 'image';
   id: string;
+  markAsReadToken?: string;
   contentProvider: {
     type: 'line' | 'external';
     originalContentUrl?: string;
@@ -40,6 +42,7 @@ export interface ImageEventMessage {
 export interface VideoEventMessage {
   type: 'video';
   id: string;
+  markAsReadToken?: string;
   duration: number;
   contentProvider: {
     type: 'line' | 'external';
@@ -51,6 +54,7 @@ export interface VideoEventMessage {
 export interface AudioEventMessage {
   type: 'audio';
   id: string;
+  markAsReadToken?: string;
   duration: number;
   contentProvider: {
     type: 'line' | 'external';
@@ -61,6 +65,7 @@ export interface AudioEventMessage {
 export interface FileEventMessage {
   type: 'file';
   id: string;
+  markAsReadToken?: string;
   fileName: string;
   fileSize: number;
 }
@@ -68,6 +73,7 @@ export interface FileEventMessage {
 export interface LocationEventMessage {
   type: 'location';
   id: string;
+  markAsReadToken?: string;
   title?: string;
   address?: string;
   latitude: number;
@@ -77,6 +83,7 @@ export interface LocationEventMessage {
 export interface StickerEventMessage {
   type: 'sticker';
   id: string;
+  markAsReadToken?: string;
   packageId: string;
   stickerId: string;
   stickerResourceType: string;

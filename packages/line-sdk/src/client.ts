@@ -13,18 +13,29 @@ const LINE_API_BASE = 'https://api.line.me';
 
 let lineMutationsDisabled = false;
 
+export type LineClientOptions = {
+  allowMutationsWhenDisabled?: boolean;
+};
+
 export function setLineMutationsDisabled(disabled: boolean): void {
   lineMutationsDisabled = disabled;
 }
 
-function assertLineMutationsAllowed(): void {
-  if (lineMutationsDisabled) {
+function assertLineMutationsAllowed(allowWhenDisabled = false): void {
+  if (lineMutationsDisabled && !allowWhenDisabled) {
     throw new Error('LINE mutations are disabled by LINE_CAPTURE_ONLY');
   }
 }
 
 export class LineClient {
-  constructor(private readonly channelAccessToken: string) {}
+  constructor(
+    private readonly channelAccessToken: string,
+    private readonly options: LineClientOptions = {},
+  ) {}
+
+  private assertMutationsAllowed(): void {
+    assertLineMutationsAllowed(Boolean(this.options.allowMutationsWhenDisabled));
+  }
 
   // ─── Core request helper ──────────────────────────────────────────────────
 
@@ -34,7 +45,7 @@ export class LineClient {
     body?: unknown,
   ): Promise<{ data: unknown; headers: Headers }> {
     if (method !== 'GET') {
-      assertLineMutationsAllowed();
+      this.assertMutationsAllowed();
     }
 
     const url = `${LINE_API_BASE}${path}`;
@@ -125,6 +136,13 @@ export class LineClient {
   ): Promise<unknown> {
     const body: ReplyMessageRequest = { replyToken, messages };
     const { data } = await this.request('POST', '/v2/bot/message/reply', body);
+    return data;
+  }
+
+  async markMessagesAsRead(markAsReadToken: string): Promise<unknown> {
+    const { data } = await this.request('POST', '/v2/bot/chat/markAsRead', {
+      markAsReadToken,
+    });
     return data;
   }
 
@@ -231,7 +249,7 @@ export class LineClient {
     imageData: ArrayBuffer,
     contentType: 'image/png' | 'image/jpeg' = 'image/png',
   ): Promise<void> {
-    assertLineMutationsAllowed();
+    this.assertMutationsAllowed();
 
     const url = `https://api-data.line.me/v2/bot/richmenu/${encodeURIComponent(richMenuId)}/content`;
     const res = await fetch(url, {

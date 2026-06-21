@@ -7,11 +7,13 @@ const lineSdkMocks = vi.hoisted(() => {
     pushTextMessage: vi.fn(),
     pushFlexMessage: vi.fn(),
     pushImageMessage: vi.fn(),
+    markMessagesAsRead: vi.fn(),
   };
   mocks.LineClient.mockImplementation(() => ({
     pushTextMessage: mocks.pushTextMessage,
     pushFlexMessage: mocks.pushFlexMessage,
     pushImageMessage: mocks.pushImageMessage,
+    markMessagesAsRead: mocks.markMessagesAsRead,
   }));
   return mocks;
 });
@@ -37,7 +39,12 @@ const { chats } = await import('./chats.js');
 
 type TestEnv = {
   Variables: { staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' } };
-  Bindings: { DB: D1Database; LINE_CHANNEL_ACCESS_TOKEN: string };
+  Bindings: {
+    DB: D1Database;
+    LINE_CHANNEL_ACCESS_TOKEN: string;
+    LINE_CAPTURE_ONLY?: string;
+    LINE_MANUAL_SEND_ENABLED?: string;
+  };
 };
 
 type FriendRow = {
@@ -74,6 +81,7 @@ type MessageRow = {
   content: string;
   created_at: string;
   delivery_type?: string | null;
+  mark_as_read_token?: string | null;
 };
 
 type SupportCaseRow = {
@@ -160,6 +168,20 @@ function makeChatDb(state: {
               item.friend_id === friendId
             ));
             return (row ? { id: row.id, title: row.title, status: row.status } : null) as T | null;
+          }
+          if (sql.includes('SELECT mark_as_read_token')) {
+            const [friendId] = bound as [string];
+            const row = messages
+              .filter((message) => (
+                message.friend_id === friendId &&
+                message.direction === 'incoming' &&
+                typeof (message as { mark_as_read_token?: unknown }).mark_as_read_token === 'string' &&
+                (message as { mark_as_read_token?: string }).mark_as_read_token
+              ))
+              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0] as
+              | (MessageRow & { mark_as_read_token?: string })
+              | undefined;
+            return (row ? { mark_as_read_token: row.mark_as_read_token } : null) as T | null;
           }
           return null as T | null;
         },
@@ -248,11 +270,15 @@ function makeChatDb(state: {
   return { db, calls, state: { messages, supportCases, supportEvents } };
 }
 
-function setupApp(db: D1Database, role: 'owner' | 'admin' | 'staff' = 'staff') {
+function setupApp(
+  db: D1Database,
+  role: 'owner' | 'admin' | 'staff' = 'staff',
+  envOverrides: Partial<TestEnv['Bindings']> = {},
+) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: '田島', role });
-    c.env = { DB: db, LINE_CHANNEL_ACCESS_TOKEN: 'fallback-token' };
+    c.env = { DB: db, LINE_CHANNEL_ACCESS_TOKEN: 'fallback-token', ...envOverrides };
     await next();
   });
   app.route('/', chats);
@@ -323,6 +349,7 @@ beforeEach(() => {
   lineSdkMocks.pushTextMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.pushFlexMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.pushImageMessage.mockReset().mockResolvedValue(undefined);
+  lineSdkMocks.markMessagesAsRead.mockReset().mockResolvedValue(undefined);
 });
 
 describe('chat support visibility', () => {
@@ -793,7 +820,7 @@ describe('chat support visibility', () => {
       nextStatus: 'customer_reply',
       statusUpdated: true,
     });
-    expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token');
+    expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token', { allowMutationsWhenDisabled: false });
     expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith('U-visible', '確認して折り返します。');
     expect(state.messages.at(-1)).toMatchObject({
       friend_id: 'friend-visible',
@@ -904,6 +931,63 @@ describe('chat support visibility', () => {
       contentPreview: 'sessionStorageなしでも紐付けます。',
       statusUpdateApplied: true,
     });
+  });
+
+  test('manual send can mark the latest incoming message as read while capture-only stays enabled', async () => {
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'incoming-1',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'text',
+          content: '確認お願いします',
+          created_at: '2026-06-12T09:30:00.000',
+          mark_as_read_token: 'read-token-1',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const res = await setupApp(db, 'owner', {
+      LINE_CAPTURE_ONLY: '1',
+      LINE_MANUAL_SEND_ENABLED: '1',
+    }).request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: '確認して折り返します。',
+        markAsRead: true,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: {
+        markAsRead: { requested: boolean; marked: boolean; reason: string | null };
+      };
+    };
+    expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token', { allowMutationsWhenDisabled: true });
+    expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith('U-visible', '確認して折り返します。');
+    expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('read-token-1');
+    expect(body.data.markAsRead).toEqual({ requested: true, marked: true, reason: null });
   });
 
   test('sending a support image reply records the chat message and support case event', async () => {

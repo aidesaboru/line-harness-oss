@@ -42,10 +42,38 @@ const FRIEND_MESSAGE_TYPES = new Set(['text', 'image', 'flex']);
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
+function lineApiErrorStatus(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
 function friendsRouteErrorKind(err: unknown): string {
+  const lineStatus = lineApiErrorStatus(err);
+  if (lineStatus != null) return `line_http_status_${lineStatus}`;
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function manualLineSendFailureMessage(err: unknown): string {
+  const status = lineApiErrorStatus(err);
+  if (err instanceof TypeError) {
+    return 'LINEへの接続に失敗しました。少し時間を置いてもう一度送信してください。';
+  }
+  if (status === 400) {
+    return 'LINE送信に失敗しました。送信先ユーザーまたはメッセージ内容をLINE側が受け付けませんでした。';
+  }
+  if (status === 401 || status === 403) {
+    return 'LINE送信に失敗しました。LINEチャネルのアクセストークンまたはMessaging API権限を確認してください。';
+  }
+  if (status === 429) {
+    return 'LINE送信に失敗しました。送信数の上限または一時的な制限に達しています。時間を置いて再送してください。';
+  }
+  if (status != null) {
+    return `LINE送信に失敗しました。LINE APIでエラーが返されました (${status})。`;
+  }
+  return 'LINE送信に失敗しました。もう一度お試しください。';
 }
 
 function clampLimit(raw: string | undefined, fallback = 50): number {
@@ -806,7 +834,12 @@ friends.post('/api/friends/:id/messages', async (c) => {
     );
 
     const message = buildMessage(tracked.messageType, tracked.content, messageBody.value.altText);
-    await lineClient.pushMessage(friend.line_user_id, [message]);
+    try {
+      await lineClient.pushMessage(friend.line_user_id, [message]);
+    } catch (err) {
+      console.error(`manual friend LINE send failed: ${friendsRouteErrorKind(err)}`);
+      return c.json({ success: false, error: manualLineSendFailureMessage(err) }, 502);
+    }
 
     // Log outgoing message
     const logId = crypto.randomUUID();

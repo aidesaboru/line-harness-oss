@@ -254,6 +254,16 @@ export function setCsrfToken(token: string | undefined | null): void {
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
+export class ApiRequestError extends Error {
+  constructor(
+    readonly status: number,
+    readonly apiError?: string,
+  ) {
+    super(apiError ? `API error: ${status}: ${apiError}` : `API error: ${status}`)
+    this.name = 'ApiRequestError'
+  }
+}
+
 export async function fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
   const method = (options?.method ?? 'GET').toUpperCase()
   const csrfHeaders: Record<string, string> = {}
@@ -271,7 +281,18 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
       ...options?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  if (!res.ok) {
+    let apiError: string | undefined
+    try {
+      const body = await res.json() as { error?: unknown }
+      if (typeof body.error === 'string' && body.error.trim()) {
+        apiError = body.error.trim()
+      }
+    } catch {
+      // Non-JSON error response. Keep the stable status-only fallback.
+    }
+    throw new ApiRequestError(res.status, apiError)
+  }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
 }

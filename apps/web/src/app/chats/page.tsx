@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
-import { api, fetchApi, type ChatMessageCursor } from '@/lib/api'
+import { ApiRequestError, api, fetchApi, type ChatMessageCursor } from '@/lib/api'
 import { messageTypePreview } from '@/lib/message-type-label'
 import {
   buildSupportChatRecoveryNotice,
@@ -162,6 +162,11 @@ function chatFailureMessage(kind: ChatFailureKind): string {
     case 'notes':
       return 'メモの保存に失敗しました。もう一度お試しください。'
   }
+}
+
+function chatActionFailureMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiRequestError && err.apiError) return err.apiError
+  return fallback
 }
 
 function buildEmptyChatDetailFromFriend(friend: {
@@ -324,8 +329,8 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
         createdAt: new Date().toISOString(),
       }])
       setMessage('')
-    } catch {
-      setSendError('メッセージの送信に失敗しました。')
+    } catch (err) {
+      setSendError(chatActionFailureMessage(err, chatFailureMessage('direct-send')))
     } finally {
       setSending(false)
       sendLockRef.current = false
@@ -810,11 +815,13 @@ export default function ChatsPage() {
     })
     sendLockRef.current = true
     setSending(true)
+    let sendFailureFallback = chatFailureMessage('text-send')
     if (supportContext) setSupportRecoveryNotice(null)
     try {
       const now = new Date().toISOString()
       // --- Image send path (runs first when image is present) ---
       if (pendingImage && pendingImage.mode === 'line-image') {
+        sendFailureFallback = chatFailureMessage('image-send')
         const imgPayload = JSON.stringify({
           originalContentUrl: pendingImage.originalContentUrl,
           previewImageUrl: pendingImage.previewImageUrl,
@@ -883,6 +890,7 @@ export default function ChatsPage() {
       }
       // --- Text send path (runs independently — both paths execute when both image and text are present) ---
       if (textContent) {
+        sendFailureFallback = chatFailureMessage('text-send')
         const content = textContent
         const sendResult = await api.chats.send(sendingChatId, {
           content,
@@ -949,8 +957,8 @@ export default function ChatsPage() {
           })
         })
       }
-    } catch {
-      setError(chatFailureMessage('text-send'))
+    } catch (err) {
+      setError(chatActionFailureMessage(err, sendFailureFallback))
     } finally {
       setSending(false)
       sendLockRef.current = false

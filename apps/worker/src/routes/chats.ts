@@ -126,6 +126,8 @@ function chatRouteErrorKind(err: unknown): string {
   if (err instanceof Error && typeof (err as ChatRouteError).status === 'number') {
     return `${err.name || 'error'}_${(err as ChatRouteError).status}`;
   }
+  const lineStatus = lineApiErrorStatus(err);
+  if (lineStatus != null) return `line_http_status_${lineStatus}`;
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
 }
@@ -143,6 +145,35 @@ function lineHttpError(status: number): ChatRouteError {
   err.name = 'LineHttpError';
   err.status = status;
   return err;
+}
+
+function lineApiErrorStatus(err: unknown): number | null {
+  if (err instanceof Error && typeof (err as ChatRouteError).status === 'number') {
+    return (err as ChatRouteError).status ?? null;
+  }
+  if (!(err instanceof Error)) return null;
+  const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function manualLineSendFailureMessage(err: unknown): string {
+  const status = lineApiErrorStatus(err);
+  if (err instanceof TypeError) {
+    return 'LINEへの接続に失敗しました。少し時間を置いてもう一度送信してください。';
+  }
+  if (status === 400) {
+    return 'LINE送信に失敗しました。送信先ユーザーまたはメッセージ内容をLINE側が受け付けませんでした。';
+  }
+  if (status === 401 || status === 403) {
+    return 'LINE送信に失敗しました。LINEチャネルのアクセストークンまたはMessaging API権限を確認してください。';
+  }
+  if (status === 429) {
+    return 'LINE送信に失敗しました。送信数の上限または一時的な制限に達しています。時間を置いて再送してください。';
+  }
+  if (status != null) {
+    return `LINE送信に失敗しました。LINE APIでエラーが返されました (${status})。`;
+  }
+  return 'LINE送信に失敗しました。もう一度お試しください。';
 }
 
 type ChatMessageType = 'text' | 'flex' | 'image';
@@ -1236,18 +1267,23 @@ chats.post('/api/chats/:id/send', async (c) => {
     });
     const { messageType, content } = normalized.payload;
 
-    if (messageType === 'text') {
-      await lineClient.pushTextMessage(friend.line_user_id, content);
-    } else if (messageType === 'flex') {
-      const contents = normalized.payload.flexContents;
-      await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
-    } else if (messageType === 'image') {
-      const parsed = normalized.payload.image;
-      await lineClient.pushImageMessage(
-        friend.line_user_id,
-        parsed.originalContentUrl,
-        parsed.previewImageUrl,
-      );
+    try {
+      if (messageType === 'text') {
+        await lineClient.pushTextMessage(friend.line_user_id, content);
+      } else if (messageType === 'flex') {
+        const contents = normalized.payload.flexContents;
+        await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+      } else if (messageType === 'image') {
+        const parsed = normalized.payload.image;
+        await lineClient.pushImageMessage(
+          friend.line_user_id,
+          parsed.originalContentUrl,
+          parsed.previewImageUrl,
+        );
+      }
+    } catch (err) {
+      console.error(`manual LINE send failed: ${chatRouteErrorKind(err)}`);
+      return c.json({ success: false, error: manualLineSendFailureMessage(err) }, 502);
     }
 
     const markAsRead = await markLatestIncomingAsRead(
@@ -1276,25 +1312,35 @@ chats.post('/api/chats/:id/send', async (c) => {
     } | null = null;
 
     if (supportCase) {
-      const statusUpdated = await markSupportCaseCustomerReply(c.env.DB, supportCase, staff, supportLineAccountId, now);
-      await addSupportReplyEvent(c.env.DB, supportCase, staff, {
-        chatId: chat.id,
-        friendId: friend.id,
-        lineAccountId: supportLineAccountId,
-        messageId: logId,
-        messageType,
-        content,
-        previousStatus: supportCase.status,
-        nextStatus: statusUpdated ? 'customer_reply' : null,
-        statusUpdateApplied: statusUpdated,
-        createdAt: now,
-      });
-      supportCaseResult = {
-        id: supportCase.id,
-        previousStatus: supportCase.status,
-        nextStatus: statusUpdated ? 'customer_reply' : null,
-        statusUpdated,
-      };
+      try {
+        const statusUpdated = await markSupportCaseCustomerReply(c.env.DB, supportCase, staff, supportLineAccountId, now);
+        await addSupportReplyEvent(c.env.DB, supportCase, staff, {
+          chatId: chat.id,
+          friendId: friend.id,
+          lineAccountId: supportLineAccountId,
+          messageId: logId,
+          messageType,
+          content,
+          previousStatus: supportCase.status,
+          nextStatus: statusUpdated ? 'customer_reply' : null,
+          statusUpdateApplied: statusUpdated,
+          createdAt: now,
+        });
+        supportCaseResult = {
+          id: supportCase.id,
+          previousStatus: supportCase.status,
+          nextStatus: statusUpdated ? 'customer_reply' : null,
+          statusUpdated,
+        };
+      } catch (err) {
+        console.error(`support reply bookkeeping failed after LINE send: ${chatRouteErrorKind(err)}`);
+        supportCaseResult = {
+          id: supportCase.id,
+          previousStatus: supportCase.status,
+          nextStatus: null,
+          statusUpdated: false,
+        };
+      }
     }
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）

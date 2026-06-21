@@ -1283,13 +1283,13 @@ describe('chat support visibility', () => {
         body: JSON.stringify({ content: '確認して折り返します。' }),
       });
 
-      expect(res.status).toBe(500);
+      expect(res.status).toBe(502);
       const body = (await res.json()) as { success: boolean; error: string };
-      expect(body).toEqual({ success: false, error: 'Internal server error' });
+      expect(body).toEqual({ success: false, error: 'LINE送信に失敗しました。もう一度お試しください。' });
       expect(state.messages).toHaveLength(0);
       expect(dbMocks.updateChat).not.toHaveBeenCalled();
       const logged = loggedText(errorSpy);
-      expect(logged).toContain('POST /api/chats/:id/send error: Error');
+      expect(logged).toContain('manual LINE send failed: Error');
       expect(logged).not.toContain('LINE push secret');
       expect(logged).not.toContain('account-token-secret');
       expect(logged).not.toContain('U-visible');

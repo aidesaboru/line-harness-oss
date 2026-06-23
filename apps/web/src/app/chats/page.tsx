@@ -42,6 +42,7 @@ interface ChatMessage {
   direction: 'incoming' | 'outgoing'
   messageType: string
   content: string
+  source?: string | null
   createdAt: string
 }
 
@@ -219,6 +220,11 @@ function markAsReadFailureMessage(result?: { requested: boolean; marked: boolean
     return '送信は完了しましたが、LINE公式側の既読化に必要なトークンがまだ保存されていません。次回以降の受信メッセージから既読化できます。'
   }
   return '送信は完了しましたが、LINE公式側の既読化に失敗しました。'
+}
+
+function chatMessageSourceLabel(source?: string | null): string {
+  if (source === 'line_official') return 'LINE公式'
+  return ''
 }
 
 function sameYmd(aIso: string, bIso: string): boolean {
@@ -495,6 +501,7 @@ export default function ChatsPage() {
   const [supportRecoveryNotice, setSupportRecoveryNotice] = useState<SupportChatRecoveryNotice | null>(null)
   const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
   const [sending, setSending] = useState(false)
+  const [recordingExternalOutgoing, setRecordingExternalOutgoing] = useState(false)
   const sendLockRef = useRef(false)
   const [notes, setNotes] = useState('')
   const [savingNotes, setSavingNotes] = useState(false)
@@ -965,6 +972,58 @@ export default function ChatsPage() {
     }
   }
 
+  const handleRecordExternalOutgoing = async () => {
+    if (!selectedChatId || sending || recordingExternalOutgoing || sendLockRef.current) return
+    const recordingChatId = selectedChatId
+    const content = messageContent.trim()
+    if (!content) return
+    setRecordingExternalOutgoing(true)
+    setError('')
+    try {
+      const result = await api.chats.recordExternalOutgoing(recordingChatId, { content })
+      if (!result.success) {
+        setError('LINE公式送信の記録に失敗しました。')
+        return
+      }
+      const message = result.data.message
+      setMessageContent('')
+      setChatDetail((prev) => (prev && prev.id === recordingChatId) ? {
+        ...prev,
+        lastMessageAt: message.createdAt,
+        status: 'in_progress',
+        messages: [
+          ...(prev.messages ?? []),
+          message,
+        ],
+      } : prev)
+      setChats((prev) => {
+        const currentFilter = statusFilterRef.current
+        const currentUnansweredOnly = unansweredOnlyRef.current
+        const updated = prev.map((chat) => chat.id === recordingChatId ? {
+          ...chat,
+          lastMessageAt: message.createdAt,
+          status: 'in_progress' as const,
+          lastMessageContent: content,
+          lastMessageDirection: 'outgoing' as const,
+          lastMessageType: 'text' as const,
+        } : chat)
+        let filtered = currentFilter === 'all' ? updated : updated.filter((chat) => chat.status === currentFilter)
+        if (currentUnansweredOnly) {
+          filtered = filtered.filter((chat) => chat.id !== recordingChatId)
+        }
+        return [...filtered].sort((a, b) => {
+          const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+          const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+          return bt - at
+        })
+      })
+    } catch (err) {
+      setError(chatActionFailureMessage(err, 'LINE公式送信の記録に失敗しました。'))
+    } finally {
+      setRecordingExternalOutgoing(false)
+    }
+  }
+
   const handleStatusUpdate = async (newStatus: Chat['status']) => {
     if (!selectedChatId) return
     try {
@@ -1323,6 +1382,7 @@ export default function ChatsPage() {
                     const prevMsg = idx > 0 ? (chatDetail.messages ?? [])[idx - 1] : null
                     const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
                     const isOutgoing = msg.direction === 'outgoing'
+                    const sourceLabel = chatMessageSourceLabel(msg.source)
 
                     // メッセージ表示の分岐
                     let bubbleContent: React.ReactNode
@@ -1381,9 +1441,14 @@ export default function ChatsPage() {
                               {bubbleContent}
                             </div>
                             {/* 時刻 */}
-                            <span className="text-xs text-white/50 mt-0.5 px-1">
-                              {new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}
-                            </span>
+                            <div className="mt-0.5 flex items-center gap-1 px-1 text-xs text-white/50">
+                              {sourceLabel && (
+                                <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] text-white/80">
+                                  {sourceLabel}
+                                </span>
+                              )}
+                              <span>{new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -1552,14 +1617,24 @@ export default function ChatsPage() {
                     placeholder="メッセージを入力..."
                     className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
                   />
-                  <button
-                    onClick={handleSendMessage}
-                    disabled={sending || (!messageContent.trim() && !pendingImage)}
-                    className="px-4 py-2 text-sm font-medium text-white rounded-lg transition-opacity hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    style={{ backgroundColor: '#06C755' }}
-                  >
-                    {sending ? '送信中...' : '送信'}
-                  </button>
+                  <div className="flex w-36 flex-col gap-1">
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={sending || recordingExternalOutgoing || (!messageContent.trim() && !pendingImage)}
+                      className="min-h-9 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      {sending ? '送信中...' : '送信'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRecordExternalOutgoing}
+                      disabled={sending || recordingExternalOutgoing || !messageContent.trim() || Boolean(pendingImage)}
+                      className="min-h-8 whitespace-nowrap rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {recordingExternalOutgoing ? '記録中...' : '公式送信を記録'}
+                    </button>
+                  </div>
                 </div>
               </div>
             </>

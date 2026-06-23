@@ -80,6 +80,7 @@ type MessageRow = {
   message_type: string;
   content: string;
   created_at: string;
+  source?: string | null;
   delivery_type?: string | null;
   mark_as_read_token?: string | null;
 };
@@ -222,8 +223,11 @@ function makeChatDb(state: {
           calls.push({ method: 'run', sql, binds: bound });
           let changes = 1;
           if (sql.includes('INSERT INTO messages_log')) {
-            const [id, friendId, messageType, content] = bound as string[];
-            const createdAt = bound[5] as string;
+            const [id, friendId] = bound as string[];
+            const isExternalOutgoing = sql.includes("'line_official'");
+            const messageType = isExternalOutgoing ? 'text' : bound[2] as string;
+            const content = isExternalOutgoing ? bound[2] as string : bound[3] as string;
+            const createdAt = (isExternalOutgoing ? bound[4] : bound[5]) as string;
             messages.push({
               id,
               friend_id: friendId,
@@ -231,6 +235,7 @@ function makeChatDb(state: {
               message_type: messageType,
               content,
               created_at: createdAt,
+              source: isExternalOutgoing ? 'line_official' : 'manual',
             });
           } else if (sql.includes('INSERT INTO support_case_events')) {
             const [id, caseId, eventType, actorId, actorName, body, metadata, createdAt] = bound as string[];
@@ -988,6 +993,61 @@ describe('chat support visibility', () => {
     expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith('U-visible', '確認して折り返します。');
     expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('read-token-1');
     expect(body.data.markAsRead).toEqual({ requested: true, marked: true, reason: null });
+  });
+
+  test('records a LINE Official Account outgoing message without sending through LINE API', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/external-outgoing', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: 'LINE公式側で送信済みです。' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: {
+        recorded: boolean;
+        message: { source: string; content: string };
+      };
+    };
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(body.data.recorded).toBe(true);
+    expect(body.data.message).toMatchObject({
+      source: 'line_official',
+      content: 'LINE公式側で送信済みです。',
+    });
+    expect(state.messages.at(-1)).toMatchObject({
+      friend_id: 'friend-visible',
+      direction: 'outgoing',
+      message_type: 'text',
+      content: 'LINE公式側で送信済みです。',
+      source: 'line_official',
+    });
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', {
+      status: 'in_progress',
+      lastMessageAt: '2026-06-12T10:00:00.000',
+    });
   });
 
   test('sending a support image reply records the chat message and support case event', async () => {

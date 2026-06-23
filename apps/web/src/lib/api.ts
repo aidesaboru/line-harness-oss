@@ -64,6 +64,7 @@ export type ChatMessage = {
   direction: 'incoming' | 'outgoing'
   messageType: string
   content: string
+  source?: string | null
   createdAt: string
 }
 
@@ -92,6 +93,12 @@ export type ChatSendResponse = {
     nextStatus: 'customer_reply' | null
     statusUpdated: boolean
   } | null
+}
+
+export type ChatExternalOutgoingResponse = {
+  recorded: boolean
+  messageId: string
+  message: ChatMessage
 }
 
 export type SupportCaseStatus =
@@ -1050,6 +1057,11 @@ export const api = {
       }),
     send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null; markAsRead?: boolean }) =>
       fetchApi<ApiResponse<ChatSendResponse>>(`/api/chats/${id}/send`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    recordExternalOutgoing: (id: string, data: { content: string }) =>
+      fetchApi<ApiResponse<ChatExternalOutgoingResponse>>(`/api/chats/${id}/external-outgoing`, {
         method: 'POST',
         body: JSON.stringify(data),
       }),

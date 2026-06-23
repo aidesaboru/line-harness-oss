@@ -105,6 +105,9 @@ type ChatSendBody = {
   lineAccountId?: string | null;
   markAsRead?: boolean;
 };
+type ExternalOutgoingBody = {
+  content: string;
+};
 
 type OperatorCreateBody = { name: string; email: string; role?: string };
 type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
@@ -435,6 +438,15 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
       markAsRead: raw.markAsRead === true,
     },
   };
+}
+
+function parseExternalOutgoingBody(raw: unknown): ValueResult<ExternalOutgoingBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'body must be an object' };
+  if (typeof raw.content !== 'string') return { ok: false, error: 'content must be a string' };
+  const content = raw.content.trim();
+  if (!content) return { ok: false, error: 'content is required' };
+  if (content.length > 5000) return { ok: false, error: 'content is too long' };
+  return { ok: true, value: { content } };
 }
 
 function isHttpsUrl(value: string): boolean {
@@ -1058,7 +1070,7 @@ chats.get('/api/chats/:id', async (c) => {
 
     const messages = await c.env.DB
       .prepare(
-        `SELECT id, friend_id, direction, message_type, content, created_at
+        `SELECT id, friend_id, direction, message_type, content, source, created_at
          FROM messages_log
          WHERE ${messageWhere.join(' AND ')}
          ORDER BY created_at DESC, id DESC LIMIT ?`,
@@ -1091,6 +1103,7 @@ chats.get('/api/chats/:id', async (c) => {
           direction: m.direction,
           messageType: m.message_type,
           content: m.content,
+          source: m.source,
           createdAt: m.created_at,
         })),
       },
@@ -1144,6 +1157,57 @@ chats.put('/api/chats/:id', async (c) => {
     });
   } catch (err) {
     console.error(`PUT /api/chats/:id error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/external-outgoing', async (c) => {
+  try {
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const body = parseExternalOutgoingBody(await readJsonBody(c));
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const { friend } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      chat.friend_id,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const messageId = crypto.randomUUID();
+    const now = jstNow();
+    await c.env.DB
+      .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
+         VALUES (?, ?, 'outgoing', 'text', ?, 'line_official', ?, ?)`,
+      )
+      .bind(messageId, friend.id, body.value.content, friend.line_account_id ?? null, now)
+      .run();
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: now });
+
+    return c.json({
+      success: true,
+      data: {
+        recorded: true,
+        messageId,
+        message: {
+          id: messageId,
+          direction: 'outgoing',
+          messageType: 'text',
+          content: body.value.content,
+          source: 'line_official',
+          createdAt: now,
+        },
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/external-outgoing error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

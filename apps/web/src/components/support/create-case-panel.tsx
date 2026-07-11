@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SupportPriority } from '@/lib/api'
 import { categoryOptions, getCreateCaseValidationIssues, priorityOptions } from './support-meta'
 import { btnBrandCls, btnSecondaryCls, Field, inputCls, selectCls, textareaCls, DueTimePresetRow, XIcon } from './support-ui'
@@ -29,6 +29,7 @@ interface CreateCasePanelProps {
   chats: ChatOption[]
   staffName: string
   staffOptions: string[]
+  initialFriendId?: string | null
   saving: boolean
   onCreate: (input: CreateCaseInput) => Promise<boolean>
   onClose: () => void
@@ -57,6 +58,7 @@ export default function CreateCasePanel({
   chats,
   staffName,
   staffOptions,
+  initialFriendId,
   saving,
   onCreate,
   onClose,
@@ -83,6 +85,22 @@ export default function CreateCasePanel({
       return next
     })
   }
+
+  useEffect(() => {
+    if (!initialFriendId) return
+    setLinkMode('chat')
+    setForm((prev) => {
+      const chat = chats.find((item) => item.friendId === initialFriendId)
+      const next = { ...prev, friendId: initialFriendId }
+      if (!prev.customerSummary.trim() && chat?.lastMessageContent) {
+        next.customerSummary = chat.lastMessageContent.slice(0, 500)
+      }
+      if (!prev.title.trim() && chat?.lastMessageContent) {
+        next.title = chat.lastMessageContent.slice(0, 42)
+      }
+      return next
+    })
+  }, [chats, initialFriendId])
 
   const handleLinkModeChange = (mode: LinkMode) => {
     setLinkMode(mode)

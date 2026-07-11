@@ -84,6 +84,7 @@ export default function SupportPage() {
   const [staffRole, setStaffRole] = useState('')
   const [staffIdentityReady, setStaffIdentityReady] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
+  const [createInitialFriendId, setCreateInitialFriendId] = useState<string | null>(null)
   const [caseQueryReady, setCaseQueryReady] = useState(false)
   const [chatOptionsError, setChatOptionsError] = useState<string | null>(null)
 
@@ -208,7 +209,13 @@ export default function SupportPage() {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
     const caseId = params.get('case')
+    const createRequested = params.get('create') === '1'
+    const createFriendId = params.get('friend') || params.get('createFriend')
     if (caseId) setSelectedCaseId(caseId)
+    if (createRequested || createFriendId) {
+      setCreateOpen(true)
+      setCreateInitialFriendId(createFriendId)
+    }
     setCaseQueryReady(true)
   }, [])
 
@@ -499,6 +506,16 @@ export default function SupportPage() {
     setCaseForm(savedForm)
   }, [savedForm])
 
+  const clearCreateDeepLink = useCallback(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    params.delete('create')
+    params.delete('friend')
+    params.delete('createFriend')
+    const next = params.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${next ? `?${next}` : ''}${window.location.hash}`)
+  }, [])
+
   const handleCreate = useCallback(async (input: CreateCaseInput): Promise<boolean> => {
     if (!selectedAccountId || saving) return false
     const blockingIssue = getCreateCaseValidationIssues(input).find((issue) => issue.blocking)
@@ -531,6 +548,8 @@ export default function SupportPage() {
       })
       if (res.success) {
         notify('success', 'チケットを作成しました')
+        setCreateInitialFriendId(null)
+        clearCreateDeepLink()
         setSelectedCaseId(res.data.id)
         await loadCases()
         return true
@@ -543,7 +562,7 @@ export default function SupportPage() {
     } finally {
       setSaving(false)
     }
-  }, [selectedAccountId, saving, requestConfirm, notify, loadCases])
+  }, [selectedAccountId, saving, requestConfirm, notify, loadCases, clearCreateDeepLink])
 
   const handleCopyReplyDraft = useCallback(async () => {
     const result = await copyText(caseForm.customerReplyDraft)
@@ -821,9 +840,14 @@ export default function SupportPage() {
           chats={visibleChats}
           staffName={verifiedStaffName}
           staffOptions={assigneeSuggestions}
+          initialFriendId={createInitialFriendId}
           saving={saving}
           onCreate={handleCreate}
-          onClose={() => setCreateOpen(false)}
+          onClose={() => {
+            setCreateOpen(false)
+            setCreateInitialFriendId(null)
+            clearCreateDeepLink()
+          }}
         />
       )}
 

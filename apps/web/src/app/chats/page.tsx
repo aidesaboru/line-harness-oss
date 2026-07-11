@@ -196,6 +196,58 @@ function isStaleChat(chat: Pick<Chat, 'lastMessageAt' | 'status'>): boolean {
   return t > 0 && Date.now() - t >= CHAT_STALE_MS
 }
 
+function chatMessagePreview(chat: Pick<Chat, 'lastMessageContent' | 'lastMessageType'>): string {
+  const previewRaw = chat.lastMessageContent ?? ''
+  if (chat.lastMessageType === 'image') return '画像'
+  if (chat.lastMessageType === 'flex') return 'Flexメッセージ'
+  if (chat.lastMessageType === 'sticker') return 'スタンプ'
+  if (chat.lastMessageType === 'video') return '動画'
+  if (chat.lastMessageType === 'audio') return '音声'
+  if (chat.lastMessageType === 'file') return 'ファイル'
+  if (chat.lastMessageType === 'location') return '位置情報'
+  return previewRaw.replace(/\n+/g, ' ').slice(0, 70)
+}
+
+function chatWorkReason(chat: Chat): { label: string; className: string } {
+  if (isStaleChat(chat)) {
+    return {
+      label: `24h超過 ${formatElapsed(chat.lastMessageAt)}`,
+      className: 'border-orange-200 bg-orange-50 text-orange-700',
+    }
+  }
+  if (chat.activeSupportCase?.status === 'secondary_answered' || chat.activeSupportCase?.latestEscalationStatus === 'answered') {
+    return {
+      label: '二次回答済み',
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+    }
+  }
+  if (chat.status === 'unread') {
+    return {
+      label: '未読',
+      className: 'border-red-200 bg-red-50 text-red-700',
+    }
+  }
+  if (chat.activeSupportCase?.latestEscalationStatus === 'pending') {
+    return {
+      label: '二次対応待ち',
+      className: 'border-purple-200 bg-purple-50 text-purple-700',
+    }
+  }
+  return {
+    label: statusConfig[chat.status]?.label ?? '確認',
+    className: 'border-slate-200 bg-slate-50 text-slate-600',
+  }
+}
+
+function chatWorkRank(chat: Chat): number {
+  if (isStaleChat(chat)) return 0
+  if (chat.activeSupportCase?.status === 'secondary_answered' || chat.activeSupportCase?.latestEscalationStatus === 'answered') return 1
+  if (chat.status === 'unread') return 2
+  if (chat.activeSupportCase?.latestEscalationStatus === 'pending') return 3
+  if (chat.status === 'in_progress') return 4
+  return 5
+}
+
 function apiErrorStatus(err: unknown): number | null {
   const message = err instanceof Error ? err.message : ''
   const match = message.match(/^API error:\s*(\d{3})\b/)
@@ -309,6 +361,35 @@ function SearchIcon({ className = 'h-4 w-4' }: { className?: string }) {
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="8" />
       <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
+
+function ArrowRightIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  )
+}
+
+function TicketIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+      <path d="M13 5v2" />
+      <path d="M13 17v2" />
+      <path d="M13 11v2" />
+    </svg>
+  )
+}
+
+function InboxIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
+      <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z" />
     </svg>
   )
 }
@@ -880,6 +961,224 @@ function ChatInternalPanel({
   )
 }
 
+function ChatWorkDashboard({
+  totalCount,
+  staleChatCount,
+  unreadChatCount,
+  inProgressChatCount,
+  supportLinkedCount,
+  secondaryAnsweredCount,
+  priorityChats,
+  staleOnly,
+  loading,
+  onOpenStaleQueue,
+  onOpenUnreadQueue,
+  onOpenUnansweredQueue,
+  onSelectChat,
+  onClearQueue,
+}: {
+  totalCount: number
+  staleChatCount: number
+  unreadChatCount: number
+  inProgressChatCount: number
+  supportLinkedCount: number
+  secondaryAnsweredCount: number
+  priorityChats: Chat[]
+  staleOnly: boolean
+  loading: boolean
+  onOpenStaleQueue: () => void
+  onOpenUnreadQueue: () => void
+  onOpenUnansweredQueue: () => void
+  onSelectChat: (chatId: string) => void
+  onClearQueue: () => void
+}) {
+  const statItems = [
+    {
+      label: '24h超過',
+      value: staleChatCount,
+      description: '古い順で確認',
+      className: staleChatCount > 0 ? 'border-orange-200 bg-orange-50 text-orange-800' : 'border-slate-200 bg-white text-slate-600',
+      icon: <FlameIcon className="h-4 w-4" />,
+      onClick: onOpenStaleQueue,
+    },
+    {
+      label: '未読',
+      value: unreadChatCount,
+      description: '顧客返信を優先',
+      className: unreadChatCount > 0 ? 'border-red-200 bg-red-50 text-red-800' : 'border-slate-200 bg-white text-slate-600',
+      icon: <InboxIcon className="h-4 w-4" />,
+      onClick: onOpenUnreadQueue,
+    },
+    {
+      label: '対応中',
+      value: inProgressChatCount,
+      description: '作業中の会話',
+      className: 'border-amber-200 bg-amber-50 text-amber-800',
+      icon: <ArrowRightIcon className="h-4 w-4" />,
+      onClick: onOpenUnansweredQueue,
+    },
+    {
+      label: 'チケット連携',
+      value: supportLinkedCount,
+      description: secondaryAnsweredCount > 0 ? `二次回答済み ${secondaryAnsweredCount}件` : '案件化済み',
+      className: secondaryAnsweredCount > 0 ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white text-slate-600',
+      icon: <TicketIcon className="h-4 w-4" />,
+      onClick: onOpenUnansweredQueue,
+    },
+  ]
+
+  return (
+    <div className="flex h-full flex-col bg-slate-50">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold text-slate-400">オペレーション</p>
+            <h2 className="mt-1 text-xl font-bold text-slate-950">今日の対応</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              {loading ? 'チャット一覧を更新中です' : `${totalCount}件の会話から優先度順に処理できます`}
+            </p>
+          </div>
+          {staleOnly && (
+            <button
+              type="button"
+              onClick={onClearQueue}
+              className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-xs font-bold text-orange-700 transition-colors hover:bg-orange-100"
+            >
+              24h超過のみを解除
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-5">
+        <div className="grid gap-3 xl:grid-cols-4">
+          {statItems.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              onClick={item.onClick}
+              className={`rounded-lg border px-4 py-3 text-left shadow-sm transition hover:shadow-md ${item.className}`}
+            >
+              <span className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 text-sm font-bold">
+                  {item.icon}
+                  {item.label}
+                </span>
+                <span className="text-2xl font-black tabular-nums">{item.value}</span>
+              </span>
+              <span className="mt-1 block text-xs font-semibold opacity-70">{item.description}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
+          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 px-4 py-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-950">次に見るチャット</h3>
+                <p className="mt-0.5 text-xs text-slate-500">24h超過 二次回答 未読の順で並べています</p>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenStaleQueue}
+                className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-bold text-slate-700 transition-colors hover:bg-white"
+              >
+                24h超過を開く
+              </button>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {priorityChats.length === 0 ? (
+                <div className="px-4 py-10 text-center">
+                  <p className="text-sm font-bold text-slate-700">今すぐ対応が必要なチャットはありません</p>
+                  <p className="mt-1 text-xs text-slate-400">新しい問い合わせが届くとここに表示されます</p>
+                </div>
+              ) : priorityChats.map((chat) => {
+                const reason = chatWorkReason(chat)
+                const preview = chatMessagePreview(chat)
+                return (
+                  <div key={chat.id} className="flex items-center gap-3 px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() => onSelectChat(chat.id)}
+                      className="min-w-0 flex-1 rounded-md px-1 py-1 text-left transition-colors hover:bg-slate-50"
+                    >
+                      <span className="flex items-start gap-3">
+                        {chat.friendPictureUrl ? (
+                          <img src={chat.friendPictureUrl} alt="" className="h-9 w-9 shrink-0 rounded-full object-cover" />
+                        ) : (
+                          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-200 text-sm font-bold text-slate-500">
+                            {chat.friendName.charAt(0)}
+                          </span>
+                        )}
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="truncate text-sm font-bold text-slate-900">{chat.friendName}</span>
+                            <span className="shrink-0 text-[11px] text-slate-400">{formatDatetime(chat.lastMessageAt)}</span>
+                          </span>
+                          <span className={`mt-1 inline-flex max-w-full rounded-full border px-2 py-0.5 text-[11px] font-bold ${reason.className}`}>
+                            <span className="truncate">{reason.label}</span>
+                          </span>
+                          <span className="mt-1 block truncate text-xs text-slate-500">
+                            {chat.lastMessageDirection === 'outgoing' ? '送信済み ' : ''}
+                            {preview || 'まだメッセージなし'}
+                          </span>
+                        </span>
+                      </span>
+                    </button>
+                    <Link
+                      href={`/support?create=1&friend=${encodeURIComponent(chat.friendId)}`}
+                      className="hidden shrink-0 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 transition-colors hover:bg-emerald-100 sm:inline-flex"
+                    >
+                      チケット化
+                    </Link>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <h3 className="text-sm font-bold text-slate-950">関連導線</h3>
+            <div className="mt-3 rounded-lg border border-orange-100 bg-orange-50 px-3 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <span className="inline-flex items-center gap-2 text-sm font-bold text-orange-800">
+                  <FlameIcon className="h-4 w-4" />
+                  24h超過
+                </span>
+                <span className="text-lg font-black tabular-nums text-orange-800">{staleChatCount}</span>
+              </div>
+              <button
+                type="button"
+                onClick={onOpenStaleQueue}
+                className="mt-3 inline-flex w-full items-center justify-between rounded-md bg-white px-3 py-2 text-sm font-bold text-orange-700 ring-1 ring-orange-200 transition-colors hover:bg-orange-100"
+              >
+                古い順で開く
+                <ArrowRightIcon />
+              </button>
+            </div>
+            <div className="mt-4 grid gap-2">
+              <Link
+                href="/support"
+                className="inline-flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-white"
+              >
+                チケット管理を開く
+                <ArrowRightIcon />
+              </Link>
+              <Link
+                href="/notifications"
+                className="inline-flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-bold text-slate-700 transition-colors hover:bg-white"
+              >
+                通知センターを見る
+                <ArrowRightIcon />
+              </Link>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   friendId: string
   friend: FriendItem | null
@@ -1085,6 +1384,7 @@ export default function ChatsPage() {
     if (typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('unanswered') === '1'
   })
+  const [staleOnly, setStaleOnly] = useState(false)
 
   // unansweredOnly 変更時に URL を書き戻す
   useEffect(() => {
@@ -1510,6 +1810,19 @@ export default function ChatsPage() {
     setInternalChatOpen(false)
   }
 
+  const handleOpenWorkQueue = (
+    mode: ChatSortMode,
+    chatId?: string | null,
+    options: { status?: StatusFilter; staleOnly?: boolean; unansweredOnly?: boolean } = {},
+  ) => {
+    setSelectedFriendId(null)
+    setStatusFilter(options.status ?? 'all')
+    setUnansweredOnly(options.unansweredOnly ?? false)
+    setStaleOnly(options.staleOnly ?? false)
+    setSortMode(mode)
+    if (chatId) handleSelectChat(chatId)
+  }
+
   const handleSelectQuoteTarget = (message: ChatMessage) => {
     setQuoteTarget(message)
     setError('')
@@ -1920,7 +2233,8 @@ export default function ChatsPage() {
   }
 
   const visibleChats = useMemo(() => {
-    return [...chats].sort((a, b) => {
+    const filtered = staleOnly ? chats.filter(isStaleChat) : chats
+    return [...filtered].sort((a, b) => {
       const at = getTime(a.lastMessageAt)
       const bt = getTime(b.lastMessageAt)
 
@@ -1948,9 +2262,48 @@ export default function ChatsPage() {
       }
       return bt - at
     })
-  }, [chats, sortMode])
+  }, [chats, sortMode, staleOnly])
 
   const staleChatCount = useMemo(() => chats.filter(isStaleChat).length, [chats])
+  const unreadChatCount = useMemo(() => chats.filter((chat) => chat.status === 'unread').length, [chats])
+  const inProgressChatCount = useMemo(() => chats.filter((chat) => chat.status === 'in_progress').length, [chats])
+  const supportLinkedCount = useMemo(() => chats.filter((chat) => activeSupportCaseBadge(chat.activeSupportCase)).length, [chats])
+  const secondaryAnsweredCount = useMemo(() => (
+    chats.filter((chat) => chat.activeSupportCase?.status === 'secondary_answered' || chat.activeSupportCase?.latestEscalationStatus === 'answered').length
+  ), [chats])
+  const oldestStaleChat = useMemo(() => (
+    chats
+      .filter(isStaleChat)
+      .sort((a, b) => getTime(a.lastMessageAt) - getTime(b.lastMessageAt))[0] ?? null
+  ), [chats])
+  const firstUnreadChat = useMemo(() => (
+    chats
+      .filter((chat) => chat.status === 'unread')
+      .sort((a, b) => getTime(b.lastMessageAt) - getTime(a.lastMessageAt))[0] ?? null
+  ), [chats])
+  const firstActionableChat = useMemo(() => (
+    chats
+      .filter((chat) => chat.status !== 'resolved' || Boolean(activeSupportCaseBadge(chat.activeSupportCase)))
+      .sort((a, b) => {
+        const ar = chatWorkRank(a)
+        const br = chatWorkRank(b)
+        if (ar !== br) return ar - br
+        if (isStaleChat(a) && isStaleChat(b)) return getTime(a.lastMessageAt) - getTime(b.lastMessageAt)
+        return getTime(b.lastMessageAt) - getTime(a.lastMessageAt)
+      })[0] ?? null
+  ), [chats])
+  const priorityChats = useMemo(() => (
+    chats
+      .filter((chat) => chat.status !== 'resolved' || Boolean(activeSupportCaseBadge(chat.activeSupportCase)))
+      .sort((a, b) => {
+        const ar = chatWorkRank(a)
+        const br = chatWorkRank(b)
+        if (ar !== br) return ar - br
+        if (isStaleChat(a) && isStaleChat(b)) return getTime(a.lastMessageAt) - getTime(b.lastMessageAt)
+        return getTime(b.lastMessageAt) - getTime(a.lastMessageAt)
+      })
+      .slice(0, 5)
+  ), [chats])
   const selectedSupportBadge = activeSupportCaseBadge(chatDetail?.activeSupportCase)
   const chatMessagesById = useMemo(
     () => new Map((chatDetail?.messages ?? []).map((message) => [message.id, message] as const)),
@@ -1986,10 +2339,21 @@ export default function ChatsPage() {
           <div className="border-b border-gray-100 bg-white px-3 py-2">
             <div className="mb-2 flex items-center justify-between gap-2 text-xs text-gray-500">
               <span>{debouncedSearchTerm ? `検索結果 ${visibleChats.length}件` : `${chats.length}件中 ${visibleChats.length}件を表示`}</span>
-              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${staleChatCount > 0 ? 'bg-orange-50 text-orange-700' : 'bg-gray-100 text-gray-500'}`}>
+              <button
+                type="button"
+                onClick={() => handleOpenWorkQueue('stale', oldestStaleChat?.id ?? null, { staleOnly: true })}
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold transition-colors ${
+                  staleOnly
+                    ? 'bg-orange-600 text-white'
+                    : staleChatCount > 0
+                      ? 'bg-orange-50 text-orange-700 hover:bg-orange-100'
+                      : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                }`}
+                title="24時間超過のチャットだけを表示"
+              >
                 <FlameIcon className="h-3 w-3" />
                 24h超過 {staleChatCount}
-              </span>
+              </button>
             </div>
             <div className="relative mb-2">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
@@ -2017,7 +2381,10 @@ export default function ChatsPage() {
             {statusFilters.map((f) => (
               <button
                 key={f.key}
-                onClick={() => setStatusFilter(f.key)}
+                onClick={() => {
+                  setStatusFilter(f.key)
+                  setStaleOnly(false)
+                }}
                 disabled={unansweredOnly}
                 className={`min-h-10 rounded-full px-4 py-2 text-sm font-bold transition-colors ${
                   statusFilter === f.key
@@ -2042,7 +2409,10 @@ export default function ChatsPage() {
               <input
                 type="checkbox"
                 checked={unansweredOnly}
-                onChange={(e) => setUnansweredOnly(e.target.checked)}
+                onChange={(e) => {
+                  setUnansweredOnly(e.target.checked)
+                  if (e.target.checked) setStaleOnly(false)
+                }}
                 className="h-4 w-4 rounded"
               />
               未対応のみ
@@ -2172,9 +2542,28 @@ export default function ChatsPage() {
               onSent={() => { setSelectedFriendId(null); loadChats(); }}
             />
           ) : !selectedChatId ? (
-            <div className="flex-1 flex items-center justify-center">
-              <p className="text-gray-400 text-sm">チャットを選択してください</p>
-            </div>
+            <ChatWorkDashboard
+              totalCount={chats.length}
+              staleChatCount={staleChatCount}
+              unreadChatCount={unreadChatCount}
+              inProgressChatCount={inProgressChatCount}
+              supportLinkedCount={supportLinkedCount}
+              secondaryAnsweredCount={secondaryAnsweredCount}
+              priorityChats={priorityChats}
+              staleOnly={staleOnly}
+              loading={loading}
+              onOpenStaleQueue={() => handleOpenWorkQueue('stale', oldestStaleChat?.id ?? null, { staleOnly: true })}
+              onOpenUnreadQueue={() => handleOpenWorkQueue('unanswered', firstUnreadChat?.id ?? null, { status: 'unread' })}
+              onOpenUnansweredQueue={() => handleOpenWorkQueue('unanswered', firstActionableChat?.id ?? null, { unansweredOnly: true })}
+              onSelectChat={(chatId) => {
+                setSelectedFriendId(null)
+                handleSelectChat(chatId)
+              }}
+              onClearQueue={() => {
+                setStaleOnly(false)
+                setSortMode('recent')
+              }}
+            />
           ) : detailLoading ? (
             <div className="flex-1 flex items-center justify-center">
               <p className="text-gray-400 text-sm">読み込み中...</p>

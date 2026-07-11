@@ -256,7 +256,7 @@ describe('support chat draft handoff', () => {
       caseId: 'case-visible',
       caseTitle: '報酬確認',
       supportHref: '/support?case=case-visible',
-      title: 'LINE送信は完了、案件更新だけ確認が必要です',
+      title: 'LINE送信は完了、チケット更新だけ確認が必要です',
     })
     expect(notice?.message).toContain('顧客へのLINE送信は完了')
     expect(notice?.steps).toContain('ステータスが「二次回答待ち」のままなら「顧客返信待ち」へ保存してください。')

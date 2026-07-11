@@ -1,61 +1,58 @@
 'use client'
 
 import { useState } from 'react'
-import type { Tag } from '@line-crm/shared'
 import type { FriendListItem } from '@/lib/api'
 import { api } from '@/lib/api'
+import {
+  customerProfileFieldGroups,
+  customerProfileFieldDefinitions,
+  customerProfileFormFromMetadata,
+  customerProfileMetadataPatch,
+  type CustomerProfileFieldKey,
+} from '@/lib/customer-profile'
 import FriendListRow from './friend-list-row'
-import TagBadge from './tag-badge'
 
 interface Props {
   friends: FriendListItem[]
-  allTags: Tag[]
   onRefresh: () => void
 }
 
-export default function FriendListTable({ friends, allTags, onRefresh }: Props) {
-  // Inline tag-management expander. The row's primary click navigates to
-  // /chats; tag editing stays available here as a secondary action because
-  // the chats page's FriendInfoSidebar currently only displays tags (no
-  // add/remove). Without this expander operators would lose the only path
-  // to mutate friend tags from the admin UI.
+type ProfileDraft = Record<CustomerProfileFieldKey, string>
+
+export default function FriendListTable({ friends, onRefresh }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [addingTagForFriend, setAddingTagForFriend] = useState<string | null>(null)
-  const [selectedTagId, setSelectedTagId] = useState('')
+  const [profileDraft, setProfileDraft] = useState<ProfileDraft | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
 
-  const toggleExpand = (id: string) => {
-    setExpandedId(expandedId === id ? null : id)
-    setAddingTagForFriend(null)
-    setSelectedTagId('')
+  const toggleExpand = (friend: FriendListItem) => {
+    const nextId = expandedId === friend.id ? null : friend.id
+    setExpandedId(nextId)
+    setProfileDraft(nextId ? customerProfileFormFromMetadata(friend.metadata) : null)
     setError('')
+    setMessage('')
   }
 
-  const handleAddTag = async (friendId: string) => {
-    if (!selectedTagId) return
-    setLoading(true)
-    setError('')
-    try {
-      await api.friends.addTag(friendId, selectedTagId)
-      setAddingTagForFriend(null)
-      setSelectedTagId('')
-      onRefresh()
-    } catch {
-      setError('タグの追加に失敗しました')
-    } finally {
-      setLoading(false)
-    }
+  const handleProfileChange = (key: CustomerProfileFieldKey, value: string) => {
+    setProfileDraft((prev) => prev ? { ...prev, [key]: value } : prev)
   }
 
-  const handleRemoveTag = async (friendId: string, tagId: string) => {
+  const handleSaveProfile = async (friendId: string) => {
+    if (!profileDraft || loading) return
     setLoading(true)
     setError('')
+    setMessage('')
     try {
-      await api.friends.removeTag(friendId, tagId)
+      const res = await api.friends.updateMetadata(friendId, customerProfileMetadataPatch(profileDraft))
+      if (!res.success) {
+        setError('顧客情報の保存に失敗しました')
+        return
+      }
+      setMessage('顧客情報を保存しました')
       onRefresh()
     } catch {
-      setError('タグの削除に失敗しました')
+      setError('顧客情報の保存に失敗しました')
     } finally {
       setLoading(false)
     }
@@ -63,104 +60,101 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
 
   if (friends.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
-        <p className="text-gray-500">友だちが見つかりません</p>
+      <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+        <p className="text-sm text-slate-500">顧客が見つかりません</p>
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
       {error && (
-        <div className="px-4 py-3 bg-red-50 border-b border-red-100 text-red-700 text-sm">
+        <div className="border-b border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
         </div>
       )}
+      {message && (
+        <div className="border-b border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {message}
+        </div>
+      )}
 
-      {/* Header sits inside the same overflow container as the body so the
-          column labels stay aligned with their values when the user scrolls
-          horizontally on narrower viewports (e.g. desktop with sidebar open
-          and the body forced to min-w-[900px]). */}
       <div className="overflow-x-auto">
-        <div className="min-w-[900px]">
-          <div className="hidden lg:grid grid-cols-[80px_220px_120px_1fr_280px] gap-3 px-4 py-2 bg-gray-50 border-b border-gray-200 text-[11px] font-semibold text-gray-500 uppercase tracking-wider">
-            <div>対応マーク</div>
-            <div>名前</div>
-            <div>シナリオ</div>
-            <div>受信メッセージ</div>
-            <div>★つきタグ・友だち情報</div>
+        <div className="min-w-[720px]">
+          <div className="hidden grid-cols-[260px_1fr_160px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-semibold uppercase text-slate-500 lg:grid">
+            <div>顧客</div>
+            <div>基本情報</div>
+            <div className="text-right">編集</div>
           </div>
           {friends.map((friend) => {
             const isExpanded = expandedId === friend.id
-            const isAddingTag = addingTagForFriend === friend.id
-            const availableTags = allTags.filter(
-              (t) => !friend.tags.some((ft) => ft.id === t.id),
-            )
 
             return (
               <div key={friend.id}>
                 <FriendListRow
                   friend={friend}
-                  onTagEditClick={() => toggleExpand(friend.id)}
+                  expanded={isExpanded}
+                  onEditClick={() => toggleExpand(friend)}
                 />
 
-                {isExpanded && (
-                  <div className="bg-gray-50 px-6 py-4 border-b border-gray-100 space-y-3">
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 mb-1">LINE連携</p>
-                      <p className="text-xs text-gray-600">連携済み</p>
-                    </div>
-                    <p className="text-xs font-semibold text-gray-500 mb-2">タグ管理</p>
-                    <div className="flex flex-wrap gap-1.5 mb-2">
-                      {friend.tags.map((tag) => (
-                        <TagBadge
-                          key={tag.id}
-                          tag={tag}
-                          onRemove={() => handleRemoveTag(friend.id, tag.id)}
-                        />
-                      ))}
-                    </div>
-
-                    {isAddingTag ? (
-                      <div className="flex items-center gap-2">
-                        <select
-                          className="text-sm border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-green-500"
-                          value={selectedTagId}
-                          onChange={(e) => setSelectedTagId(e.target.value)}
-                        >
-                          <option value="">タグを選択...</option>
-                          {availableTags.map((tag) => (
-                            <option key={tag.id} value={tag.id}>{tag.name}</option>
-                          ))}
-                        </select>
+                {isExpanded && profileDraft && (
+                  <div className="border-b border-slate-100 bg-slate-50 px-5 py-5">
+                    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="顧客情報の編集">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h2 className="text-sm font-semibold text-slate-950">顧客情報</h2>
+                          <p className="mt-1 text-xs text-slate-500">未入力の必須項目は黄色い枠で表示しています。</p>
+                        </div>
                         <button
-                          onClick={() => handleAddTag(friend.id)}
-                          disabled={!selectedTagId || loading}
-                          className="px-3 py-1 text-xs font-medium rounded-md text-white disabled:opacity-50 transition-opacity"
-                          style={{ backgroundColor: '#06C755' }}
+                          type="button"
+                          onClick={() => handleSaveProfile(friend.id)}
+                          disabled={loading}
+                          className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          追加
-                        </button>
-                        <button
-                          onClick={() => { setAddingTagForFriend(null); setSelectedTagId('') }}
-                          className="px-3 py-1 text-xs font-medium rounded-md text-gray-600 bg-gray-200 hover:bg-gray-300 transition-colors"
-                        >
-                          キャンセル
+                          {loading ? '保存中...' : '保存'}
                         </button>
                       </div>
-                    ) : (
-                      availableTags.length > 0 && (
-                        <button
-                          onClick={() => setAddingTagForFriend(friend.id)}
-                          className="text-xs font-medium text-green-600 hover:text-green-700 flex items-center gap-1 transition-colors"
-                        >
-                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          タグを追加
-                        </button>
-                      )
-                    )}
+                      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                        {customerProfileFieldGroups.map((group) => {
+                          const fields = group.keys
+                            .map((key) => customerProfileFieldDefinitions.find((field) => field.key === key))
+                            .filter((field): field is NonNullable<typeof field> => Boolean(field))
+                          return (
+                            <section key={group.title} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                              <div>
+                                <h3 className="text-xs font-semibold text-slate-900">{group.title}</h3>
+                                <p className="mt-0.5 text-[11px] text-slate-500">{group.description}</p>
+                              </div>
+                              <div className="mt-3 grid gap-3 md:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                                {fields.map((field) => {
+                                  const value = profileDraft[field.key] ?? ''
+                                  const missing = field.required && !value.trim()
+                                  return (
+                                    <label key={field.key} className="block">
+                                      <span className="flex items-center gap-1 text-xs font-semibold text-slate-600">
+                                        {field.label}
+                                        {field.required && <span className="text-amber-600">必須</span>}
+                                      </span>
+                                      <input
+                                        type={field.key === 'googleFolderUrl' ? 'url' : 'text'}
+                                        value={value}
+                                        onChange={(e) => handleProfileChange(field.key, e.target.value)}
+                                        className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none transition-colors focus:ring-2 focus:ring-green-500 ${
+                                          missing
+                                            ? 'border-amber-300 bg-amber-50 text-amber-950'
+                                            : 'border-slate-300 bg-white text-slate-900'
+                                        }`}
+                                        placeholder={missing ? `${field.label}を入力` : field.label}
+                                      />
+                                    </label>
+                                  )
+                                })}
+                              </div>
+                            </section>
+                          )
+                        })}
+                      </div>
+                    </section>
                   </div>
                 )}
               </div>

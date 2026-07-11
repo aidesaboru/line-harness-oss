@@ -840,7 +840,7 @@ export interface StaffMember {
   id: string;
   name: string;
   email: string | null;
-  role: 'owner' | 'admin' | 'staff';
+  role: 'owner' | 'admin' | 'staff' | 'secondary';
   apiKey: string;
   isActive: boolean;
   createdAt: string;
@@ -850,7 +850,7 @@ export interface StaffMember {
 export interface StaffProfile {
   id: string;
   name: string;
-  role: 'owner' | 'admin' | 'staff';
+  role: 'owner' | 'admin' | 'staff' | 'secondary';
   email: string | null;
 }
 

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { readStaffIdentityCache } from '@/lib/auth-session'
-import { canAccessSidebarRoute } from './layout/sidebar-access'
+import { canAccessSidebarRoute, defaultSidebarHrefForRole } from './layout/sidebar-access'
 
 export default function StaffRouteGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -24,8 +24,8 @@ export default function StaffRouteGuard({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!ready || allowed) return
-    router.replace('/support')
-  }, [allowed, ready, router])
+    router.replace(pathname.startsWith('/notifications') ? '/notification-settings' : defaultSidebarHrefForRole(role))
+  }, [allowed, pathname, ready, role, router])
 
   if (!ready || !allowed) {
     return (

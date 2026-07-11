@@ -5,7 +5,6 @@ import {
   getQueuedBroadcasts,
   updateBroadcastStatus,
   updateBroadcastBatchProgress,
-  getFriendsByTag,
   jstNow,
   updateBroadcastLineRequestId,
   createBroadcastInsight,
@@ -14,6 +13,12 @@ import type { Broadcast } from '@line-crm/db';
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
+import {
+  assertLineSendAllowed,
+  getLineSendSafetyBlock,
+  isLineSafetyBlockedError,
+} from './line-safety.js';
+import { appendBroadcastSafetyFilter, broadcastSafetyWhere } from './broadcast-safety.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -24,6 +29,7 @@ function broadcastServiceLineErrorStatus(err: unknown): number | null {
 }
 
 function broadcastServiceErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   const status = broadcastServiceLineErrorStatus(err);
   if (status != null) return `line_http_status_${status}`;
   if (err instanceof TypeError) return 'network_error';
@@ -44,6 +50,10 @@ export async function processBroadcastSend(
   if (!broadcast) {
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
+  const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+  if (broadcast.target_type !== 'multi-account-dedup') {
+    await assertLineSendAllowed(db, broadcastAccountId);
+  }
 
   // Auto-wrap URLs with tracking links (text with URLs → Flex with button)
   let finalType: string = broadcast.message_type;
@@ -60,7 +70,6 @@ export async function processBroadcastSend(
   // multi-account-dedup の sentinel account を踏むと placeholder が消えて
   // dedup ループ側で {{liff_id}} を見失うので、ここでは置換しない。
   if (broadcast.target_type !== 'multi-account-dedup') {
-    const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
     if (broadcastAccountId) {
       const { getLineAccountById: getLA } = await import('@line-crm/db');
       const acct = await getLA(db, broadcastAccountId);
@@ -75,34 +84,54 @@ export async function processBroadcastSend(
   let successCount = 0;
 
   try {
-    if (broadcast.target_type === 'all') {
-      // Use LINE broadcast API (sends to all followers)
-      const { requestId } = await lineClient.broadcast([message]);
-      await updateBroadcastLineRequestId(db, broadcast.id, requestId, null);
-      // We don't have exact count for broadcast API, set as 0 (unknown)
-      totalCount = 0;
-      successCount = 0;
-    } else if (broadcast.target_type === 'tag') {
-      if (!broadcast.target_tag_id) {
-        throw new Error('target_tag_id is required for tag-targeted broadcasts');
+    if (broadcast.target_type === 'all' || broadcast.target_type === 'tag') {
+      const recipientBinds: unknown[] = [];
+      const accountFilter = broadcastAccountId ? 'AND f.line_account_id = ?' : '';
+
+      let recipientSql: string;
+      if (broadcast.target_type === 'tag') {
+        if (!broadcast.target_tag_id) {
+          throw new Error('target_tag_id is required for tag-targeted broadcasts');
+        }
+        recipientSql = `
+          SELECT f.id, f.line_user_id
+          FROM friends f
+          INNER JOIN friend_tags ft ON ft.friend_id = f.id
+          WHERE ft.tag_id = ?
+            AND ${broadcastSafetyWhere('f')}
+            ${accountFilter}
+          ORDER BY f.created_at DESC
+        `;
+        recipientBinds.push(broadcast.target_tag_id);
+      } else {
+        recipientSql = `
+          SELECT f.id, f.line_user_id
+          FROM friends f
+          WHERE ${broadcastSafetyWhere('f')}
+            ${accountFilter}
+          ORDER BY f.created_at DESC
+        `;
       }
+      if (broadcastAccountId) recipientBinds.push(broadcastAccountId);
 
-      const friends = await getFriendsByTag(db, broadcast.target_tag_id);
-      const followingFriends = friends.filter((f) => f.is_following);
-      totalCount = followingFriends.length;
+      const recipientRows = await db.prepare(recipientSql)
+        .bind(...recipientBinds)
+        .all<{ id: string; line_user_id: string }>();
+      const safeRecipients = recipientRows.results ?? [];
+      totalCount = safeRecipients.length;
 
-      // Send in batches with stealth delays to mimic human patterns
+      // Send in batches with stealth delays to mimic human patterns.
       const now = jstNow();
-      const totalBatches = Math.ceil(followingFriends.length / MULTICAST_BATCH_SIZE);
+      const totalBatches = Math.ceil(safeRecipients.length / MULTICAST_BATCH_SIZE);
       const unit = `bcast_${broadcast.id.slice(0, 8)}`;
-      for (let i = 0; i < followingFriends.length; i += MULTICAST_BATCH_SIZE) {
+      for (let i = 0; i < safeRecipients.length; i += MULTICAST_BATCH_SIZE) {
         const batchIndex = Math.floor(i / MULTICAST_BATCH_SIZE);
-        const batch = followingFriends.slice(i, i + MULTICAST_BATCH_SIZE);
+        const batch = safeRecipients.slice(i, i + MULTICAST_BATCH_SIZE);
         const lineUserIds = batch.map((f) => f.line_user_id);
 
         // Stealth: add staggered delay between batches
         if (batchIndex > 0) {
-          const delay = calculateStaggerDelay(followingFriends.length, batchIndex);
+          const delay = calculateStaggerDelay(safeRecipients.length, batchIndex);
           await sleep(delay);
         }
 
@@ -119,12 +148,11 @@ export async function processBroadcastSend(
           // Log only successfully sent messages (batch insert for performance)
           // line_account_id は broadcast 設定時のアカウントを記録 (送信時点の固定値)。
           // friends.line_account_id は webhook で書き換わる mutable なので使わない。
-          const broadcastAccount = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
           const logStmts = batch.map(friend =>
             db.prepare(
               `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
                VALUES (?, ?, 'outgoing', ?, ?, ?, NULL, 'broadcast', ?, ?)`,
-            ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcastId, broadcastAccount, now),
+            ).bind(crypto.randomUUID(), friend.id, broadcast.message_type, broadcast.message_content, broadcastId, broadcastAccountId, now),
           );
           await db.batch(logStmts);
         } catch (err) {
@@ -222,6 +250,11 @@ export async function processQueuedBroadcasts(
     const accountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
     let client = lineClient;
     if (accountId) {
+      const safetyBlock = await getLineSendSafetyBlock(db, accountId);
+      if (safetyBlock) {
+        console.warn('Queued broadcast blocked by LINE safety mode');
+        continue;
+      }
       const { getLineAccountById } = await import('@line-crm/db');
       const account = await getLineAccountById(db, accountId);
       if (account) client = new (await import('@line-crm/line-sdk')).LineClient(account.channel_access_token);
@@ -244,6 +277,7 @@ async function processQueuedBroadcastBatches(
   const raw = broadcast as unknown as Record<string, unknown>;
   const segmentConditionsStr = raw.segment_conditions as string | null;
   const batchOffset = (raw.batch_offset as number) || 0;
+  const queuedAccountId = raw.line_account_id as string | null;
 
   // 排他ロック: batch_offset を -1 に設定して他のCronが拾わないようにする
   // WHERE batch_offset = ? で楽観ロック（既に他が処理中なら更新0行→スキップ）
@@ -260,6 +294,14 @@ async function processQueuedBroadcastBatches(
   if (!lockResult.meta.changes || lockResult.meta.changes === 0) {
     // 他のCron実行が既に処理中 → スキップ
     return;
+  }
+  if (broadcast.target_type !== 'multi-account-dedup') {
+    try {
+      await assertLineSendAllowed(db, queuedAccountId);
+    } catch (err) {
+      await updateBroadcastBatchProgress(db, broadcast.id, batchOffset, 0);
+      throw err;
+    }
   }
 
   // auto-track（初回バッチのみ、offsetが0のとき）
@@ -278,7 +320,6 @@ async function processQueuedBroadcastBatches(
   }
 
   // {{liff_id}} 置換 (single account 経路のみ; multi は dedup 側で per-account 置換)。
-  const queuedAccountId = raw.line_account_id as string | null;
   if (queuedAccountId && broadcast.target_type !== 'multi-account-dedup') {
     const { getLineAccountById: getLA } = await import('@line-crm/db');
     const acct = await getLA(db, queuedAccountId);
@@ -314,18 +355,28 @@ async function processQueuedBroadcastBatches(
     const condition = JSON.parse(segmentConditionsStr);
     const { sql, bindings } = buildSegmentQuery(condition);
     // アカウントフィルタを追加（line_account_idで絞り込み）
-    let accountSql = sql;
+    let accountSql = appendBroadcastSafetyFilter(sql);
     const accountBindings = [...bindings];
     if (accountId) {
-      accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      accountSql = accountSql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
       accountBindings.unshift(accountId);
     }
     const result = await db.prepare(accountSql).bind(...accountBindings).all<{ id: string; line_user_id: string }>();
     friends = result.results ?? [];
   } else if (broadcast.target_tag_id) {
-    const { getFriendsByTag } = await import('@line-crm/db');
-    const tagFriends = await getFriendsByTag(db, broadcast.target_tag_id);
-    friends = tagFriends.filter(f => f.is_following).map(f => ({ id: f.id, line_user_id: f.line_user_id }));
+    const tagBindings: unknown[] = [broadcast.target_tag_id];
+    const tagAccountFilter = accountId ? 'AND f.line_account_id = ?' : '';
+    if (accountId) tagBindings.push(accountId);
+    const result = await db.prepare(
+      `SELECT f.id, f.line_user_id
+       FROM friends f
+       INNER JOIN friend_tags ft ON ft.friend_id = f.id
+       WHERE ft.tag_id = ?
+         AND ${broadcastSafetyWhere('f')}
+         ${tagAccountFilter}
+       ORDER BY f.created_at DESC`,
+    ).bind(...tagBindings).all<{ id: string; line_user_id: string }>();
+    friends = result.results ?? [];
   } else {
     // target_type='all' でキューに入ることはないが、念のため
     const { requestId } = await lineClient.broadcast([message]);

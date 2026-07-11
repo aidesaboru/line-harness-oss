@@ -25,6 +25,7 @@ export interface TextEventMessage {
   type: 'text';
   id: string;
   markAsReadToken?: string;
+  quoteToken?: string;
   text: string;
 }
 
@@ -32,6 +33,7 @@ export interface ImageEventMessage {
   type: 'image';
   id: string;
   markAsReadToken?: string;
+  quoteToken?: string;
   contentProvider: {
     type: 'line' | 'external';
     originalContentUrl?: string;
@@ -43,6 +45,7 @@ export interface VideoEventMessage {
   type: 'video';
   id: string;
   markAsReadToken?: string;
+  quoteToken?: string;
   duration: number;
   contentProvider: {
     type: 'line' | 'external';
@@ -84,6 +87,7 @@ export interface StickerEventMessage {
   type: 'sticker';
   id: string;
   markAsReadToken?: string;
+  quoteToken?: string;
   packageId: string;
   stickerId: string;
   stickerResourceType: string;
@@ -163,6 +167,7 @@ export type FlexContainer = object;
 export interface TextMessage {
   type: 'text';
   text: string;
+  quoteToken?: string;
 }
 
 export interface ImageMessage {

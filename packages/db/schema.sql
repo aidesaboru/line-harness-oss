@@ -178,7 +178,16 @@ CREATE TABLE IF NOT EXISTS messages_log (
   delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
   source           TEXT,
   line_account_id  TEXT,
+  line_message_id  TEXT,
+  quote_token      TEXT,
+  quoted_message_id TEXT,
   mark_as_read_token TEXT,
+  marked_as_read_at TEXT,
+  marked_as_read_by TEXT,
+  deleted_at       TEXT,
+  deleted_reason   TEXT,
+  sent_by_staff_id TEXT,
+  sent_by_staff_name TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
@@ -188,6 +197,23 @@ CREATE INDEX IF NOT EXISTS idx_messages_log_friend_id ON messages_log (friend_id
 CREATE INDEX IF NOT EXISTS idx_messages_log_created_at ON messages_log (created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_source ON messages_log (friend_id, source);
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_direction_created ON messages_log (friend_id, direction, created_at);
+CREATE INDEX IF NOT EXISTS idx_messages_log_line_message_id ON messages_log (line_message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_log_quoted_message_id ON messages_log (quoted_message_id);
+
+CREATE TABLE IF NOT EXISTS chat_typing_status (
+  id              TEXT PRIMARY KEY,
+  chat_id         TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+  friend_id       TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  staff_id        TEXT NOT NULL,
+  staff_name      TEXT NOT NULL,
+  line_account_id TEXT,
+  expires_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  UNIQUE (chat_id, staff_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_typing_status_chat ON chat_typing_status (chat_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_chat_typing_status_friend ON chat_typing_status (friend_id, expires_at);
 
 -- ============================================================
 -- Auto Replies
@@ -617,7 +643,7 @@ CREATE TABLE IF NOT EXISTS staff_members (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   email      TEXT,
-  role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'staff')),
+  role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'staff', 'secondary')),
   api_key    TEXT UNIQUE NOT NULL,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
@@ -626,6 +652,21 @@ CREATE TABLE IF NOT EXISTS staff_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+
+-- Staff browser presence for showing who currently has L-Link open
+CREATE TABLE IF NOT EXISTS staff_presence (
+  staff_id      TEXT PRIMARY KEY,
+  staff_name    TEXT NOT NULL,
+  staff_role    TEXT NOT NULL DEFAULT 'staff' CHECK (staff_role IN ('owner', 'admin', 'staff', 'secondary')),
+  last_seen_at  TEXT NOT NULL,
+  last_login_at TEXT,
+  user_agent    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_presence_last_seen
+  ON staff_presence(last_seen_at);
 
 -- Reusable message templates (text or Flex) for reward messages in campaigns
 CREATE TABLE IF NOT EXISTS message_templates (

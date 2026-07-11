@@ -21,12 +21,12 @@ describe('staff create form', () => {
     expect(buildStaffCreatePayload({
       name: '管理者',
       email: '   ',
-      role: 'admin',
+      role: 'secondary',
     })).toEqual({
       ok: true,
       payload: {
         name: '管理者',
-        role: 'admin',
+        role: 'secondary',
       },
     })
   })

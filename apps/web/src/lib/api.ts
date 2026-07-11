@@ -65,6 +65,14 @@ export type ChatMessage = {
   messageType: string
   content: string
   source?: string | null
+  canQuote?: boolean
+  quotedMessageId?: string | null
+  markedAsReadAt?: string | null
+  markedAsReadBy?: string | null
+  deletedAt?: string | null
+  deletedReason?: string | null
+  sentByStaffId?: string | null
+  sentByStaffName?: string | null
   createdAt: string
 }
 
@@ -73,19 +81,62 @@ export type ChatMessageCursor = {
   id: string
 }
 
+export type ChatInternalMessage = {
+  id: string
+  friendId: string
+  lineAccountId: string | null
+  parentId: string | null
+  body: string
+  mentions: string[]
+  reactions: InternalMessageReaction[]
+  createdBy: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
+export type ChatTypingParticipant = {
+  staffId: string
+  staffName: string
+  updatedAt: string
+}
+
+export type ChatActiveSupportCase = {
+  id: string
+  title: string
+  status: SupportCaseStatus
+  priority: SupportPriority
+  escalationAssignee: string | null
+  latestEscalationStatus: SupportEscalationStatus | null
+  updatedAt: string
+}
+
 export type ChatDetailResponse = Chat & {
   messages?: ChatMessage[]
   hasMoreMessages?: boolean
   nextMessagesBefore?: ChatMessageCursor | null
+  internalMessages?: ChatInternalMessage[]
+  typingParticipants?: ChatTypingParticipant[]
+  activeSupportCase?: ChatActiveSupportCase | null
+}
+
+export type ChatTypingResponse = {
+  active: boolean
+  status: Chat['status']
+  typingParticipants: ChatTypingParticipant[]
 }
 
 export type ChatSendResponse = {
   sent: boolean
   messageId: string
+  sentByStaffId?: string | null
+  sentByStaffName?: string | null
+  quotedMessageId?: string | null
   markAsRead?: {
     requested: boolean
     marked: boolean
     reason: 'not_requested' | 'no_token' | 'line_error' | null
+    messageId?: string | null
+    markedAt?: string | null
   }
   supportCase: {
     id: string
@@ -95,10 +146,128 @@ export type ChatSendResponse = {
   } | null
 }
 
+export type ChatMarkReadResponse = {
+  markAsRead: {
+    requested: boolean
+    marked: boolean
+    reason: 'not_requested' | 'no_token' | 'line_error' | null
+    messageId: string | null
+    markedAt: string | null
+  }
+  status: Chat['status'] | null
+  markedMessageId: string | null
+  markedAt: string | null
+  updatedAt: string
+}
+
+export type ChatDeletedMessageResponse = {
+  messageId: string
+  deletedAt: string
+}
+
 export type ChatExternalOutgoingResponse = {
   recorded: boolean
   messageId: string
   message: ChatMessage
+}
+
+export type AppNotificationKind =
+  | 'urgent_case'
+  | 'secondary_assigned'
+  | 'secondary_answered'
+  | 'support_mention'
+  | 'chat_mention'
+
+export type AppNotificationItem = {
+  id: string
+  kind: AppNotificationKind
+  title: string
+  body: string
+  href: string
+  createdAt: string
+}
+
+export type InternalChatFeedItem = {
+  id: string
+  source: 'support' | 'chat'
+  sourceId: string
+  sourceTitle: string
+  customerName: string | null
+  ticketTitle: string | null
+  parentId: string | null
+  body: string
+  mentions: string[]
+  reactions: InternalMessageReaction[]
+  createdByName: string | null
+  createdAt: string
+  href: string
+}
+
+export type StaffPresenceItem = {
+  id: string
+  name: string
+  role: 'owner' | 'admin' | 'staff' | 'secondary'
+  isActive: boolean
+  isOnline: boolean
+  lastSeenAt: string | null
+  lastLoginAt: string | null
+  userAgent: string | null
+  updatedAt: string | null
+}
+
+export type StaffPresenceResponse = {
+  onlineWindowSeconds: number
+  onlineCount: number
+  items: StaffPresenceItem[]
+}
+
+export type InternalMessageReaction = {
+  emoji: string
+  count: number
+  reactedByMe: boolean
+  names: string[]
+}
+
+export type AppNotificationRecentResponse = {
+  cursor: string
+  items: AppNotificationItem[]
+}
+
+export type WebPushConfigResponse = {
+  enabled: boolean
+  publicKey: string
+}
+
+export type WebPushSettings = {
+  notifyUrgent: boolean
+  notifySecondary: boolean
+  notifyMentions: boolean
+}
+
+export type WebPushStatusResponse = {
+  subscribed: boolean
+  settings: WebPushSettings | null
+}
+
+export type WebPushTestResponse = {
+  sent: number
+  failed: number
+}
+
+export type LineSafetyMode = {
+  frozen: boolean
+  reason: string | null
+  updatedAt: string | null
+  updatedBy: string | null
+}
+
+export type SupportNotificationSettings = {
+  enabled: boolean
+  webhookConfigured: boolean
+  immediateUrgent: boolean
+  digestEnabled: boolean
+  digestHours: number[]
+  dueSoonHours: number
 }
 
 export type SupportCaseStatus =
@@ -107,6 +276,7 @@ export type SupportCaseStatus =
   | 'waiting_primary'
   | 'escalated'
   | 'waiting_secondary'
+  | 'secondary_answered'
   | 'customer_reply'
   | 'on_hold'
   | 'resolved'
@@ -204,18 +374,34 @@ export type SupportCaseEvent = {
   createdAt: string
 }
 
+export type SupportInternalMessage = {
+  id: string
+  caseId: string
+  lineAccountId: string
+  parentId: string | null
+  body: string
+  mentions: string[]
+  reactions: InternalMessageReaction[]
+  createdBy: string | null
+  createdByName: string | null
+  createdAt: string
+}
+
 export type SupportMessage = {
   id: string
   direction: string
   messageType: string
   content: string
+  source?: string | null
   createdAt: string
 }
 
 export type SupportCaseDetail = SupportCase & {
   events: SupportCaseEvent[]
   escalations: SupportEscalation[]
+  internalMessages: SupportInternalMessage[]
   manuals: SupportManual[]
+  canViewLineConversation: boolean
   recentMessages: SupportMessage[]
 }
 
@@ -223,9 +409,13 @@ export type SupportSummary = {
   totals: {
     total: number
     open: number
+    primaryAction: number
     escalated: number
+    secondaryAnswered: number
     myEscalations: number
     overdue: number
+    urgent: number
+    dueSoon: number
     unassigned: number
     waitingCustomer: number
     resolved: number
@@ -233,6 +423,13 @@ export type SupportSummary = {
   byStatus: Array<{ status: string; count: number }>
   byCategory: Array<{ category: string; count: number }>
   byAssignee: Array<{ assignee: string; count: number }>
+}
+
+export type StaffAssigneeOption = {
+  id: string
+  name: string
+  role: string
+  isActive: boolean
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL
@@ -259,6 +456,17 @@ export function setCsrfToken(token: string | undefined | null): void {
   writeCsrfToken(token)
 }
 
+export function buildApiUrl(pathOrUrl: string): string {
+  try {
+    const url = new URL(pathOrUrl)
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.toString()
+  } catch {
+    // Relative API paths are handled below.
+  }
+  const path = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`
+  return `${API_URL}${path}`
+}
+
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
 export class ApiRequestError extends Error {
@@ -278,7 +486,7 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
     const token = getCsrfToken()
     if (token) csrfHeaders['X-CSRF-Token'] = token
   }
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(buildApiUrl(path), {
     ...options,
     // Send the HttpOnly session cookie with every request.
     credentials: 'include',
@@ -354,6 +562,19 @@ export const api = {
     },
     get: (id: string) =>
       fetchApi<ApiResponse<FriendWithTags>>(`/api/friends/${id}`),
+    updateMetadata: (id: string, data: Record<string, unknown>) =>
+      fetchApi<ApiResponse<FriendWithTags>>(`/api/friends/${id}/metadata`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    bulkUpdateMetadata: (data: {
+      lineAccountId?: string
+      rows: Array<{ friendId?: string; lineUserId?: string; metadata: Record<string, unknown> }>
+    }) =>
+      fetchApi<ApiResponse<{ requested: number; updated: number; notFound: Array<{ friendId?: string; lineUserId?: string }> }>>(
+        '/api/friends/metadata/bulk',
+        { method: 'POST', body: JSON.stringify(data) },
+      ),
     count: (params?: { accountId?: string }) => {
       const query = params?.accountId ? '?lineAccountId=' + params.accountId : ''
       return fetchApi<ApiResponse<{ count: number }>>('/api/friends/count' + query)
@@ -580,11 +801,37 @@ export const api = {
 
   accountSettings: {
     getTestRecipients: (accountId: string) =>
-      fetchApi<{ success: boolean; data: Array<{ id: string; displayName: string; pictureUrl: string | null }> }>(`/api/account-settings/test-recipients?accountId=${accountId}`),
+      fetchApi<{ success: boolean; data: Array<{ id: string; displayName: string; pictureUrl: string | null }> }>(`/api/account-settings/test-recipients?accountId=${encodeURIComponent(accountId)}`),
     updateTestRecipients: (accountId: string, friendIds: string[]) =>
       fetchApi<{ success: boolean }>('/api/account-settings/test-recipients', {
         method: 'PUT',
         body: JSON.stringify({ accountId, friendIds }),
+      }),
+    getLineSafety: (accountId: string) =>
+      fetchApi<{ success: boolean; data: LineSafetyMode; error?: string }>(`/api/account-settings/line-safety?accountId=${encodeURIComponent(accountId)}`),
+    updateLineSafety: (accountId: string, frozen: boolean, reason?: string | null) =>
+      fetchApi<{ success: boolean; data?: LineSafetyMode; error?: string }>('/api/account-settings/line-safety', {
+        method: 'PUT',
+        body: JSON.stringify({ accountId, frozen, reason }),
+      }),
+    getSupportNotifications: (accountId: string) =>
+      fetchApi<{ success: boolean; data: SupportNotificationSettings; error?: string }>(
+        `/api/account-settings/support-notifications?accountId=${encodeURIComponent(accountId)}`,
+      ),
+    updateSupportNotifications: (
+      accountId: string,
+      data: Partial<{
+        enabled: boolean
+        webhookUrl: string | null
+        immediateUrgent: boolean
+        digestEnabled: boolean
+        digestHours: number[]
+        dueSoonHours: number
+      }>,
+    ) =>
+      fetchApi<{ success: boolean; data?: SupportNotificationSettings; error?: string }>('/api/account-settings/support-notifications', {
+        method: 'PUT',
+        body: JSON.stringify({ accountId, ...data }),
       }),
   },
 
@@ -948,6 +1195,16 @@ export const api = {
           method: 'POST',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
         }),
+      addInternalMessage: (id: string, accountId: string, data: { body: string; parentId?: string | null; mentions?: string[] }) =>
+        fetchApi<ApiResponse<SupportInternalMessage>>(`/api/support/cases/${id}/internal-messages`, {
+          method: 'POST',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      toggleInternalReaction: (id: string, accountId: string, messageId: string, emoji: string) =>
+        fetchApi<ApiResponse<SupportInternalMessage>>(`/api/support/cases/${id}/internal-messages/${messageId}/reactions`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId, emoji }),
+        }),
       escalate: (id: string, accountId: string, data: { assignee?: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/cases/${id}/escalations`, {
           method: 'POST',
@@ -1025,12 +1282,13 @@ export const api = {
     },
   },
   chats: {
-    list: (params?: { status?: string; operatorId?: string; accountId?: string; unansweredOnly?: boolean }) => {
+    list: (params?: { status?: string; operatorId?: string; accountId?: string; unansweredOnly?: boolean; search?: string }) => {
       const query: Record<string, string> = {}
       if (params?.status) query.status = params.status
       if (params?.operatorId) query.operatorId = params.operatorId
       if (params?.accountId) query.lineAccountId = params.accountId
       if (params?.unansweredOnly) query.unansweredOnly = '1'
+      if (params?.search?.trim()) query.q = params.search.trim()
       return fetchApi<ApiResponse<Chat[]>>(
         '/api/chats?' + new URLSearchParams(query),
       )
@@ -1055,15 +1313,85 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
-    send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null; markAsRead?: boolean }) =>
+    typing: (id: string, data: { active: boolean }) =>
+      fetchApi<ApiResponse<ChatTypingResponse>>(`/api/chats/${id}/typing`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null; markAsRead?: boolean; quoteMessageId?: string | null }) =>
       fetchApi<ApiResponse<ChatSendResponse>>(`/api/chats/${id}/send`, {
         method: 'POST',
         body: JSON.stringify(data),
+      }),
+    markRead: (id: string) =>
+      fetchApi<ApiResponse<ChatMarkReadResponse>>(`/api/chats/${id}/read`, {
+        method: 'POST',
+      }),
+    markMessageDeleted: (id: string, messageId: string) =>
+      fetchApi<ApiResponse<ChatDeletedMessageResponse>>(`/api/chats/${id}/messages/${messageId}/deleted`, {
+        method: 'POST',
       }),
     recordExternalOutgoing: (id: string, data: { content: string }) =>
       fetchApi<ApiResponse<ChatExternalOutgoingResponse>>(`/api/chats/${id}/external-outgoing`, {
         method: 'POST',
         body: JSON.stringify(data),
+      }),
+    addInternalMessage: (id: string, data: { body: string; parentId?: string | null; mentions?: string[] }) =>
+      fetchApi<ApiResponse<ChatInternalMessage>>(`/api/chats/${id}/internal-messages`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    toggleInternalReaction: (id: string, messageId: string, emoji: string) =>
+      fetchApi<ApiResponse<ChatInternalMessage>>(`/api/chats/${id}/internal-messages/${messageId}/reactions`, {
+        method: 'POST',
+        body: JSON.stringify({ emoji }),
+      }),
+  },
+  appNotifications: {
+    recent: (params?: { after?: string; accountId?: string }) => {
+      const query: Record<string, string> = {}
+      if (params?.after) query.after = params.after
+      if (params?.accountId) query.lineAccountId = params.accountId
+      const qs = new URLSearchParams(query).toString()
+      return fetchApi<ApiResponse<AppNotificationRecentResponse>>(
+        `/api/app-notifications/recent${qs ? `?${qs}` : ''}`,
+      )
+    },
+    internalChatFeed: (params?: { accountId?: string; limit?: number }) => {
+      const query: Record<string, string> = {}
+      if (params?.accountId) query.lineAccountId = params.accountId
+      if (params?.limit) query.limit = String(params.limit)
+      const qs = new URLSearchParams(query).toString()
+      return fetchApi<ApiResponse<{ items: InternalChatFeedItem[] }>>(
+        `/api/app-notifications/internal-chat-feed${qs ? `?${qs}` : ''}`,
+      )
+    },
+    webPushConfig: () =>
+      fetchApi<ApiResponse<WebPushConfigResponse>>('/api/app-notifications/web-push/config'),
+    subscribeWebPush: (subscription: PushSubscriptionJSON & { userAgent?: string }) =>
+      fetchApi<ApiResponse<{ id: string }>>('/api/app-notifications/web-push/subscribe', {
+        method: 'POST',
+        body: JSON.stringify(subscription),
+      }),
+    webPushStatus: (endpoint: string) =>
+      fetchApi<ApiResponse<WebPushStatusResponse>>('/api/app-notifications/web-push/status', {
+        method: 'POST',
+        body: JSON.stringify({ endpoint }),
+      }),
+    updateWebPushSettings: (endpoint: string, settings: Partial<WebPushSettings>) =>
+      fetchApi<ApiResponse<{ settings: WebPushSettings | null }>>('/api/app-notifications/web-push/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ endpoint, ...settings }),
+      }),
+    unsubscribeWebPush: (endpoint: string) =>
+      fetchApi<ApiResponse<{ unsubscribed: boolean }>>('/api/app-notifications/web-push/subscribe', {
+        method: 'DELETE',
+        body: JSON.stringify({ endpoint }),
+      }),
+    testWebPush: () =>
+      fetchApi<ApiResponse<WebPushTestResponse>>('/api/app-notifications/web-push/test', {
+        method: 'POST',
+        body: JSON.stringify({}),
       }),
   },
   reminders: {
@@ -1195,11 +1523,20 @@ export const api = {
   staff: {
     list: () =>
       fetchApi<ApiResponse<StaffMember[]>>('/api/staff'),
+    assigneeOptions: () =>
+      fetchApi<ApiResponse<StaffAssigneeOption[]>>('/api/staff/assignee-options'),
     get: (id: string) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`),
     me: () =>
       fetchApi<ApiResponse<{ id: string; name: string; role: string; email: string | null }>>('/api/staff/me'),
-    create: (data: { name: string; email?: string; role: 'admin' | 'staff' }) =>
+    presence: () =>
+      fetchApi<ApiResponse<StaffPresenceResponse>>('/api/staff/presence'),
+    heartbeat: (data?: { sessionStarted?: boolean }) =>
+      fetchApi<ApiResponse<StaffPresenceItem | null>>('/api/staff/presence/heartbeat', {
+        method: 'POST',
+        body: JSON.stringify(data ?? {}),
+      }),
+    create: (data: { name: string; email?: string; role: 'admin' | 'staff' | 'secondary' }) =>
       fetchApi<ApiResponse<StaffMember>>('/api/staff', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1617,6 +1954,20 @@ export const api = {
       return fetchApi<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number }>>('/api/images', {
         method: 'POST',
         headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: buf,
+      })
+    },
+    file: async (file: File): Promise<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number; filename: string }>> => {
+      const buf = await file.arrayBuffer()
+      const contentType = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
+        ? 'application/pdf'
+        : (file.type || 'application/octet-stream')
+      return fetchApi<ApiResponse<{ id: string; key: string; url: string; mimeType: string; size: number; filename: string }>>('/api/files', {
+        method: 'POST',
+        headers: {
+          'Content-Type': contentType,
+          'X-File-Name': encodeURIComponent(file.name),
+        },
         body: buf,
       })
     },

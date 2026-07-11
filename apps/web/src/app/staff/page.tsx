@@ -9,6 +9,13 @@ import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
 
 type NewApiKey = { apiKey: string; staffId: string }
+type EditableRole = 'admin' | 'staff' | 'secondary'
+
+const editableRoleOptions: Array<{ value: EditableRole; label: string }> = [
+  { value: 'admin', label: '管理者' },
+  { value: 'staff', label: '一次対応' },
+  { value: 'secondary', label: '二次対応のみ（閲覧のみ）' },
+]
 
 function RoleBadge({ role }: { role: string }) {
   const styles =
@@ -16,9 +23,11 @@ function RoleBadge({ role }: { role: string }) {
       ? 'bg-yellow-100 text-yellow-800'
       : role === 'admin'
         ? 'bg-blue-100 text-blue-800'
-        : 'bg-gray-100 text-gray-600'
+        : role === 'secondary'
+          ? 'bg-indigo-100 text-indigo-800'
+          : 'bg-gray-100 text-gray-600'
   const label =
-    role === 'owner' ? 'オーナー' : role === 'admin' ? '管理者' : 'スタッフ'
+    role === 'owner' ? 'オーナー' : role === 'admin' ? '管理者' : role === 'secondary' ? '二次対応のみ（閲覧のみ）' : '一次対応'
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styles}`}>
       {label}
@@ -45,9 +54,10 @@ export default function StaffPage() {
   const [showForm, setShowForm] = useState(false)
   const [formName, setFormName] = useState('')
   const [formEmail, setFormEmail] = useState('')
-  const [formRole, setFormRole] = useState<'admin' | 'staff'>('staff')
+  const [formRole, setFormRole] = useState<EditableRole>('staff')
   const [formLoading, setFormLoading] = useState(false)
   const [formError, setFormError] = useState('')
+  const [roleSavingId, setRoleSavingId] = useState<string | null>(null)
 
   const loadMembers = async () => {
     setLoading(true)
@@ -63,6 +73,35 @@ export default function StaffPage() {
       setError(staffOperationFailureMessage('load'))
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleRoleChange = async (member: StaffMember, nextRole: EditableRole) => {
+    if (member.role === nextRole) return
+    setRoleSavingId(member.id)
+    setError('')
+    const previousMembers = members
+    setMembers((current) =>
+      current.map((m) => (m.id === member.id ? { ...m, role: nextRole } : m)),
+    )
+    try {
+      const res = await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role: nextRole }),
+      })
+      if (!res.success) {
+        setMembers(previousMembers)
+        setError(staffOperationFailureMessage('update'))
+        return
+      }
+      setMembers((current) =>
+        current.map((m) => (m.id === member.id ? res.data : m)),
+      )
+    } catch {
+      setMembers(previousMembers)
+      setError(staffOperationFailureMessage('update'))
+    } finally {
+      setRoleSavingId(null)
     }
   }
 
@@ -256,11 +295,12 @@ export default function StaffPage() {
                 <label className="block text-xs font-medium text-gray-700 mb-1">ロール *</label>
                 <select
                   value={formRole}
-                  onChange={(e) => setFormRole(e.target.value as 'admin' | 'staff')}
+                  onChange={(e) => setFormRole(e.target.value as EditableRole)}
                   className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
                 >
-                  <option value="staff">スタッフ</option>
-                  <option value="admin">管理者</option>
+                  {editableRoleOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -333,7 +373,26 @@ export default function StaffPage() {
                   <td className="px-4 py-3 font-medium text-gray-900">{member.name}</td>
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
-                    <RoleBadge role={member.role} />
+                    {member.role === 'owner' ? (
+                      <RoleBadge role={member.role} />
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={editableRoleOptions.some((option) => option.value === member.role) ? member.role : 'staff'}
+                          onChange={(e) => handleRoleChange(member, e.target.value as EditableRole)}
+                          disabled={Boolean(roleSavingId)}
+                          className="min-w-[104px] rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm outline-none transition-colors focus:border-green-500 focus:ring-2 focus:ring-green-100 disabled:cursor-wait disabled:bg-gray-50 disabled:text-gray-400"
+                          aria-label={`${member.name} の権限`}
+                        >
+                          {editableRoleOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                        {roleSavingId === member.id && (
+                          <span className="text-[11px] font-medium text-gray-400">保存中</span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-400 font-mono text-xs hidden md:table-cell">
                     {maskKey(member.apiKey ?? '')}

@@ -15,6 +15,7 @@ import {
 } from '@line-crm/db';
 import type { LineClient, Message } from '@line-crm/line-sdk';
 import { addJitter, sleep } from './stealth.js';
+import { getLineSendSafetyBlock } from './line-safety.js';
 
 function reminderDeliveryLineErrorStatus(err: unknown): number | null {
   if (!(err instanceof Error)) return null;
@@ -53,6 +54,11 @@ export async function processReminderDeliveries(
       // Resolve correct lineClient for this friend's account
       let deliveryClient = lineClient;
       const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
+      const safetyBlock = await getLineSendSafetyBlock(db, friendAccountId);
+      if (safetyBlock) {
+        console.warn('Reminder delivery blocked by LINE safety mode');
+        continue;
+      }
       if (friendAccountId) {
         const { getLineAccountById } = await import('@line-crm/db');
         const account = await getLineAccountById(db, friendAccountId);

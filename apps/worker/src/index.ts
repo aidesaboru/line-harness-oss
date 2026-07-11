@@ -74,8 +74,11 @@ import dedupPreview from './routes/dedup-preview.js';
 import { profileRefresh } from './routes/profile-refresh.js';
 import { richMenuGroups } from './routes/rich-menu-groups.js';
 import { support } from './routes/support.js';
+import { appNotifications, processWebPushNotifications } from './routes/app-notifications.js';
+import { processSupportNotificationDigests } from './services/support-notifications.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
+import { updateHistory } from './routes/update-history.js';
 import { isLineCaptureOnly } from './services/line-capture-only.js';
 
 function scheduledErrorKind(err: unknown): string {
@@ -88,6 +91,7 @@ export type Env = {
   Bindings: {
     DB: D1Database;
     IMAGES: R2Bucket;
+    FILES?: KVNamespace;
     ASSETS: Fetcher;
     LINE_CHANNEL_SECRET: string;
     LINE_CHANNEL_ACCESS_TOKEN: string;
@@ -129,9 +133,12 @@ export type Env = {
     // Allows explicitly triggered operator sends while LINE_CAPTURE_ONLY keeps
     // automated replies, scheduled deliveries, and other mutation paths stopped.
     LINE_MANUAL_SEND_ENABLED?: string;
+    WEB_PUSH_VAPID_PUBLIC_KEY?: string;
+    WEB_PUSH_VAPID_PRIVATE_KEY?: string;
+    WEB_PUSH_CONTACT?: string;
   };
   Variables: {
-    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
+    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' };
   };
 };
 
@@ -331,6 +338,8 @@ app.route('/', dedupPreview);
 app.route('/', profileRefresh);
 app.route('/', richMenuGroups);
 app.route('/', support);
+app.route('/', appNotifications);
+app.route('/', updateHistory);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
@@ -736,6 +745,32 @@ async function scheduled(
     }
   }
   const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
+  const activeAccountIds = dbAccounts.filter((account) => account.is_active).map((account) => account.id);
+
+  try {
+    const result = await processSupportNotificationDigests(env.DB, {
+      accountIds: activeAccountIds,
+      adminPublicUrl: env.ADMIN_PUBLIC_URL,
+      now: new Date(),
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[support-notifications] sent=${result.sent} failed=${result.failed}`);
+    }
+  } catch (e) {
+    console.error(`support-notifications error: ${scheduledErrorKind(e)}`);
+  }
+
+  try {
+    const result = await processWebPushNotifications(env.DB, env, {
+      now: new Date(),
+      lookbackMinutes: 60,
+    });
+    if (result.sent + result.failed > 0) {
+      console.log(`[web-push] sent=${result.sent} failed=${result.failed} skipped=${result.skipped}`);
+    }
+  } catch (e) {
+    console.error(`web-push error: ${scheduledErrorKind(e)}`);
+  }
 
   if (captureOnly) {
     console.log('[line-capture-only] skipping scheduled LINE delivery jobs');

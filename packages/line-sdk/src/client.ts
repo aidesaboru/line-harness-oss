@@ -221,8 +221,8 @@ export class LineClient {
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  async pushTextMessage(to: string, text: string): Promise<unknown> {
-    return this.pushMessage(to, [{ type: 'text', text }]);
+  async pushTextMessage(to: string, text: string, quoteToken?: string): Promise<unknown> {
+    return this.pushMessage(to, [{ type: 'text', text, ...(quoteToken ? { quoteToken } : {}) }]);
   }
 
   async pushFlexMessage(

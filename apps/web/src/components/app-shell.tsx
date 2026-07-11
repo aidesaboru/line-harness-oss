@@ -4,6 +4,8 @@ import Sidebar from './layout/sidebar'
 import { UpdateBanner } from './update/update-banner'
 import AuthGuard from './auth-guard'
 import StaffRouteGuard from './staff-route-guard'
+import AppNotifier from './app-notifier'
+import StaffPresenceHeartbeat from './staff-presence-heartbeat'
 import { AccountProvider } from '@/contexts/account-context'
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
@@ -18,6 +20,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <StaffRouteGuard>
         <AccountProvider>
           <div className="flex min-h-screen flex-col">
+            <AppNotifier />
+            <StaffPresenceHeartbeat />
             {/* Phase 6: banner above sidebar+header so it pins to the top of the
                 admin shell. Renders nothing while loading; one of latest/fork/
                 upgrade once /admin/version + manifest resolve. */}

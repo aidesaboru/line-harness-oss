@@ -1,7 +1,7 @@
 export type SupportAccessStaff = {
   id: string;
   name: string;
-  role: 'owner' | 'admin' | 'staff';
+  role: 'owner' | 'admin' | 'staff' | 'secondary';
 };
 
 type SqlScope = {
@@ -9,8 +9,14 @@ type SqlScope = {
   binds: unknown[];
 };
 
+const SECONDARY_ONLY_SUPPORT_MODE = true;
+
 export function isRestrictedSupportStaff(staff: SupportAccessStaff): boolean {
-  return staff.role === 'staff';
+  return staff.role === 'staff' || staff.role === 'secondary';
+}
+
+export function isSecondaryOnlySupportStaff(staff: SupportAccessStaff): boolean {
+  return SECONDARY_ONLY_SUPPORT_MODE && staff.role === 'secondary';
 }
 
 function escapeLike(value: string): string {
@@ -31,6 +37,23 @@ export function supportCaseVisibilitySql(
   if (!isRestrictedSupportStaff(staff)) return { sql: '', binds: [] };
 
   const pattern = supportStaffLikePattern(staff);
+  if (isSecondaryOnlySupportStaff(staff)) {
+    if (!pattern) return { sql: '(0 = 1)', binds: [] };
+    return {
+      sql: `(
+        ${caseAlias}.escalation_assignee LIKE ? ESCAPE '\\'
+        OR EXISTS (
+          SELECT 1
+          FROM support_escalations ${escalationAlias}
+          WHERE ${escalationAlias}.case_id = ${caseAlias}.id
+            AND ${escalationAlias}.status != 'closed'
+            AND ${escalationAlias}.assignee LIKE ? ESCAPE '\\'
+        )
+      )`,
+      binds: [pattern, pattern],
+    };
+  }
+
   const parts = [`${caseAlias}.created_by = ?`];
   const binds: unknown[] = [staff.id];
   if (pattern) {
@@ -61,8 +84,16 @@ export function supportEscalationVisibilitySql(
 ): SqlScope {
   if (!isRestrictedSupportStaff(staff)) return { sql: '', binds: [] };
 
-  const caseScope = supportCaseVisibilitySql(staff, caseAlias, 'se_case_scope');
   const pattern = supportStaffLikePattern(staff);
+  if (isSecondaryOnlySupportStaff(staff)) {
+    if (!pattern) return { sql: '(0 = 1)', binds: [] };
+    return {
+      sql: `(${escalationAlias}.assignee LIKE ? ESCAPE '\\')`,
+      binds: [pattern],
+    };
+  }
+
+  const caseScope = supportCaseVisibilitySql(staff, caseAlias, 'se_case_scope');
   const parts = pattern ? [`${escalationAlias}.assignee LIKE ? ESCAPE '\\'`] : [];
   const binds: unknown[] = pattern ? [pattern] : [];
   parts.push(`EXISTS (
@@ -84,6 +115,7 @@ export function supportFriendVisibilitySql(
   friendIdExpression: string,
 ): SqlScope {
   if (!isRestrictedSupportStaff(staff)) return { sql: '', binds: [] };
+  if (isSecondaryOnlySupportStaff(staff)) return { sql: '(0 = 1)', binds: [] };
 
   const caseScope = supportCaseVisibilitySql(staff, 'sc_friend_scope', 'se_friend_scope');
   return {
@@ -102,6 +134,7 @@ export async function canAccessSupportFriend(
   staff: SupportAccessStaff,
   friendId: string,
 ): Promise<boolean> {
+  if (isSecondaryOnlySupportStaff(staff)) return false;
   const visibility = supportFriendVisibilitySql(staff, '?');
   if (!visibility.sql) return true;
 

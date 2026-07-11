@@ -26,6 +26,7 @@ import {
   type BookingStatus,
 } from '../services/booking-types.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { assertLineSendAllowed } from '../services/line-safety.js';
 
 const booking = new Hono<Env>();
 
@@ -659,7 +660,8 @@ async function notifyForBooking(
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
-              f.line_user_id
+              f.line_user_id,
+              b.line_account_id
          FROM bookings b
          INNER JOIN menus m ON m.id = b.menu_id
          INNER JOIN staff s ON s.id = b.staff_id
@@ -674,8 +676,10 @@ async function notifyForBooking(
       staff_name: string;
       channel_access_token: string;
       line_user_id: string;
+      line_account_id: string;
     }>();
   if (!row) return;
+  await assertLineSendAllowed(db, row.line_account_id);
   await sendBookingNotification({
     channelAccessToken: row.channel_access_token,
     toLineUserId: row.line_user_id,

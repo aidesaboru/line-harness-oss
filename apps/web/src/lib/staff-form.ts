@@ -1,4 +1,4 @@
-export type StaffCreateRole = 'admin' | 'staff'
+export type StaffCreateRole = 'admin' | 'staff' | 'secondary'
 
 export type StaffCreateFormInput = {
   name: string

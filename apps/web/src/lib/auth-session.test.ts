@@ -94,6 +94,8 @@ describe('auth session cache', () => {
   it('treats staff without a name as unusable for scoped data', () => {
     expect(isUsableStaffIdentity({ role: ' staff ', name: ' 田島 ' })).toBe(true)
     expect(isUsableStaffIdentity({ role: 'staff', name: '  ' })).toBe(false)
+    expect(isUsableStaffIdentity({ role: 'secondary', name: ' 松山 ' })).toBe(true)
+    expect(isUsableStaffIdentity({ role: 'secondary', name: '  ' })).toBe(false)
     expect(isUsableStaffIdentity({ role: 'owner', name: '' })).toBe(true)
     expect(isUsableStaffIdentity({ role: 'admin', name: null })).toBe(true)
     expect(isUsableStaffIdentity({ role: '', name: '田島' })).toBe(false)

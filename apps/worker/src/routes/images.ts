@@ -4,16 +4,31 @@ import { requireRole } from '../middleware/role-guard.js';
 
 const images = new Hono<Env>();
 
-const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const BYTES_PER_MIB = 1024 * 1024;
+const IMAGE_MAX_BYTES = 10 * BYTES_PER_MIB;
+const FILE_MAX_BYTES_KV = 25 * BYTES_PER_MIB;
+const FILE_MAX_BYTES_R2 = 50 * BYTES_PER_MIB;
 const IMAGE_KEY_MAX_LENGTH = 256;
 const IMAGE_FILENAME_MAX_LENGTH = 255;
 const IMAGE_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const IMAGE_FILENAME_PATTERN = /^[^\u0000-\u001F\u007F/\\]+$/;
 const IMAGE_BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const ALLOWED_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
+const ALLOWED_FILE_TYPES = ['application/pdf'] as const;
 
 type ImageMimeType = (typeof ALLOWED_IMAGE_TYPES)[number];
+type FileMimeType = (typeof ALLOWED_FILE_TYPES)[number];
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
+type UploadedObjectMetadata = {
+  contentType?: string;
+  originalFilename?: string;
+};
+type UploadedObject = {
+  body: BodyInit;
+  contentType: string;
+  filename: string;
+  etag?: string;
+};
 
 async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
   try {
@@ -36,6 +51,36 @@ function parseImageMimeType(raw: unknown): ValueResult<ImageMimeType> {
   return { ok: true, value: mimeType as ImageMimeType };
 }
 
+function isPdfFilename(filename: string | undefined): boolean {
+  return Boolean(filename && /\.pdf$/i.test(filename));
+}
+
+function parseFileMimeType(raw: unknown, filename?: string): ValueResult<FileMimeType> {
+  if (typeof raw !== 'string') return { ok: false, error: 'invalid_mime_type' };
+  const mimeType = raw.split(';')[0].trim().toLowerCase();
+  if ((mimeType === 'application/octet-stream' || mimeType === '') && isPdfFilename(filename)) {
+    return { ok: true, value: 'application/pdf' };
+  }
+  if (!ALLOWED_FILE_TYPES.includes(mimeType as FileMimeType)) {
+    return { ok: false, error: `Unsupported file type: ${mimeType}. Allowed: ${ALLOWED_FILE_TYPES.join(', ')}` };
+  }
+  return { ok: true, value: mimeType as FileMimeType };
+}
+
+function fileMaxBytes(c: Context<Env>): number {
+  return c.env.IMAGES ? FILE_MAX_BYTES_R2 : FILE_MAX_BYTES_KV;
+}
+
+function fileMaxLabel(c: Context<Env>): string {
+  return c.env.IMAGES ? '50MB' : '25MB';
+}
+
+function parseContentLength(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
 function parseOptionalFilename(raw: unknown): ValueResult<string | undefined> {
   if (raw === undefined || raw === null) return { ok: true, value: undefined };
   if (typeof raw !== 'string') return { ok: false, error: 'invalid_filename' };
@@ -45,6 +90,15 @@ function parseOptionalFilename(raw: unknown): ValueResult<string | undefined> {
     return { ok: false, error: 'invalid_filename' };
   }
   return { ok: true, value: filename };
+}
+
+function parseHeaderFilename(raw: string | undefined): ValueResult<string | undefined> {
+  if (!raw) return { ok: true, value: undefined };
+  try {
+    return parseOptionalFilename(decodeURIComponent(raw));
+  } catch {
+    return parseOptionalFilename(raw);
+  }
 }
 
 function parseImageKey(raw: unknown): ValueResult<string> {
@@ -74,6 +128,58 @@ function imageRouteErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function encodeRfc5987Value(value: string): string {
+  return encodeURIComponent(value).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+async function putUploadedObject(
+  c: Context<Env>,
+  key: string,
+  data: ArrayBuffer,
+  contentType: string,
+  filename: string,
+): Promise<void> {
+  if (c.env.IMAGES) {
+    await c.env.IMAGES.put(key, data, {
+      httpMetadata: { contentType },
+      customMetadata: { originalFilename: filename },
+    });
+    return;
+  }
+  if (c.env.FILES) {
+    await c.env.FILES.put(key, data, {
+      metadata: { contentType, originalFilename: filename } satisfies UploadedObjectMetadata,
+    });
+    return;
+  }
+  throw new Error('upload_storage_unavailable');
+}
+
+async function getUploadedObject(c: Context<Env>, key: string): Promise<UploadedObject | null> {
+  if (c.env.IMAGES) {
+    const object = await c.env.IMAGES.get(key);
+    if (object) {
+      return {
+        body: object.body,
+        contentType: object.httpMetadata?.contentType || 'application/octet-stream',
+        filename: object.customMetadata?.originalFilename || key,
+        etag: object.etag,
+      };
+    }
+  }
+  if (c.env.FILES) {
+    const object = await c.env.FILES.getWithMetadata<UploadedObjectMetadata>(key, 'arrayBuffer');
+    if (object.value) {
+      return {
+        body: object.value,
+        contentType: object.metadata?.contentType || 'application/octet-stream',
+        filename: object.metadata?.originalFilename || key,
+      };
+    }
+  }
+  return null;
 }
 
 // POST /api/images — upload image (base64 or binary)
@@ -125,11 +231,9 @@ images.post('/api/images', async (c) => {
     const ext = mimeType.split('/')[1] === 'jpeg' ? 'jpg' : mimeType.split('/')[1];
     const id = crypto.randomUUID();
     const key = `${id}.${ext}`;
+    const storedFilename = filename ?? key;
 
-    await c.env.IMAGES.put(key, data, {
-      httpMetadata: { contentType: mimeType },
-      customMetadata: { originalFilename: filename ?? key },
-    });
+    await putUploadedObject(c, key, data, mimeType, storedFilename);
 
     const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
     const url = `${workerUrl}/images/${key}`;
@@ -144,20 +248,90 @@ images.post('/api/images', async (c) => {
   }
 });
 
+// POST /api/files — upload a document that can be shared as a public link.
+images.post('/api/files', async (c) => {
+  try {
+    const contentType = c.req.header('Content-Type') || '';
+    const parsedFilename = parseHeaderFilename(c.req.header('X-File-Name') || undefined);
+    if (!parsedFilename.ok) return c.json({ success: false, error: parsedFilename.error }, 400);
+
+    const parsedMime = parseFileMimeType(contentType || 'application/octet-stream', parsedFilename.value);
+    if (!parsedMime.ok) return c.json({ success: false, error: parsedMime.error }, 400);
+
+    const maxBytes = fileMaxBytes(c);
+    const contentLength = parseContentLength(c.req.header('Content-Length') || undefined);
+    if (contentLength !== null && contentLength > maxBytes) {
+      return c.json({ success: false, error: `PDFは${fileMaxLabel(c)}以下にしてください。` }, 400);
+    }
+
+    const data = await c.req.arrayBuffer();
+    if (data.byteLength === 0) {
+      return c.json({ success: false, error: 'PDFファイルが空です。別のファイルを選択してください。' }, 400);
+    }
+
+    if (data.byteLength > maxBytes) {
+      return c.json({ success: false, error: `PDFは${fileMaxLabel(c)}以下にしてください。` }, 400);
+    }
+
+    const id = crypto.randomUUID();
+    const key = `${id}.pdf`;
+    const storedFilename = parsedFilename.value ?? key;
+
+    await putUploadedObject(c, key, data, parsedMime.value, storedFilename);
+
+    const workerUrl = c.env.WORKER_URL || new URL(c.req.url).origin;
+    const url = `${workerUrl}/files/${key}`;
+
+    return c.json({
+      success: true,
+      data: {
+        id,
+        key,
+        url,
+        mimeType: parsedMime.value,
+        size: data.byteLength,
+        filename: storedFilename,
+      },
+    }, 201);
+  } catch (err) {
+    console.error(`POST /api/files error: ${imageRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // GET /images/:key — serve image (public, no auth)
 images.get('/images/:key', async (c) => {
   const key = parseImageKey(c.req.param('key'));
   if (!key.ok) return c.json({ success: false, error: 'Image not found' }, 404);
-  const object = await c.env.IMAGES.get(key.value);
+  const object = await getUploadedObject(c, key.value);
 
   if (!object) {
     return c.json({ success: false, error: 'Image not found' }, 404);
   }
 
   const headers = new Headers();
-  headers.set('Content-Type', object.httpMetadata?.contentType || 'image/png');
+  headers.set('Content-Type', object.contentType || 'image/png');
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  headers.set('ETag', object.etag);
+  if (object.etag) headers.set('ETag', object.etag);
+
+  return new Response(object.body, { headers });
+});
+
+// GET /files/:key — serve uploaded files (public link for LINE recipients).
+images.get('/files/:key', async (c) => {
+  const key = parseImageKey(c.req.param('key'));
+  if (!key.ok) return c.json({ success: false, error: 'File not found' }, 404);
+  const object = await getUploadedObject(c, key.value);
+
+  if (!object) {
+    return c.json({ success: false, error: 'File not found' }, 404);
+  }
+
+  const headers = new Headers();
+  headers.set('Content-Type', object.contentType || 'application/octet-stream');
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  headers.set('Content-Disposition', `inline; filename*=UTF-8''${encodeRfc5987Value(object.filename)}`);
+  if (object.etag) headers.set('ETag', object.etag);
 
   return new Response(object.body, { headers });
 });
@@ -167,7 +341,13 @@ images.delete('/api/images/:key', requireRole('owner', 'admin'), async (c) => {
   try {
     const key = parseImageKey(c.req.param('key'));
     if (!key.ok) return c.json({ success: false, error: key.error }, 400);
-    await c.env.IMAGES.delete(key.value);
+    if (c.env.IMAGES) {
+      await c.env.IMAGES.delete(key.value);
+    } else if (c.env.FILES) {
+      await c.env.FILES.delete(key.value);
+    } else {
+      throw new Error('upload_storage_unavailable');
+    }
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/images/:key error: ${imageRouteErrorKind(err)}`);

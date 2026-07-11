@@ -1,6 +1,7 @@
 import type { Context, Next } from 'hono';
 import { getStaffByApiKey } from '@line-crm/db';
 import type { Env } from '../index.js';
+import { ENV_OWNER_DISPLAY_NAME } from '../services/owner-display.js';
 import type { AdminSameSite } from './admin-auth-config.js';
 
 export const ADMIN_AUTH_COOKIE = 'lh_admin_session';
@@ -87,7 +88,7 @@ export function expiredCookie(name: string, sameSite: AdminSameSite): string {
 export type AuthenticatedStaff = {
   id: string;
   name: string;
-  role: 'owner' | 'admin' | 'staff';
+  role: 'owner' | 'admin' | 'staff' | 'secondary';
 };
 
 /**
@@ -108,7 +109,7 @@ export async function authenticateApiToken(
 
   // Fallback: env API_KEY acts as owner (current rotation slot)
   if (token === c.env.API_KEY) {
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner' };
   }
 
   // Legacy fallback: LEGACY_API_KEY accepted during rotation grace period.
@@ -122,7 +123,7 @@ export async function authenticateApiToken(
     token === c.env.LEGACY_API_KEY
   ) {
     console.log('[auth] accept_via=LEGACY_API_KEY');
-    return { id: 'env-owner', name: 'Owner', role: 'owner' };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner' };
   }
 
   return null;

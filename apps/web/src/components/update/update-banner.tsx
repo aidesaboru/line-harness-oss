@@ -16,7 +16,9 @@ type Status =
   | { kind: 'fork'; reason: string; version: string }
   | { kind: 'upgrade'; current: string; target: ReleaseEntry }
 
-const updateBannerEnabled = process.env.NEXT_PUBLIC_UPDATE_BANNER_ENABLED !== 'false'
+// LINEハーネスは本番環境ごとにカスタム運用するため、標準manifestに載らない
+// version が正常です。更新バナーは明示的に有効化した環境だけ表示します。
+const updateBannerEnabled = process.env.NEXT_PUBLIC_UPDATE_BANNER_ENABLED === 'true'
 
 export function UpdateBanner() {
   const [status, setStatus] = useState<Status>({ kind: 'loading' })

@@ -8,27 +8,25 @@ import { useAccount } from '@/contexts/account-context'
 
 const ccPrompts = [
   {
-    title: 'ダッシュボードのKPI分析',
-    prompt: `LINE CRM ダッシュボードのデータを分析してください。
-1. 友だち数の推移を確認
-2. アクティブシナリオの効果を評価
-3. 配信の開封率・クリック率を分析
-改善提案を含めてレポートしてください。`,
+    title: '対応状況の整理',
+    prompt: `Lリンクの対応状況を整理してください。
+1. 未対応の件数を確認
+2. チケットの進捗を確認
+3. 顧客対応で詰まっている箇所を洗い出す
+現場メンバーに共有しやすい形でまとめてください。`,
   },
   {
-    title: '新しいシナリオを提案',
-    prompt: `現在の友だちデータとタグ情報を元に、効果的なシナリオ配信を提案してください。
-1. ターゲットセグメントの特定
-2. メッセージ内容の提案
-3. 配信タイミングの最適化
-具体的なステップ配信の構成を含めてください。`,
+    title: '顧客対応の改善案',
+    prompt: `個別チャットとチケット管理の運用を見直してください。
+1. 見落としが起きやすい場所
+2. 二次対応に回すべき条件
+3. メンバーが迷わない運用ルール
+を分かりやすく提案してください。`,
   },
 ]
 
 interface DashboardStats {
   friendCount: number | null
-  activeScenarioCount: number | null
-  broadcastCount: number | null
   templateCount: number | null
   automationCount: number | null
   scoringRuleCount: number | null
@@ -75,8 +73,6 @@ export default function DashboardPage() {
   const { selectedAccountId, selectedAccount } = useAccount()
   const [stats, setStats] = useState<DashboardStats>({
     friendCount: null,
-    activeScenarioCount: null,
-    broadcastCount: null,
     templateCount: null,
     automationCount: null,
     scoringRuleCount: null,
@@ -89,10 +85,8 @@ export default function DashboardPage() {
       setLoading(true)
       setError('')
       try {
-        const [friendCountRes, scenariosRes, broadcastsRes, templatesRes, automationsRes, scoringRes] = await Promise.allSettled([
+        const [friendCountRes, templatesRes, automationsRes, scoringRes] = await Promise.allSettled([
           api.friends.count({ accountId: selectedAccountId ?? undefined }),
-          api.scenarios.list(),
-          api.broadcasts.list(),
           api.templates.list(),
           api.automations.list(),
           api.scoring.rules(),
@@ -102,14 +96,6 @@ export default function DashboardPage() {
           friendCount:
             friendCountRes.status === 'fulfilled' && friendCountRes.value.success
               ? friendCountRes.value.data.count
-              : null,
-          activeScenarioCount:
-            scenariosRes.status === 'fulfilled' && scenariosRes.value.success
-              ? scenariosRes.value.data.filter((s) => s.isActive).length
-              : null,
-          broadcastCount:
-            broadcastsRes.status === 'fulfilled' && broadcastsRes.value.success
-              ? broadcastsRes.value.data.length
               : null,
           templateCount:
             templatesRes.status === 'fulfilled' && templatesRes.value.success
@@ -161,7 +147,7 @@ export default function DashboardPage() {
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm font-bold text-gray-900">LINE で体験する</p>
-            <p className="text-xs text-gray-500 mt-0.5">友だち追加でステップ配信・フォーム・自動返信を体験</p>
+            <p className="text-xs text-gray-500 mt-0.5">本番運用前の接続確認・チャット確認</p>
           </div>
           <span className="text-xs px-3 py-1.5 rounded-full text-white font-medium" style={{ backgroundColor: '#06C755' }}>
             友だち追加
@@ -180,32 +166,6 @@ export default function DashboardPage() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                 d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="アクティブシナリオ数"
-          value={stats.activeScenarioCount}
-          loading={loading}
-          href="/scenarios"
-          accentColor="#3B82F6"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-            </svg>
-          }
-        />
-        <StatCard
-          title="配信数 (合計)"
-          value={stats.broadcastCount}
-          loading={loading}
-          href="/broadcasts"
-          accentColor="#8B5CF6"
-          icon={
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
             </svg>
           }
         />
@@ -269,40 +229,8 @@ export default function DashboardPage() {
               </svg>
             </div>
             <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">友だち管理</p>
+              <p className="text-sm font-medium text-gray-900 group-hover:text-green-700 transition-colors">顧客管理</p>
               <p className="text-xs text-gray-400">友だちの一覧・タグ管理</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/scenarios"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-blue-300 hover:bg-blue-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-blue-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-blue-700 transition-colors">シナリオ配信</p>
-              <p className="text-xs text-gray-400">自動配信シナリオの作成・編集</p>
-            </div>
-          </Link>
-
-          <Link
-            href="/broadcasts"
-            className="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-purple-300 hover:bg-purple-50 transition-colors group"
-          >
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white shrink-0 bg-purple-500">
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-              </svg>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-900 group-hover:text-purple-700 transition-colors">一斉配信</p>
-              <p className="text-xs text-gray-400">メッセージの一斉送信・予約</p>
             </div>
           </Link>
 

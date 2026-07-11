@@ -8,8 +8,6 @@ import {
   type SupportCase,
   type SupportCaseDetail,
   type SupportCaseStatus,
-  type SupportEscalationStatus,
-  type SupportManual,
   type SupportSummary,
 } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
@@ -23,11 +21,9 @@ import {
   createSupportChatDraftContext,
   tryStoreSupportChatDraft,
 } from '@/lib/support-chat-draft'
-import CaseDetail, { type DetailTab } from '@/components/support/case-detail'
+import CaseDetail from '@/components/support/case-detail'
 import CaseList from '@/components/support/case-list'
 import CreateCasePanel, { type ChatOption, type CreateCaseInput } from '@/components/support/create-case-panel'
-import EscalationPanel, { type EscalateInput } from '@/components/support/escalation-panel'
-import ManualPanel, { type ManualEditorInput } from '@/components/support/manual-panel'
 import QueueStrip, { type QueueKey } from '@/components/support/queue-strip'
 import {
   buildSupportCaseSearch,
@@ -39,14 +35,11 @@ import {
   getBlockingCaseFormValidationIssues,
   getCreateCaseValidationIssues,
   getDisplayCases,
-  getEscalationDraftValidationIssues,
-  getManualEditorValidationIssues,
   getInitialSupportCaseId,
   getOutsideCurrentListAction,
   getSupportCaseListEmptyState,
   getSupportIdentityIssue,
   getSupportRolePermissions,
-  isStaleCase,
   isSelectedCaseOutsideCurrentList,
   supportApiErrorMessage,
   type CaseFormState,
@@ -63,7 +56,7 @@ import {
 } from '@/components/support/support-ui'
 
 const SEARCH_DEBOUNCE_MS = 350
-const AUTO_REFRESH_MS = 60 * 1000
+const SUPPORT_REALTIME_POLL_MS = 8 * 1000
 
 export default function SupportPage() {
   const { selectedAccountId, selectedAccount, loading: accountLoading } = useAccount()
@@ -76,7 +69,6 @@ export default function SupportPage() {
   const [detail, setDetail] = useState<SupportCaseDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [chats, setChats] = useState<ChatOption[]>([])
-  const [manuals, setManuals] = useState<SupportManual[]>([])
   const [staffNames, setStaffNames] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -88,10 +80,6 @@ export default function SupportPage() {
   const [sortMode, setSortMode] = useState<CaseSortMode>('updated')
   const [search, setSearch] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
-  const [manualSearch, setManualSearch] = useState('')
-  const [appliedManualSearch, setAppliedManualSearch] = useState('')
-  const [manualCategory, setManualCategory] = useState('all')
-  const [detailTab, setDetailTab] = useState<DetailTab>('work')
   const [staffName, setStaffName] = useState('')
   const [staffRole, setStaffRole] = useState('')
   const [staffIdentityReady, setStaffIdentityReady] = useState(false)
@@ -110,13 +98,14 @@ export default function SupportPage() {
   )
   const dirtyRef = useRef(dirty)
   useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  const selectedCaseIdRef = useRef<string | null>(null)
+  useEffect(() => { selectedCaseIdRef.current = selectedCaseId }, [selectedCaseId])
   const casesRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
   const detailIdRef = useRef<string | null>(null)
   useEffect(() => { detailIdRef.current = detail?.id ?? null }, [detail?.id])
 
   const visibleChats = useMemo(() => chats.slice(0, 80), [chats])
-  const staleCaseCount = useMemo(() => cases.filter(isStaleCase).length, [cases])
   const displayCases = useMemo(() => getDisplayCases(cases, { caseFocus, sortMode }), [cases, caseFocus, sortMode])
   const displayCaseIds = useMemo(() => displayCases.map((item) => item.id), [displayCases])
   const selectedCaseOutsideList = !loading && !detailLoading && isSelectedCaseOutsideCurrentList({
@@ -155,17 +144,18 @@ export default function SupportPage() {
     if (!staffIdentityReady) return 'ログイン権限を確認中です。'
     if (saving) return '保存中です。完了までお待ちください。'
     if (loading) return '一覧を更新中です。'
-    if (detailLoading) return '案件詳細を読み込み中です。'
+    if (detailLoading) return 'チケット詳細を読み込み中です。'
     return null
   })()
 
   const activeQueueKey = useMemo<QueueKey | null>(() => {
-    if (caseFocus === 'stale') return 'stale'
     if (queueFilter !== 'all') return queueFilter as QueueKey
     if (statusFilter === 'resolved') return 'resolved'
     if (statusFilter === 'all') return 'all'
     return null
-  }, [caseFocus, queueFilter, statusFilter])
+  }, [queueFilter, statusFilter])
+  const secondaryAnsweredCount = summary?.totals.secondaryAnswered ?? 0
+  const showSecondaryAnsweredNotice = secondaryAnsweredCount > 0 && activeQueueKey !== 'secondary_answered'
 
   const assigneeSuggestions = useMemo(() => {
     const names = new Set<string>(staffNames)
@@ -178,7 +168,6 @@ export default function SupportPage() {
   const permissions = getSupportRolePermissions(verifiedStaffRole)
   const canCreateCases = permissions.canCreateCases
   const canEditCaseRouting = permissions.canEditCaseRouting
-  const canManageManuals = permissions.canManageManuals
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
@@ -244,14 +233,11 @@ export default function SupportPage() {
         api.support.cases.list({
           accountId: selectedAccountId,
           status: statusFilter === 'all' ? undefined : statusFilter,
-          queue: queueFilter === 'my_escalations'
-            ? undefined
-            : queueFilter !== 'all'
+          queue: queueFilter !== 'all'
               ? queueFilter
               : statusFilter === 'all'
                 ? 'unresolved'
                 : undefined,
-          scope: queueFilter === 'my_escalations' ? 'my_escalations' : undefined,
           q: appliedSearch || undefined,
         }),
       ])
@@ -260,15 +246,15 @@ export default function SupportPage() {
       throw err
     }
     if (requestId !== casesRequestRef.current) return
-    if (!summaryRes.success) throw new Error(supportApiErrorMessage(summaryRes, '案件サマリーの読み込みに失敗しました'))
-    if (!casesRes.success) throw new Error(supportApiErrorMessage(casesRes, '案件一覧の読み込みに失敗しました'))
+    if (!summaryRes.success) throw new Error(supportApiErrorMessage(summaryRes, 'チケットサマリーの読み込みに失敗しました'))
+    if (!casesRes.success) throw new Error(supportApiErrorMessage(casesRes, 'チケット一覧の読み込みに失敗しました'))
     setSummary(summaryRes.data)
     setCases(casesRes.data)
-    // 初回のみ表示順の先頭を自動選択。絞り込みで一覧から消えても選択中の案件は維持する
+    // 初回のみ表示順の先頭を自動選択。絞り込みで一覧から消えても選択中のチケットは維持する
     setSelectedCaseId((prev) => prev ?? getInitialSupportCaseId(casesRes.data, { caseFocus, sortMode }))
   }, [selectedAccountId, statusFilter, queueFilter, appliedSearch, supportDataReady, caseFocus, sortMode])
 
-  const loadDetail = useCallback(async (id: string | null) => {
+  const loadDetail = useCallback(async (id: string | null, options: { silent?: boolean } = {}) => {
     const requestId = ++detailRequestRef.current
     if (!id || !selectedAccountId || !supportDataReady) {
       setDetail(null)
@@ -281,7 +267,7 @@ export default function SupportPage() {
       setCaseForm(emptyCaseForm)
       setSavedForm(emptyCaseForm)
     }
-    setDetailLoading(true)
+    if (!options.silent) setDetailLoading(true)
     try {
       const res = await api.support.cases.get(id, selectedAccountId)
       if (requestId !== detailRequestRef.current) return
@@ -289,7 +275,7 @@ export default function SupportPage() {
         setDetail(null)
         setCaseForm(emptyCaseForm)
         setSavedForm(emptyCaseForm)
-        throw new Error(supportApiErrorMessage(res, '案件詳細の読み込みに失敗しました'))
+        throw new Error(supportApiErrorMessage(res, 'チケット詳細の読み込みに失敗しました'))
       }
       setDetail(res.data)
       const form = caseFormFromDetail(res.data)
@@ -299,21 +285,9 @@ export default function SupportPage() {
       if (requestId !== detailRequestRef.current) return
       throw err
     } finally {
-      if (requestId === detailRequestRef.current) setDetailLoading(false)
+      if (!options.silent && requestId === detailRequestRef.current) setDetailLoading(false)
     }
   }, [selectedAccountId, supportDataReady])
-
-  const loadManuals = useCallback(async () => {
-    if (!selectedAccountId || !supportDataReady) return
-    const res = await api.support.manuals.list({
-      accountId: selectedAccountId,
-      category: manualCategory === 'all' ? undefined : manualCategory,
-      q: appliedManualSearch || undefined,
-      active: '1',
-    })
-    if (!res.success) throw new Error(supportApiErrorMessage(res, 'マニュアルの読み込みに失敗しました'))
-    setManuals(res.data)
-  }, [selectedAccountId, manualCategory, appliedManualSearch, supportDataReady])
 
   useEffect(() => {
     if (!staffIdentityReady || !identityUnavailable) return
@@ -325,7 +299,6 @@ export default function SupportPage() {
     setDetail(null)
     setCaseForm(emptyCaseForm)
     setSavedForm(emptyCaseForm)
-    setManuals([])
     setChats([])
     setChatOptionsError(null)
     setLoadError(null)
@@ -366,13 +339,13 @@ export default function SupportPage() {
       return
     }
     let active = true
-    api.staff.list()
+    api.staff.assigneeOptions()
       .then((res) => {
         if (active && res.success) {
           setStaffNames(res.data.filter((member) => member.isActive).map((member) => member.name))
         }
       })
-      .catch(() => { /* staff権限では取得できない場合がある。サジェストなしで動作 */ })
+      .catch(() => { /* 担当者候補は必須ではない。取得できなくても作成フォームは動く */ })
     return () => { active = false }
   }, [supportDataReady])
 
@@ -383,7 +356,7 @@ export default function SupportPage() {
     setLoadError(null)
     loadCases()
       .catch((err) => {
-        if (active) setLoadError(formatSupportErrorMessage(err, '案件一覧の読み込みに失敗しました'))
+        if (active) setLoadError(formatSupportErrorMessage(err, 'チケット一覧の読み込みに失敗しました'))
       })
       .finally(() => {
         if (active) setLoading(false)
@@ -392,19 +365,9 @@ export default function SupportPage() {
   }, [selectedAccountId, loadCases, supportDataReady])
 
   useEffect(() => {
-    if (!supportDataReady || !selectedAccountId) return
-    let active = true
-    loadManuals().catch((err) => {
-      if (active) setLoadError(formatSupportErrorMessage(err, 'マニュアルの読み込みに失敗しました'))
-    })
-    return () => { active = false }
-  }, [selectedAccountId, loadManuals, supportDataReady])
-
-  useEffect(() => {
     void loadDetail(selectedCaseId).catch((err) => {
-      setLoadError(formatSupportErrorMessage(err, '案件詳細の読み込みに失敗しました'))
+      setLoadError(formatSupportErrorMessage(err, 'チケット詳細の読み込みに失敗しました'))
     })
-    setDetailTab('work')
   }, [selectedCaseId, loadDetail])
 
   // 検索は入力後に自動適用 (ボタン不要)
@@ -413,19 +376,38 @@ export default function SupportPage() {
     return () => clearTimeout(timer)
   }, [search])
 
-  useEffect(() => {
-    const timer = setTimeout(() => setAppliedManualSearch(manualSearch.trim()), SEARCH_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
-  }, [manualSearch])
+  const refreshSupportWorkspace = useCallback(() => {
+    if (!supportDataReady || !selectedAccountId || document.hidden || saving) return
+    void (async () => {
+      await loadCases()
+      const currentCaseId = selectedCaseIdRef.current
+      if (currentCaseId && !dirtyRef.current) {
+        await loadDetail(currentCaseId, { silent: true })
+      }
+    })().catch(() => { /* 自動更新の失敗は次回に任せる */ })
+  }, [loadCases, loadDetail, saving, selectedAccountId, supportDataReady])
 
-  // 一覧と件数は60秒ごとに自動更新 (編集中・保存中・非表示タブはスキップ)
+  // 一覧・件数・選択中チケット詳細を自動更新する。編集中の詳細だけは上書きしない。
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.hidden || dirtyRef.current) return
-      void loadCases().catch(() => { /* 自動更新の失敗は次回に任せる */ })
-    }, AUTO_REFRESH_MS)
-    return () => clearInterval(timer)
-  }, [loadCases])
+    if (!supportDataReady || !selectedAccountId) return
+    const timer = window.setInterval(refreshSupportWorkspace, SUPPORT_REALTIME_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [refreshSupportWorkspace, selectedAccountId, supportDataReady])
+
+  useEffect(() => {
+    if (!supportDataReady || !selectedAccountId) return
+    const handleVisibleRefresh = () => {
+      if (!document.hidden) refreshSupportWorkspace()
+    }
+    window.addEventListener('focus', handleVisibleRefresh)
+    window.addEventListener('online', handleVisibleRefresh)
+    document.addEventListener('visibilitychange', handleVisibleRefresh)
+    return () => {
+      window.removeEventListener('focus', handleVisibleRefresh)
+      window.removeEventListener('online', handleVisibleRefresh)
+      document.removeEventListener('visibilitychange', handleVisibleRefresh)
+    }
+  }, [refreshSupportWorkspace, selectedAccountId, supportDataReady])
 
   // 未保存のままタブを閉じる事故を防ぐ
   useEffect(() => {
@@ -446,7 +428,7 @@ export default function SupportPage() {
     if (dirtyRef.current) {
       const ok = await requestConfirm({
         title: '未保存の変更があります',
-        message: '保存していない編集内容は破棄されます。別の案件を開きますか？',
+        message: '保存していない編集内容は破棄されます。別のチケットを開きますか？',
         confirmLabel: '破棄して移動',
         cancelLabel: '戻る',
         tone: 'warning',
@@ -489,14 +471,14 @@ export default function SupportPage() {
         eventBody,
       })
       if (res.success) {
-        notify('success', '案件を保存しました')
+        notify('success', 'チケットを保存しました')
         await Promise.all([loadCases(), loadDetail(detail.id)])
         return true
       }
-      notify('error', supportApiErrorMessage(res, '案件の保存に失敗しました'))
+      notify('error', supportApiErrorMessage(res, 'チケットの保存に失敗しました'))
       return false
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, '案件の保存に失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'チケットの保存に失敗しました'))
       return false
     } finally {
       setSaving(false)
@@ -504,7 +486,7 @@ export default function SupportPage() {
   }, [detail, selectedAccountId, saving, canEditCaseRouting, notify, loadCases, loadDetail])
 
   const handleSave = useCallback(() => {
-    void persistCase(caseForm, '管理画面から案件情報を更新しました')
+    void persistCase(caseForm, '管理画面からチケット情報を更新しました')
   }, [persistCase, caseForm])
 
   const handleQuickStatus = useCallback(async (status: SupportCaseStatus, eventBody: string): Promise<boolean> => {
@@ -517,12 +499,6 @@ export default function SupportPage() {
     setCaseForm(savedForm)
   }, [savedForm])
 
-  /** エスカレ作成や紐付けの前に、未保存の編集を先に保存して消失を防ぐ */
-  const ensureSaved = useCallback(async (): Promise<boolean> => {
-    if (!dirtyRef.current) return true
-    return persistCase(caseForm, '案件情報を更新しました')
-  }, [persistCase, caseForm])
-
   const handleCreate = useCallback(async (input: CreateCaseInput): Promise<boolean> => {
     if (!selectedAccountId || saving) return false
     const blockingIssue = getCreateCaseValidationIssues(input).find((issue) => issue.blocking)
@@ -533,7 +509,7 @@ export default function SupportPage() {
     if (dirtyRef.current) {
       const ok = await requestConfirm({
         title: '未保存の変更があります',
-        message: '保存していない編集内容は破棄されます。このまま新しい案件を作成しますか？',
+        message: '保存していない編集内容は破棄されます。このまま新しいチケットを作成しますか？',
         confirmLabel: '破棄して作成',
         cancelLabel: '戻る',
         tone: 'warning',
@@ -549,227 +525,25 @@ export default function SupportPage() {
         category: input.category,
         priority: input.priority,
         primaryAssignee: input.primaryAssignee || null,
+        escalationAssignee: input.escalationAssignee || null,
         dueAt: fromInputDateTime(input.dueAt),
         customerSummary: input.customerSummary,
       })
       if (res.success) {
-        notify('success', '案件を作成しました')
+        notify('success', 'チケットを作成しました')
         setSelectedCaseId(res.data.id)
         await loadCases()
         return true
       }
-      notify('error', supportApiErrorMessage(res, '案件の作成に失敗しました'))
+      notify('error', supportApiErrorMessage(res, 'チケットの作成に失敗しました'))
       return false
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, '案件の作成に失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'チケットの作成に失敗しました'))
       return false
     } finally {
       setSaving(false)
     }
   }, [selectedAccountId, saving, requestConfirm, notify, loadCases])
-
-  const handleEscalate = useCallback(async (input: EscalateInput): Promise<boolean> => {
-    if (!detail || !selectedAccountId || saving) return false
-    const blockingIssue = getEscalationDraftValidationIssues({
-      question: input.question,
-      assignee: input.assignee,
-      canEditRouting: canEditCaseRouting,
-      hasPresetAssignee: Boolean(detail.escalationAssignee?.trim()),
-      detailStatus: detail.status,
-    }).find((issue) => issue.blocking)
-    if (blockingIssue) {
-      notify('error', blockingIssue.message)
-      return false
-    }
-    if (!(await ensureSaved())) return false
-    setSaving(true)
-    try {
-      const res = await api.support.cases.escalate(detail.id, selectedAccountId, {
-        ...(canEditCaseRouting ? {
-          assignee: input.assignee.trim(),
-          level: input.level,
-          dueAt: fromInputDateTime(input.dueAt),
-        } : {}),
-        question: input.question.trim(),
-      })
-      if (res.success) {
-        notify('success', 'エスカレーションを作成しました')
-        await Promise.all([loadCases(), loadDetail(detail.id)])
-        return true
-      }
-      notify('error', supportApiErrorMessage(res, 'エスカレーションの作成に失敗しました'))
-      return false
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'エスカレーションの作成に失敗しました'))
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }, [detail, selectedAccountId, saving, canEditCaseRouting, ensureSaved, notify, loadCases, loadDetail])
-
-  const handleUpdateEscalation = useCallback(async (id: string, status: SupportEscalationStatus, answer: string) => {
-    if (!detail || !selectedAccountId || saving) return
-    if (!(await ensureSaved())) return
-    setSaving(true)
-    try {
-      const res = await api.support.escalations.update(id, selectedAccountId, {
-        status,
-        answer,
-        eventBody: status === 'answered' ? '二次回答の要点を登録しました' : 'エスカレーションを差し戻しました',
-      })
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'エスカレーションの更新に失敗しました'))
-        return
-      }
-      notify('success', status === 'answered' ? '回答済みにしました' : '差し戻しました')
-      await Promise.all([loadCases(), loadDetail(detail.id)])
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'エスカレーションの更新に失敗しました'))
-    } finally {
-      setSaving(false)
-    }
-  }, [detail, selectedAccountId, saving, ensureSaved, notify, loadCases, loadDetail])
-
-  const updateManualLinks = useCallback(async (nextIds: string[], eventBody: string, successMessage: string) => {
-    if (!detail || !selectedAccountId || saving) return
-    if (!(await ensureSaved())) return
-    setSaving(true)
-    try {
-      const res = await api.support.cases.update(detail.id, selectedAccountId, { manualIds: nextIds, eventBody })
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの更新に失敗しました'))
-        return
-      }
-      notify('success', successMessage)
-      await loadDetail(detail.id)
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの更新に失敗しました'))
-    } finally {
-      setSaving(false)
-    }
-  }, [detail, selectedAccountId, saving, ensureSaved, notify, loadDetail])
-
-  const handleLinkManual = useCallback((manual: SupportManual) => {
-    if (!detail) return
-    const nextIds = Array.from(new Set([...detail.manualIds, manual.id]))
-    void updateManualLinks(nextIds, `マニュアルを紐付けました: ${manual.title}`, 'マニュアルを紐付けました')
-  }, [detail, updateManualLinks])
-
-  const handleUnlinkManual = useCallback((manual: SupportManual) => {
-    if (!detail) return
-    const nextIds = detail.manualIds.filter((id) => id !== manual.id)
-    void updateManualLinks(nextIds, `マニュアルの紐付けを解除しました: ${manual.title}`, '紐付けを解除しました')
-  }, [detail, updateManualLinks])
-
-  const handleCreateManual = useCallback(async (input: ManualEditorInput): Promise<boolean> => {
-    if (!selectedAccountId || saving) return false
-    const blockingIssue = getManualEditorValidationIssues(input).find((issue) => issue.blocking)
-    if (blockingIssue) {
-      notify('error', blockingIssue.message)
-      return false
-    }
-    const title = input.title.trim()
-    const body = input.body.trim()
-    const url = input.url.trim()
-    setSaving(true)
-    try {
-      const res = await api.support.manuals.create({
-        lineAccountId: selectedAccountId,
-        title,
-        category: input.category,
-        body,
-        url: url || null,
-        keywords: input.keywords.trim(),
-        owner: input.owner.trim() || null,
-        approvedBy: input.approvedBy.trim() || null,
-        revisedAt: input.revisedAt || null,
-      })
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの作成に失敗しました'))
-        return false
-      }
-      notify('success', 'マニュアルを作成しました')
-      await loadManuals()
-      return true
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの作成に失敗しました'))
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }, [selectedAccountId, saving, notify, loadManuals])
-
-  const handleUpdateManual = useCallback(async (manual: SupportManual, input: ManualEditorInput): Promise<boolean> => {
-    if (!selectedAccountId || saving) return false
-    const blockingIssue = getManualEditorValidationIssues(input).find((issue) => issue.blocking)
-    if (blockingIssue) {
-      notify('error', blockingIssue.message)
-      return false
-    }
-    const title = input.title.trim()
-    const body = input.body.trim()
-    const url = input.url.trim()
-    setSaving(true)
-    try {
-      const res = await api.support.manuals.update(manual.id, {
-        lineAccountId: selectedAccountId,
-        title,
-        category: input.category,
-        body,
-        url: url || null,
-        keywords: input.keywords.trim(),
-        owner: input.owner.trim() || null,
-        approvedBy: input.approvedBy.trim() || null,
-        revisedAt: input.revisedAt || null,
-      })
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの更新に失敗しました'))
-        return false
-      }
-      notify('success', 'マニュアルを更新しました')
-      await Promise.all([
-        loadManuals(),
-        detail ? loadDetail(detail.id) : Promise.resolve(),
-      ])
-      return true
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの更新に失敗しました'))
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }, [selectedAccountId, saving, notify, loadManuals, loadDetail, detail])
-
-  const handleArchiveManual = useCallback(async (manual: SupportManual): Promise<boolean> => {
-    if (!selectedAccountId || saving) return false
-    const ok = await requestConfirm({
-      title: 'マニュアルを無効化します',
-      message: `「${manual.title}」を一覧から外します。既存の案件履歴は残りますが、新しい紐付け候補には出なくなります。`,
-      confirmLabel: '無効化する',
-      cancelLabel: '戻る',
-      tone: 'danger',
-    })
-    if (!ok) return false
-    setSaving(true)
-    try {
-      const res = await api.support.manuals.archive(manual.id, selectedAccountId)
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの無効化に失敗しました'))
-        return false
-      }
-      notify('success', 'マニュアルを無効化しました')
-      await Promise.all([
-        loadManuals(),
-        detail ? loadDetail(detail.id) : Promise.resolve(),
-      ])
-      return true
-    } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの無効化に失敗しました'))
-      return false
-    } finally {
-      setSaving(false)
-    }
-  }, [selectedAccountId, saving, requestConfirm, notify, loadManuals, loadDetail, detail])
 
   const handleCopyReplyDraft = useCallback(async () => {
     const result = await copyText(caseForm.customerReplyDraft)
@@ -780,6 +554,51 @@ export default function SupportPage() {
     }
   }, [caseForm.customerReplyDraft, notify])
 
+  const handleCreateInternalMessage = useCallback(async (body: string, parentId: string | null, mentions: string[]): Promise<boolean> => {
+    if (!detail || !selectedAccountId || saving) return false
+    setSaving(true)
+    try {
+      const res = await api.support.cases.addInternalMessage(detail.id, selectedAccountId, {
+        body,
+        parentId,
+        mentions,
+      })
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, '社内チャットの投稿に失敗しました'))
+        return false
+      }
+      notify('success', parentId ? 'スレッドに返信しました' : '社内チャットに投稿しました')
+      await loadDetail(detail.id)
+      return true
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, '社内チャットの投稿に失敗しました'))
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }, [detail, loadDetail, notify, saving, selectedAccountId])
+
+  const handleInternalMessageReaction = useCallback(async (messageId: string, emoji: string): Promise<void> => {
+    if (!detail || !selectedAccountId || saving) return
+    try {
+      const res = await api.support.cases.toggleInternalReaction(detail.id, selectedAccountId, messageId, emoji)
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, 'リアクションの更新に失敗しました'))
+        return
+      }
+      setDetail((prev) => prev
+        ? {
+            ...prev,
+            internalMessages: prev.internalMessages.map((message) => (
+              message.id === res.data.id ? res.data : message
+            )),
+          }
+        : prev)
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, 'リアクションの更新に失敗しました'))
+    }
+  }, [detail, notify, saving, selectedAccountId])
+
   const handleOpenChatWithDraft = useCallback(async () => {
     if (!detail?.friendId || !selectedAccountId) return
     const draft = caseForm.customerReplyDraft.trim()
@@ -787,7 +606,7 @@ export default function SupportPage() {
       notify('error', '顧客向け返信案を入力してください')
       return
     }
-    if (dirtyRef.current && !(await persistCase(caseForm, 'チャット返信前に案件情報を保存しました'))) {
+    if (dirtyRef.current && !(await persistCase(caseForm, 'チャット返信前にチケット情報を保存しました'))) {
       return
     }
     try {
@@ -817,12 +636,6 @@ export default function SupportPage() {
       setQueueFilter('all')
       setStatusFilter('all')
       setCaseFocus('all')
-      return
-    }
-    if (key === 'stale') {
-      setQueueFilter('all')
-      setStatusFilter('all')
-      setCaseFocus('stale')
       return
     }
     if (key === 'resolved') {
@@ -872,21 +685,20 @@ export default function SupportPage() {
       await Promise.all([
         loadCases(),
         selectedCaseId ? loadDetail(selectedCaseId) : Promise.resolve(),
-        loadManuals(),
       ])
     } catch (err) {
       setLoadError(formatSupportErrorMessage(err, '更新に失敗しました'))
     } finally {
       setLoading(false)
     }
-  }, [selectedAccountId, selectedCaseId, controlsDisabled, requestConfirm, loadCases, loadDetail, loadManuals])
+  }, [selectedAccountId, selectedCaseId, controlsDisabled, requestConfirm, loadCases, loadDetail])
 
-  // ⌘S / Ctrl+S で保存、↑↓ / j k で案件移動 (入力中は無効)
+  // ⌘S / Ctrl+S で保存、↑↓ / j k でチケット移動 (入力中は無効)
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        if (dirtyRef.current && detail && !saving) void persistCase(caseForm, '管理画面から案件情報を更新しました')
+        if (dirtyRef.current && detail && !saving) void persistCase(caseForm, '管理画面からチケット情報を更新しました')
         return
       }
       const target = e.target as HTMLElement | null
@@ -913,8 +725,8 @@ export default function SupportPage() {
   return (
     <div className="space-y-4">
       <Header
-        title="サポートCRM"
-        description={`${accountName} の問い合わせ案件を一元管理`}
+        title="チケット管理"
+        description={`${accountName} の問い合わせチケットを一元管理`}
         action={
           <div className="flex items-center gap-2">
             {canCreateCases && (
@@ -926,7 +738,7 @@ export default function SupportPage() {
                 aria-expanded={createOpen}
               >
                 <PlusIcon className="h-4 w-4" />
-                新規案件
+                新規チケット
               </button>
             )}
             <button onClick={() => void refreshAll()} disabled={controlsDisabled} className={btnSecondaryCls}>
@@ -968,22 +780,39 @@ export default function SupportPage() {
 
       <QueueStrip
         summary={summary}
-        staleCount={staleCaseCount}
         activeKey={activeQueueKey}
         staffName={verifiedStaffName}
+        staffRole={verifiedStaffRole}
         disabled={controlsDisabled}
         onSelect={handleQueueSelect}
       />
 
+      {showSecondaryAnsweredNotice && (
+        <button
+          type="button"
+          onClick={() => handleQueueSelect('secondary_answered')}
+          disabled={controlsDisabled}
+          className="flex w-full flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-left text-emerald-900 shadow-sm transition-colors hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <span>
+            <span className="block text-sm font-semibold">二次対応から回答が戻っています</span>
+            <span className="mt-0.5 block text-xs text-emerald-700">一次対応者が確認して顧客へ返すチケットです。</span>
+          </span>
+          <span className="rounded-md bg-white px-3 py-1.5 text-sm font-semibold text-emerald-700 ring-1 ring-emerald-200">
+            {secondaryAnsweredCount}件を見る
+          </span>
+        </button>
+      )}
+
       {verifiedStaffRole === 'staff' && (
         <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          staff権限では、自分が作成・担当・エスカレ先になっている案件と、その案件に紐づくチャットだけが表示されます。
+          staff権限では、自分が作成・担当・エスカレ先になっているチケットと、そのチケットに紐づくチャットだけが表示されます。
         </div>
       )}
 
       {canCreateCases && createOpen && chatOptionsError && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
-          {chatOptionsError}。会話に紐付けない案件化はできますが、LINE会話の候補は更新後にもう一度確認してください。
+          {chatOptionsError}。会話に紐付けないチケット化はできますが、LINE会話の候補は更新後にもう一度確認してください。
         </div>
       )}
 
@@ -991,13 +820,14 @@ export default function SupportPage() {
         <CreateCasePanel
           chats={visibleChats}
           staffName={verifiedStaffName}
+          staffOptions={assigneeSuggestions}
           saving={saving}
           onCreate={handleCreate}
           onClose={() => setCreateOpen(false)}
         />
       )}
 
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
+      <div className="grid min-h-0 gap-4 lg:h-[calc(100vh-320px)] lg:min-h-[680px] lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)] lg:items-stretch xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
         <CaseList
           cases={displayCases}
           loading={loading}
@@ -1025,49 +855,21 @@ export default function SupportPage() {
           dirty={dirty}
           saving={saving}
           canEditRouting={canEditCaseRouting}
-          detailTab={detailTab}
+          staffOptions={assigneeSuggestions}
+          staffName={verifiedStaffName}
           onFormChange={(patch) => setCaseForm((prev) => ({ ...prev, ...patch }))}
           onSave={handleSave}
           onDiscard={handleDiscard}
           onQuickStatus={handleQuickStatus}
+          onInternalMessageCreate={handleCreateInternalMessage}
+          onInternalMessageReaction={handleInternalMessageReaction}
           onOpenChatWithDraft={() => void handleOpenChatWithDraft()}
-          onTabChange={setDetailTab}
           onCopyReplyDraft={() => void handleCopyReplyDraft()}
           emptyState={detailEmptyState}
           outsideCurrentList={selectedCaseOutsideList}
           outsideCurrentListActionLabel={outsideCurrentListAction.label}
           onResetFilters={revealSelectedCaseInList}
         />
-
-        <aside className="grid gap-4 lg:col-span-2 xl:grid-cols-2">
-          <EscalationPanel
-            detail={detail}
-            caseForm={caseForm}
-            staffName={verifiedStaffName}
-            saving={saving}
-            canEditRouting={canEditCaseRouting}
-            onEscalate={handleEscalate}
-            onUpdateEscalation={handleUpdateEscalation}
-            notify={notify}
-          />
-          <ManualPanel
-            manuals={manuals}
-            linkedManuals={detail?.manuals ?? []}
-            linkedIds={detail?.manualIds ?? []}
-            canLink={Boolean(detail)}
-            canManage={canManageManuals}
-            saving={saving}
-            search={manualSearch}
-            category={manualCategory}
-            onSearchChange={setManualSearch}
-            onCategoryChange={setManualCategory}
-            onLink={handleLinkManual}
-            onUnlink={handleUnlinkManual}
-            onCreateManual={handleCreateManual}
-            onUpdateManual={handleUpdateManual}
-            onArchiveManual={handleArchiveManual}
-          />
-        </aside>
       </div>
 
       {/* 一次担当・二次対応先入力のサジェスト (スタッフ + 既存担当者) */}

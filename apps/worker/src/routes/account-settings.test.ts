@@ -21,6 +21,7 @@ function makeDb(state: {
   configuredFriendIds?: string[];
   visibleFriendIds?: string[];
   friends?: FriendRow[];
+  settings?: Record<string, string>;
 } = {}) {
   const configuredFriendIds = state.configuredFriendIds ?? ['friend-visible', 'friend-hidden'];
   const visibleFriendIds = new Set(state.visibleFriendIds ?? []);
@@ -28,6 +29,7 @@ function makeDb(state: {
     { id: 'friend-visible', display_name: 'Visible Friend', picture_url: 'https://example.com/visible.png' },
     { id: 'friend-hidden', display_name: 'Hidden Friend', picture_url: 'https://example.com/hidden.png' },
   ];
+  const settings = new Map<string, string>(Object.entries(state.settings ?? {}));
   const calls: DbCall[] = [];
 
   const db = {
@@ -40,6 +42,11 @@ function makeDb(state: {
         },
         async first<T>() {
           calls.push({ method: 'first', sql, binds: bound });
+          if (sql.includes('FROM account_settings') && sql.includes('key = ?')) {
+            const [accountId, key] = bound as [string, string];
+            const value = settings.get(`${accountId}:${key}`);
+            return (value ? { value } : null) as T | null;
+          }
           if (sql.includes("key = 'test_recipients'")) {
             return { value: JSON.stringify(configuredFriendIds) } as T;
           }
@@ -62,6 +69,10 @@ function makeDb(state: {
         },
         async run() {
           calls.push({ method: 'run', sql, binds: bound });
+          if (sql.includes('INSERT INTO account_settings') && bound.length >= 8) {
+            const [, accountId, key, value] = bound as [string, string, string, string];
+            settings.set(`${accountId}:${key}`, value);
+          }
           return { success: true, meta: { changes: 1 } };
         },
       };
@@ -197,5 +208,149 @@ describe('account settings test recipients support visibility', () => {
       JSON.stringify(['friend-visible', 'friend-hidden']),
       expect.any(String),
     ]);
+  });
+});
+
+describe('account settings line safety permissions', () => {
+  test('owner can update LINE send safety mode', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'owner').request('/api/account-settings/line-safety', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: ' acc-1 ',
+        frozen: true,
+        reason: '緊急確認',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown> };
+    expect(body.data).toMatchObject({
+      frozen: true,
+      reason: '緊急確認',
+      updatedBy: 'Tajima (staff-1)',
+    });
+    const runCall = db.calls.find((call) => call.method === 'run');
+    expect(runCall?.binds[1]).toBe('acc-1');
+    expect(runCall?.binds[2]).toBe('line_safety_freeze');
+  });
+
+  test('admin cannot update LINE send safety mode', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'admin').request('/api/account-settings/line-safety', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: 'acc-1',
+        frozen: true,
+        reason: '緊急確認',
+      }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(db.calls.some((call) => call.method === 'run')).toBe(false);
+  });
+});
+
+describe('account settings support notifications', () => {
+  test('owner can read support notification settings without exposing webhook URL', async () => {
+    const db = makeDb({
+      settings: {
+        'acc-1:support_slack_notifications': JSON.stringify({
+          enabled: true,
+          webhookUrl: 'https://hooks.slack.test/secret',
+          immediateUrgent: true,
+          digestEnabled: true,
+          digestHours: [12, 17],
+          dueSoonHours: 6,
+        }),
+      },
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/account-settings/support-notifications?accountId=acc-1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown> };
+    expect(body.data).toEqual({
+      enabled: true,
+      webhookConfigured: true,
+      immediateUrgent: true,
+      digestEnabled: true,
+      digestHours: [12, 17],
+      dueSoonHours: 6,
+    });
+    expect(JSON.stringify(body)).not.toContain('secret');
+  });
+
+  test('staff cannot read or update support notification settings', async () => {
+    const db = makeDb();
+
+    const readRes = await setupApp(db, 'staff').request('/api/account-settings/support-notifications?accountId=acc-1');
+    const updateRes = await setupApp(db, 'staff').request('/api/account-settings/support-notifications', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: 'acc-1', enabled: true }),
+    });
+
+    expect(readRes.status).toBe(403);
+    expect(updateRes.status).toBe(403);
+    expect(db.calls.some((call) => call.method === 'run')).toBe(false);
+  });
+
+  test('admin can update support notification settings', async () => {
+    const db = makeDb();
+
+    const res = await setupApp(db, 'admin').request('/api/account-settings/support-notifications', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: ' acc-1 ',
+        enabled: true,
+        webhookUrl: 'https://hooks.slack.test/new',
+        immediateUrgent: true,
+        digestEnabled: true,
+        digestHours: [14, 12, 14],
+        dueSoonHours: 8,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Record<string, unknown> };
+    expect(body.data).toMatchObject({
+      enabled: true,
+      webhookConfigured: true,
+      digestHours: [12, 14],
+      dueSoonHours: 8,
+    });
+    const runCall = db.calls.find((call) => call.method === 'run');
+    expect(runCall?.binds[1]).toBe('acc-1');
+    expect(runCall?.binds[2]).toBe('support_slack_notifications');
+  });
+
+  test('support notification updates reject unsafe values before DB writes', async () => {
+    const requests = [
+      '{',
+      JSON.stringify({}),
+      JSON.stringify({ accountId: 'bad account', enabled: true }),
+      JSON.stringify({ accountId: 'acc-1', enabled: 'yes' }),
+      JSON.stringify({ accountId: 'acc-1', webhookUrl: 'http://hooks.slack.test/nope' }),
+      JSON.stringify({ accountId: 'acc-1', digestHours: [12, 99] }),
+      JSON.stringify({ accountId: 'acc-1', dueSoonHours: 0 }),
+    ];
+
+    for (const body of requests) {
+      const db = makeDb();
+      const res = await setupApp(db, 'admin').request('/api/account-settings/support-notifications', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+
+      expect(res.status, body).toBe(400);
+      expect(db.calls.some((call) => call.method === 'run')).toBe(false);
+    }
   });
 });

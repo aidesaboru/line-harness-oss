@@ -311,6 +311,118 @@ describe('POST /webhook — message intake', () => {
             'friend-1',
             'テスト4',
             'acc-1',
+            'msg-1',
+            'quote-token',
+            null,
+            '2026-06-11T17:45:17.000+09:00',
+          ],
+        }),
+      ]),
+    );
+  });
+
+  test('fills missing line account id for an existing friend when a message arrives', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-existing',
+      line_user_id: 'Urealuser',
+      display_name: 'Existing User',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: null,
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-06-10T17:45:17.000+09:00',
+      updated_at: '2026-06-10T17:45:17.000+09:00',
+    });
+    vi.mocked(upsertChatOnMessage).mockResolvedValue(undefined);
+
+    const { db, statements } = createDbMock();
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const body = JSON.stringify({
+      destination: 'Ubot',
+      events: [
+        {
+          type: 'message',
+          mode: 'active',
+          timestamp: 1781167517000,
+          source: { type: 'user', userId: 'Urealuser' },
+          webhookEventId: '01JXEXISTING',
+          deliveryContext: { isRedelivery: false },
+          replyToken: 'reply-token',
+          message: {
+            id: 'msg-existing',
+            type: 'text',
+            quoteToken: 'quote-token',
+            text: '既存顧客からの連絡です',
+          },
+        },
+      ],
+    });
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body,
+      },
+      {
+        ...baseEnv,
+        DB: db,
+      },
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    const processingPromise = vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>;
+    await processingPromise;
+
+    expect(upsertFriend).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-existing');
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: expect.stringContaining('UPDATE friends SET line_account_id'),
+          binds: ['acc-1', '2026-06-11T17:45:17.000+09:00', 'friend-existing'],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining('INSERT INTO messages_log'),
+          binds: [
+            expect.any(String),
+            'friend-existing',
+            '既存顧客からの連絡です',
+            'acc-1',
+            'msg-existing',
+            'quote-token',
             null,
             '2026-06-11T17:45:17.000+09:00',
           ],
@@ -422,8 +534,91 @@ describe('POST /webhook — message intake', () => {
             'friend-1',
             '体験を完了する',
             'acc-1',
+            'msg-1',
+            'quote-token',
             'read-token-1',
             '2026-06-11T17:45:17.000+09:00',
+          ],
+        }),
+      ]),
+    );
+  });
+
+  test('marks unsent LINE messages as deleted in Harness', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+
+    const { db, statements } = createDbMock();
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const body = JSON.stringify({
+      destination: 'Ubot',
+      events: [
+        {
+          type: 'unsend',
+          mode: 'active',
+          timestamp: 1781167517000,
+          source: { type: 'user', userId: 'Urealuser' },
+          webhookEventId: '01JXUNSENDTEST',
+          deliveryContext: { isRedelivery: false },
+          unsend: { messageId: 'msg-1' },
+        },
+      ],
+    });
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body,
+      },
+      {
+        ...baseEnv,
+        DB: db,
+      },
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    const processingPromise = vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>;
+    await processingPromise;
+
+    expect(statements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sql: expect.stringContaining('UPDATE messages_log'),
+          binds: [
+            '2026-06-11T17:45:17.000+09:00',
+            'acc-1',
+            'acc-1',
+            'msg-1',
+            'msg-1',
+            'msg-1',
           ],
         }),
       ]),

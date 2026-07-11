@@ -4,6 +4,7 @@
 
 import type { BookingNotificationSender, NotificationKind } from './booking-notifier.js';
 import { REMINDER_MAX_RETRY } from './booking-types.js';
+import { getLineSendSafetyBlock } from './line-safety.js';
 
 interface DueRow {
   id: string;
@@ -15,6 +16,7 @@ interface DueRow {
   staff_name: string;
   channel_access_token: string;
   line_user_id: string;
+  line_account_id: string;
 }
 
 export interface ProcessRemindersParams {
@@ -57,7 +59,8 @@ export async function processDueReminders(
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
-              f.line_user_id
+              f.line_user_id,
+              b.line_account_id
          FROM booking_reminders r
          INNER JOIN bookings b ON b.id = r.booking_id
          INNER JOIN menus m ON m.id = b.menu_id
@@ -78,6 +81,11 @@ export async function processDueReminders(
   for (const row of due.results) {
     const kind: NotificationKind = row.kind;
     try {
+      const safetyBlock = await getLineSendSafetyBlock(db, row.line_account_id);
+      if (safetyBlock) {
+        console.warn('Booking reminder blocked by LINE safety mode');
+        continue;
+      }
       await params.sender({
         channelAccessToken: row.channel_access_token,
         toLineUserId: row.line_user_id,

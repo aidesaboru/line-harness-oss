@@ -32,6 +32,7 @@ type TestEnv = {
 function createDb() {
   const stmt = {
     bind: vi.fn(),
+    first: vi.fn().mockResolvedValue(null),
     run: vi.fn().mockResolvedValue({ success: true }),
   };
   stmt.bind.mockReturnValue(stmt);
@@ -195,7 +196,9 @@ describe('Meet callback signature guard', () => {
     ]);
     expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE friends SET metadata'));
     expect(stmt.bind).toHaveBeenCalledWith(expect.any(String), 'friend-1');
-    const [metadata] = stmt.bind.mock.calls[0] as [string, string];
+    const metadataCall = stmt.bind.mock.calls.find((call) => call[1] === 'friend-1') as [string, string] | undefined;
+    expect(metadataCall).toBeDefined();
+    const [metadata] = metadataCall!;
     expect(JSON.parse(metadata)).toMatchObject({
       existing: true,
       meet_hearing: {

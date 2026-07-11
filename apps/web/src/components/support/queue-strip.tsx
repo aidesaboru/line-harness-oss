@@ -1,16 +1,13 @@
 'use client'
 
 import type { SupportSummary } from '@/lib/api'
-import { FlameIcon } from './support-ui'
 
 export type QueueKey =
   | 'all'
   | 'escalated'
-  | 'my_escalations'
-  | 'overdue'
-  | 'unassigned'
+  | 'secondary_answered'
+  | 'primary_action'
   | 'waiting_customer'
-  | 'stale'
   | 'resolved'
 
 interface QueueChip {
@@ -19,54 +16,58 @@ interface QueueChip {
   /** count > 0 のときに数字へ付ける強調色 */
   countCls: string
   activeCls: string
-  icon?: 'flame'
   /** 件数が0でも常時グレー表示にする (完了など参考値) */
   muted?: boolean
 }
 
 const chips: QueueChip[] = [
-  { key: 'all', label: '未完了', countCls: 'text-gray-900', activeCls: 'border-gray-900 bg-gray-900 text-white' },
-  { key: 'overdue', label: '期限超過', countCls: 'text-red-600', activeCls: 'border-red-600 bg-red-600 text-white' },
-  { key: 'stale', label: '24h滞留', countCls: 'text-orange-600', activeCls: 'border-orange-500 bg-orange-500 text-white', icon: 'flame' },
-  { key: 'unassigned', label: '担当者なし', countCls: 'text-amber-600', activeCls: 'border-amber-500 bg-amber-500 text-white' },
-  { key: 'escalated', label: 'エスカレ', countCls: 'text-purple-600', activeCls: 'border-purple-600 bg-purple-600 text-white' },
-  { key: 'my_escalations', label: '自分宛', countCls: 'text-green-600', activeCls: 'border-green-600 bg-green-600 text-white' },
-  { key: 'waiting_customer', label: '顧客返信待ち', countCls: 'text-blue-600', activeCls: 'border-blue-600 bg-blue-600 text-white' },
-  { key: 'resolved', label: '完了', countCls: 'text-gray-400', activeCls: 'border-gray-500 bg-gray-500 text-white', muted: true },
+  { key: 'all', label: '未完了', countCls: 'text-slate-700', activeCls: 'border-slate-300 bg-slate-100 text-slate-900' },
+  { key: 'escalated', label: '二次対応中', countCls: 'text-indigo-600', activeCls: 'border-indigo-200 bg-indigo-50 text-indigo-800' },
+  { key: 'secondary_answered', label: '二次回答済み', countCls: 'text-emerald-600', activeCls: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
+  { key: 'primary_action', label: '対応中', countCls: 'text-amber-600', activeCls: 'border-amber-200 bg-amber-50 text-amber-800' },
+  { key: 'waiting_customer', label: '顧客返信待ち', countCls: 'text-blue-600', activeCls: 'border-blue-200 bg-blue-50 text-blue-800' },
+  { key: 'resolved', label: '完了済みチケット', countCls: 'text-gray-400', activeCls: 'border-slate-200 bg-slate-50 text-slate-600', muted: true },
 ]
 
 interface QueueStripProps {
   summary: SupportSummary | null
-  staleCount: number
   activeKey: QueueKey | null
   staffName: string
+  staffRole: string
   disabled?: boolean
   onSelect: (key: QueueKey) => void
 }
 
-function chipCount(key: QueueKey, summary: SupportSummary | null, staleCount: number): number {
+function chipCount(key: QueueKey, summary: SupportSummary | null): number {
   if (!summary) return 0
   switch (key) {
     case 'all': return summary.totals.open
     case 'escalated': return summary.totals.escalated
-    case 'my_escalations': return summary.totals.myEscalations
-    case 'overdue': return summary.totals.overdue
-    case 'unassigned': return summary.totals.unassigned
+    case 'secondary_answered': return summary.totals.secondaryAnswered
+    case 'primary_action': return summary.totals.primaryAction
     case 'waiting_customer': return summary.totals.waitingCustomer
-    case 'stale': return staleCount
     case 'resolved': return summary.totals.resolved
   }
 }
 
 /**
- * 優先キューの数字チップ。クリックで絞り込み、もう一度クリックで解除。
- * 日次確認の起点: 期限超過 → 24h滞留 → 担当者なし → エスカレ → 自分宛。
+ * 作業状態の数字チップ。クリックで絞り込み、もう一度クリックで解除。
+ * 日次確認の起点: 二次対応 → 二次回答済み → 対応中 → 顧客返信待ち。
  */
-export default function QueueStrip({ summary, staleCount, activeKey, staffName, disabled = false, onSelect }: QueueStripProps) {
+export default function QueueStrip({
+  summary,
+  activeKey,
+  staffName,
+  staffRole,
+  disabled = false,
+  onSelect,
+}: QueueStripProps) {
+  const canViewAllEscalations = staffRole === 'owner' || staffRole === 'admin'
+
   return (
-    <div className="flex flex-wrap gap-2" role="group" aria-label="優先キュー">
+    <div className="flex flex-wrap gap-2" role="group" aria-label="チケットの状態">
       {chips.map((chip) => {
-        const count = chipCount(chip.key, summary, staleCount)
+        const count = chipCount(chip.key, summary)
         const isActive = activeKey === chip.key
         const hasItems = count > 0 && !chip.muted
         return (
@@ -76,27 +77,29 @@ export default function QueueStrip({ summary, staleCount, activeKey, staffName, 
             onClick={() => onSelect(chip.key)}
             disabled={disabled}
             aria-pressed={isActive}
-            title={chip.key === 'my_escalations' && staffName ? `${staffName} 宛の未完了エスカレ` : undefined}
-            className={`group flex min-w-[96px] flex-1 items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 sm:flex-none ${
+            title={
+              chip.key === 'escalated'
+                ? canViewAllEscalations
+                  ? '管理者に見えている二次対応中チケット'
+                  : staffName
+                    ? `${staffName} さんに見えている二次対応中のチケット`
+                    : undefined
+                : undefined
+            }
+            className={`group flex min-w-[150px] flex-1 items-center justify-between gap-3 rounded-lg border px-4 py-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 sm:flex-none ${
               isActive
-                ? `${chip.activeCls} shadow-sm`
-                : 'border-gray-200 bg-white hover:border-gray-300 hover:shadow-sm'
+                ? `${chip.activeCls} shadow-sm ring-1 ring-inset ring-white/60`
+                : 'border-slate-200 bg-white shadow-sm hover:border-slate-300 hover:bg-slate-50'
             } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:shadow-none`}
           >
             <span className="flex flex-col">
-              <span className={`flex items-center gap-1 text-[11px] font-semibold ${isActive ? 'text-white/90' : 'text-gray-500'}`}>
-                {chip.icon === 'flame' && <FlameIcon className="h-3 w-3" />}
+              <span className={`flex items-center gap-1 text-sm font-medium ${isActive ? '' : 'text-gray-700'}`}>
                 {chip.label}
               </span>
-              {chip.key === 'my_escalations' && staffName && (
-                <span className={`max-w-[88px] truncate text-[10px] ${isActive ? 'text-white/70' : 'text-gray-400'}`}>
-                  {staffName}
-                </span>
-              )}
             </span>
             <span
-              className={`text-xl font-bold tabular-nums leading-none ${
-                isActive ? 'text-white' : hasItems ? chip.countCls : 'text-gray-300'
+              className={`text-2xl font-semibold tabular-nums leading-none ${
+                isActive ? '' : hasItems ? chip.countCls : 'text-gray-300'
               }`}
             >
               {count}

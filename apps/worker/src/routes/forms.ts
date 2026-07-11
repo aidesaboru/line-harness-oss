@@ -20,6 +20,7 @@ import type {
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 
 const forms = new Hono<Env>();
 const FORM_ID_MAX_LENGTH = 128;
@@ -28,6 +29,7 @@ const MAX_PUBLIC_FORM_DATA_FIELDS = 100;
 const FORM_ID_PATTERN = /^[!-~]+$/;
 
 function formRouteErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
@@ -396,6 +398,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
                 const account = await getLineAccountById(c.env.DB, (friend as unknown as Record<string, unknown>).line_account_id as string);
                 if (account) accessToken = account.channel_access_token;
               }
+              await assertLineSendAllowed(c.env.DB, (friend as unknown as Record<string, string | null>).line_account_id);
               const lineClient = new LineClient(accessToken);
               await lineClient.pushMessage(friend.line_user_id, [{ type: 'text', text: form.on_submit_webhook_fail_message }]);
               await c.env.DB
@@ -531,6 +534,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
                 paddingAll: '16px',
               },
             };
+            await assertLineSendAllowed(db, (friend as unknown as Record<string, string | null>).line_account_id);
             await lineClient.pushMessage(friend.line_user_id, [
               { type: 'flex', altText: 'ヒアリングの準備ができました', contents: meetFlex },
             ]);
@@ -624,6 +628,7 @@ forms.post('/api/forms/:id/submit', async (c) => {
             messages.push(buildMessage('flex', JSON.stringify(resultFlex)));
           }
 
+          await assertLineSendAllowed(db, (friend as unknown as Record<string, string | null>).line_account_id);
           await lineClient.pushMessage(friend.line_user_id, messages);
 
           // Mirror every pushed message into messages_log so the dashboard chat

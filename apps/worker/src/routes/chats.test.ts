@@ -38,7 +38,7 @@ vi.mock('@line-crm/line-sdk', () => ({ LineClient: lineSdkMocks.LineClient }));
 const { chats } = await import('./chats.js');
 
 type TestEnv = {
-  Variables: { staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' } };
+  Variables: { staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' } };
   Bindings: {
     DB: D1Database;
     LINE_CHANNEL_ACCESS_TOKEN: string;
@@ -83,6 +83,15 @@ type MessageRow = {
   source?: string | null;
   delivery_type?: string | null;
   mark_as_read_token?: string | null;
+  marked_as_read_at?: string | null;
+  marked_as_read_by?: string | null;
+  line_message_id?: string | null;
+  quote_token?: string | null;
+  quoted_message_id?: string | null;
+  deleted_at?: string | null;
+  deleted_reason?: string | null;
+  sent_by_staff_id?: string | null;
+  sent_by_staff_name?: string | null;
 };
 
 type SupportCaseRow = {
@@ -107,6 +116,18 @@ type SupportEventRow = {
   created_at: string;
 };
 
+type ChatInternalMessageRow = {
+  id: string;
+  friend_id: string;
+  line_account_id: string | null;
+  parent_id: string | null;
+  body: string;
+  mentions: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+};
+
 function makeChatDb(state: {
   rows: ChatListRow[];
   friends: FriendRow[];
@@ -114,12 +135,14 @@ function makeChatDb(state: {
   messages?: MessageRow[];
   supportCases?: SupportCaseRow[];
   supportEvents?: SupportEventRow[];
+  chatInternalMessages?: ChatInternalMessageRow[];
 }) {
   const calls: Array<{ method: 'first' | 'all' | 'run'; sql: string; binds: unknown[] }> = [];
   const visible = new Set(state.visibleFriendIds);
   const messages = state.messages ?? [];
   const supportCases = state.supportCases ?? [];
   const supportEvents = state.supportEvents ?? [];
+  const chatInternalMessages = state.chatInternalMessages ?? [];
 
   const db = {
     prepare(sql: string) {
@@ -131,6 +154,20 @@ function makeChatDb(state: {
         },
         async first<T>() {
           calls.push({ method: 'first', sql, binds: bound });
+          if (sql.includes('FROM messages_log ml') && sql.includes('LEFT JOIN friends f')) {
+            const [messageId] = bound as [string];
+            const row = messages.find((message) => message.id === messageId);
+            if (!row) return null as T | null;
+            const friend = state.friends.find((item) => item.id === row.friend_id);
+            return {
+              id: row.id,
+              friend_id: row.friend_id,
+              message_type: row.message_type,
+              content: row.content,
+              line_account_id: (row as MessageRow & { line_account_id?: string | null }).line_account_id ?? null,
+              friend_line_account_id: friend?.line_account_id ?? null,
+            } as T;
+          }
           if (sql.startsWith('SELECT 1 AS ok WHERE')) {
             const [friendId] = bound as [string];
             return (visible.has(friendId) ? { ok: 1 } : null) as T | null;
@@ -170,28 +207,79 @@ function makeChatDb(state: {
             ));
             return (row ? { id: row.id, title: row.title, status: row.status } : null) as T | null;
           }
-          if (sql.includes('SELECT mark_as_read_token')) {
+          if (sql.includes('FROM chat_internal_messages') && sql.includes('WHERE id = ? AND friend_id = ?')) {
+            const [messageId, friendId] = bound as [string, string];
+            const row = chatInternalMessages.find((item) => item.id === messageId && item.friend_id === friendId);
+            return (row ? { id: row.id } : null) as T | null;
+          }
+          if (sql.includes('FROM chat_internal_messages') && sql.includes('WHERE id = ?')) {
+            const [messageId] = bound as [string];
+            return (chatInternalMessages.find((item) => item.id === messageId) ?? null) as T | null;
+          }
+          if (sql.includes('SELECT id, mark_as_read_token, marked_as_read_at')) {
             const [friendId] = bound as [string];
             const row = messages
               .filter((message) => (
                 message.friend_id === friendId &&
-                message.direction === 'incoming' &&
-                typeof (message as { mark_as_read_token?: unknown }).mark_as_read_token === 'string' &&
-                (message as { mark_as_read_token?: string }).mark_as_read_token
+                message.direction === 'incoming'
               ))
-              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0] as
-              | (MessageRow & { mark_as_read_token?: string })
-              | undefined;
-            return (row ? { mark_as_read_token: row.mark_as_read_token } : null) as T | null;
+              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
+            return (row ? {
+              id: row.id,
+              mark_as_read_token: row.mark_as_read_token ?? null,
+              marked_as_read_at: row.marked_as_read_at ?? null,
+            } : null) as T | null;
+          }
+          if (sql.includes('SELECT id, friend_id, direction, deleted_at')) {
+            const [messageId, friendId] = bound as [string, string];
+            const row = messages.find((message) => (
+              message.id === messageId &&
+              message.friend_id === friendId &&
+              (message.delivery_type === undefined || message.delivery_type === null || message.delivery_type !== 'test')
+            ));
+            return (row ? {
+              id: row.id,
+              friend_id: row.friend_id,
+              direction: row.direction,
+              deleted_at: row.deleted_at ?? null,
+            } : null) as T | null;
+          }
+          if (sql.includes('SELECT id, direction, quote_token, deleted_at')) {
+            const [messageId, friendId] = bound as [string, string];
+            const row = messages.find((message) => (
+              message.id === messageId &&
+              message.friend_id === friendId &&
+              (message.delivery_type === undefined || message.delivery_type === null || message.delivery_type !== 'test')
+            ));
+            return (row ? {
+              id: row.id,
+              direction: row.direction,
+              quote_token: row.quote_token ?? null,
+              deleted_at: row.deleted_at ?? null,
+            } : null) as T | null;
           }
           return null as T | null;
         },
         async all<T>() {
           calls.push({ method: 'all', sql, binds: bound });
           if (sql.includes('FROM deduped d')) {
-            const rows = sql.includes('support_cases sc_friend_scope')
+            let rows = sql.includes('support_cases sc_friend_scope')
               ? state.rows.filter((row) => visible.has(row.friend_id))
               : state.rows;
+            if (sql.includes("f.display_name LIKE ? ESCAPE '\\'")) {
+              const pattern = String(bound.at(-1) ?? '');
+              const needle = pattern
+                .replace(/^%/, '')
+                .replace(/%$/, '')
+                .replace(/\\([\\%_])/g, '$1')
+                .toLowerCase();
+              rows = rows.filter((row) => [
+                row.display_name,
+                row.line_user_id,
+                row.last_message_content,
+                row.notes,
+              ].some((value) => String(value ?? '').toLowerCase().includes(needle)));
+            }
             return { results: rows } as { results: T[] };
           }
           if (sql.includes('FROM messages_log')) {
@@ -217,6 +305,13 @@ function makeChatDb(state: {
             ));
             return { results: rows.slice(0, limit) } as { results: T[] };
           }
+          if (sql.includes('FROM chat_internal_messages')) {
+            const [friendId] = bound as [string];
+            const rows = chatInternalMessages
+              .filter((item) => item.friend_id === friendId)
+              .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+            return { results: rows } as { results: T[] };
+          }
           return { results: [] } as { results: T[] };
         },
         async run() {
@@ -225,9 +320,25 @@ function makeChatDb(state: {
           if (sql.includes('INSERT INTO messages_log')) {
             const [id, friendId] = bound as string[];
             const isExternalOutgoing = sql.includes("'line_official'");
+            const hasLineMessageId = sql.includes('line_message_id');
+            const hasQuoteColumns = sql.includes('quote_token') || sql.includes('quoted_message_id');
+            const hasSenderColumns = sql.includes('sent_by_staff_id') || sql.includes('sent_by_staff_name');
             const messageType = isExternalOutgoing ? 'text' : bound[2] as string;
             const content = isExternalOutgoing ? bound[2] as string : bound[3] as string;
-            const createdAt = (isExternalOutgoing ? bound[4] : bound[5]) as string;
+            const lineMessageId = !isExternalOutgoing && hasLineMessageId ? bound[5] as string | null : null;
+            const quoteToken = !isExternalOutgoing && hasQuoteColumns ? bound[6] as string | null : null;
+            const quotedMessageId = !isExternalOutgoing && hasQuoteColumns ? bound[7] as string | null : null;
+            const sentByStaffId = !isExternalOutgoing && hasSenderColumns
+              ? (hasQuoteColumns ? bound[8] : bound[6]) as string | null
+              : null;
+            const sentByStaffName = !isExternalOutgoing && hasSenderColumns
+              ? (hasQuoteColumns ? bound[9] : bound[7]) as string | null
+              : null;
+            const createdAt = (isExternalOutgoing
+              ? bound[4]
+              : hasSenderColumns
+                ? (hasQuoteColumns ? bound[10] : bound[8])
+                : (hasQuoteColumns ? bound[8] : (hasLineMessageId ? bound[6] : bound[5]))) as string;
             messages.push({
               id,
               friend_id: friendId,
@@ -236,7 +347,30 @@ function makeChatDb(state: {
               content,
               created_at: createdAt,
               source: isExternalOutgoing ? 'line_official' : 'manual',
+              line_message_id: lineMessageId,
+              quote_token: quoteToken,
+              quoted_message_id: quotedMessageId,
+              sent_by_staff_id: sentByStaffId,
+              sent_by_staff_name: sentByStaffName,
             });
+          } else if (sql.includes('UPDATE messages_log') && sql.includes('deleted_at')) {
+            const [deletedAt, messageId, friendId] = bound as [string, string, string];
+            const row = messages.find((message) => message.id === messageId && message.friend_id === friendId);
+            if (row && !row.deleted_at) {
+              row.deleted_at = deletedAt;
+              row.deleted_reason = 'manual_unsend_reflection';
+            } else {
+              changes = 0;
+            }
+          } else if (sql.includes('UPDATE messages_log') && sql.includes('marked_as_read_at')) {
+            const [markedAt, markedBy, messageId] = bound as [string, string | null, string];
+            const row = messages.find((message) => message.id === messageId);
+            if (row) {
+              row.marked_as_read_at = markedAt;
+              row.marked_as_read_by = markedBy;
+            } else {
+              changes = 0;
+            }
           } else if (sql.includes('INSERT INTO support_case_events')) {
             const [id, caseId, eventType, actorId, actorName, body, metadata, createdAt] = bound as string[];
             supportEvents.push({
@@ -247,6 +381,19 @@ function makeChatDb(state: {
               actor_name: actorName,
               body,
               metadata,
+              created_at: createdAt,
+            });
+          } else if (sql.includes('INSERT INTO chat_internal_messages')) {
+            const [id, friendId, lineAccountId, parentId, body, mentions, createdBy, createdByName, createdAt] = bound as string[];
+            chatInternalMessages.push({
+              id,
+              friend_id: friendId,
+              line_account_id: lineAccountId ?? null,
+              parent_id: parentId ?? null,
+              body,
+              mentions,
+              created_by: createdBy,
+              created_by_name: createdByName,
               created_at: createdAt,
             });
           } else if (sql.includes('UPDATE support_cases') && sql.includes("status = 'customer_reply'")) {
@@ -272,12 +419,12 @@ function makeChatDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { messages, supportCases, supportEvents } };
+  return { db, calls, state: { messages, supportCases, supportEvents, chatInternalMessages } };
 }
 
 function setupApp(
   db: D1Database,
-  role: 'owner' | 'admin' | 'staff' = 'staff',
+  role: 'owner' | 'admin' | 'staff' | 'secondary' = 'staff',
   envOverrides: Partial<TestEnv['Bindings']> = {},
 ) {
   const app = new Hono<TestEnv>();
@@ -348,6 +495,7 @@ const friends: FriendRow[] = rows.map((row) => ({
 }));
 
 beforeEach(() => {
+  vi.unstubAllGlobals();
   for (const fn of Object.values(dbMocks)) fn.mockReset();
   dbMocks.jstNow.mockReturnValue('2026-06-12T10:00:00.000');
   lineSdkMocks.LineClient.mockClear();
@@ -355,10 +503,13 @@ beforeEach(() => {
   lineSdkMocks.pushFlexMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.pushImageMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.markMessagesAsRead.mockReset().mockResolvedValue(undefined);
+  dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+    friends.find((friend) => friend.id === id) ?? null,
+  );
 });
 
 describe('chat support visibility', () => {
-  test('staff chat list only includes friends tied to visible support cases', async () => {
+  test('staff chat list includes individual chats in the selected account', async () => {
     const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
 
     const res = await setupApp(db, 'staff').request('/api/chats?lineAccountId=acc-1');
@@ -366,11 +517,24 @@ describe('chat support visibility', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { success: boolean; data: Array<{ id: string; friendName: string }> };
     expect(body.success).toBe(true);
-    expect(body.data.map((item) => item.id)).toEqual(['friend-visible']);
+    expect(body.data.map((item) => item.id)).toEqual(['friend-visible', 'friend-hidden']);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
-    expect(listCall?.sql).toContain('support_cases sc_friend_scope');
-    expect(listCall?.binds).toContain('staff-1');
-    expect(listCall?.binds).toContain('%田島%');
+    expect(listCall?.sql).not.toContain('support_cases sc_friend_scope');
+  });
+
+  test('chat list searches by customer name and latest message', async () => {
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'owner').request('/api/chats?q=%20%E9%9A%A0%E3%82%8C%E3%82%8B%20');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ id: string; friendName: string }> };
+    expect(body.data.map((item) => item.id)).toEqual(['friend-hidden']);
+
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
+    expect(listCall?.sql).toContain("f.display_name LIKE ? ESCAPE '\\'");
+    expect(listCall?.sql).toContain("rm.content LIKE ? ESCAPE '\\'");
+    expect(listCall?.binds).toEqual(Array.from({ length: 13 }, () => '%隠れる%'));
   });
 
   test('owner chat list remains unrestricted', async () => {
@@ -383,18 +547,33 @@ describe('chat support visibility', () => {
     expect(body.data.map((item) => item.id)).toEqual(['friend-visible', 'friend-hidden']);
   });
 
-  test('staff cannot open a hidden chat by URL', async () => {
+  test('staff can open an existing individual chat by URL', async () => {
     const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
     dbMocks.getChatById.mockResolvedValue(null);
-    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
-      friends.find((friend) => friend.id === id) ?? null,
-    );
 
-    const denied = await setupApp(db, 'staff').request('/api/chats/friend-hidden');
-    expect(denied.status).toBe(404);
+    const hidden = await setupApp(db, 'staff').request('/api/chats/friend-hidden');
+    expect(hidden.status).toBe(200);
 
     const allowed = await setupApp(db, 'staff').request('/api/chats/friend-visible');
     expect(allowed.status).toBe(200);
+  });
+
+  test('secondary-only staff cannot access individual LINE chats', async () => {
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue(null);
+
+    const listRes = await setupApp(db, 'secondary').request('/api/chats?lineAccountId=acc-1');
+    expect(listRes.status).toBe(403);
+    await expect(listRes.json()).resolves.toMatchObject({
+      success: false,
+      error: '二次対応専用権限では顧客チャットを閲覧できません',
+    });
+
+    const detailRes = await setupApp(db, 'secondary').request('/api/chats/friend-visible');
+    expect(detailRes.status).toBe(404);
+
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
+    expect(listCall).toBeUndefined();
   });
 
   test('chat detail returns message pagination metadata and accepts before cursor', async () => {
@@ -455,12 +634,203 @@ describe('chat support visibility', () => {
     ]);
   });
 
+  test('chat detail includes internal staff chat messages', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      chatInternalMessages: [
+        {
+          id: 'chat-internal-1',
+          friend_id: 'friend-visible',
+          line_account_id: 'acc-1',
+          parent_id: null,
+          body: '@田島 返品理由を確認してください',
+          mentions: JSON.stringify(['田島']),
+          created_by: 'staff-2',
+          created_by_name: '佐藤',
+          created_at: '2026-06-12T09:10:00.000',
+        },
+        {
+          id: 'chat-internal-2',
+          friend_id: 'friend-visible',
+          line_account_id: 'acc-1',
+          parent_id: 'chat-internal-1',
+          body: '確認しました',
+          mentions: '[]',
+          created_by: 'staff-1',
+          created_by_name: '田島',
+          created_at: '2026-06-12T09:11:00.000',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+
+    const res = await setupApp(db, 'staff').request('/api/chats/friend-visible');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: { internalMessages: Array<{ id: string; parentId: string | null; mentions: string[] }> };
+    };
+    expect(body.data.internalMessages).toEqual([
+      expect.objectContaining({ id: 'chat-internal-1', parentId: null, mentions: ['田島'] }),
+      expect.objectContaining({ id: 'chat-internal-2', parentId: 'chat-internal-1', mentions: [] }),
+    ]);
+  });
+
+  test('staff can open LINE media for visible chats', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'msg-file-1',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'file',
+          content: JSON.stringify({
+            lineMessageId: 'line-msg-1',
+            fileName: 'invoice.pdf',
+            fileSize: 1234,
+          }),
+          created_at: '2026-06-12T09:00:00.000',
+        },
+      ],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    const fetchMock = vi.fn(async () => new Response('pdf-bytes', {
+      headers: { 'Content-Type': 'application/pdf', 'Content-Length': '9' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp(db, 'staff').request('/api/chats/messages/msg-file-1/media');
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api-data.line.me/v2/bot/message/line-msg-1/content',
+      { headers: { Authorization: 'Bearer account-token' } },
+    );
+    expect(res.headers.get('Content-Type')).toBe('application/pdf');
+    expect(res.headers.get('Content-Disposition')).toContain('invoice.pdf');
+    expect(await res.text()).toBe('pdf-bytes');
+  });
+
+  test('staff can open LINE media for individual chats', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'msg-hidden-file',
+          friend_id: 'friend-hidden',
+          direction: 'incoming',
+          message_type: 'file',
+          content: JSON.stringify({ lineMessageId: 'line-hidden', fileName: 'hidden.pdf' }),
+          created_at: '2026-06-12T09:00:00.000',
+        },
+      ],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    const fetchMock = vi.fn(async () => new Response('hidden-pdf', {
+      headers: { 'Content-Type': 'application/pdf' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp(db, 'staff').request('/api/chats/messages/msg-hidden-file/media');
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api-data.line.me/v2/bot/message/line-hidden/content',
+      { headers: { Authorization: 'Bearer account-token' } },
+    );
+  });
+
+  test('staff can post internal chat messages and thread replies on visible chats', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      chatInternalMessages: [
+        {
+          id: 'chat-internal-root',
+          friend_id: 'friend-visible',
+          line_account_id: 'acc-1',
+          parent_id: null,
+          body: '確認お願いします',
+          mentions: '[]',
+          created_by: 'staff-2',
+          created_by_name: '佐藤',
+          created_at: '2026-06-12T09:10:00.000',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    const app = setupApp(db, 'staff');
+
+    const postRes = await app.request('/api/chats/friend-visible/internal-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: '@佐藤 対応方針を確認してください' }),
+    });
+
+    expect(postRes.status).toBe(201);
+    expect(state.chatInternalMessages.at(-1)).toMatchObject({
+      friend_id: 'friend-visible',
+      line_account_id: 'acc-1',
+      parent_id: null,
+      body: '@佐藤 対応方針を確認してください',
+      created_by: 'staff-1',
+      created_by_name: '田島',
+    });
+    expect(JSON.parse(state.chatInternalMessages.at(-1)!.mentions)).toEqual(['佐藤']);
+
+    const replyRes = await app.request('/api/chats/friend-visible/internal-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: 'こちらで回答します', parentId: 'chat-internal-root' }),
+    });
+
+    expect(replyRes.status).toBe(201);
+    expect(state.chatInternalMessages.at(-1)).toMatchObject({
+      friend_id: 'friend-visible',
+      parent_id: 'chat-internal-root',
+      body: 'こちらで回答します',
+    });
+  });
+
+  test('staff can post internal chat messages on individual chats', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue(null);
+
+    const res = await setupApp(db, 'staff').request('/api/chats/friend-hidden/internal-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ body: '見えない顧客には投稿できない' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.chatInternalMessages.at(-1)).toMatchObject({
+      friend_id: 'friend-hidden',
+      body: '見えない顧客には投稿できない',
+    });
+  });
+
   test('chat list rejects unsafe filters before SQL bind', async () => {
     const cases = [
       '/api/chats?lineAccountId=bad%20account',
       '/api/chats?operatorId=bad%20operator',
       '/api/chats?status=archived',
       '/api/chats?unansweredOnly=maybe',
+      '/api/chats?q=%00',
+      `/api/chats?q=${encodeURIComponent('あ'.repeat(121))}`,
     ];
 
     for (const path of cases) {
@@ -939,7 +1309,7 @@ describe('chat support visibility', () => {
   });
 
   test('manual send can mark the latest incoming message as read while capture-only stays enabled', async () => {
-    const { db } = makeChatDb({
+    const { db, state } = makeChatDb({
       rows,
       friends,
       visibleFriendIds: ['friend-visible'],
@@ -986,13 +1356,232 @@ describe('chat support visibility', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       data: {
-        markAsRead: { requested: boolean; marked: boolean; reason: string | null };
+        markAsRead: { requested: boolean; marked: boolean; reason: string | null; messageId: string | null; markedAt: string | null };
       };
     };
     expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token', { allowMutationsWhenDisabled: true });
     expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith('U-visible', '確認して折り返します。');
     expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('read-token-1');
-    expect(body.data.markAsRead).toEqual({ requested: true, marked: true, reason: null });
+    expect(body.data.markAsRead).toMatchObject({
+      requested: true,
+      marked: true,
+      reason: null,
+      messageId: 'incoming-1',
+    });
+    expect(body.data.markAsRead.markedAt).toEqual(expect.any(String));
+    expect(state.messages[0].marked_as_read_at).toEqual(body.data.markAsRead.markedAt);
+    expect(state.messages[0].marked_as_read_by).toBe('staff-1');
+    expect(state.messages.at(-1)).toMatchObject({
+      direction: 'outgoing',
+      content: '確認して折り返します。',
+    });
+  });
+
+  test('manual send stores the LINE sent message id when the API returns one', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+    lineSdkMocks.pushTextMessage.mockResolvedValueOnce({ sentMessages: [{ id: 'line-sent-message-1' }] });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '送信IDも保存します。' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.messages.at(-1)).toMatchObject({
+      direction: 'outgoing',
+      content: '送信IDも保存します。',
+      line_message_id: 'line-sent-message-1',
+    });
+  });
+
+  test('manual send can quote an incoming LINE message', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'incoming-quote-1',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'text',
+          content: 'この内容に返信してほしいです',
+          created_at: '2026-06-12T09:30:00.000',
+          quote_token: 'incoming-quote-token-1',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+    lineSdkMocks.pushTextMessage.mockResolvedValueOnce({
+      sentMessages: [{ id: 'line-sent-message-quote', quoteToken: 'sent-quote-token-1' }],
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        content: 'こちら確認します。',
+        quoteMessageId: 'incoming-quote-1',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: { quotedMessageId: string | null; sentByStaffId: string | null; sentByStaffName: string | null } };
+    expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith(
+      'U-visible',
+      'こちら確認します。',
+      'incoming-quote-token-1',
+    );
+    expect(body.data.quotedMessageId).toBe('incoming-quote-1');
+    expect(body.data.sentByStaffId).toBe('staff-1');
+    expect(body.data.sentByStaffName).toBe('田島');
+    expect(state.messages.at(-1)).toMatchObject({
+      direction: 'outgoing',
+      content: 'こちら確認します。',
+      line_message_id: 'line-sent-message-quote',
+      quote_token: 'sent-quote-token-1',
+      quoted_message_id: 'incoming-quote-1',
+      sent_by_staff_id: 'staff-1',
+      sent_by_staff_name: '田島',
+    });
+  });
+
+  test('can reflect an official-side outgoing unsend as deleted in Harness', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'outgoing-1',
+          friend_id: 'friend-visible',
+          direction: 'outgoing',
+          message_type: 'text',
+          content: '取り消した送信',
+          created_at: '2026-06-12T09:30:00.000',
+          source: 'manual',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+
+    const res = await setupApp(db, 'owner').request('/api/chats/chat-visible/messages/outgoing-1/deleted', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as { success: boolean; data: { messageId: string; deletedAt: string } };
+    expect(body.data.messageId).toBe('outgoing-1');
+    expect(state.messages[0]).toMatchObject({
+      deleted_at: body.data.deletedAt,
+      deleted_reason: 'manual_unsend_reflection',
+    });
+  });
+
+  test('can mark the latest incoming message as read without sending a LINE message', async () => {
+    const { db, state } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'incoming-1',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'text',
+          content: 'ありがとうございます',
+          created_at: '2026-06-12T09:30:00.000',
+          mark_as_read_token: 'read-token-thanks',
+        },
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'unread',
+      notes: null,
+      last_message_at: '2026-06-12T09:30:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T09:30:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const res = await setupApp(db, 'owner', {
+      LINE_CAPTURE_ONLY: '1',
+      LINE_MANUAL_SEND_ENABLED: '1',
+    }).request('/api/chats/chat-visible/read', {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: {
+        markAsRead: { requested: boolean; marked: boolean; reason: string | null; messageId: string | null; markedAt: string | null };
+        status: string | null;
+        markedMessageId: string | null;
+        markedAt: string | null;
+      };
+    };
+    expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token', { allowMutationsWhenDisabled: true });
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('read-token-thanks');
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', { status: 'in_progress' });
+    expect(body.data).toMatchObject({
+      markAsRead: { requested: true, marked: true, reason: null, messageId: 'incoming-1' },
+      status: 'in_progress',
+      markedMessageId: 'incoming-1',
+    });
+    expect(body.data.markedAt).toEqual(expect.any(String));
+    expect(state.messages[0].marked_as_read_at).toEqual(body.data.markedAt);
+    expect(state.messages[0].marked_as_read_by).toBe('staff-1');
   });
 
   test('records a LINE Official Account outgoing message without sending through LINE API', async () => {

@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { cacheStaffSession, clearAuthSessionCache } from '@/lib/auth-session'
+import BrandMark, { BrandWordmark } from '@/components/brand-mark'
 
 export default function LoginPage() {
   const [apiKey, setApiKey] = useState('')
@@ -59,10 +60,8 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#06C755' }}>
       <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-sm">
         <div className="text-center mb-6">
-          <div className="w-12 h-12 rounded-xl flex items-center justify-center text-white font-bold text-lg mx-auto mb-3" style={{ backgroundColor: '#06C755' }}>
-            H
-          </div>
-          <h1 className="text-xl font-bold text-gray-900">L Harness</h1>
+          <BrandMark size="xl" className="mx-auto mb-4" />
+          <BrandWordmark size="xl" className="mx-auto" />
           <p className="text-sm text-gray-500 mt-1">管理画面にログイン</p>
         </div>
 

@@ -51,7 +51,19 @@
     "043_events_og.sql",
     "044_forms_og.sql",
     "045_menus_auto_tag.sql",
-    "046_support_crm.sql"
+    "046_support_crm.sql",
+    "047_messages_mark_as_read.sql",
+    "048_support_internal_messages.sql",
+    "049_chat_internal_messages.sql",
+    "050_web_push_subscriptions.sql",
+    "051_support_secondary_answered_status.sql",
+    "052_internal_message_reactions.sql",
+    "053_secondary_staff_role.sql",
+    "054_messages_marked_as_read_state.sql",
+    "055_messages_unsend_and_typing.sql",
+    "056_messages_quote_reply.sql",
+    "057_messages_sender_staff.sql",
+    "058_staff_presence.sql"
   ],
-  "migrationCount": 52
+  "migrationCount": 64
 }

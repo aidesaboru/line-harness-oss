@@ -15,7 +15,7 @@ vi.mock('@line-crm/db', () => dbMocks);
 
 const { staff } = await import('./staff.js');
 
-type StaffRole = 'owner' | 'admin' | 'staff';
+type StaffRole = 'owner' | 'admin' | 'staff' | 'secondary';
 
 type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
@@ -163,6 +163,40 @@ describe('staff routes', () => {
       name: '田島',
       email: 'tajima@example.com',
       role: 'staff',
+    });
+  });
+
+  test('accepts the secondary role when creating and updating members', async () => {
+    dbMocks.createStaffMember.mockResolvedValue({ ...staffRow, role: 'secondary' });
+
+    const createRes = await setupApp().request('/api/staff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '松山', email: '', role: 'secondary' }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(expect.anything(), {
+      name: '松山',
+      email: null,
+      role: 'secondary',
+    });
+
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    dbMocks.updateStaffMember.mockResolvedValue({ ...staffRow, id: 'staff-1', role: 'secondary' });
+
+    const updateRes = await setupApp().request('/api/staff/staff-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'secondary' }),
+    });
+
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(expect.anything(), 'staff-1', {
+      name: undefined,
+      email: undefined,
+      role: 'secondary',
+      is_active: undefined,
     });
   });
 

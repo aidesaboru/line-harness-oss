@@ -141,7 +141,7 @@ function EscalationItem({
 
 /**
  * エスカレーション欄。
- * 二次対応先は案件の「二次対応先」から自動引き継ぎ。自分宛の未回答は緑でハイライト。
+ * 二次対応先はチケットの「二次対応先」から自動引き継ぎ。自分宛の未回答は緑でハイライト。
  */
 export default function EscalationPanel({
   detail,
@@ -158,7 +158,7 @@ export default function EscalationPanel({
   const [copied, setCopied] = useState(false)
   const lastCaseIdRef = useRef<string | null>(null)
 
-  // 案件を切り替えたときだけフォームをリセットし、二次対応先を引き継ぐ
+  // チケットを切り替えたときだけフォームをリセットし、二次対応先を引き継ぐ
   useEffect(() => {
     if (!detail) {
       lastCaseIdRef.current = null
@@ -236,7 +236,7 @@ export default function EscalationPanel({
       </div>
 
       {!detail && (
-        <p className="mt-2 text-xs text-gray-400">案件を選択するとエスカレーションを作成できます</p>
+        <p className="mt-2 text-xs text-gray-400">チケットを選択するとエスカレーションを作成できます</p>
       )}
 
       <fieldset disabled={!detail} className="mt-3 space-y-3 disabled:opacity-60">
@@ -317,7 +317,7 @@ export default function EscalationPanel({
           onClick={handleSubmit}
           disabled={!canSubmit || saving}
           className="w-full rounded-md bg-indigo-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-          title={!detail ? '案件を選択してください' : blockingValidationIssues[0]?.message}
+          title={!detail ? 'チケットを選択してください' : blockingValidationIssues[0]?.message}
         >
           {saving ? '作成中…' : 'エスカレ作成'}
         </button>
@@ -328,7 +328,7 @@ export default function EscalationPanel({
           <div className="flex items-start justify-between gap-2">
             <div>
               <p className="text-xs font-semibold text-indigo-900">エスカレ共有文</p>
-              <p className="mt-0.5 text-[11px] text-indigo-700">案件情報と直近会話をまとめてSlack等へ渡せます</p>
+              <p className="mt-0.5 text-[11px] text-indigo-700">チケット情報と直近会話をまとめてSlack等へ渡せます</p>
             </div>
             <button
               type="button"
@@ -356,7 +356,7 @@ export default function EscalationPanel({
 
       <div className="mt-4 space-y-3">
         {detail && sortedEscalations.length === 0 && (
-          <p className="text-xs text-gray-400">この案件のエスカレーションはまだありません</p>
+          <p className="text-xs text-gray-400">このチケットのエスカレーションはまだありません</p>
         )}
         {sortedEscalations.map((item) => (
           <EscalationItem

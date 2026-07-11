@@ -952,6 +952,37 @@ describe('management role guards', () => {
     expect(dbMocks.createAccountMigration).not.toHaveBeenCalled();
     expect(dbMocks.getAccountMigrationById).not.toHaveBeenCalled();
   });
+
+  test('admin can read account health and migration history but cannot start migration', async () => {
+    const db = { prepare: vi.fn() } as unknown as D1Database;
+    const app = setupApp('admin', db);
+    dbMocks.getLatestRiskLevel.mockResolvedValue('normal');
+    dbMocks.getAccountHealthLogs.mockResolvedValue([]);
+    dbMocks.getAccountMigrations.mockResolvedValue([]);
+    dbMocks.getAccountMigrationById.mockResolvedValue({
+      id: 'migration-1',
+      from_account_id: 'acc-1',
+      to_account_id: 'acc-2',
+      status: 'completed',
+      migrated_count: 1,
+      total_count: 1,
+      created_at: '2026-06-13T10:00:00.000',
+      completed_at: '2026-06-13T10:05:00.000',
+    });
+
+    expect((await app.request('/api/accounts/acc-1/health')).status).toBe(200);
+    expect((await app.request('/api/accounts/migrations')).status).toBe(200);
+    expect((await app.request('/api/accounts/migrations/migration-1')).status).toBe(200);
+
+    const migrate = await app.request('/api/accounts/acc-1/migrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toAccountId: 'acc-2' }),
+    });
+    expect(migrate.status).toBe(403);
+
+    expect(dbMocks.createAccountMigration).not.toHaveBeenCalled();
+  });
 });
 
 describe('account health and migration payload validation', () => {

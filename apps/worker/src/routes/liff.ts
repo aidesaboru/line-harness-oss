@@ -25,6 +25,7 @@ import { safeRedirectTarget } from '../lib/safe-redirect.js';
 import { verifyCallerLineUserId } from '../services/liff-auth.js';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 
 const liffRoutes = new Hono<Env>();
 const MAX_LIFF_ID_TOKEN_LENGTH = 8192;
@@ -57,6 +58,7 @@ type LiffSendFormLinkBody = {
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function errorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) {
     const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
@@ -322,9 +324,13 @@ async function applyRefAttribution(
       // Resolve push token. Prefer caller-supplied account channel (OAuth
       // context), then friend.line_account_id, then the env default.
       let accessToken = c.env.LINE_CHANNEL_ACCESS_TOKEN;
+      let deliveryAccountId: string | null = friend.line_account_id ?? null;
       if (options?.accountChannelId) {
         const acct = await getLineAccountByChannelId(db, options.accountChannelId);
-        if (acct?.channel_access_token) accessToken = acct.channel_access_token;
+        if (acct?.channel_access_token) {
+          accessToken = acct.channel_access_token;
+          deliveryAccountId = acct.id;
+        }
       } else if (friend.line_account_id) {
         const acct = await getLineAccountById(db, friend.line_account_id);
         if (acct?.channel_access_token) accessToken = acct.channel_access_token;
@@ -347,6 +353,7 @@ async function applyRefAttribution(
         c.env.WORKER_URL,
       );
       const pushedMessage = buildMessage(resolved.messageType, expanded);
+      await assertLineSendAllowed(db, deliveryAccountId);
       await lineClient.pushMessage(lineUserId, [pushedMessage]);
 
       // Log the push so the cooldown above sees it on subsequent calls,
@@ -1032,6 +1039,7 @@ liffRoutes.get('/auth/callback', async (c) => {
                   c.env.WORKER_URL,
                 );
                 const pushedMessage = buildMessage(resolved.messageType, expandedContent);
+                await assertLineSendAllowed(db, friend.line_account_id ?? matchedAccountId ?? null);
                 await lineClient.pushMessage(lineUserId, [pushedMessage]);
 
                 // messages_log への記録 (到達率分母に含めるため)
@@ -1139,6 +1147,7 @@ liffRoutes.get('/auth/callback', async (c) => {
         const introMessage = buildIntroMessage(introTemplate, formLiffUrl);
 
         const lineClient = new LineClient(accessToken);
+        await assertLineSendAllowed(db, friend.line_account_id ?? null);
         await lineClient.pushMessage(friend.line_user_id, [introMessage as any]);
       } catch (err) {
         console.error(`Form link push error (non-blocking): ${errorKind(err)}`);
@@ -1943,6 +1952,7 @@ liffRoutes.post('/api/liff/send-form-link', async (c) => {
     const introMessage = buildIntroMessage(introTemplate, formLiffUrl);
 
     const lineClient = new LineClient(accessToken);
+    await assertLineSendAllowed(db, (friend as unknown as Record<string, string | null>).line_account_id);
     await lineClient.pushMessage(lineUserId, [introMessage as any]);
 
     return c.json({ success: true });

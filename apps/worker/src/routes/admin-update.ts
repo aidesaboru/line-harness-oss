@@ -83,6 +83,9 @@ type UpdateEnv = {
 
 const app = new Hono<UpdateEnv>();
 const UPDATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const MANUAL_UPDATE_TITLE_MAX_LENGTH = 120;
+const MANUAL_UPDATE_CHANGE_MAX_LENGTH = 180;
+const MANUAL_UPDATE_MAX_CHANGES = 12;
 
 /**
  * Adapter from Cloudflare's `D1Database` to the engine's local `D1Like`
@@ -120,6 +123,35 @@ function adminUpdateErrorKind(err: unknown): string {
 
 function isSafeUpdateId(id: string): boolean {
   return UPDATE_ID_PATTERN.test(id);
+}
+
+function normalizeManualUpdateText(raw: unknown, maxLength: number): string {
+  if (typeof raw !== 'string') return '';
+  return raw.trim().replace(/\s+/g, ' ').slice(0, maxLength);
+}
+
+async function readManualUpdateBody(c: {
+  req: { json(): Promise<unknown> };
+}): Promise<{ ok: true; title: string; changes: string[] } | { ok: false; error: string }> {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'invalid_payload' };
+  }
+  const record = body as Record<string, unknown>;
+  const title = normalizeManualUpdateText(record.title, MANUAL_UPDATE_TITLE_MAX_LENGTH);
+  const rawChanges = Array.isArray(record.changes) ? record.changes : [];
+  const changes = rawChanges
+    .map((item) => normalizeManualUpdateText(item, MANUAL_UPDATE_CHANGE_MAX_LENGTH))
+    .filter(Boolean)
+    .slice(0, MANUAL_UPDATE_MAX_CHANGES);
+  if (!title) return { ok: false, error: 'title_required' };
+  if (changes.length === 0) return { ok: false, error: 'changes_required' };
+  return { ok: true, title, changes };
 }
 
 function rollbackContext(
@@ -381,6 +413,51 @@ app.post('/rollback/:id', async (c) => {
   c.executionCtx.waitUntil(rollbackDone.catch(() => undefined));
 
   return c.json({ updateId: rollbackId, rollbackOf: source.id }, 202);
+});
+
+/**
+ * POST /admin/update/manual-record — persist a human-readable change summary.
+ *
+ * This is intentionally separate from the self-update engine. Custom product
+ * tweaks are often deployed manually, but operators still need one place where
+ * "what changed" is visible after the fact.
+ */
+app.post('/manual-record', async (c) => {
+  const parsed = await readManualUpdateBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+
+  const id = `manual_${crypto.randomUUID()}`;
+  const now = Date.now();
+  const event = {
+    step: 'manual_change',
+    status: 'done',
+    title: parsed.title,
+    changes: parsed.changes,
+    recorded_at: now,
+  };
+
+  await c.env.DB
+    .prepare(
+      `INSERT INTO update_history (
+        id, started_at, completed_at, from_version, to_version, status,
+        snapshot_worker_url, snapshot_admin_deployment, snapshot_liff_deployment,
+        events_jsonl, error, rollback_of, rollback_expires_at
+      ) VALUES (?, ?, ?, ?, ?, 'success', ?, ?, ?, ?, NULL, NULL, NULL)`,
+    )
+    .bind(
+      id,
+      now,
+      now,
+      BUNDLE_VERSION,
+      BUNDLE_VERSION,
+      null,
+      null,
+      null,
+      `${JSON.stringify(event)}\n`,
+    )
+    .run();
+
+  return c.json({ id, success: true }, 201);
 });
 
 /**

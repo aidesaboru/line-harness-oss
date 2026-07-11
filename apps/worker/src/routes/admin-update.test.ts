@@ -395,6 +395,46 @@ describe('GET /admin/update/status/:id', () => {
   });
 });
 
+describe('POST /admin/update/manual-record', () => {
+  it('returns 401 without auth', async () => {
+    const res = await request('/admin/update/manual-record', {
+      method: 'POST',
+      body: JSON.stringify({ title: '権限整理', changes: ['メニューを整理'] }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects malformed manual history payloads before DB writes', async () => {
+    const res = await request('/admin/update/manual-record', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: ' ', changes: [] }),
+    });
+
+    expect(res.status).toBe(400);
+    expect((baseEnv.DB as { prepare: ReturnType<typeof vi.fn> }).prepare).not.toHaveBeenCalled();
+  });
+
+  it('persists a manual update history row', async () => {
+    const res = await request('/admin/update/manual-record', {
+      method: 'POST',
+      headers: { 'x-admin-api-key': 'test-admin-key', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: '権限メニュー整理',
+        changes: ['一次対応と二次対応の基本メニューを統一', 'スタッフ管理と緊急コントロールをオーナー専用化'],
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { success: boolean; id: string };
+    expect(body.success).toBe(true);
+    expect(body.id).toMatch(/^manual_/);
+    expect((baseEnv.DB as { prepare: ReturnType<typeof vi.fn> }).prepare).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO update_history'),
+    );
+  });
+});
+
 describe('GET /admin/update/history', () => {
   it('returns 401 without auth', async () => {
     const res = await request('/admin/update/history');

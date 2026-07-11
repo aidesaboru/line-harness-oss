@@ -14,6 +14,56 @@ export interface Friend {
   updated_at: string;
 }
 
+const CUSTOMER_NUMBER_METADATA_KEYS = [
+  'customerNumber',
+  'customer_number',
+  'customerNo',
+  'customer_no',
+  'clientNumber',
+  'client_number',
+] as const;
+
+const CONTACT_NAME_METADATA_KEYS = [
+  'contactName',
+  'contact_name',
+  'personInCharge',
+  'person_in_charge',
+  'managerName',
+  'manager_name',
+] as const;
+
+function normalizeFriendDisplayNamePart(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  return '';
+}
+
+function readFriendMetadataText(metadata: Record<string, unknown>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = normalizeFriendDisplayNamePart(metadata[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function parseFriendMetadata(metadata: string | null | undefined): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(metadata || '{}') as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+export function deriveFriendDisplayNameFromMetadata(metadata: Record<string, unknown>): string | null {
+  const customerNumber = readFriendMetadataText(metadata, CUSTOMER_NUMBER_METADATA_KEYS);
+  const contactName = readFriendMetadataText(metadata, CONTACT_NAME_METADATA_KEYS);
+  if (!customerNumber || !contactName) return null;
+  return `${customerNumber}_${contactName}`;
+}
+
 export interface GetFriendsOptions {
   limit?: number;
   offset?: number;
@@ -149,6 +199,7 @@ export async function upsertFriend(
   const existing = await getFriendByLineUserId(db, input.lineUserId);
 
   if (existing) {
+    const metadataDisplayName = deriveFriendDisplayNameFromMetadata(parseFriendMetadata(existing.metadata));
     await db
       .prepare(
         `UPDATE friends
@@ -160,7 +211,7 @@ export async function upsertFriend(
          WHERE line_user_id = ?`,
       )
       .bind(
-        'displayName' in input ? (input.displayName ?? null) : existing.display_name,
+        metadataDisplayName ?? ('displayName' in input ? (input.displayName ?? null) : existing.display_name),
         'pictureUrl' in input ? (input.pictureUrl ?? null) : existing.picture_url,
         'statusMessage' in input ? (input.statusMessage ?? null) : existing.status_message,
         now,

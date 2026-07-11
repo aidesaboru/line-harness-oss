@@ -41,6 +41,7 @@ import {
   type EventBookingAction,
 } from '../services/event-booking-state.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 
 const events = new Hono<Env>();
 const EVENT_IDEMPOTENCY_KEY_MAX_LENGTH = 128;
@@ -68,6 +69,7 @@ function bad(c: Context<Env>, code: string, status = 422): Response {
 }
 
 function eventRouteErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof SyntaxError) return 'syntax_error';
   if (err instanceof Error) return err.name || 'error';
@@ -1173,6 +1175,7 @@ events.post('/api/liff/events/:id/bookings', async (c) => {
     if (acc?.channel_access_token) {
       const kind: EventNotificationKind =
         status === 'requested' ? 'received_pending' : 'received_confirmed';
+      await assertLineSendAllowed(c.env.DB, account_id);
       await sendEventBookingNotification({
         channelAccessToken: acc.channel_access_token,
         toLineUserId: bookingLineUserId,
@@ -1323,7 +1326,8 @@ async function notifyBookingFriend(
         `SELECT e.name AS event_name, e.venue_name, e.venue_url,
                 s.starts_at AS slot_starts_at,
                 la.channel_access_token,
-                f.line_user_id
+                f.line_user_id,
+                b.line_account_id
            FROM event_bookings b
            JOIN events e ON e.id = b.event_id
            JOIN event_slots s ON s.id = b.slot_id
@@ -1339,8 +1343,10 @@ async function notifyBookingFriend(
         slot_starts_at: string;
         channel_access_token: string;
         line_user_id: string;
+        line_account_id: string;
       }>();
     if (!row || !row.channel_access_token) return;
+    await assertLineSendAllowed(db, row.line_account_id);
     await sendEventBookingNotification({
       channelAccessToken: row.channel_access_token,
       toLineUserId: row.line_user_id,

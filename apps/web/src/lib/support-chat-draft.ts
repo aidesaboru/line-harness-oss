@@ -52,6 +52,7 @@ const SUPPORT_STATUS_LABELS: Record<string, string> = {
   waiting_primary: '一次回答待ち',
   escalated: 'エスカレ中',
   waiting_secondary: '二次回答待ち',
+  secondary_answered: '二次対応回答済み',
   customer_reply: '顧客返信待ち',
   on_hold: '保留',
   resolved: '完了',
@@ -123,12 +124,12 @@ export function buildSupportChatRecoveryNotice(
     caseId,
     caseTitle,
     supportHref: buildSupportCaseUrl(caseId),
-    title: 'LINE送信は完了、案件更新だけ確認が必要です',
-    message: `案件「${caseTitle}」のステータスを「顧客返信待ち」に更新できませんでした。顧客へのLINE送信は完了しています。`,
+    title: 'LINE送信は完了、チケット更新だけ確認が必要です',
+    message: `チケット「${caseTitle}」のステータスを「顧客返信待ち」に更新できませんでした。顧客へのLINE送信は完了しています。`,
     steps: [
-      'サポートCRMで案件を開き、最新状態を再読み込みしてください。',
+      'チケット管理でチケットを開き、最新状態を再読み込みしてください。',
       `ステータスが「${previousLabel}」のままなら「顧客返信待ち」へ保存してください。`,
-      '案件履歴に「チャットで顧客返信を送信しました」が残っているか確認してください。',
+      'チケット履歴に「チャットで顧客返信を送信しました」が残っているか確認してください。',
     ],
   }
 }

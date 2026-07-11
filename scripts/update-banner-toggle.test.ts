@@ -9,9 +9,9 @@ const updateBanner = readFileSync(
 );
 
 describe('update banner deployment toggle', () => {
-  test('custom client builds can disable the fork/update banner at build time', () => {
+  test('custom client builds can opt in to the fork/update banner at build time', () => {
     expect(updateBanner).toContain('NEXT_PUBLIC_UPDATE_BANNER_ENABLED');
-    expect(updateBanner).toContain("!== 'false'");
+    expect(updateBanner).toContain("=== 'true'");
     expect(updateBanner).toContain('if (!updateBannerEnabled) return');
     expect(updateBanner).toContain('getCurrentVersion()');
     expect(updateBanner).toContain('detectFork(current, manifest)');

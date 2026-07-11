@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/header'
 import { api } from '@/lib/api'
+import { readStaffIdentityCache } from '@/lib/auth-session'
 import CcPromptButton from '@/components/cc-prompt-button'
 
 interface LineAccount {
@@ -78,6 +79,7 @@ export default function HealthPage() {
   const [migrateFrom, setMigrateFrom] = useState<string | null>(null)
   const [migrateToId, setMigrateToId] = useState('')
   const [migrating, setMigrating] = useState(false)
+  const [isOwner, setIsOwner] = useState(false)
 
   const loadAccounts = useCallback(async () => {
     setLoading(true)
@@ -131,6 +133,7 @@ export default function HealthPage() {
   }, [])
 
   useEffect(() => {
+    setIsOwner(readStaffIdentityCache().role === 'owner')
     loadAccounts()
     loadMigrations()
   }, [loadAccounts, loadMigrations])
@@ -141,7 +144,7 @@ export default function HealthPage() {
 
   const handleMigrate = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!migrateFrom || !migrateToId) return
+    if (!isOwner || !migrateFrom || !migrateToId) return
     setMigrating(true)
     try {
       await api.health.migrate(migrateFrom, { toAccountId: migrateToId })
@@ -230,7 +233,7 @@ export default function HealthPage() {
                   {/* Expanded: Health Logs */}
                   {isExpanded && (
                     <div className="border-t border-gray-200 p-4">
-                      {risk === 'danger' && (
+                      {isOwner && risk === 'danger' && (
                         <div className="mb-3">
                           <button
                             onClick={() => {
@@ -292,7 +295,7 @@ export default function HealthPage() {
           </div>
 
           {/* Migration Form Modal */}
-          {migrateFrom && (
+          {isOwner && migrateFrom && (
             <div className="mb-8 bg-white rounded-lg border border-red-200 p-6">
               <h2 className="text-sm font-bold text-gray-900 mb-4">
                 友だち移行: {getAccountName(migrateFrom)}

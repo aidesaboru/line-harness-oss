@@ -1,4 +1,5 @@
 import { URL_TOKEN_SQL } from '../lib/url-token.js';
+import { broadcastSafetyWhere } from './broadcast-safety.js';
 
 export interface DedupPreviewPerAccount {
   accountId: string;
@@ -73,7 +74,7 @@ export async function computeDedupBroadcastPreview(
   // population. Empty/null targetTagId means "no tag filter".
   const hasTagFilter = !!targetTagId;
   const tagJoinForSelectedCount = hasTagFilter
-    ? `AND EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = friends.id AND ft.tag_id = ?)`
+    ? `AND EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)`
     : '';
   const tagJoinForRanked = hasTagFilter
     ? `AND EXISTS (SELECT 1 FROM friend_tags ft WHERE ft.friend_id = f.id AND ft.tag_id = ?)`
@@ -81,13 +82,13 @@ export async function computeDedupBroadcastPreview(
 
   // Per-account selectedCount.
   const selectedCountSql = `
-    SELECT line_account_id, COUNT(*) AS cnt
-    FROM friends
-    WHERE is_following = 1
-      AND line_account_id IN (${inPlaceholders})
-      AND line_account_id IS NOT NULL
+    SELECT f.line_account_id, COUNT(*) AS cnt
+    FROM friends f
+    WHERE ${broadcastSafetyWhere('f')}
+      AND f.line_account_id IN (${inPlaceholders})
+      AND f.line_account_id IS NOT NULL
       ${tagJoinForSelectedCount}
-    GROUP BY line_account_id
+    GROUP BY f.line_account_id
   `;
   const selectedCountBinds = hasTagFilter
     ? [...accountIds, targetTagId]
@@ -113,7 +114,7 @@ export async function computeDedupBroadcastPreview(
         f.created_at,
         COALESCE(${URL_TOKEN_SQL}, 'uid:'||f.user_id, 'solo:'||f.id) AS ident_key
       FROM friends f
-      WHERE f.is_following = 1
+      WHERE ${broadcastSafetyWhere('f')}
         AND f.line_account_id IN (${inPlaceholders})
         AND f.line_account_id IS NOT NULL
         ${tagJoinForRanked}
@@ -193,6 +194,7 @@ import { getLineAccountById, jstNow, updateBroadcastLineRequestId } from '@line-
 import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js';
 import { renderMessageContent } from './render-message.js';
 import { buildMessage } from './broadcast.js';
+import { getLineSendSafetyBlock } from './line-safety.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -320,6 +322,11 @@ export async function processMultiAccountDedupBroadcast(
     const account = await getLineAccountById(db, accountResult.accountId);
     if (!account || !account.is_active) {
       console.log('[multi-account-dedup] skipping inactive/missing account');
+      continue;
+    }
+    const safetyBlock = await getLineSendSafetyBlock(db, account.id);
+    if (safetyBlock) {
+      console.warn('[multi-account-dedup] skipping account blocked by LINE safety mode');
       continue;
     }
 

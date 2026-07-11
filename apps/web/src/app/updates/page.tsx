@@ -3,10 +3,10 @@
 import { useEffect, useState } from 'react'
 import { useConfirmDialog } from '@/components/support/support-ui'
 import { ProgressModal } from '@/components/update/progress-modal'
+import { fetchApi } from '@/lib/api'
 import { startRollback } from '@/lib/update-client'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL!
-const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY!
+const CAN_ROLLBACK = Boolean(process.env.NEXT_PUBLIC_ADMIN_API_KEY)
 
 interface Row {
   id: string
@@ -18,15 +18,19 @@ interface Row {
   error: string | null
   rollback_expires_at: number | null
   rollback_of: string | null
+  events_jsonl?: string | null
+}
+
+type ManualChangeEvent = {
+  step?: string
+  title?: string
+  changes?: unknown
 }
 
 async function fetchHistory(): Promise<Row[]> {
-  const r = await fetch(`${API_URL}/admin/update/history`, {
-    headers: { 'x-admin-api-key': ADMIN_KEY },
-  })
-  if (!r.ok) throw new Error(`history_fetch_${r.status}`)
-  const j = (await r.json()) as { history: Row[] }
-  return j.history
+  const res = await fetchApi<{ success: boolean; data?: Row[]; error?: string }>('/api/update-history')
+  if (!res.success) throw new Error(res.error || 'history_fetch_failed')
+  return res.data ?? []
 }
 
 export default function UpdatesPage() {
@@ -93,6 +97,7 @@ export default function UpdatesPage() {
               <tr>
                 <th className="py-2 pr-4">開始</th>
                 <th className="py-2 pr-4">更新前 → 更新後</th>
+                <th className="py-2 pr-4">内容</th>
                 <th className="py-2 pr-4">状態</th>
                 <th className="py-2">ロールバック</th>
               </tr>
@@ -113,6 +118,9 @@ export default function UpdatesPage() {
                     {r.from_version} → {r.to_version}
                   </td>
                   <td className="py-2 pr-4">
+                    <UpdateSummary row={r} />
+                  </td>
+                  <td className="py-2 pr-4">
                     <span
                       className={`text-xs px-2 py-0.5 rounded ${statusClass(r.status)}`}
                     >
@@ -120,7 +128,8 @@ export default function UpdatesPage() {
                     </span>
                   </td>
                   <td className="py-2">
-                    {r.status === 'success' &&
+                    {CAN_ROLLBACK &&
+                    r.status === 'success' &&
                     !r.rollback_of &&
                     r.rollback_expires_at &&
                     Date.now() < r.rollback_expires_at ? (
@@ -154,6 +163,43 @@ export default function UpdatesPage() {
       {confirmDialog}
     </div>
   )
+}
+
+function UpdateSummary({ row }: { row: Row }) {
+  const summary = readManualChange(row)
+  if (!summary) {
+    return <span className="text-xs text-gray-400">自動アップデート</span>
+  }
+  return (
+    <div className="max-w-[280px]">
+      <p className="text-xs font-semibold text-gray-800">{summary.title}</p>
+      <ul className="mt-1 space-y-0.5">
+        {summary.changes.slice(0, 3).map((change) => (
+          <li key={change} className="text-xs text-gray-500 truncate">
+            {change}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function readManualChange(row: Row): { title: string; changes: string[] } | null {
+  const lines = (row.events_jsonl ?? '').trim().split('\n').filter(Boolean)
+  for (const line of lines) {
+    try {
+      const event = JSON.parse(line) as ManualChangeEvent
+      if (event.step !== 'manual_change') continue
+      const title = typeof event.title === 'string' ? event.title.trim() : ''
+      const changes = Array.isArray(event.changes)
+        ? event.changes.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : []
+      if (title && changes.length > 0) return { title, changes }
+    } catch {
+      // Ignore malformed JSONL lines. The raw row still shows status/version.
+    }
+  }
+  return null
 }
 
 function statusClass(s: string): string {

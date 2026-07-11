@@ -23,6 +23,7 @@ import {
 import { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { sendAdConversions } from './ad-conversion.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from './line-safety.js';
 
 export interface EventPayload {
   friendId?: string;
@@ -39,6 +40,7 @@ function eventBusLineErrorStatus(err: unknown): number | null {
 }
 
 function eventBusErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   const status = eventBusLineErrorStatus(err);
   if (status != null) return `line_http_status_${status}`;
   if (err instanceof TypeError) return 'network_error';
@@ -269,10 +271,11 @@ async function executeAction(
     case 'send_message': {
       if (!lineAccessToken || !friendId) break;
       const friend = await db
-        .prepare('SELECT line_user_id FROM friends WHERE id = ?')
+        .prepare('SELECT line_user_id, line_account_id FROM friends WHERE id = ?')
         .bind(friendId)
-        .first<{ line_user_id: string }>();
+        .first<{ line_user_id: string; line_account_id: string | null }>();
       if (!friend) break;
+      await assertLineSendAllowed(db, lineAccountId ?? friend.line_account_id);
       const lineClient = new LineClient(lineAccessToken);
 
       // template_id が set なら templates から content/type を resolve、

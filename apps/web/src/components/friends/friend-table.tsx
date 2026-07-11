@@ -4,6 +4,7 @@ import { useState } from 'react'
 import type { Tag } from '@line-crm/shared'
 import type { FriendWithTags } from '@/lib/api'
 import { api } from '@/lib/api'
+import { customerProfileFromMetadata } from '@/lib/customer-profile'
 import TagBadge from './tag-badge'
 
 interface FriendTableProps {
@@ -101,6 +102,7 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
           {friends.map((friend) => {
             const isExpanded = expandedId === friend.id
             const isAddingTag = addingTagForFriend === friend.id
+            const displayName = customerProfileFromMetadata(friend.metadata).displayName || friend.displayName || '名前なし'
             const availableTags = allTags.filter(
               (t) => !friend.tags.some((ft) => ft.id === t.id)
             )
@@ -118,16 +120,16 @@ export default function FriendTable({ friends, allTags, onRefresh }: FriendTable
                       {friend.pictureUrl ? (
                         <img
                           src={friend.pictureUrl}
-                          alt={friend.displayName}
+                          alt={displayName}
                           className="w-9 h-9 rounded-full object-cover bg-gray-100"
                         />
                       ) : (
                         <div className="w-9 h-9 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 text-sm font-medium">
-                          {friend.displayName?.charAt(0) ?? '?'}
+                          {displayName.charAt(0)}
                         </div>
                       )}
                       <div>
-                        <p className="text-sm font-medium text-gray-900">{friend.displayName}</p>
+                        <p className="text-sm font-medium text-gray-900">{displayName}</p>
                         {friend.statusMessage && (
                           <p className="text-xs text-gray-400 truncate max-w-[160px]">{friend.statusMessage}</p>
                         )}

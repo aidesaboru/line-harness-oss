@@ -1,10 +1,12 @@
 import { jstNow } from './utils.js';
 
+export type StaffRole = 'owner' | 'admin' | 'staff' | 'secondary';
+
 export interface StaffMember {
   id: string;
   name: string;
   email: string | null;
-  role: 'owner' | 'admin' | 'staff';
+  role: StaffRole;
   api_key: string;
   is_active: number;
   created_at: string;
@@ -14,13 +16,13 @@ export interface StaffMember {
 export interface CreateStaffInput {
   name: string;
   email?: string | null;
-  role: 'owner' | 'admin' | 'staff';
+  role: StaffRole;
 }
 
 export interface UpdateStaffInput {
   name?: string;
   email?: string | null;
-  role?: 'owner' | 'admin' | 'staff';
+  role?: StaffRole;
   is_active?: number;
 }
 

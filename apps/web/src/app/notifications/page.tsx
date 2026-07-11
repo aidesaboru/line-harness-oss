@@ -1,157 +1,259 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import Header from '@/components/layout/header'
-import InboxFilters from '@/components/inbox/inbox-filters'
-import InboxList from '@/components/inbox/inbox-list'
-import InboxSummaryBar from '@/components/inbox/inbox-summary-bar'
-import { api } from '@/lib/api'
-import {
-  buildUnansweredInboxListOptions,
-  buildUnansweredInboxSummaryOptions,
-  getInboxTotalPages,
-} from '@/lib/inbox-pagination'
-import type { InboxRowData } from '@/components/inbox/inbox-row'
+import { useAccount } from '@/contexts/account-context'
+import { api, type AppNotificationItem, type InternalChatFeedItem, type SupportCase, type SupportSummary } from '@/lib/api'
 
-const PAGE_SIZE = 50
-const POLL_INTERVAL_MS = 30_000
-
-interface AccountOption {
-  id: string
-  name: string
-}
-
-interface InboxSummary {
-  total: number
-  byAccount: Array<{ accountId: string; accountName: string; count: number }>
-  oldestWaitMinutes: number | null
-}
-
-export default function InboxPage() {
-  const [rows, setRows] = useState<InboxRowData[]>([])
-  const [serverTotal, setServerTotal] = useState(0)
-  const [summary, setSummary] = useState<InboxSummary>({
-    total: 0,
-    byAccount: [],
-    oldestWaitMinutes: null,
+function formatDateTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('ja-JP', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
   })
-  const [page, setPage] = useState(1)
-  const [q, setQ] = useState('')
-  const [account, setAccount] = useState('')
-  const [overdueOnly, setOverdueOnly] = useState(false)
+}
+
+function notificationTone(kind: AppNotificationItem['kind']): string {
+  switch (kind) {
+    case 'urgent_case':
+      return 'border-red-200 bg-red-50 text-red-800'
+    case 'secondary_answered':
+      return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    case 'secondary_assigned':
+      return 'border-indigo-200 bg-indigo-50 text-indigo-800'
+    case 'support_mention':
+    case 'chat_mention':
+      return 'border-sky-200 bg-sky-50 text-sky-800'
+    default:
+      return 'border-slate-200 bg-slate-50 text-slate-700'
+  }
+}
+
+function notificationKindLabel(kind: AppNotificationItem['kind']): string {
+  switch (kind) {
+    case 'urgent_case':
+      return '大至急'
+    case 'secondary_assigned':
+      return '二次対応'
+    case 'secondary_answered':
+      return '二次回答'
+    case 'support_mention':
+    case 'chat_mention':
+      return 'メンション'
+    default:
+      return '通知'
+  }
+}
+
+function caseHref(item: SupportCase): string {
+  return `/support?case=${encodeURIComponent(item.id)}`
+}
+
+function isMentionForMe(item: InternalChatFeedItem, staffName: string): boolean {
+  const name = staffName.trim()
+  if (!name) return false
+  return item.mentions.includes(name) || item.body.includes(`@${name}`)
+}
+
+function compact(text: string | null | undefined, fallback: string): string {
+  const value = (text ?? '').replace(/\s+/g, ' ').trim()
+  return value ? value.slice(0, 90) : fallback
+}
+
+export default function NotificationsPage() {
+  const { selectedAccountId, selectedAccount } = useAccount()
+  const [summary, setSummary] = useState<SupportSummary | null>(null)
+  const [notifications, setNotifications] = useState<AppNotificationItem[]>([])
+  const [feedItems, setFeedItems] = useState<InternalChatFeedItem[]>([])
+  const [secondaryAnsweredCases, setSecondaryAnsweredCases] = useState<SupportCase[]>([])
+  const [urgentCases, setUrgentCases] = useState<SupportCase[]>([])
+  const [staffName, setStaffName] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [accountOptions, setAccountOptions] = useState<AccountOption[]>([])
 
-  // 重複 polling で古いレスポンスが新しいデータを上書きしないように世代管理
-  // (Codex Round 1 指摘: race condition)。
-  const requestSeqRef = useRef(0)
+  const accountName = selectedAccount?.displayName || selectedAccount?.name || '選択中アカウント'
 
-  // 検索/account/overdue を変えたらページを1に戻す
-  useEffect(() => {
-    setPage(1)
-  }, [q, account, overdueOnly])
-
-  // Active なアカウントを候補に出す
-  useEffect(() => {
-    api.lineAccounts.list().then((res) => {
-      if (res.success) {
-        setAccountOptions(
-          res.data
-            .filter((a) => a.isActive)
-            .map((a) => ({ id: a.id, name: a.name }))
-            .sort((x, y) => x.name.localeCompare(y.name)),
-        )
-      }
-    })
-  }, [])
-
-  const loadPage = useCallback(async () => {
-    const seq = ++requestSeqRef.current
+  const load = useCallback(async () => {
+    if (!selectedAccountId) return
     setLoading(true)
     setError('')
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     try {
-      const listOptions = buildUnansweredInboxListOptions({
-        q,
-        account,
-        overdueOnly,
-        page,
-        pageSize: PAGE_SIZE,
-      })
-      const [listRes, summaryRes] = await Promise.all([
-        api.inbox.unanswered.list(listOptions),
-        api.inbox.unanswered.count(buildUnansweredInboxSummaryOptions(listOptions)),
+      const [meRes, summaryRes, recentRes, feedRes, secondaryRes, unresolvedRes] = await Promise.all([
+        api.staff.me(),
+        api.support.summary({ accountId: selectedAccountId }),
+        api.appNotifications.recent({ after: since, accountId: selectedAccountId }),
+        api.appNotifications.internalChatFeed({ accountId: selectedAccountId, limit: 80 }),
+        api.support.cases.list({ accountId: selectedAccountId, queue: 'secondary_answered', limit: 20 }),
+        api.support.cases.list({ accountId: selectedAccountId, queue: 'unresolved', limit: 50 }),
       ])
-      // 古いリクエストが新しいリクエストの後に到着したら破棄
-      if (seq !== requestSeqRef.current) return
-      if (summaryRes.success) {
-        setSummary(summaryRes.data)
+      if (meRes.success) setStaffName(meRes.data.name || '')
+      if (summaryRes.success) setSummary(summaryRes.data)
+      if (recentRes.success) setNotifications(recentRes.data.items)
+      if (feedRes.success) setFeedItems(feedRes.data.items)
+      if (secondaryRes.success) setSecondaryAnsweredCases(secondaryRes.data)
+      if (unresolvedRes.success) {
+        setUrgentCases(unresolvedRes.data.filter((item) => item.priority === 'urgent').slice(0, 10))
       }
-      if (listRes.success) {
-        const totalPages = getInboxTotalPages(listRes.data.total, PAGE_SIZE)
-        if (page > totalPages) {
-          setPage(totalPages)
-          return
-        }
-        setRows(listRes.data.rows)
-        setServerTotal(listRes.data.total)
-      } else {
-        setError('取得に失敗しました')
-        // rows は前回値を保持して stale-while-error
+      if (!summaryRes.success || !feedRes.success) {
+        setError('一部の通知情報を取得できませんでした。時間を置いて更新してください。')
       }
     } catch {
-      if (seq !== requestSeqRef.current) return
-      setError('取得に失敗しました')
+      setError('通知情報の取得に失敗しました。')
     } finally {
-      if (seq === requestSeqRef.current) setLoading(false)
+      setLoading(false)
     }
-  }, [account, overdueOnly, page, q])
+  }, [selectedAccountId])
 
   useEffect(() => {
-    loadPage()
-    const id = setInterval(loadPage, POLL_INTERVAL_MS)
-    return () => clearInterval(id)
-  }, [loadPage])
+    void load()
+  }, [load])
+
+  const myMentions = useMemo(
+    () => feedItems.filter((item) => isMentionForMe(item, staffName)).slice(0, 10),
+    [feedItems, staffName],
+  )
+
+  const cards = [
+    { label: '二次回答済み', value: summary?.totals.secondaryAnswered ?? 0, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
+    { label: '大至急', value: summary?.totals.urgent ?? 0, tone: 'text-red-700 bg-red-50 border-red-200' },
+    { label: '自分宛メンション', value: myMentions.length, tone: 'text-sky-700 bg-sky-50 border-sky-200' },
+    { label: '24時間以内の通知', value: notifications.length, tone: 'text-slate-700 bg-slate-50 border-slate-200' },
+  ]
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <Header
-        title="未対応インボックス"
-        description="人間が返事してない LINE 会話の triage。auto_reply は人間の返事に数えない。"
-      />
-
-      <InboxSummaryBar
-        total={summary.total}
-        byAccount={summary.byAccount}
-        oldestWaitMinutes={summary.oldestWaitMinutes}
-      />
-
-      <InboxFilters
-        q={q}
-        account={account}
-        overdueOnly={overdueOnly}
-        accountOptions={accountOptions}
-        onChange={(next) => {
-          if (next.q !== undefined) setQ(next.q)
-          if (next.account !== undefined) setAccount(next.account)
-          if (next.overdueOnly !== undefined) setOverdueOnly(next.overdueOnly)
-        }}
+        title="通知センター"
+        description={`${accountName} の見落としやすい通知をまとめて確認`}
+        action={
+          <div className="flex items-center gap-2">
+            <Link
+              href="/notification-settings"
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            >
+              通知設定
+            </Link>
+            <button
+              type="button"
+              onClick={() => void load()}
+              className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              更新
+            </button>
+          </div>
+        }
       />
 
       {error && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
           {error}
         </div>
       )}
 
-      <InboxList
-        rows={rows}
-        total={serverTotal}
-        page={page}
-        pageSize={PAGE_SIZE}
-        loading={loading}
-        onPageChange={setPage}
-      />
+      <div className="grid gap-3 md:grid-cols-4">
+        {cards.map((card) => (
+          <div key={card.label} className={`rounded-xl border px-4 py-3 ${card.tone}`}>
+            <p className="text-xs font-medium opacity-80">{card.label}</p>
+            <p className="mt-1 text-3xl font-semibold tabular-nums">{loading ? '...' : card.value}</p>
+          </div>
+        ))}
+      </div>
+
+      <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-4">
+          <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">今見るもの</h2>
+              <p className="mt-0.5 text-xs text-slate-500">二次回答済みと大至急を優先して表示します。</p>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {loading ? (
+                <div className="p-4 text-sm text-slate-500">読み込み中...</div>
+              ) : secondaryAnsweredCases.length === 0 && urgentCases.length === 0 ? (
+                <div className="p-6 text-sm font-medium text-slate-500">優先して確認するチケットはありません</div>
+              ) : (
+                <>
+                  {secondaryAnsweredCases.map((item) => (
+                    <Link key={`secondary-${item.id}`} href={caseHref(item)} className="block px-4 py-3 hover:bg-slate-50">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">二次回答済み</span>
+                        <span className="text-xs text-slate-400">更新 {formatDateTime(item.updatedAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">{compact(item.friendName || item.companyName || item.contactName, '顧客未紐付け')}</p>
+                    </Link>
+                  ))}
+                  {urgentCases.map((item) => (
+                    <Link key={`urgent-${item.id}`} href={caseHref(item)} className="block px-4 py-3 hover:bg-slate-50">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700">大至急</span>
+                        <span className="text-xs text-slate-400">更新 {formatDateTime(item.updatedAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">{compact(item.friendName || item.companyName || item.contactName, '顧客未紐付け')}</p>
+                    </Link>
+                  ))}
+                </>
+              )}
+            </div>
+          </section>
+
+          <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">最近の通知</h2>
+              <p className="mt-0.5 text-xs text-slate-500">直近24時間の通知です。</p>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {loading ? (
+                <div className="p-4 text-sm text-slate-500">読み込み中...</div>
+              ) : notifications.length === 0 ? (
+                <div className="p-6 text-sm font-medium text-slate-500">最近の通知はありません</div>
+              ) : notifications.slice().reverse().map((item) => (
+                <Link key={item.id} href={item.href} className="block px-4 py-3 hover:bg-slate-50">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${notificationTone(item.kind)}`}>
+                      {notificationKindLabel(item.kind)}
+                    </span>
+                    <span className="text-xs text-slate-400">{formatDateTime(item.createdAt)}</span>
+                  </div>
+                  <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-500">{item.body}</p>
+                </Link>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <aside className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <h2 className="text-sm font-semibold text-slate-900">自分宛メンション</h2>
+            <p className="mt-0.5 text-xs text-slate-500">社内チャットで呼ばれている相談です。</p>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {loading ? (
+              <div className="p-4 text-sm text-slate-500">読み込み中...</div>
+            ) : myMentions.length === 0 ? (
+              <div className="p-6 text-sm font-medium text-slate-500">自分宛のメンションはありません</div>
+            ) : myMentions.map((item) => (
+              <Link key={item.id} href={item.href} className="block px-4 py-3 hover:bg-slate-50">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs font-semibold text-sky-700">
+                    {item.source === 'support' ? 'チケット' : '個別チャット'}
+                  </span>
+                  <span className="text-xs text-slate-400">{formatDateTime(item.createdAt)}</span>
+                </div>
+                <p className="mt-2 text-sm font-semibold text-slate-900">{item.ticketTitle || item.customerName || item.sourceTitle}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">{compact(item.body, '社内チャットを確認してください')}</p>
+              </Link>
+            ))}
+          </div>
+        </aside>
+      </section>
     </div>
   )
 }

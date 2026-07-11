@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 import { support } from './support.js';
 
-type Staff = { id: string; name: string; role: 'owner' | 'admin' | 'staff' };
+type Staff = { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' };
 
 type TestEnv = {
   Variables: { staff: Staff };
@@ -70,6 +70,29 @@ type SupportEventRow = {
   actor_name: string | null;
   body: string;
   metadata: string;
+  created_at: string;
+};
+
+type SupportInternalMessageRow = {
+  id: string;
+  case_id: string;
+  line_account_id: string;
+  parent_id: string | null;
+  body: string;
+  mentions: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+};
+
+type SupportMessageRow = {
+  id: string;
+  friend_id: string;
+  direction: string;
+  message_type: string;
+  content: string;
+  source: string | null;
+  delivery_type?: string | null;
   created_at: string;
 };
 
@@ -180,15 +203,48 @@ function baseEscalation(overrides: Partial<SupportEscalationRow> = {}): SupportE
   };
 }
 
+function baseInternalMessage(overrides: Partial<SupportInternalMessageRow> = {}): SupportInternalMessageRow {
+  return {
+    id: 'internal-1',
+    case_id: 'case-1',
+    line_account_id: 'acc-1',
+    parent_id: null,
+    body: '社内確認です',
+    mentions: '[]',
+    created_by: 'staff-1',
+    created_by_name: '田島',
+    created_at: '2026-06-12T09:00:00.000',
+    ...overrides,
+  };
+}
+
+function baseMessage(overrides: Partial<SupportMessageRow> = {}): SupportMessageRow {
+  return {
+    id: 'msg-1',
+    friend_id: 'friend-1',
+    direction: 'incoming',
+    message_type: 'text',
+    content: '顧客からのLINE本文',
+    source: 'webhook',
+    delivery_type: null,
+    created_at: '2026-06-12T09:05:00.000',
+    ...overrides,
+  };
+}
+
 function makeSupportDb(state: {
   cases?: SupportCaseRow[];
   escalations?: SupportEscalationRow[];
+  internalMessages?: SupportInternalMessageRow[];
+  messages?: SupportMessageRow[];
   events?: SupportEventRow[];
   friends?: FriendRow[];
   manuals?: SupportManualRow[];
 }) {
   const cases = state.cases ?? [];
   const escalations = state.escalations ?? [];
+  const internalMessages = state.internalMessages ?? [];
+  const messages = state.messages ?? [];
   const events = state.events ?? [];
   const friends = state.friends ?? [];
   const manuals = state.manuals ?? [];
@@ -281,18 +337,39 @@ function makeSupportDb(state: {
   }
 
   function visibilityParts(sql: string, binds: unknown[]) {
-    if (!sql.includes('created_by = ?')) return null;
     const patternIndex = binds.findIndex((item) => typeof item === 'string' && item.startsWith('%') && item.endsWith('%'));
+    if (patternIndex < 0) return null;
+    const staffName = String(binds[patternIndex]).replaceAll('%', '');
+    if (!sql.includes('created_by = ?')) {
+      if (!sql.includes("sc.escalation_assignee LIKE ? ESCAPE '\\'")) return null;
+      return {
+        staffId: null,
+        staffName,
+        secondaryOnly: true,
+      };
+    }
     if (patternIndex < 1) return null;
     return {
       staffId: String(binds[patternIndex - 1]),
-      staffName: String(binds[patternIndex]).replaceAll('%', ''),
+      staffName,
+      secondaryOnly: false,
     };
   }
 
   function visibleCase(row: SupportCaseRow, sql: string, binds: unknown[]): boolean {
     const scope = visibilityParts(sql, binds);
     if (!scope) return true;
+    if (scope.secondaryOnly) {
+      return (
+        (row.escalation_assignee ?? '').includes(scope.staffName) ||
+        escalations.some(
+          (item) =>
+            item.case_id === row.id &&
+            item.status !== 'closed' &&
+            item.assignee.includes(scope.staffName),
+        )
+      );
+    }
     return (
       row.created_by === scope.staffId ||
       (row.primary_assignee ?? '').includes(scope.staffName) ||
@@ -316,6 +393,11 @@ function makeSupportDb(state: {
         },
         async first<T>() {
           calls.push({ method: 'first', sql, binds: bound });
+          if (sql.startsWith('SELECT 1 AS ok WHERE')) {
+            const [friendId] = bound as [string];
+            const visible = cases.some((item) => item.friend_id === friendId && visibleCase(item, sql, bound));
+            return (visible ? { ok: 1 } : null) as T | null;
+          }
           if (sql.includes('FROM friends WHERE id = ?')) {
             const [friendId] = bound as [string];
             const friend = friends.find((item) => item.id === friendId);
@@ -351,6 +433,17 @@ function makeSupportDb(state: {
             const [id, lineAccountId] = bound as [string, string];
             return findEscalation(id, lineAccountId) as T | null;
           }
+          if (sql.includes('FROM support_internal_messages') && sql.includes('WHERE id = ? AND case_id = ? AND line_account_id = ?')) {
+            const [messageId, caseId, lineAccountId] = bound as [string, string, string];
+            const row = internalMessages.find(
+              (item) => item.id === messageId && item.case_id === caseId && item.line_account_id === lineAccountId,
+            );
+            return (row ? { id: row.id } : null) as T | null;
+          }
+          if (sql.includes('FROM support_internal_messages') && sql.includes('WHERE id = ? AND line_account_id = ?')) {
+            const [messageId, lineAccountId] = bound as [string, string];
+            return (internalMessages.find((item) => item.id === messageId && item.line_account_id === lineAccountId) ?? null) as T | null;
+          }
           return null as T | null;
         },
         async all<T>() {
@@ -360,7 +453,7 @@ function makeSupportDb(state: {
             let rows = cases.filter((item) => item.line_account_id === lineAccountId);
             rows = rows.filter((item) => visibleCase(item, sql, bound));
             if (sql.includes("sc.status = ?")) {
-              const status = bound.find((item) => typeof item === 'string' && ['open', 'in_progress', 'waiting_primary', 'escalated', 'waiting_secondary', 'customer_reply', 'on_hold', 'resolved', 'reopened'].includes(item));
+              const status = bound.find((item) => typeof item === 'string' && ['open', 'in_progress', 'waiting_primary', 'escalated', 'waiting_secondary', 'secondary_answered', 'customer_reply', 'on_hold', 'resolved', 'reopened'].includes(item));
               if (status) rows = rows.filter((item) => item.status === status);
             }
             if (sql.includes("sc.status != 'resolved'")) {
@@ -368,6 +461,12 @@ function makeSupportDb(state: {
             }
             if (sql.includes("sc.status IN ('escalated', 'waiting_secondary')")) {
               rows = rows.filter((item) => ['escalated', 'waiting_secondary'].includes(item.status));
+            }
+            if (sql.includes("sc.status = 'secondary_answered'")) {
+              rows = rows.filter((item) => item.status === 'secondary_answered');
+            }
+            if (sql.includes("sc.status IN ('open', 'in_progress', 'waiting_primary', 'on_hold', 'reopened')")) {
+              rows = rows.filter((item) => ['open', 'in_progress', 'waiting_primary', 'on_hold', 'reopened'].includes(item.status));
             }
             if (sql.includes("sc.status = 'customer_reply'")) {
               rows = rows.filter((item) => item.status === 'customer_reply');
@@ -404,16 +503,39 @@ function makeSupportDb(state: {
             const [caseId] = bound as [string];
             return { results: events.filter((item) => item.case_id === caseId) } as { results: T[] };
           }
+          if (sql.includes('FROM support_internal_messages')) {
+            if (sql.includes('WHERE case_id = ? AND line_account_id = ?')) {
+              const [caseId, lineAccountId] = bound as [string, string];
+              return {
+                results: internalMessages.filter((item) => item.case_id === caseId && item.line_account_id === lineAccountId),
+              } as { results: T[] };
+            }
+            return { results: [] } as { results: T[] };
+          }
           if (sql.includes('FROM support_escalations se') && sql.includes('WHERE se.case_id = ?')) {
             const [caseId] = bound as [string];
             return { results: escalations.filter((item) => item.case_id === caseId).map((item) => findEscalation(item.id)!) } as { results: T[] };
           }
           if (sql.includes('FROM support_escalations se')) {
             const lineAccountId = bound[0] as string;
-            return { results: escalations.filter((item) => item.line_account_id === lineAccountId).map((item) => findEscalation(item.id)!) } as { results: T[] };
+            let rows = escalations.filter((item) => item.line_account_id === lineAccountId);
+            if (sql.includes('se.assignee LIKE ?')) {
+              const patterns = bound
+                .filter((item, index) => index > 0 && typeof item === 'string' && item.startsWith('%') && item.endsWith('%'))
+                .map((item) => String(item).replaceAll('%', ''));
+              for (const assigneeName of patterns) {
+                rows = rows.filter((item) => item.assignee.includes(assigneeName));
+              }
+            }
+            return { results: rows.map((item) => findEscalation(item.id)!) } as { results: T[] };
           }
           if (sql.includes('FROM messages_log')) {
-            return { results: [] } as { results: T[] };
+            const [friendId] = bound as [string];
+            return {
+              results: messages
+                .filter((item) => item.friend_id === friendId && item.delivery_type !== 'test')
+                .sort((a, b) => b.created_at.localeCompare(a.created_at)),
+            } as { results: T[] };
           }
           if (sql.includes('FROM support_manuals')) {
             const lineAccountId = bound.find((item) => typeof item === 'string' && item.startsWith('acc-')) as string | undefined;
@@ -498,6 +620,19 @@ function makeSupportDb(state: {
               body,
               metadata,
               created_at: createdAt,
+            });
+          } else if (sql.includes('INSERT INTO support_internal_messages')) {
+            const [id, caseId, lineAccountId, parentId, body, mentions, createdBy, createdByName, createdAt] = bound as Array<string | null>;
+            internalMessages.push({
+              id: String(id),
+              case_id: String(caseId),
+              line_account_id: String(lineAccountId),
+              parent_id: parentId === null ? null : String(parentId),
+              body: String(body),
+              mentions: String(mentions),
+              created_by: createdBy === null ? null : String(createdBy),
+              created_by_name: createdByName === null ? null : String(createdByName),
+              created_at: String(createdAt),
             });
           } else if (sql.includes('INSERT INTO support_escalations')) {
             const [id, caseId, lineAccountId, assignee, level, question, dueAt, createdBy, updatedBy, createdAt, updatedAt] = bound as string[];
@@ -584,7 +719,7 @@ function makeSupportDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { cases, escalations, events, friends, manuals } };
+  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals } };
 }
 
 function setupApp(db: D1Database, staff: Staff = { id: 'staff-1', name: '田島', role: 'staff' }) {
@@ -744,7 +879,7 @@ describe('support CRM routes', () => {
     ]);
   });
 
-  test('staff cannot create support cases', async () => {
+  test('staff can create support cases for visible friends', async () => {
     const { db, state } = makeSupportDb({
       friends: [{
         id: 'friend-visible',
@@ -766,11 +901,55 @@ describe('support CRM routes', () => {
       }),
     });
 
-    expect(res.status).toBe(403);
-    const body = (await res.json()) as { success: boolean; error: string };
-    expect(body.success).toBe(false);
-    expect(body.error).toContain('owner/admin');
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { success: boolean; data: { friendName: string | null; createdBy: string | null } };
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({
+      friendName: '担当中の友だち',
+      createdBy: 'staff-1',
+    });
+    expect(state.cases).toHaveLength(2);
+    expect(state.events.at(-1)).toEqual(expect.objectContaining({
+      event_type: 'created',
+      actor_name: '田島',
+    }));
+  });
+
+  test('staff can create support cases for existing friends before assignment', async () => {
+    const { db, state } = makeSupportDb({
+      friends: [{
+        id: 'friend-new',
+        line_account_id: 'acc-1',
+        display_name: '未担当の友だち',
+        picture_url: null,
+        line_user_id: 'U-new',
+      }],
+      cases: [],
+    });
+
+    const res = await setupApp(db, { id: 'staff-hayashi', name: '林 静香', role: 'staff' }).request('/api/support/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        friendId: 'friend-new',
+        customerSummary: '未担当の顧客からチケット化',
+        primaryAssignee: '林 静香',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { success: boolean; data: { friendName: string | null; createdBy: string | null } };
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({
+      friendName: '未担当の友だち',
+      createdBy: 'staff-hayashi',
+    });
     expect(state.cases).toHaveLength(1);
+    expect(state.events.at(-1)).toEqual(expect.objectContaining({
+      event_type: 'created',
+      actor_name: '林 静香',
+    }));
   });
 
   test('case creation requires either a linked friend or a customer summary', async () => {
@@ -789,7 +968,7 @@ describe('support CRM routes', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { success: boolean; error: string };
     expect(body.success).toBe(false);
-    expect(body.error).toBe('LINE会話を選ぶか、問い合わせ要約を入力してください。');
+    expect(body.error).toBe('LINE会話を選ぶか、問い合わせ内容を入力してください。');
     expect(state.cases).toHaveLength(0);
   });
 
@@ -1137,7 +1316,7 @@ describe('support CRM routes', () => {
       updated_by: 'staff-1',
     });
     expect(state.cases[0]).toMatchObject({
-      status: 'customer_reply',
+      status: 'secondary_answered',
       updated_by: 'staff-1',
     });
     expect(state.events.at(-1)).toMatchObject({
@@ -1145,6 +1324,144 @@ describe('support CRM routes', () => {
       event_type: 'escalation_updated',
       actor_name: '田島',
     });
+  });
+
+  test('case detail includes internal chat messages', async () => {
+    const { db } = makeSupportDb({
+      cases: [baseCase({ id: 'case-chat', primary_assignee: '田島' })],
+      internalMessages: [
+        baseInternalMessage({
+          id: 'internal-root',
+          case_id: 'case-chat',
+          body: '@松山 この顧客の履歴を確認してください',
+          mentions: JSON.stringify(['松山']),
+        }),
+        baseInternalMessage({
+          id: 'internal-reply',
+          case_id: 'case-chat',
+          parent_id: 'internal-root',
+          body: '確認しました',
+          created_by: 'staff-2',
+          created_by_name: '松山',
+        }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' })
+      .request('/api/support/cases/case-chat?lineAccountId=acc-1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { internalMessages: Array<{ id: string; parentId: string | null; mentions: string[] }> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.internalMessages).toEqual([
+      expect.objectContaining({ id: 'internal-root', parentId: null, mentions: ['松山'] }),
+      expect.objectContaining({ id: 'internal-reply', parentId: 'internal-root', mentions: [] }),
+    ]);
+  });
+
+  test('secondary-only case detail does not return LINE conversation logs', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({
+          id: 'case-secondary',
+          friend_id: 'friend-1',
+          status: 'waiting_secondary',
+          escalation_assignee: '田島',
+        }),
+      ],
+      friends: [{ id: 'friend-1', line_account_id: 'acc-1', display_name: '顧客A' }],
+      messages: [
+        baseMessage({ id: 'msg-secret-1', friend_id: 'friend-1', content: 'LINEで見える本文です' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'secondary-1', name: '田島', role: 'secondary' })
+      .request('/api/support/cases/case-secondary?lineAccountId=acc-1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { canViewLineConversation: boolean; recentMessages: Array<{ content: string }> };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.canViewLineConversation).toBe(false);
+    expect(body.data.recentMessages).toEqual([]);
+    expect(calls.some((call) => call.method === 'all' && call.sql.includes('FROM messages_log'))).toBe(false);
+  });
+
+  test('staff can post internal chat messages and thread replies on visible cases', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-chat', primary_assignee: '田島' })],
+      internalMessages: [baseInternalMessage({ id: 'internal-root', case_id: 'case-chat' })],
+    });
+    const app = setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' });
+
+    const postRes = await app.request('/api/support/cases/case-chat/internal-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        body: '@松山 顧客の購入履歴を見てください',
+        mentions: ['松山'],
+      }),
+    });
+
+    expect(postRes.status).toBe(201);
+    expect(state.internalMessages.at(-1)).toMatchObject({
+      case_id: 'case-chat',
+      parent_id: null,
+      body: '@松山 顧客の購入履歴を見てください',
+      mentions: JSON.stringify(['松山']),
+      created_by: 'staff-1',
+      created_by_name: '田島',
+    });
+    expect(state.events.at(-1)).toMatchObject({
+      case_id: 'case-chat',
+      event_type: 'internal_chat',
+      actor_name: '田島',
+    });
+
+    const replyRes = await app.request('/api/support/cases/case-chat/internal-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        parentId: 'internal-root',
+        body: 'スレッドで返信します',
+      }),
+    });
+
+    expect(replyRes.status).toBe(201);
+    expect(state.internalMessages.at(-1)).toMatchObject({
+      case_id: 'case-chat',
+      parent_id: 'internal-root',
+      body: 'スレッドで返信します',
+    });
+    expect(state.events.at(-1)).toMatchObject({
+      event_type: 'internal_thread_reply',
+    });
+  });
+
+  test('staff cannot post internal chat messages outside their support scope', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-other', created_by: 'owner-1', primary_assignee: '松山' })],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' })
+      .request('/api/support/cases/case-other/internal-messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          body: '範囲外に投稿したい',
+        }),
+      });
+
+    expect(res.status).toBe(404);
+    expect(state.internalMessages).toHaveLength(0);
   });
 
   test('updating an escalation answer without a status change does not move the case status', async () => {
@@ -1284,12 +1601,210 @@ describe('support CRM routes', () => {
     expect(listCall?.binds).toContain('%田島%');
   });
 
+  test('admin can filter secondary cases to their own assignments', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-admin', title: '管理者名宛', status: 'waiting_secondary', escalation_assignee: '田島' }),
+        baseCase({ id: 'case-other', title: '別担当宛', status: 'waiting_secondary', escalation_assignee: '松山' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'admin-1', name: '田島', role: 'admin' })
+      .request('/api/support/cases?lineAccountId=acc-1&queue=escalated&scope=my_escalations');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Array<{ id: string }> };
+    expect(body.success).toBe(true);
+    expect(body.data.map((item) => item.id)).toEqual(['case-admin']);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
+    expect(listCall?.sql).toContain("sc.status != 'resolved' AND (");
+    expect(listCall?.binds).toContain('%田島%');
+  });
+
+  test('admin can filter escalation requests to their own assignments', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-admin', status: 'waiting_secondary' }),
+        baseCase({ id: 'case-other', status: 'waiting_secondary' }),
+      ],
+      escalations: [
+        baseEscalation({ id: 'esc-admin', case_id: 'case-admin', assignee: '田島' }),
+        baseEscalation({ id: 'esc-other', case_id: 'case-other', assignee: '松山' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'admin-1', name: '田島', role: 'admin' })
+      .request('/api/support/escalations?lineAccountId=acc-1&scope=my_escalations');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Array<{ id: string }> };
+    expect(body.success).toBe(true);
+    expect(body.data.map((item) => item.id)).toEqual(['esc-admin']);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_escalations se'));
+    expect(listCall?.sql).toContain("se.assignee LIKE ? ESCAPE '\\'");
+    expect(listCall?.binds).toContain('%田島%');
+  });
+
+  test('staff can filter escalation requests by another assignee', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-mine', status: 'waiting_secondary' }),
+        baseCase({ id: 'case-other', status: 'waiting_secondary' }),
+      ],
+      escalations: [
+        baseEscalation({ id: 'esc-mine', case_id: 'case-mine', assignee: '田島' }),
+        baseEscalation({ id: 'esc-other', case_id: 'case-other', assignee: '松山' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' })
+      .request('/api/support/escalations?lineAccountId=acc-1&assignee=%E6%9D%BE%E5%B1%B1');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Array<{ id: string; assignee: string }> };
+    expect(body.success).toBe(true);
+    expect(body.data.map((item) => ({ id: item.id, assignee: item.assignee }))).toEqual([{ id: 'esc-other', assignee: '松山' }]);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_escalations se'));
+    expect(listCall?.sql).toContain('se.assignee LIKE ?');
+    expect(listCall?.sql).not.toContain('sc_escalation_list_scope');
+    expect(listCall?.binds).toContain('%松山%');
+  });
+
+  test('staff can answer another assignee escalation without changing routing', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-other', status: 'waiting_secondary', primary_assignee: '松山' })],
+      escalations: [baseEscalation({ id: 'esc-other', case_id: 'case-other', assignee: '松山' })],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' }).request('/api/support/escalations/esc-other', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'answered',
+        answer: '代わりに確認しました',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.escalations[0]).toMatchObject({
+      assignee: '松山',
+      status: 'answered',
+      answer: '代わりに確認しました',
+      updated_by: 'staff-1',
+    });
+    expect(state.cases[0]).toMatchObject({
+      status: 'secondary_answered',
+      updated_by: 'staff-1',
+    });
+  });
+
+  test('secondary-only staff can filter and answer only their own secondary escalations', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-mine', status: 'waiting_secondary' }),
+        baseCase({ id: 'case-other', status: 'waiting_secondary' }),
+      ],
+      escalations: [
+        baseEscalation({ id: 'esc-mine', case_id: 'case-mine', assignee: '田島' }),
+        baseEscalation({ id: 'esc-other', case_id: 'case-other', assignee: '松山' }),
+      ],
+    });
+    const app = setupApp(db, { id: 'secondary-1', name: '田島', role: 'secondary' });
+
+    const listRes = await app.request('/api/support/escalations?lineAccountId=acc-1&assignee=%E6%9D%BE%E5%B1%B1');
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as { success: boolean; data: Array<{ id: string; assignee: string }> };
+    expect(listBody.success).toBe(true);
+    expect(listBody.data.map((item) => ({ id: item.id, assignee: item.assignee }))).toEqual([{ id: 'esc-mine', assignee: '田島' }]);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_escalations se'));
+    expect(listCall?.binds).toContain('%田島%');
+
+    const ownUpdate = await app.request('/api/support/escalations/esc-mine', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'answered',
+        answer: '確認しました',
+      }),
+    });
+    expect(ownUpdate.status).toBe(200);
+    expect(state.escalations[0]).toMatchObject({
+      status: 'answered',
+      answer: '確認しました',
+      updated_by: 'secondary-1',
+    });
+
+    const otherUpdate = await app.request('/api/support/escalations/esc-other', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'answered',
+        answer: '他人宛を更新',
+      }),
+    });
+    expect(otherUpdate.status).toBe(404);
+    expect(state.escalations[1]).toMatchObject({
+      status: 'pending',
+      answer: '',
+    });
+  });
+
+  test('secondary-only staff sees only secondary assignments and cannot create cases', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-created', title: '自分が作成', created_by: 'secondary-1', escalation_assignee: null }),
+        baseCase({ id: 'case-primary', title: '一次担当', created_by: 'owner-1', primary_assignee: '田島', escalation_assignee: null }),
+        baseCase({ id: 'case-secondary', title: '二次担当', created_by: 'owner-1', primary_assignee: '松山', escalation_assignee: '田島' }),
+        baseCase({ id: 'case-other', title: '範囲外', created_by: 'owner-1', primary_assignee: '松山', escalation_assignee: '松山' }),
+      ],
+    });
+    const app = setupApp(db, { id: 'secondary-1', name: '田島', role: 'secondary' });
+
+    const listRes = await app.request('/api/support/cases?lineAccountId=acc-1');
+    expect(listRes.status).toBe(200);
+    const listBody = (await listRes.json()) as { data: Array<{ id: string }> };
+    expect(listBody.data.map((item) => item.id)).toEqual(['case-secondary']);
+
+    const createRes = await app.request('/api/support/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1', customerSummary: '二次対応もチケット作成できます' }),
+    });
+    expect(createRes.status).toBe(403);
+    expect(state.cases).toHaveLength(4);
+  });
+
+  test('admin can still view all secondary cases when no personal scope is sent', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [
+        baseCase({ id: 'case-admin', title: '管理者名宛', status: 'waiting_secondary', escalation_assignee: '田島' }),
+        baseCase({ id: 'case-other', title: '別担当宛', status: 'waiting_secondary', escalation_assignee: '松山' }),
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'admin-1', name: '田島', role: 'admin' })
+      .request('/api/support/cases?lineAccountId=acc-1&queue=escalated');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Array<{ id: string }> };
+    expect(body.success).toBe(true);
+    expect(body.data.map((item) => item.id)).toEqual(['case-admin', 'case-other']);
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
+    expect(listCall?.sql).not.toContain("sc.status != 'resolved' AND (");
+  });
+
   test('filters operational queues without mixing resolved cases', async () => {
     const { db } = makeSupportDb({
       cases: [
         baseCase({ id: 'case-open', status: 'open', primary_assignee: '田島', due_at: '2099-01-01T10:00:00.000' }),
         baseCase({ id: 'case-overdue', status: 'in_progress', primary_assignee: '田島', due_at: '2020-01-01T10:00:00.000' }),
         baseCase({ id: 'case-unassigned', status: 'waiting_primary', primary_assignee: null, due_at: null }),
+        baseCase({ id: 'case-secondary', status: 'waiting_secondary', primary_assignee: '田島', due_at: null }),
+        baseCase({ id: 'case-secondary-answered', status: 'secondary_answered', primary_assignee: '田島', due_at: null }),
+        baseCase({ id: 'case-customer', status: 'customer_reply', primary_assignee: '田島', due_at: null }),
         baseCase({ id: 'case-resolved', status: 'resolved', primary_assignee: null, due_at: '2020-01-01T10:00:00.000' }),
       ],
     });
@@ -1302,7 +1817,29 @@ describe('support CRM routes', () => {
       'case-open',
       'case-overdue',
       'case-unassigned',
+      'case-secondary',
+      'case-secondary-answered',
+      'case-customer',
     ]);
+
+    const primaryAction = await app.request('/api/support/cases?lineAccountId=acc-1&queue=primary_action');
+    expect(primaryAction.status).toBe(200);
+    const primaryActionBody = (await primaryAction.json()) as { data: Array<{ id: string }> };
+    expect(primaryActionBody.data.map((item) => item.id)).toEqual([
+      'case-open',
+      'case-overdue',
+      'case-unassigned',
+    ]);
+
+    const secondaryAction = await app.request('/api/support/cases?lineAccountId=acc-1&queue=escalated');
+    expect(secondaryAction.status).toBe(200);
+    const secondaryActionBody = (await secondaryAction.json()) as { data: Array<{ id: string }> };
+    expect(secondaryActionBody.data.map((item) => item.id)).toEqual(['case-secondary']);
+
+    const secondaryAnswered = await app.request('/api/support/cases?lineAccountId=acc-1&queue=secondary_answered');
+    expect(secondaryAnswered.status).toBe(200);
+    const secondaryAnsweredBody = (await secondaryAnswered.json()) as { data: Array<{ id: string }> };
+    expect(secondaryAnsweredBody.data.map((item) => item.id)).toEqual(['case-secondary-answered']);
 
     const overdue = await app.request('/api/support/cases?lineAccountId=acc-1&queue=overdue');
     expect(overdue.status).toBe(200);

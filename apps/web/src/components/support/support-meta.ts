@@ -20,17 +20,19 @@ export const categoryOptions = [
 
 export const statusOptions: Array<{ value: SupportCaseStatus; label: string }> = [
   { value: 'open', label: '未対応' },
+  { value: 'waiting_secondary', label: '二次対応中' },
+  { value: 'secondary_answered', label: '二次対応回答済み' },
   { value: 'in_progress', label: '対応中' },
-  { value: 'waiting_primary', label: '一次回答待ち' },
-  { value: 'escalated', label: 'エスカレ中' },
-  { value: 'waiting_secondary', label: '二次回答待ち' },
   { value: 'customer_reply', label: '顧客返信待ち' },
-  { value: 'on_hold', label: '保留' },
   { value: 'resolved', label: '完了' },
-  { value: 'reopened', label: '再オープン' },
 ]
 
-export type SupportStaffRole = 'owner' | 'admin' | 'staff' | string | null | undefined
+const reopenedStatusOption: { value: SupportCaseStatus; label: string } = {
+  value: 'reopened',
+  label: '再オープン',
+}
+
+export type SupportStaffRole = 'owner' | 'admin' | 'staff' | 'secondary' | string | null | undefined
 
 export interface SupportRolePermissions {
   canCreateCases: boolean
@@ -42,8 +44,9 @@ export interface SupportRolePermissions {
 
 export function getSupportRolePermissions(role: SupportStaffRole): SupportRolePermissions {
   const canManageRouting = role === 'owner' || role === 'admin'
+  const canUseSupport = role === 'owner' || role === 'admin' || role === 'staff'
   return {
-    canCreateCases: canManageRouting,
+    canCreateCases: canUseSupport,
     canEditCaseRouting: canManageRouting,
     canManageManuals: canManageRouting,
     canEditCaseWork: true,
@@ -58,9 +61,9 @@ export function getSupportIdentityIssue(input: {
 }): string | null {
   if (!input.ready) return null
   const role = typeof input.role === 'string' ? input.role.trim() : ''
-  if (!role) return 'ログイン権限を確認できませんでした。再ログインしてからサポートCRMを開き直してください。'
-  if (role === 'staff' && !input.staffName.trim()) {
-    return 'staff権限の表示範囲を判定できません。スタッフ管理でスタッフ名を設定し、再ログインしてください。'
+  if (!role) return 'ログイン権限を確認できませんでした。再ログインしてからチケット管理を開き直してください。'
+  if ((role === 'staff' || role === 'secondary') && !input.staffName.trim()) {
+    return 'スタッフ名がないため表示範囲を判定できません。スタッフ管理でスタッフ名を設定し、再ログインしてください。'
   }
   return null
 }
@@ -91,71 +94,63 @@ export function getSupportCaseListEmptyState(input: {
 
   if (search) {
     return {
-      title: '検索条件に合う案件はありません',
-      description: '件名、顧客名、要約、内部メモの言葉を変えて検索してください。',
+      title: '検索条件に合うチケットはありません',
+      description: '件名、顧客名、問い合わせ内容、内部メモの言葉を変えて検索してください。',
       actionLabel: '絞り込みをリセット',
     }
   }
 
   if (input.caseFocus === 'stale') {
     return {
-      title: '24h滞留している案件はありません',
-      description: '今の一覧では、24時間以上動きが止まっている未完了案件はありません。',
-      actionLabel: '絞り込みをリセット',
-    }
-  }
-
-  if (input.queueFilter === 'my_escalations') {
-    return {
-      title: '自分宛エスカレ案件はありません',
-      description: 'ログイン中スタッフ名に紐づく未完了のエスカレーションはありません。',
-      actionLabel: '絞り込みをリセット',
-    }
-  }
-
-  if (input.queueFilter === 'overdue') {
-    return {
-      title: '期限超過の案件はありません',
-      description: '今すぐ期限対応が必要な未完了案件はありません。',
-      actionLabel: '絞り込みをリセット',
-    }
-  }
-
-  if (input.queueFilter === 'unassigned') {
-    return {
-      title: '担当者なしの案件はありません',
-      description: '未完了案件には一次担当が設定されています。',
-      actionLabel: '絞り込みをリセット',
-    }
-  }
-
-  if (input.queueFilter === 'waiting_customer') {
-    return {
-      title: '顧客返信待ちの案件はありません',
-      description: '顧客へ返信済みで、追加の反応を待っている案件はありません。',
+      title: '24h滞留しているチケットはありません',
+      description: '今の一覧では、24時間以上動きが止まっている未完了チケットはありません。',
       actionLabel: '絞り込みをリセット',
     }
   }
 
   if (input.queueFilter === 'escalated') {
     return {
-      title: 'エスカレ中の案件はありません',
-      description: '二次対応者の確認待ちになっている案件はありません。',
+      title: '二次対応が確認中のチケットはありません',
+      description: '今の一覧では、詳しい人の回答待ちになっているチケットはありません。',
+      actionLabel: '絞り込みをリセット',
+    }
+  }
+
+  if (input.queueFilter === 'primary_action') {
+    return {
+      title: '一次対応が動くチケットはありません',
+      description: '一次対応者が次に進める番のチケットはありません。',
+      actionLabel: '絞り込みをリセット',
+    }
+  }
+
+  if (input.queueFilter === 'secondary_answered') {
+    return {
+      title: '二次対応回答済みのチケットはありません',
+      description: '詳しい人から回答が戻っていて、一次対応者が確認するチケットはありません。',
+      actionLabel: '絞り込みをリセット',
+    }
+  }
+
+  if (input.queueFilter === 'waiting_customer') {
+    return {
+      title: '顧客返信待ちのチケットはありません',
+      description: '顧客へ返信済みで、追加の反応を待っているチケットはありません。',
       actionLabel: '絞り込みをリセット',
     }
   }
 
   if (input.statusFilter === 'resolved') {
     return {
-      title: '完了案件はありません',
-      description: '完了済みの案件を確認したい場合は、期間や検索条件も見直してください。',
+      title: '完了チケットはありません',
+      description: '完了済みのチケットを確認したい場合は、期間や検索条件も見直してください。',
       actionLabel: input.hasActiveFilters ? '絞り込みをリセット' : undefined,
     }
   }
 
   if (input.hasActiveFilters) {
     return {
-      title: '条件に合う案件はありません',
+      title: '条件に合うチケットはありません',
       description: 'ステータス、キュー、検索条件を見直してください。',
       actionLabel: '絞り込みをリセット',
     }
@@ -163,14 +158,14 @@ export function getSupportCaseListEmptyState(input: {
 
   if (input.role === 'staff') {
     return {
-      title: '表示できる案件はありません',
-      description: 'staff権限では、自分が作成・担当・エスカレ先になっている案件だけが表示されます。新しい割り当てが必要ならowner/adminに依頼してください。',
+      title: '表示できるチケットはありません',
+      description: 'staff権限では、自分が作成・担当・エスカレ先になっているチケットだけが表示されます。新しい割り当てが必要ならowner/adminに依頼してください。',
     }
   }
 
   return {
-    title: '未完了の案件はありません',
-    description: '新しい問い合わせが来たら、チャット画面から案件化して対応を始めます。',
+    title: '未完了のチケットはありません',
+    description: '新しい問い合わせが来たら、チャット画面からチケット化して対応を始めます。',
   }
 }
 
@@ -178,9 +173,8 @@ export function getVisibleStatusOptions(
   detailStatus: SupportCaseStatus,
   formStatus: SupportCaseStatus,
 ): Array<{ value: SupportCaseStatus; label: string }> {
-  return statusOptions.filter(
-    (item) => item.value !== 'reopened' || detailStatus === 'resolved' || formStatus === 'reopened',
-  )
+  if (detailStatus === 'resolved' || formStatus === 'reopened') return [...statusOptions, reopenedStatusOption]
+  return statusOptions
 }
 
 export function canOpenChatWithDraft(params: {
@@ -196,16 +190,16 @@ export function supportApiErrorMessage(res: { error?: string }, fallback: string
 }
 
 const supportUserFacingApiMessages = new Set([
-  'LINE会話を選ぶか、問い合わせ要約を入力してください。',
+  'LINE会話を選ぶか、問い合わせ内容を入力してください。',
   '保留にする場合は、保留理由の内部メモと次回確認日が必要です',
   '完了にする場合は、対応結果メモが必要です',
-  '完了済み案件を戻す場合は再オープンを選択してください',
-  '再オープンは完了済み案件だけで選択できます',
-  '完了済み案件は再オープンしてからエスカレーションしてください',
-  'staff権限では二次対応先が設定済みの案件だけエスカレーションできます',
+  '完了済みチケットを戻す場合は再オープンを選択してください',
+  '再オープンは完了済みチケットだけで選択できます',
+  '完了済みチケットは再オープンしてからエスカレーションしてください',
+  'staff権限では二次対応先が設定済みのチケットだけエスカレーションできます',
   '回答済みにする場合は回答要点が必要です',
   'staff権限ではエスカレーションを回答済み、または差し戻しにのみ変更できます',
-  '完了済み案件は再オープンしてからエスカレーションを更新してください',
+  '完了済みチケットは再オープンしてからエスカレーションを更新してください',
 ])
 
 export function formatSupportErrorMessage(error: unknown, fallback: string): string {
@@ -216,6 +210,7 @@ export function formatSupportErrorMessage(error: unknown, fallback: string): str
       : ''
   const message = raw.trim()
   if (!message) return fallback
+  const displayMessage = message.replace(/サポートCRM/g, 'チケット管理').replace(/案件/g, 'チケット')
 
   const status = message.match(/^API error:\s*(\d+)/)?.[1]
   if (status === '401') {
@@ -247,7 +242,7 @@ export function formatSupportErrorMessage(error: unknown, fallback: string): str
 
   const lower = message.toLowerCase()
   if (lower.includes('support case is resolved') || lower.includes('resolved case')) {
-    return '完了済みの案件です。返信や二次対応を続ける場合は、案件を再オープンしてください。'
+    return '完了済みのチケットです。返信や二次対応を続ける場合は、チケットを再オープンしてください。'
   }
   if (lower.includes('forbidden') || lower.includes('permission') || lower.includes('not allowed')) {
     return 'この操作を行う権限がありません。owner/adminに依頼してください。'
@@ -256,28 +251,36 @@ export function formatSupportErrorMessage(error: unknown, fallback: string): str
     return `${fallback} 対象が見つかりません。最新データで再読み込みしてください。`
   }
 
-  if (supportUserFacingApiMessages.has(message)) return message
+  if (supportUserFacingApiMessages.has(displayMessage)) return displayMessage
 
   return fallback
 }
 
 export const priorityOptions: Array<{ value: SupportPriority; label: string }> = [
-  { value: 'urgent', label: '緊急' },
-  { value: 'high', label: '高' },
-  { value: 'medium', label: '中' },
-  { value: 'low', label: '低' },
+  { value: 'urgent', label: '大至急' },
+  { value: 'high', label: '緊急' },
+  { value: 'medium', label: '通常' },
 ]
 
-export const statusLabel = Object.fromEntries(
-  statusOptions.map((item) => [item.value, item.label]),
-) as Record<SupportCaseStatus, string>
+export const statusLabel: Record<SupportCaseStatus, string> = {
+  open: '未対応',
+  in_progress: '対応中',
+  waiting_primary: '回答確認',
+  escalated: '二次対応中',
+  waiting_secondary: '二次対応中',
+  secondary_answered: '二次対応回答済み',
+  customer_reply: '顧客返信待ち',
+  on_hold: '保留',
+  resolved: '完了',
+  reopened: '再オープン',
+}
 
 export const categoryLabel = Object.fromEntries(
   categoryOptions.map((item) => [item.value, item.label]),
 ) as Record<string, string>
 
 export const priorityLabel = Object.fromEntries(
-  priorityOptions.map((item) => [item.value, item.label]),
+  [...priorityOptions, { value: 'low', label: '通常' }].map((item) => [item.value, item.label]),
 ) as Record<SupportPriority, string>
 
 export const statusClass: Record<SupportCaseStatus, string> = {
@@ -286,6 +289,7 @@ export const statusClass: Record<SupportCaseStatus, string> = {
   waiting_primary: 'bg-yellow-50 text-yellow-700 border-yellow-200',
   escalated: 'bg-purple-50 text-purple-700 border-purple-200',
   waiting_secondary: 'bg-indigo-50 text-indigo-700 border-indigo-200',
+  secondary_answered: 'bg-emerald-50 text-emerald-700 border-emerald-200',
   customer_reply: 'bg-blue-50 text-blue-700 border-blue-200',
   on_hold: 'bg-gray-100 text-gray-700 border-gray-200',
   resolved: 'bg-green-50 text-green-700 border-green-200',
@@ -293,10 +297,10 @@ export const statusClass: Record<SupportCaseStatus, string> = {
 }
 
 export const priorityClass: Record<SupportPriority, string> = {
-  urgent: 'bg-red-600 text-white border-red-600',
+  urgent: 'bg-red-100 text-red-700 border-red-200',
   high: 'bg-orange-100 text-orange-700 border-orange-200',
   medium: 'bg-sky-100 text-sky-700 border-sky-200',
-  low: 'bg-gray-100 text-gray-600 border-gray-200',
+  low: 'bg-sky-100 text-sky-700 border-sky-200',
 }
 
 export const escalationStatusMeta: Record<
@@ -312,10 +316,12 @@ export const escalationStatusMeta: Record<
 }
 
 export const eventTypeLabel: Record<string, string> = {
-  created: '案件作成',
-  updated: '案件更新',
+  created: 'チケット作成',
+  updated: 'チケット更新',
   escalated: 'エスカレ作成',
   escalation_updated: 'エスカレ更新',
+  internal_chat: '社内チャット',
+  internal_thread_reply: '社内スレッド返信',
   customer_reply_sent: '顧客返信送信',
   note: 'メモ',
 }
@@ -456,7 +462,7 @@ export const dueTimePresets: DueTimePreset[] = [
   },
 ]
 
-// ─── 案件編集フォーム ───
+// ─── チケット編集フォーム ───
 
 export interface CaseFormState {
   title: string
@@ -522,7 +528,7 @@ export function caseFormFromDetail(detail: {
   return {
     title: detail.title,
     category: detail.category,
-    priority: detail.priority,
+    priority: detail.priority === 'low' ? 'medium' : detail.priority,
     status: detail.status,
     primaryAssignee: detail.primaryAssignee ?? '',
     escalationAssignee: detail.escalationAssignee ?? '',
@@ -597,7 +603,7 @@ export function getCaseFormValidationIssues(
       issues.push({
         key: 'reply_resolved_case',
         severity: 'info',
-        message: '完了済み案件からはチャット返信できません。返信を続ける場合は再オープンしてください。',
+        message: '完了済みチケットからはチャット返信できません。返信を続ける場合は再オープンしてください。',
         fieldLabel: '顧客向け返信案',
         blocking: false,
       })
@@ -639,8 +645,8 @@ export function getCreateCaseValidationIssues(input: {
   return [{
     key: 'create_case_source',
     severity: 'error',
-    message: 'LINE会話を選ぶか、問い合わせ要約を入力してください。',
-    fieldLabel: 'LINE会話 / 問い合わせ要約',
+    message: 'LINE会話を選ぶか、問い合わせ内容を入力してください。',
+    fieldLabel: 'LINE会話 / 問い合わせ内容',
     blocking: true,
   }]
 }
@@ -737,8 +743,8 @@ export function getEscalationDraftValidationIssues(input: {
     issues.push({
       key: 'escalation_resolved_case',
       severity: 'error',
-      message: '完了済み案件ではエスカレーションを作成できません。先に案件を再オープンしてください。',
-      fieldLabel: '案件ステータス',
+      message: '完了済みチケットではエスカレーションを作成できません。先にチケットを再オープンしてください。',
+      fieldLabel: 'チケットステータス',
       blocking: true,
     })
   }
@@ -776,7 +782,7 @@ export function getEscalationDraftValidationIssues(input: {
   return issues
 }
 
-// ─── 案件一覧の並び替え ───
+// ─── チケット一覧の並び替え ───
 
 export type CaseSortMode = 'updated' | 'due' | 'priority'
 export type CaseFocus = 'all' | 'stale'
@@ -784,7 +790,7 @@ export type CaseFocus = 'all' | 'stale'
 export const caseSortOptions: Array<{ value: CaseSortMode; label: string }> = [
   { value: 'updated', label: '更新が新しい順' },
   { value: 'due', label: '期限が近い順' },
-  { value: 'priority', label: '優先度順' },
+  { value: 'priority', label: '緊急度順' },
 ]
 
 const priorityRank: Record<SupportPriority, number> = {
@@ -860,7 +866,7 @@ export function getOutsideCurrentListAction(status?: SupportCaseStatus | null): 
 } {
   if (status === 'resolved') {
     return {
-      label: '完了案件を表示',
+      label: '完了チケットを表示',
       statusFilter: 'resolved',
       queueFilter: 'all',
       caseFocus: 'all',
@@ -915,15 +921,15 @@ export interface ShareTextSource {
 export function buildEscalationShareText(source: ShareTextSource): string {
   const latestMessages = source.recentMessages.slice(-8).map(formatMessageForShare)
   return [
-    `【案件】${source.title}`,
+    `【チケット】${source.title}`,
     `【顧客】${source.friendName || source.companyName || '顧客未紐付け'}`,
-    `【優先度】${priorityLabel[source.priority]}`,
+    `【緊急度】${priorityLabel[source.priority]}`,
     `【種別】${categoryLabel[source.category] || source.category}`,
     `【期限】${formatDateTime(source.dueAt)}`,
     `【一次担当】${source.primaryAssignee || '未設定'}`,
     `【エスカレ先】${source.escalationAssignee || '未設定'}`,
     '',
-    `【問い合わせ要約】`,
+    `【問い合わせ内容】`,
     source.customerSummary || '未記入',
     '',
     `【確認してほしいこと】`,
@@ -933,6 +939,6 @@ export function buildEscalationShareText(source: ShareTextSource): string {
     latestMessages.length ? latestMessages.join('\n') : '会話ログなし',
     '',
     `【回答の返し方】`,
-    '回答要点をこの案件のエスカレーション欄へ記入してください。顧客への最終返信はフロント側で確認して送信します。',
+    '回答要点をこのチケットのエスカレーション欄へ記入してください。顧客への最終返信はフロント側で確認して送信します。',
   ].join('\n')
 }

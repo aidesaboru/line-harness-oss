@@ -1,9 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { api } from '@/lib/api'
+import type { LineSafetyMode } from '@/lib/api'
 import Header from '@/components/layout/header'
 import CcPromptButton from '@/components/cc-prompt-button'
+import { useAccount } from '@/contexts/account-context'
 
 type ActionStatus = 'idle' | 'confirming' | 'executing' | 'done' | 'error'
 
@@ -19,9 +21,10 @@ const emergencyPrompts = [
   {
     title: '緊急: 全配信を停止するプロンプト',
     prompt: `LINE CRM の全配信を即時停止してください。
-1. broadcasts の status が scheduled のものを全て draft に変更
-2. scenarios の isActive を全て false に変更
-3. automations の isActive を全て false に変更
+1. 緊急コントロールの LINE送信セーフティ停止を ON にする
+2. broadcasts の status が scheduled のものを全て draft に変更
+3. scenarios の isActive を全て false に変更
+4. automations の isActive を全て false に変更
 完了後、停止した件数を報告してください。`,
   },
   {
@@ -35,6 +38,7 @@ const emergencyPrompts = [
 ]
 
 export default function EmergencyPage() {
+  const { selectedAccountId, selectedAccount } = useAccount()
   const [actions, setActions] = useState<EmergencyAction[]>([
     {
       id: 'stop-broadcasts',
@@ -55,6 +59,37 @@ export default function EmergencyPage() {
       status: 'idle',
     },
   ])
+  const [lineSafety, setLineSafety] = useState<LineSafetyMode | null>(null)
+  const [lineSafetyReason, setLineSafetyReason] = useState('BANリスク確認のため一時停止')
+  const [lineSafetyLoading, setLineSafetyLoading] = useState(false)
+  const [lineSafetySaving, setLineSafetySaving] = useState(false)
+  const [lineSafetyError, setLineSafetyError] = useState<string | null>(null)
+
+  const loadLineSafety = useCallback(async () => {
+    if (!selectedAccountId) {
+      setLineSafety(null)
+      return
+    }
+    setLineSafetyLoading(true)
+    setLineSafetyError(null)
+    try {
+      const res = await api.accountSettings.getLineSafety(selectedAccountId)
+      if (res.success) {
+        setLineSafety(res.data)
+        if (res.data.reason) setLineSafetyReason(res.data.reason)
+      } else {
+        setLineSafetyError(res.error || '状態の取得に失敗しました')
+      }
+    } catch {
+      setLineSafetyError('状態の取得に失敗しました')
+    } finally {
+      setLineSafetyLoading(false)
+    }
+  }, [selectedAccountId])
+
+  useEffect(() => {
+    void loadLineSafety()
+  }, [loadLineSafety])
 
   const updateAction = (id: string, updates: Partial<EmergencyAction>) => {
     setActions((prev) =>
@@ -106,6 +141,39 @@ export default function EmergencyPage() {
     updateAction(id, { status: 'idle', errorMessage: undefined })
   }
 
+  const handleLineSafetyUpdate = async (frozen: boolean) => {
+    if (!selectedAccountId) {
+      setLineSafetyError('LINE公式アカウントを選択してください')
+      return
+    }
+    setLineSafetySaving(true)
+    setLineSafetyError(null)
+    try {
+      const res = await api.accountSettings.updateLineSafety(
+        selectedAccountId,
+        frozen,
+        frozen ? lineSafetyReason : null,
+      )
+      if (res.success && res.data) {
+        setLineSafety(res.data)
+        if (res.data.reason) setLineSafetyReason(res.data.reason)
+      } else {
+        setLineSafetyError(res.error || '更新に失敗しました')
+      }
+    } catch {
+      setLineSafetyError('更新に失敗しました')
+    } finally {
+      setLineSafetySaving(false)
+    }
+  }
+
+  const formatUpdatedAt = (value: string | null) => {
+    if (!value) return '未更新'
+    const parsed = new Date(value)
+    if (Number.isNaN(parsed.getTime())) return value
+    return parsed.toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })
+  }
+
   const getStatusBadge = (status: ActionStatus) => {
     switch (status) {
       case 'done':
@@ -150,6 +218,85 @@ export default function EmergencyPage() {
             <p className="text-xs text-red-600 mt-1">
               各ボタンをクリックすると確認ダイアログが表示されます。「実行」で操作が開始されます。
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* LINE send safety */}
+      <div className={`mb-6 bg-white rounded-lg shadow-sm border-2 p-5 ${
+        lineSafety?.frozen ? 'border-red-300' : 'border-emerald-200'
+      }`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-bold text-gray-900">LINE送信セーフティ停止</h2>
+              <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ${
+                lineSafety?.frozen ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'
+              }`}>
+                {lineSafetyLoading ? '確認中' : lineSafety?.frozen ? '停止中' : '送信可能'}
+              </span>
+            </div>
+            <p className="mt-2 text-sm text-gray-600">
+              対象: {selectedAccount?.name || selectedAccountId || '未選択'}
+            </p>
+            <p className="mt-2 text-xs leading-5 text-gray-500">
+              ONの間、このアカウントからの個別返信・顧客詳細送信・一斉送信・自動返信・シナリオ/リマインド配信を止めます。
+            </p>
+            {lineSafety?.updatedAt && (
+              <p className="mt-2 text-xs text-gray-500">
+                最終更新: {formatUpdatedAt(lineSafety.updatedAt)}
+                {lineSafety.updatedBy ? ` / ${lineSafety.updatedBy}` : ''}
+              </p>
+            )}
+            {lineSafetyError && (
+              <p className="mt-3 text-sm font-medium text-red-600">{lineSafetyError}</p>
+            )}
+          </div>
+
+          <div className="w-full lg:w-[360px]">
+            {!lineSafety?.frozen && (
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium text-gray-600">停止理由</span>
+                <textarea
+                  value={lineSafetyReason}
+                  onChange={(event) => setLineSafetyReason(event.target.value)}
+                  maxLength={500}
+                  rows={3}
+                  className="w-full resize-none rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-100"
+                />
+              </label>
+            )}
+            {lineSafety?.frozen && lineSafety.reason && (
+              <div className="mb-3 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {lineSafety.reason}
+              </div>
+            )}
+            <div className="mt-3 flex gap-2">
+              {lineSafety?.frozen ? (
+                <button
+                  onClick={() => handleLineSafetyUpdate(false)}
+                  disabled={lineSafetySaving || !selectedAccountId}
+                  className="w-full min-h-[44px] rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {lineSafetySaving ? '解除中...' : '送信停止を解除'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleLineSafetyUpdate(true)}
+                  disabled={lineSafetySaving || lineSafetyLoading || !selectedAccountId}
+                  className="w-full min-h-[44px] rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+                >
+                  {lineSafetySaving ? '停止中...' : 'LINE送信を停止'}
+                </button>
+              )}
+              <button
+                onClick={() => void loadLineSafety()}
+                disabled={lineSafetyLoading}
+                className="min-h-[44px] rounded-lg bg-gray-100 px-4 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-200 disabled:opacity-50"
+              >
+                更新
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -206,6 +353,12 @@ export default function EmergencyPage() {
       <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
         <h2 className="text-sm font-semibold text-gray-800 mb-3">現在のステータス</h2>
         <div className="space-y-2">
+          <div className="flex items-center justify-between py-2 border-b border-gray-100">
+            <span className="text-sm text-gray-600">LINE送信セーフティ停止</span>
+            <span className={`text-xs font-medium ${lineSafety?.frozen ? 'text-red-600' : 'text-emerald-600'}`}>
+              {lineSafety?.frozen ? '停止中' : '送信可能'}
+            </span>
+          </div>
           {actions.map((action) => (
             <div key={action.id} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
               <span className="text-sm text-gray-600">{action.label}</span>

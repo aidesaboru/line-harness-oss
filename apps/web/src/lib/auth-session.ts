@@ -35,7 +35,7 @@ export function isUsableStaffIdentity(input: {
 }): boolean {
   const role = normalizeStorageValue(input.role)
   if (!role) return false
-  if (role === 'staff') return Boolean(normalizeStorageValue(input.name))
+  if (role === 'staff' || role === 'secondary') return Boolean(normalizeStorageValue(input.name))
   return true
 }
 

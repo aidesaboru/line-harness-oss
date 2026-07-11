@@ -22,7 +22,7 @@ function withIdentKey<T extends { friend_id: string; ident_key?: string }>(rows:
 function fakeDb(canned: CannedData): D1Database {
   return {
     prepare(sql: string) {
-      const isSelectedCount = sql.includes('SELECT line_account_id, COUNT(*) AS cnt');
+      const isSelectedCount = sql.includes('COUNT(*) AS cnt') && sql.includes('FROM friends f');
       const isRanked = sql.includes('ROW_NUMBER() OVER');
       const isAccountMeta = sql.includes('FROM line_accounts WHERE id IN');
       return {
@@ -48,7 +48,7 @@ describe('computeDedupBroadcastPreview', () => {
     const capturingDb = {
       prepare(sql: string) {
         preparedSqls.push(sql);
-        const isSelectedCount = sql.includes('SELECT line_account_id, COUNT(*) AS cnt');
+        const isSelectedCount = sql.includes('COUNT(*) AS cnt') && sql.includes('FROM friends f');
         const isRanked = sql.includes('ROW_NUMBER() OVER');
         return {
           bind(..._args: unknown[]) { return this; },
@@ -68,6 +68,8 @@ describe('computeDedupBroadcastPreview', () => {
     const rankedSql = preparedSqls.find((s) => s.includes('ROW_NUMBER() OVER'));
     expect(selectedCountSql).toMatch(/EXISTS \(SELECT 1 FROM friend_tags/);
     expect(rankedSql).toMatch(/EXISTS \(SELECT 1 FROM friend_tags/);
+    expect(selectedCountSql).toContain('support_cases sc_broadcast_scope');
+    expect(rankedSql).toContain('chats ch_broadcast_scope');
 
     // Without tag, the EXISTS clause should NOT appear.
     const preparedSqls2: string[] = [];
@@ -353,7 +355,7 @@ function makeSendDb(opts: {
   const batches: unknown[][] = [];
   const db = {
     prepare(sql: string) {
-      const isSelectedCount = sql.includes('SELECT line_account_id, COUNT(*) AS cnt');
+      const isSelectedCount = sql.includes('COUNT(*) AS cnt') && sql.includes('FROM friends f');
       const isRanked = sql.includes('ROW_NUMBER() OVER');
       const isAccountMetaList = sql.includes('FROM line_accounts WHERE id IN');
       const isFailedUpdate = sql.includes('UPDATE broadcasts SET failed_account_ids');

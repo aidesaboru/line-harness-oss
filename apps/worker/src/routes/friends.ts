@@ -15,8 +15,7 @@ import { fireEvent } from '../services/event-bus.js';
 import { buildMessage } from '../services/step-delivery.js';
 import type { Env } from '../index.js';
 import {
-  canAccessSupportFriend,
-  supportFriendVisibilitySql,
+  isSecondaryOnlySupportStaff,
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import { requireRole } from '../middleware/role-guard.js';
@@ -25,6 +24,7 @@ import {
   isLineCaptureOnly,
   isLineManualSendEnabled,
 } from '../services/line-capture-only.js';
+import { getLineSendSafetyBlock, type LineSendSafetyBlock } from '../services/line-safety.js';
 
 const friends = new Hono<Env>();
 
@@ -34,11 +34,28 @@ const FRIEND_METADATA_KEY_MAX_LENGTH = 80;
 const FRIEND_METADATA_VALUE_MAX_LENGTH = 2000;
 const FRIEND_METADATA_MAX_KEYS = 50;
 const FRIEND_METADATA_MAX_BYTES = 16000;
+const FRIEND_METADATA_BULK_MAX_ROWS = 200;
 const FRIEND_MESSAGE_CONTENT_MAX_LENGTH = 50000;
 const FRIEND_ALT_TEXT_MAX_LENGTH = 400;
 const FRIEND_URL_MAX_LENGTH = 2048;
 const FRIEND_VISIBLE_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 const FRIEND_MESSAGE_TYPES = new Set(['text', 'image', 'flex']);
+const CUSTOMER_NUMBER_METADATA_KEYS = [
+  'customerNumber',
+  'customer_number',
+  'customerNo',
+  'customer_no',
+  'clientNumber',
+  'client_number',
+] as const;
+const CONTACT_NAME_METADATA_KEYS = [
+  'contactName',
+  'contact_name',
+  'personInCharge',
+  'person_in_charge',
+  'managerName',
+  'manager_name',
+] as const;
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -74,6 +91,10 @@ function manualLineSendFailureMessage(err: unknown): string {
     return `LINE送信に失敗しました。LINE APIでエラーが返されました (${status})。`;
   }
   return 'LINE送信に失敗しました。もう一度お試しください。';
+}
+
+function lineSafetyBlockedResponse(c: Context<Env>, block: LineSendSafetyBlock): Response {
+  return c.json({ success: false, error: block.message, lineSafety: block }, 423);
 }
 
 function clampLimit(raw: string | undefined, fallback = 50): number {
@@ -162,6 +183,74 @@ function parseMetadataPatch(raw: Record<string, unknown>): ValueResult<Record<st
   return { ok: true, value: normalized };
 }
 
+function normalizeDisplayNamePart(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  return '';
+}
+
+function readMetadataText(metadata: Record<string, unknown>, keys: readonly string[]): string {
+  for (const key of keys) {
+    const value = normalizeDisplayNamePart(metadata[key]);
+    if (value) return value;
+  }
+  return '';
+}
+
+function deriveFriendDisplayNameFromMetadata(metadata: Record<string, unknown>): string | null {
+  const customerNumber = readMetadataText(metadata, CUSTOMER_NUMBER_METADATA_KEYS);
+  const contactName = readMetadataText(metadata, CONTACT_NAME_METADATA_KEYS);
+  if (!customerNumber || !contactName) return null;
+  return `${customerNumber}_${contactName}`;
+}
+
+type MetadataBulkRow = {
+  friendId?: string;
+  lineUserId?: string;
+  metadata: Record<string, unknown>;
+};
+
+function parseMetadataBulkRows(raw: Record<string, unknown>): ValueResult<{ lineAccountId?: string; rows: MetadataBulkRow[] }> {
+  const lineAccountId = parseOptionalSafeId(raw.lineAccountId, 'line_account_id');
+  if (!lineAccountId.ok) return lineAccountId;
+  if (!Array.isArray(raw.rows) || raw.rows.length === 0 || raw.rows.length > FRIEND_METADATA_BULK_MAX_ROWS) {
+    return { ok: false, error: 'invalid_rows' };
+  }
+
+  const rows: MetadataBulkRow[] = [];
+  for (const item of raw.rows) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { ok: false, error: 'invalid_rows' };
+    }
+    const row = item as Record<string, unknown>;
+    const friendId = parseOptionalSafeId(row.friendId, 'friend_id');
+    if (!friendId.ok) return friendId;
+    const lineUserId = parseOptionalSafeId(row.lineUserId, 'line_user_id');
+    if (!lineUserId.ok) return lineUserId;
+    if (!friendId.value && !lineUserId.value) {
+      return { ok: false, error: 'invalid_rows' };
+    }
+    if (!row.metadata || typeof row.metadata !== 'object' || Array.isArray(row.metadata)) {
+      return { ok: false, error: 'invalid_metadata' };
+    }
+    const metadata = parseMetadataPatch(row.metadata as Record<string, unknown>);
+    if (!metadata.ok) return metadata;
+    rows.push({
+      ...(friendId.value ? { friendId: friendId.value } : {}),
+      ...(lineUserId.value ? { lineUserId: lineUserId.value } : {}),
+      metadata: metadata.value,
+    });
+  }
+  return {
+    ok: true,
+    value: {
+      ...(lineAccountId.value ? { lineAccountId: lineAccountId.value } : {}),
+      rows,
+    },
+  };
+}
+
 function isHttpsUrl(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > FRIEND_URL_MAX_LENGTH) return false;
   try {
@@ -227,16 +316,18 @@ function appendStaffFriendScope(
   c: { get: (key: 'staff') => SupportAccessStaff | undefined },
   conditions: string[],
   binds: unknown[],
-  friendIdExpression = 'f.id',
+  _friendIdExpression = 'f.id',
 ): void {
-  const visibility = supportFriendVisibilitySql(currentStaff(c), friendIdExpression);
-  if (!visibility.sql) return;
-  conditions.push(visibility.sql);
-  binds.push(...visibility.binds);
+  if (!isSecondaryOnlySupportStaff(currentStaff(c))) return;
+  conditions.push('(0 = 1)');
+  void binds;
 }
 
 async function ensureFriendAccess(c: Context<Env>, friendId: string): Promise<Response | null> {
-  if (await canAccessSupportFriend(c.env.DB, currentStaff(c), friendId)) return null;
+  if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+    return c.json({ success: false, error: 'Friend not found' }, 404);
+  }
+  if (await getFriendById(c.env.DB, friendId)) return null;
   return c.json({ success: false, error: 'Friend not found' }, 404);
 }
 
@@ -629,6 +720,72 @@ friends.get('/api/friends/ref-stats', requireRole('owner', 'admin'), async (c) =
   }
 });
 
+// POST /api/friends/metadata/bulk - update customer metadata in batches
+friends.post('/api/friends/metadata/bulk', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const body = await readJsonObject(c);
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+    const input = parseMetadataBulkRows(body.value);
+    if (!input.ok) return c.json({ success: false, error: input.error }, 400);
+
+    const db = c.env.DB;
+    const now = jstNow();
+    let updated = 0;
+    const notFound: Array<{ friendId?: string; lineUserId?: string }> = [];
+
+    for (const row of input.value.rows) {
+      const where = row.friendId
+        ? ['id = ?']
+        : ['line_user_id = ?'];
+      const binds: unknown[] = [row.friendId ?? row.lineUserId!];
+      if (input.value.lineAccountId) {
+        where.push('line_account_id = ?');
+        binds.push(input.value.lineAccountId);
+      }
+
+      const friend = await db
+        .prepare(`SELECT * FROM friends WHERE ${where.join(' AND ')}`)
+        .bind(...binds)
+        .first<DbFriend>();
+      if (!friend) {
+        notFound.push({
+          ...(row.friendId ? { friendId: row.friendId } : {}),
+          ...(row.lineUserId ? { lineUserId: row.lineUserId } : {}),
+        });
+        continue;
+      }
+
+      const existing = JSON.parse(friend.metadata || '{}') as Record<string, unknown>;
+      const merged = { ...existing, ...row.metadata };
+      const nextDisplayName = deriveFriendDisplayNameFromMetadata(merged);
+      if (nextDisplayName) {
+        await db
+          .prepare('UPDATE friends SET metadata = ?, display_name = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(merged), nextDisplayName, now, friend.id)
+          .run();
+      } else {
+        await db
+          .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+          .bind(JSON.stringify(merged), now, friend.id)
+          .run();
+      }
+      updated += 1;
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        requested: input.value.rows.length,
+        updated,
+        notFound,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/friends/metadata/bulk error: ${friendsRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 // GET /api/friends/:id - get single friend with tags
 friends.get('/api/friends/:id', async (c) => {
   try {
@@ -742,11 +899,19 @@ friends.put('/api/friends/:id/metadata', async (c) => {
     const existing = JSON.parse(friend.metadata || '{}');
     const merged = { ...existing, ...metadataPatch.value };
     const now = jstNow();
+    const nextDisplayName = deriveFriendDisplayNameFromMetadata(merged);
 
-    await db
-      .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
-      .bind(JSON.stringify(merged), now, friendId.value)
-      .run();
+    if (nextDisplayName) {
+      await db
+        .prepare('UPDATE friends SET metadata = ?, display_name = ?, updated_at = ? WHERE id = ?')
+        .bind(JSON.stringify(merged), nextDisplayName, now, friendId.value)
+        .run();
+    } else {
+      await db
+        .prepare('UPDATE friends SET metadata = ?, updated_at = ? WHERE id = ?')
+        .bind(JSON.stringify(merged), now, friendId.value)
+        .run();
+    }
 
     const updated = await getFriendById(db, friendId.value);
     const tags = await getFriendTags(db, friendId.value);
@@ -812,6 +977,8 @@ friends.post('/api/friends/:id/messages', async (c) => {
     if (!friend) {
       return c.json({ success: false, error: 'Friend not found' }, 404);
     }
+    const safetyBlock = await getLineSendSafetyBlock(db, friend.line_account_id);
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
 
     const { LineClient } = await import('@line-crm/line-sdk');
     // Resolve access token from friend's account (multi-account support)
@@ -842,16 +1009,17 @@ friends.post('/api/friends/:id/messages', async (c) => {
     }
 
     // Log outgoing message
+    const staff = currentStaff(c);
     const logId = crypto.randomUUID();
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'manual', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, sent_by_staff_id, sent_by_staff_name, created_at)
+         VALUES (?, ?, 'outgoing', ?, ?, NULL, NULL, 'manual', ?, ?, ?, ?)`,
       )
-      .bind(logId, friend.id, messageType, messageBody.value.content, friend.line_account_id ?? null, jstNow())
+      .bind(logId, friend.id, messageType, messageBody.value.content, friend.line_account_id ?? null, staff.id, staff.name, jstNow())
       .run();
 
-    return c.json({ success: true, data: { messageId: logId } });
+    return c.json({ success: true, data: { messageId: logId, sentByStaffId: staff.id, sentByStaffName: staff.name } });
   } catch (err) {
     console.error(`POST /api/friends/:id/messages error: ${friendsRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);

@@ -15,6 +15,7 @@ import {
 import type { LineClient } from '@line-crm/line-sdk';
 import type { Message } from '@line-crm/line-sdk';
 import { jitterDeliveryTime, addJitter, sleep } from './stealth.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from './line-safety.js';
 
 /**
  * Replace template variables in message content.
@@ -95,6 +96,7 @@ export async function resolveMetadata(
 const MAX_SENDS_PER_CRON = 40; // CF Free plan: 50 subrequests limit (margin for other jobs)
 
 function stepDeliveryErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
@@ -148,6 +150,16 @@ async function processSingleDelivery(
   if (!friend || !friend.is_following) {
     await completeFriendScenario(db, fs.id);
     return false;
+  }
+  const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
+  try {
+    await assertLineSendAllowed(db, friendAccountId);
+  } catch (err) {
+    await db
+      .prepare(`UPDATE friend_scenarios SET status = 'active', updated_at = ? WHERE id = ? AND status = 'delivering'`)
+      .bind(jstNow(), fs.id)
+      .run();
+    throw err;
   }
 
   // Fetch scenario row for delivery_mode (needed by computeNextDeliveryAt below)
@@ -232,7 +244,6 @@ async function processSingleDelivery(
   const message = buildMessage(trackedType, trackedContent);
   // Resolve the correct LINE client for this friend's account
   let deliveryClient = lineClient;
-  const friendAccountId = (friend as unknown as Record<string, string | null>).line_account_id;
   if (friendAccountId) {
     const { getLineAccountById } = await import('@line-crm/db');
     const account = await getLineAccountById(db, friendAccountId);

@@ -44,11 +44,9 @@ function healthRouteErrorKind(err: unknown): string {
   return typeof err;
 }
 
-health.use('/api/accounts/*', requireRole('owner', 'admin'));
-
 // ========== アカウントヘルス ==========
 
-health.get('/api/accounts/:id/health', async (c) => {
+health.get('/api/accounts/:id/health', requireRole('owner', 'admin'), async (c) => {
   try {
     const lineAccountId = parseVisibleId(c.req.param('id'), 'line_account_id');
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
@@ -79,7 +77,7 @@ health.get('/api/accounts/:id/health', async (c) => {
 
 // ========== アカウント移行 ==========
 
-health.get('/api/accounts/migrations', async (c) => {
+health.get('/api/accounts/migrations', requireRole('owner', 'admin'), async (c) => {
   try {
     const items = await getAccountMigrations(c.env.DB);
     return c.json({
@@ -101,7 +99,7 @@ health.get('/api/accounts/migrations', async (c) => {
   }
 });
 
-health.post('/api/accounts/:id/migrate', async (c) => {
+health.post('/api/accounts/:id/migrate', requireRole('owner'), async (c) => {
   try {
     const fromAccountId = parseVisibleId(c.req.param('id'), 'from_account_id');
     if (!fromAccountId.ok) return c.json({ success: false, error: fromAccountId.error }, 400);
@@ -147,7 +145,7 @@ health.post('/api/accounts/:id/migrate', async (c) => {
   }
 });
 
-health.get('/api/accounts/migrations/:migrationId', async (c) => {
+health.get('/api/accounts/migrations/:migrationId', requireRole('owner', 'admin'), async (c) => {
   try {
     const migrationId = parseVisibleId(c.req.param('migrationId'), 'migration_id');
     if (!migrationId.ok) return c.json({ success: false, error: migrationId.error }, 400);

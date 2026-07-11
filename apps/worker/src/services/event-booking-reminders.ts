@@ -9,6 +9,7 @@ import type {
   EventBookingNotificationSender,
   EventNotificationKind,
 } from './event-booking-notifier.js';
+import { getLineSendSafetyBlock } from './line-safety.js';
 
 export interface ComputedReminder {
   kind: EventReminderKind;
@@ -105,6 +106,7 @@ interface DueEventReminderRow {
   starts_at: string;
   channel_access_token: string;
   line_user_id: string;
+  line_account_id: string;
   reminder_hours_before: number | null;
 }
 
@@ -149,7 +151,8 @@ export async function processDueEventReminders(
               e.name AS event_name, e.venue_name, e.venue_url, e.reminder_hours_before,
               s.starts_at,
               la.channel_access_token,
-              f.line_user_id
+              f.line_user_id,
+              b.line_account_id
          FROM event_booking_reminders r
          INNER JOIN event_bookings b ON b.id = r.booking_id
          INNER JOIN events e ON e.id = b.event_id
@@ -168,6 +171,11 @@ export async function processDueEventReminders(
   let sent = 0;
   let failed = 0;
   for (const row of due.results ?? []) {
+    const safetyBlock = await getLineSendSafetyBlock(db, row.line_account_id);
+    if (safetyBlock) {
+      console.warn('Event booking reminder blocked by LINE safety mode');
+      continue;
+    }
     // Optimistic claim: bump retry_count CAS-style on (id, retry_count).
     // If two cron invocations fetched the same row, only one of them wins
     // this UPDATE; the other gets changes=0 and skips. retry_count thus

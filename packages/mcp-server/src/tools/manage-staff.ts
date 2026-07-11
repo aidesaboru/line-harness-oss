@@ -12,7 +12,7 @@ export function registerManageStaff(server: McpServer): void {
         .describe("Action to perform"),
       name: z.string().optional().describe("Staff name (for 'create' action)"),
       email: z.string().nullable().optional().describe("Staff email (optional, null to clear)"),
-      role: z.enum(["admin", "staff"]).optional().describe("Staff role (for 'create'/'update')"),
+      role: z.enum(["admin", "staff", "secondary"]).optional().describe("Staff role (for 'create'/'update')"),
       staffId: z.string().optional().describe("Staff ID (for 'get','update','delete','regenerate_key')"),
       isActive: z.boolean().optional().describe("Activate/deactivate (for 'update')"),
     },

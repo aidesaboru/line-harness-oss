@@ -147,7 +147,7 @@ describe('support current-list visibility', () => {
 
   it('shows completed cases when the selected hidden case is already resolved', () => {
     expect(getOutsideCurrentListAction('resolved')).toEqual({
-      label: '完了案件を表示',
+      label: '完了チケットを表示',
       statusFilter: 'resolved',
       queueFilter: 'all',
       caseFocus: 'all',
@@ -177,17 +177,17 @@ describe('support case URL state', () => {
 
 describe('support role permissions', () => {
   it.each([
-    ['owner', true],
-    ['admin', true],
-    ['staff', false],
-    ['', false],
-    ['manager', false],
-    [null, false],
-    [undefined, false],
-  ] as const)('maps management controls for role %s', (role, canManage) => {
+    ['owner', true, true],
+    ['admin', true, true],
+    ['staff', true, false],
+    ['', false, false],
+    ['manager', false, false],
+    [null, false, false],
+    [undefined, false, false],
+  ] as const)('maps management controls for role %s', (role, canCreate, canManage) => {
     const permissions = getSupportRolePermissions(role)
 
-    expect(permissions.canCreateCases).toBe(canManage)
+    expect(permissions.canCreateCases).toBe(canCreate)
     expect(permissions.canEditCaseRouting).toBe(canManage)
     expect(permissions.canManageManuals).toBe(canManage)
     expect(permissions.canEditCaseWork).toBe(true)
@@ -204,13 +204,15 @@ describe('support identity issues', () => {
     expect(getSupportIdentityIssue({ ready: true, role: '', staffName: '山田' })).toContain('ログイン権限')
   })
 
-  it('requires staff users to have a name for visibility checks', () => {
+  it('requires scoped staff users to have a name for visibility checks', () => {
     expect(getSupportIdentityIssue({ ready: true, role: 'staff', staffName: '  ' })).toContain('スタッフ名')
+    expect(getSupportIdentityIssue({ ready: true, role: 'secondary', staffName: '  ' })).toContain('スタッフ名')
   })
 
-  it('allows owner and named staff identities', () => {
+  it('allows owner and named scoped staff identities', () => {
     expect(getSupportIdentityIssue({ ready: true, role: 'owner', staffName: '' })).toBeNull()
     expect(getSupportIdentityIssue({ ready: true, role: 'staff', staffName: '田島' })).toBeNull()
+    expect(getSupportIdentityIssue({ ready: true, role: 'secondary', staffName: '松山' })).toBeNull()
   })
 })
 
@@ -232,7 +234,7 @@ describe('support workspace data loading gate', () => {
     expect(canLoadSupportWorkspaceData({
       selectedAccountId: 'acc-1',
       staffIdentityReady: true,
-      identityIssue: 'staff権限の表示範囲を判定できません。',
+      identityIssue: 'スタッフ名がないため表示範囲を判定できません。',
     })).toBe(false)
   })
 
@@ -255,7 +257,7 @@ describe('support case empty states', () => {
       caseFocus: 'all',
       search: '',
     })).toMatchObject({
-      title: '表示できる案件はありません',
+      title: '表示できるチケットはありません',
       description: expect.stringContaining('owner/admin'),
     })
   })
@@ -269,8 +271,8 @@ describe('support case empty states', () => {
       caseFocus: 'all',
       search: '',
     })).toMatchObject({
-      title: '未完了の案件はありません',
-      description: expect.stringContaining('チャット画面から案件化'),
+      title: '未完了のチケットはありません',
+      description: expect.stringContaining('チャット画面からチケット化'),
     })
   })
 
@@ -283,13 +285,13 @@ describe('support case empty states', () => {
       caseFocus: 'all',
       search: ' 報酬 ',
     })).toEqual({
-      title: '検索条件に合う案件はありません',
-      description: '件名、顧客名、要約、内部メモの言葉を変えて検索してください。',
+      title: '検索条件に合うチケットはありません',
+      description: '件名、顧客名、問い合わせ内容、内部メモの言葉を変えて検索してください。',
       actionLabel: '絞り込みをリセット',
     })
   })
 
-  it('shows queue-specific guidance for stale and my-escalation queues', () => {
+  it('shows queue-specific guidance for stale and action-owner queues', () => {
     expect(getSupportCaseListEmptyState({
       role: 'admin',
       hasActiveFilters: true,
@@ -297,16 +299,34 @@ describe('support case empty states', () => {
       queueFilter: 'all',
       caseFocus: 'stale',
       search: '',
-    }).title).toBe('24h滞留している案件はありません')
+    }).title).toBe('24h滞留しているチケットはありません')
 
     expect(getSupportCaseListEmptyState({
       role: 'staff',
       hasActiveFilters: true,
       statusFilter: 'all',
-      queueFilter: 'my_escalations',
+      queueFilter: 'escalated',
       caseFocus: 'all',
       search: '',
-    }).title).toBe('自分宛エスカレ案件はありません')
+    }).title).toBe('二次対応が確認中のチケットはありません')
+
+    expect(getSupportCaseListEmptyState({
+      role: 'staff',
+      hasActiveFilters: true,
+      statusFilter: 'all',
+      queueFilter: 'primary_action',
+      caseFocus: 'all',
+      search: '',
+    }).title).toBe('一次対応が動くチケットはありません')
+
+    expect(getSupportCaseListEmptyState({
+      role: 'staff',
+      hasActiveFilters: true,
+      statusFilter: 'all',
+      queueFilter: 'secondary_answered',
+      caseFocus: 'all',
+      search: '',
+    }).title).toBe('二次対応回答済みのチケットはありません')
   })
 })
 
@@ -332,7 +352,7 @@ describe('support error messages', () => {
   })
 
   it('turns missing and conflict status errors into recovery guidance', () => {
-    expect(formatSupportErrorMessage(new Error('API error: 404'), '案件詳細の読み込みに失敗しました')).toContain('最新データ')
+    expect(formatSupportErrorMessage(new Error('API error: 404'), 'チケット詳細の読み込みに失敗しました')).toContain('最新データ')
     expect(formatSupportErrorMessage(new Error('API error: 409'), '保存に失敗しました')).toContain('再読み込み')
   })
 
@@ -411,8 +431,8 @@ describe('support case creation validation', () => {
       {
         key: 'create_case_source',
         severity: 'error',
-        message: 'LINE会話を選ぶか、問い合わせ要約を入力してください。',
-        fieldLabel: 'LINE会話 / 問い合わせ要約',
+        message: 'LINE会話を選ぶか、問い合わせ内容を入力してください。',
+        fieldLabel: 'LINE会話 / 問い合わせ内容',
         blocking: true,
       },
     ])

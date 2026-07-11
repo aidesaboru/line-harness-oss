@@ -15,7 +15,14 @@ import type { SegmentCondition } from '../services/segment-query.js';
 import { getLineAccountById } from '@line-crm/db';
 import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
+import { appendBroadcastSafetyFilter, broadcastSafetyWhere } from '../services/broadcast-safety.js';
 import { supportFriendVisibilitySql } from '../services/support-access.js';
+import {
+  getFrozenLineAccountIds,
+  getLineSendSafetyBlock,
+  isLineSafetyBlockedError,
+  type LineSendSafetyBlock,
+} from '../services/line-safety.js';
 import { currentSupportStaff } from './support-friend-access.js';
 
 const broadcasts = new Hono<Env>();
@@ -160,11 +167,36 @@ function broadcastLineErrorStatus(err: unknown): number | null {
 }
 
 function broadcastRouteErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   const status = broadcastLineErrorStatus(err);
   if (status != null) return `line_http_status_${status}`;
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function lineSafetyBlockedResponse(c: Context<Env>, block: LineSendSafetyBlock): Response {
+  return c.json({ success: false, error: block.message, lineSafety: block }, 423);
+}
+
+function lineSafetyBlockedAccountsResponse(c: Context<Env>, blocks: LineSendSafetyBlock[]): Response {
+  const first = blocks[0];
+  return c.json({
+    success: false,
+    error: first?.message ?? 'LINE送信セーフティ停止中です。緊急コントロールで解除するまで送信できません。',
+    lineSafety: first ?? null,
+    lineSafetyBlocks: blocks,
+  }, 423);
+}
+
+async function ensureBroadcastLineSafety(c: Context<Env>, broadcast: DbBroadcast): Promise<Response | null> {
+  const raw = broadcast as unknown as Record<string, unknown>;
+  const accountIds = broadcast.target_type === 'multi-account-dedup'
+    ? parseJsonArray(raw.account_ids) ?? []
+    : [raw.line_account_id as string | null | undefined];
+  const blocks = await getFrozenLineAccountIds(c.env.DB, accountIds);
+  if (blocks.length === 0) return null;
+  return lineSafetyBlockedAccountsResponse(c, blocks);
 }
 
 function isHttpsUrl(value: unknown): value is string {
@@ -388,6 +420,39 @@ function parseJsonArray(s: unknown): string[] | null {
   }
 }
 
+async function countSafeBroadcastRecipients(
+  db: D1Database,
+  input: { targetType: 'all' | 'tag'; accountId?: string | null; targetTagId?: string | null },
+): Promise<number> {
+  const binds: unknown[] = [];
+  let sql: string;
+  const accountFilter = input.accountId ? 'AND f.line_account_id = ?' : '';
+
+  if (input.targetType === 'tag') {
+    if (!input.targetTagId) return 0;
+    sql = `
+      SELECT COUNT(*) AS cnt
+      FROM friends f
+      INNER JOIN friend_tags ft ON ft.friend_id = f.id
+      WHERE ft.tag_id = ?
+        AND ${broadcastSafetyWhere('f')}
+        ${accountFilter}
+    `;
+    binds.push(input.targetTagId);
+  } else {
+    sql = `
+      SELECT COUNT(*) AS cnt
+      FROM friends f
+      WHERE ${broadcastSafetyWhere('f')}
+        ${accountFilter}
+    `;
+  }
+
+  if (input.accountId) binds.push(input.accountId);
+  const row = await db.prepare(sql).bind(...binds).first<{ cnt: number }>();
+  return row?.cnt ?? 0;
+}
+
 function serializeBroadcast(row: DbBroadcast) {
   const r = row as unknown as Record<string, unknown>;
   return {
@@ -484,23 +549,16 @@ broadcasts.get('/api/broadcasts/:id/preview-count', requireRole('owner', 'admin'
       count = active;
       perAccount = breakdown;
     } else if (broadcast.target_type === 'tag' && broadcast.target_tag_id) {
-      // 注: ここは inline send パス (broadcast.ts:61 getFriendsByTag) が
-      // line_account_id でフィルタしないので、preview もアカウント横断で数える。
-      // 実際の送信先と modal 表示を一致させるための整合性。
-      const row = await c.env.DB.prepare(
-        `SELECT COUNT(*) AS cnt FROM friends f
-           INNER JOIN friend_tags ft ON ft.friend_id = f.id
-           WHERE ft.tag_id = ? AND f.is_following = 1`,
-      ).bind(broadcast.target_tag_id).first<{ cnt: number }>();
-      count = row?.cnt ?? 0;
+      count = await countSafeBroadcastRecipients(c.env.DB, {
+        targetType: 'tag',
+        targetTagId: broadcast.target_tag_id,
+        accountId: (raw.line_account_id as string | null) || null,
+      });
     } else if (broadcast.target_type === 'all') {
-      const accountId = (raw.line_account_id as string | null) || null;
-      const sql = accountId
-        ? `SELECT COUNT(*) AS cnt FROM friends WHERE is_following = 1 AND line_account_id = ?`
-        : `SELECT COUNT(*) AS cnt FROM friends WHERE is_following = 1`;
-      const binds: unknown[] = accountId ? [accountId] : [];
-      const row = await c.env.DB.prepare(sql).bind(...binds).first<{ cnt: number }>();
-      count = row?.cnt ?? 0;
+      count = await countSafeBroadcastRecipients(c.env.DB, {
+        targetType: 'all',
+        accountId: (raw.line_account_id as string | null) || null,
+      });
     }
 
     return c.json({ success: true, data: { count, perAccount } });
@@ -737,6 +795,8 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
+    const safetyResponse = await ensureBroadcastLineSafety(c, existing);
+    if (safetyResponse) return safetyResponse;
 
     // multi-account-dedup は常にキュー方式 — Worker の30秒制限を超えるため
     if (existing.target_type === 'multi-account-dedup') {
@@ -800,18 +860,42 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
       }, 202);
     }
 
+    // target_type='all' で対象が多い場合はキュー方式
+    if (existing.target_type === 'all') {
+      const rawExisting = existing as unknown as Record<string, unknown>;
+      const projectedCount = await countSafeBroadcastRecipients(c.env.DB, {
+        targetType: 'all',
+        accountId: (rawExisting.line_account_id as string | null) || null,
+      });
+
+      if (projectedCount > 500) {
+        const allMarker = JSON.stringify({ operator: 'AND', rules: [] });
+        const lockResult = await c.env.DB.prepare(
+          `UPDATE broadcasts SET status = 'sending', batch_offset = 0, total_count = ?, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
+        ).bind(projectedCount, allMarker, id.value).run();
+        if (!lockResult.meta.changes) {
+          return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
+        }
+        const result = await getBroadcastById(c.env.DB, id.value);
+        return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
+      }
+    }
+
     // target_type='tag' で対象が多い場合はキュー方式
     if (existing.target_type === 'tag' && existing.target_tag_id) {
-      const { getFriendsByTag } = await import('@line-crm/db');
-      const friends = await getFriendsByTag(c.env.DB, existing.target_tag_id);
-      const followingCount = friends.filter(f => f.is_following).length;
+      const rawExisting = existing as unknown as Record<string, unknown>;
+      const followingCount = await countSafeBroadcastRecipients(c.env.DB, {
+        targetType: 'tag',
+        targetTagId: existing.target_tag_id,
+        accountId: (rawExisting.line_account_id as string | null) || null,
+      });
 
       if (followingCount > 500) {
         // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
         const tagMarker = JSON.stringify({ operator: 'AND', rules: [{ type: 'tag_exists', value: existing.target_tag_id }] });
         const lockResult = await c.env.DB.prepare(
-          `UPDATE broadcasts SET status = 'sending', batch_offset = 0, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
-        ).bind(tagMarker, id.value).run();
+          `UPDATE broadcasts SET status = 'sending', batch_offset = 0, total_count = ?, segment_conditions = ? WHERE id = ? AND status IN ('draft','scheduled')`
+        ).bind(followingCount, tagMarker, id.value).run();
         if (!lockResult.meta.changes) {
           return c.json({ success: false, error: 'Broadcast is already sent or sending' }, 409);
         }
@@ -869,6 +953,7 @@ broadcasts.post('/api/broadcasts/:id/send', requireRole('owner', 'admin'), async
     const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null });
   } catch (err) {
+    if (isLineSafetyBlockedError(err)) return lineSafetyBlockedResponse(c, err.block);
     console.error(`POST /api/broadcasts/:id/send error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
@@ -888,6 +973,8 @@ broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'
     if (!existing) {
       return c.json({ success: false, error: 'Broadcast not found' }, 404);
     }
+    const safetyResponse = await ensureBroadcastLineSafety(c, existing);
+    if (safetyResponse) return safetyResponse;
 
     // Atomic lock: status='draft'|'scheduled' のときだけ status='sending' に遷移
     const lockResult = await c.env.DB.prepare(
@@ -900,6 +987,7 @@ broadcasts.post('/api/broadcasts/:id/send-segment', requireRole('owner', 'admin'
     const result = await getBroadcastById(c.env.DB, id.value);
     return c.json({ success: true, data: result ? serializeBroadcast(result) : null, queued: true, message: 'Broadcast queued for batch processing by Cron' }, 202);
   } catch (err) {
+    if (isLineSafetyBlockedError(err)) return lineSafetyBlockedResponse(c, err.block);
     console.error(`POST /api/broadcasts/:id/send-segment error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
@@ -1119,6 +1207,8 @@ broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), 
     const raw = broadcast as unknown as Record<string, unknown>;
     const accountId = raw.line_account_id as string | null;
     if (!accountId) return c.json({ success: false, error: 'Broadcast has no line_account_id' }, 400);
+    const safetyBlock = await getLineSendSafetyBlock(c.env.DB, accountId);
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
 
     // Get test recipients
     const setting = await c.env.DB.prepare(
@@ -1178,6 +1268,7 @@ broadcasts.post('/api/broadcasts/:id/test-send', requireRole('owner', 'admin'), 
 
     return c.json({ success: true, sent, failed });
   } catch (err) {
+    if (isLineSafetyBlockedError(err)) return lineSafetyBlockedResponse(c, err.block);
     console.error(`POST /api/broadcasts/:id/test-send error: ${broadcastRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
@@ -1214,14 +1305,14 @@ broadcasts.post('/api/segments/count', requireRole('owner', 'admin'), async (c) 
     const { buildSegmentQuery } = await import('../services/segment-query.js');
     const { sql, bindings } = buildSegmentQuery(conditions.value);
 
-    let accountSql = sql;
+    let accountSql = appendBroadcastSafetyFilter(sql);
     const accountBindings = [...bindings];
     if (accountId.value) {
-      accountSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      accountSql = accountSql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
       accountBindings.unshift(accountId.value);
     }
 
-    const countSql = accountSql.replace(/^SELECT .+ FROM/, 'SELECT COUNT(*) as count FROM');
+    const countSql = accountSql.replace(/^SELECT\s+f\.id,\s*f\.line_user_id\s+FROM/i, 'SELECT COUNT(*) as count FROM');
     const result = await c.env.DB.prepare(countSql).bind(...accountBindings).first<{ count: number }>();
 
     return c.json({ success: true, count: result?.count ?? 0 });

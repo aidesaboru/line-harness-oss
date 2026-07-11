@@ -32,6 +32,7 @@ interface ManualPanelProps {
   onCreateManual: (input: ManualEditorInput) => Promise<boolean>
   onUpdateManual: (manual: SupportManual, input: ManualEditorInput) => Promise<boolean>
   onArchiveManual: (manual: SupportManual) => Promise<boolean>
+  showLinkActions?: boolean
 }
 
 const emptyManualInput: ManualEditorInput = {
@@ -99,6 +100,7 @@ export default function ManualPanel({
   onCreateManual,
   onUpdateManual,
   onArchiveManual,
+  showLinkActions = true,
 }: ManualPanelProps) {
   const [editing, setEditing] = useState<SupportManual | null>(null)
   const [draft, setDraft] = useState<ManualEditorInput>(emptyManualInput)
@@ -267,7 +269,7 @@ export default function ManualPanel({
         </div>
       )}
 
-      {canLink && linkedManuals.length > 0 && (
+      {showLinkActions && canLink && linkedManuals.length > 0 && (
         <div className="mt-3 rounded-lg border border-green-200 bg-green-50/50 p-2.5">
           <p className="text-[11px] font-semibold text-green-800">この案件に紐付け済み</p>
           <ul className="mt-1.5 space-y-1">
@@ -353,18 +355,20 @@ export default function ManualPanel({
                     {manual.owner || '担当未設定'}
                   </p>
                 </div>
-                <button
-                  onClick={() => onLink(manual)}
-                  disabled={!canLink || saving || linked}
-                  title={!canLink ? '案件を選択すると紐付けできます' : undefined}
-                  className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                    linked
-                      ? 'border border-green-200 bg-green-50 text-green-700'
-                      : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50'
-                  }`}
-                >
-                  {linked ? '紐付済' : '紐付け'}
-                </button>
+                {showLinkActions && (
+                  <button
+                    onClick={() => onLink(manual)}
+                    disabled={!canLink || saving || linked}
+                    title={!canLink ? 'チケットを選択すると紐付けできます' : undefined}
+                    className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                      linked
+                        ? 'border border-green-200 bg-green-50 text-green-700'
+                        : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                    }`}
+                  >
+                    {linked ? '紐付済' : '紐付け'}
+                  </button>
+                )}
               </div>
               <ManualBody body={manual.body} />
               {manual.url && (

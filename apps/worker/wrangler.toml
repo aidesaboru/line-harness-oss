@@ -24,6 +24,10 @@ binding = "DB"
 database_name = "ec-owner-line-harness-db"
 database_id = "6df8b286-0414-4e4e-b656-f3ce5257df61"
 
+[[kv_namespaces]]
+binding = "FILES"
+id = "d0ff6d19c2c9470fa1663d7155b78203"
+
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -46,6 +50,8 @@ CF_ACCOUNT_ID = "fd23c99ff238478f219c521454f26f43"
 LINE_CAPTURE_ONLY = "1"
 # Allow only explicitly triggered operator chat sends from the CRM.
 LINE_MANUAL_SEND_ENABLED = "1"
+WEB_PUSH_VAPID_PUBLIC_KEY = "BEZxfIkrOVdNRX6oDtkFXBAwP1MFklOgFoIN2Cx5-Xy92sbDRTtmASeE52jD9xSmoRvjmVYMj6GoJmsEGRyDdmY"
+WEB_PUSH_CONTACT = "https://ec-owner-line-harness-admin.pages.dev"
 
 # ═══════════════════════════════════════════════════════════════
 # 本番環境

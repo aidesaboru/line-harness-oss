@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import Link from 'next/link'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
-import { ApiRequestError, api, fetchApi, type ChatMessageCursor } from '@/lib/api'
+import { ApiRequestError, api, buildApiUrl, fetchApi, type ChatActiveSupportCase, type ChatInternalMessage, type ChatMessageCursor, type ChatTypingParticipant } from '@/lib/api'
 import { messageTypePreview } from '@/lib/message-type-label'
 import {
   buildSupportChatRecoveryNotice,
@@ -16,10 +17,10 @@ import {
 } from '@/lib/support-chat-draft'
 import { useAccount } from '@/contexts/account-context'
 import Header from '@/components/layout/header'
-import CcPromptButton from '@/components/cc-prompt-button'
 import FlexPreviewComponent from '@/components/flex-preview'
 import FriendInfoSidebar from '@/components/chats/friend-info-sidebar'
-import ImageUploader, { type ImageUploaderValue } from '@/components/shared/image-uploader'
+import MentionText from '@/components/shared/mention-text'
+import type { ImageUploaderValue } from '@/components/shared/image-uploader'
 
 interface Chat {
   id: string
@@ -35,6 +36,7 @@ interface Chat {
   lastMessageType: string | null
   createdAt: string
   updatedAt: string
+  activeSupportCase?: ChatActiveSupportCase | null
 }
 
 interface ChatMessage {
@@ -43,6 +45,14 @@ interface ChatMessage {
   messageType: string
   content: string
   source?: string | null
+  canQuote?: boolean
+  quotedMessageId?: string | null
+  markedAsReadAt?: string | null
+  markedAsReadBy?: string | null
+  deletedAt?: string | null
+  deletedReason?: string | null
+  sentByStaffId?: string | null
+  sentByStaffName?: string | null
   createdAt: string
 }
 
@@ -52,17 +62,83 @@ interface ChatDetail extends Chat {
   messages?: ChatMessage[]
   hasMoreMessages?: boolean
   nextMessagesBefore?: ChatMessageCursor | null
+  internalMessages?: ChatInternalMessage[]
+  typingParticipants?: ChatTypingParticipant[]
+  activeSupportCase?: ChatActiveSupportCase | null
 }
 
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
 type ChatSortMode = 'recent' | 'oldest' | 'stale' | 'unanswered'
+type PendingChatAttachment = ImageUploaderValue | {
+  mode: 'pdf-link'
+  url: string
+  fileName: string
+  mimeType: string
+  size: number
+}
 
 const CHAT_STALE_MS = 24 * 60 * 60 * 1000
+const CHAT_REALTIME_POLL_MS = 5 * 1000
+const PDF_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+const PDF_UPLOAD_MAX_LABEL = '25MB'
+const FILE_UPLOAD_ERROR_MESSAGE = 'ファイルのアップロードに失敗しました。'
+const internalReactionEmojis = ['👍', '🙏', '✅', '👀', '❤️']
+const CHAT_SEARCH_DEBOUNCE_MS = 250
+
+function fileUploadErrorMessage(error: unknown): string {
+  if (error instanceof ApiRequestError) {
+    if (error.apiError) return error.apiError
+    if (error.status === 413) return `PDFは${PDF_UPLOAD_MAX_LABEL}以下にしてください。`
+  }
+  return FILE_UPLOAD_ERROR_MESSAGE
+}
 
 const statusConfig: Record<Chat['status'], { label: string; className: string }> = {
   unread: { label: '未読', className: 'bg-red-100 text-red-700' },
   in_progress: { label: '対応中', className: 'bg-yellow-100 text-yellow-700' },
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
+}
+
+function activeSupportCaseBadge(supportCase?: ChatActiveSupportCase | null): {
+  label: string
+  className: string
+  description: string
+} | null {
+  if (!supportCase) return null
+  if (supportCase.status === 'resolved') return null
+  if (supportCase.status === 'customer_reply') {
+    return {
+      label: '顧客返信待ち',
+      className: 'border-blue-200 bg-blue-50 text-blue-700',
+      description: '顧客へ返信済みで、反応待ちのチケットがあります',
+    }
+  }
+  if (supportCase.status === 'secondary_answered' || supportCase.latestEscalationStatus === 'answered') {
+    return {
+      label: '二次回答済み',
+      className: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+      description: '二次対応者から回答が入っています',
+    }
+  }
+  if (supportCase.status === 'waiting_primary') {
+    return {
+      label: '一次確認中',
+      className: 'border-amber-200 bg-amber-50 text-amber-700',
+      description: '一次対応者側で追加確認が必要です',
+    }
+  }
+  if (supportCase.latestEscalationStatus === 'pending') {
+    return {
+      label: '二次対応待ち',
+      className: 'border-purple-200 bg-purple-50 text-purple-700',
+      description: '二次対応者の回答待ちです',
+    }
+  }
+  return {
+    label: '二次対応中',
+    className: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+    description: '二次対応に上がっているチケットがあります',
+  }
 }
 
 const statusFilters: { key: StatusFilter; label: string }[] = [
@@ -78,11 +154,6 @@ const sortOptions: { value: ChatSortMode; label: string }[] = [
   { value: 'stale', label: '24時間超過' },
   { value: 'unanswered', label: '未対応優先' },
 ]
-
-const SHOW_LOADING_PREF_KEY = 'lh_chat_show_loading_indicator'
-const LOADING_SECONDS_PREF_KEY = 'lh_chat_loading_seconds'
-const MARK_AS_READ_ON_SEND_PREF_KEY = 'lh_chat_mark_as_read_on_send'
-const LOADING_REFRESH_INTERVAL_MS = 4000
 
 function StickerMessageImage({ content }: { content: string }) {
   const [failed, setFailed] = useState(false)
@@ -140,7 +211,7 @@ type ChatFailureKind =
   | 'image-send'
   | 'text-send'
   | 'status'
-  | 'notes'
+  | 'internal-chat'
 
 function chatFailureMessage(kind: ChatFailureKind): string {
   switch (kind) {
@@ -160,8 +231,8 @@ function chatFailureMessage(kind: ChatFailureKind): string {
       return 'メッセージの送信に失敗しました。もう一度お試しください。'
     case 'status':
       return 'ステータスの更新に失敗しました。もう一度お試しください。'
-    case 'notes':
-      return 'メモの保存に失敗しました。もう一度お試しください。'
+    case 'internal-chat':
+      return '社内チャットの投稿に失敗しました。もう一度お試しください。'
   }
 }
 
@@ -195,6 +266,8 @@ function buildEmptyChatDetailFromFriend(friend: {
     messages: [],
     hasMoreMessages: false,
     nextMessagesBefore: null,
+    internalMessages: [],
+    activeSupportCase: null,
   }
 }
 
@@ -214,6 +287,32 @@ function FlameIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
   )
 }
 
+function PaperclipIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  )
+}
+
+function XIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  )
+}
+
+function SearchIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
+
 function markAsReadFailureMessage(result?: { requested: boolean; marked: boolean; reason: string | null }): string {
   if (!result?.requested || result.marked) return ''
   if (result.reason === 'no_token') {
@@ -222,9 +321,183 @@ function markAsReadFailureMessage(result?: { requested: boolean; marked: boolean
   return '送信は完了しましたが、LINE公式側の既読化に失敗しました。'
 }
 
-function chatMessageSourceLabel(source?: string | null): string {
-  if (source === 'line_official') return 'LINE公式'
-  return ''
+function markAsReadOnlyFailureMessage(result?: { requested: boolean; marked: boolean; reason: string | null }): string {
+  if (!result?.requested || result.marked) return ''
+  if (result.reason === 'no_token') {
+    return '既読化に必要な情報がまだ保存されていません。次回以降の受信メッセージから既読化できます。'
+  }
+  return '既読化に失敗しました。時間を置いてもう一度お試しください。'
+}
+
+type ChatMediaPreview = {
+  kind: 'image' | 'pdf' | 'file' | 'video' | 'audio'
+  url: string
+  previewUrl?: string
+  label: string
+  description?: string
+}
+
+function safeHttpUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function safeMediaUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  if (trimmed.startsWith('/api/') || trimmed.startsWith('/images/')) return buildApiUrl(trimmed)
+  return safeHttpUrl(trimmed)
+}
+
+function contentString(parsed: Record<string, unknown> | null, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = parsed?.[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+function contentNumber(parsed: Record<string, unknown> | null, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = parsed?.[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  }
+  return null
+}
+
+function formatFileSize(size: number | null): string | null {
+  if (size == null || size < 0) return null
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function lineMediaUrlFromLog(parsed: Record<string, unknown> | null, logId?: string): string | null {
+  const explicitUrl =
+    safeMediaUrl(parsed?.contentUrl) ??
+    safeMediaUrl(parsed?.content_url) ??
+    safeMediaUrl(parsed?.url) ??
+    safeMediaUrl(parsed?.downloadUrl) ??
+    safeMediaUrl(parsed?.download_url)
+  if (explicitUrl) return explicitUrl
+
+  const lineMessageId = contentString(parsed, ['lineMessageId', 'line_message_id', 'messageId', 'message_id'])
+  if (!lineMessageId || !logId) return null
+  return buildApiUrl(`/api/chats/messages/${encodeURIComponent(logId)}/media`)
+}
+
+function parseChatMediaPreview(messageType: string, content: string, logId?: string): ChatMediaPreview | null {
+  let parsed: Record<string, unknown> | null = null
+  try {
+    parsed = JSON.parse(content) as Record<string, unknown>
+  } catch {
+    parsed = null
+  }
+
+  if (messageType === 'image') {
+    const originalUrl =
+      safeMediaUrl(parsed?.originalContentUrl) ??
+      safeMediaUrl(parsed?.original_content_url) ??
+      lineMediaUrlFromLog(parsed, logId)
+    const previewUrl =
+      safeMediaUrl(parsed?.previewImageUrl) ??
+      safeMediaUrl(parsed?.preview_image_url) ??
+      originalUrl
+    const label = contentString(parsed, ['fileName', 'filename', 'name']) ?? 'LINE画像'
+    if (!originalUrl) return null
+    return { kind: 'image', url: originalUrl, previewUrl: previewUrl ?? originalUrl, label }
+  }
+
+  if (messageType === 'file' || messageType === 'video' || messageType === 'audio') {
+    const url = lineMediaUrlFromLog(parsed, logId)
+    const label =
+      contentString(parsed, ['fileName', 'filename', 'name']) ??
+      (messageType === 'video' ? '動画' : messageType === 'audio' ? '音声' : 'ファイル')
+    if (!url) return null
+    const mimeType = contentString(parsed, ['mimeType', 'mime_type', 'contentType', 'content_type'])
+    const fileSize = formatFileSize(contentNumber(parsed, ['fileSize', 'file_size', 'size']))
+    const isPdf = mimeType === 'application/pdf' || /\.pdf(?:$|[?#])/i.test(label) || /\.pdf(?:$|[?#])/i.test(url)
+    const kind = isPdf ? 'pdf' : messageType === 'video' ? 'video' : messageType === 'audio' ? 'audio' : 'file'
+    const description = [isPdf ? 'PDF' : messageType === 'video' ? '動画' : messageType === 'audio' ? '音声' : 'ファイル', fileSize]
+      .filter(Boolean)
+      .join(' / ')
+    return { kind, url, label, description }
+  }
+
+  return null
+}
+
+function parseLocationPreview(content: string): { title: string; address: string; url: string | null } | null {
+  let parsed: Record<string, unknown> | null = null
+  try {
+    const value = JSON.parse(content) as unknown
+    parsed = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+  } catch {
+    parsed = null
+  }
+  if (!parsed) return null
+  const title = contentString(parsed, ['title']) ?? '位置情報'
+  const address = contentString(parsed, ['address']) ?? ''
+  const explicitUrl = safeMediaUrl(parsed.url)
+  const lat = contentNumber(parsed, ['latitude'])
+  const lng = contentNumber(parsed, ['longitude'])
+  const url = explicitUrl ?? (lat != null && lng != null
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lng}`)}`
+    : null)
+  return { title, address, url }
+}
+
+function trimUrlTrailingPunctuation(rawUrl: string): { url: string; suffix: string } {
+  const match = rawUrl.match(/[)\],.。、「」』』）]+$/)
+  if (!match) return { url: rawUrl, suffix: '' }
+  return { url: rawUrl.slice(0, -match[0].length), suffix: match[0] }
+}
+
+function LinkifiedText({ text, isOutgoing }: { text: string; isOutgoing: boolean }) {
+  const parts: React.ReactNode[] = []
+  const urlPattern = /https?:\/\/[^\s<>"']+/g
+  let lastIndex = 0
+  for (const match of text.matchAll(urlPattern)) {
+    const raw = match[0]
+    const index = match.index ?? 0
+    if (index > lastIndex) parts.push(text.slice(lastIndex, index))
+    const { url, suffix } = trimUrlTrailingPunctuation(raw)
+    parts.push(
+      <a
+        key={`${url}-${index}`}
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        className={`font-semibold underline underline-offset-2 ${isOutgoing ? 'text-white' : 'text-blue-700'}`}
+      >
+        {url}
+      </a>,
+    )
+    if (suffix) parts.push(suffix)
+    lastIndex = index + raw.length
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex))
+  return <>{parts}</>
+}
+
+function chatMessageQuotePreview(message?: Pick<ChatMessage, 'messageType' | 'content'> | null): string {
+  if (!message) return '元メッセージ'
+  if (message.messageType === 'image') return '画像'
+  if (message.messageType === 'file') return 'ファイル'
+  if (message.messageType === 'video') return '動画'
+  if (message.messageType === 'audio') return '音声'
+  if (message.messageType === 'sticker') return 'スタンプ'
+  if (message.messageType === 'location') return '位置情報'
+  if (message.messageType === 'flex') return 'Flexメッセージ'
+  return message.content.replace(/\s+/g, ' ').trim().slice(0, 90) || 'テキスト'
 }
 
 function sameYmd(aIso: string, bIso: string): boolean {
@@ -242,25 +515,6 @@ function formatYmdSlash(iso: string): string {
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
-const ccPrompts = [
-  {
-    title: 'チャット対応テンプレート',
-    prompt: `チャット対応で使えるテンプレートメッセージを作成してください。
-1. よくある質問への回答テンプレート（挨拶、FAQ、サポート）
-2. クレーム対応用の丁寧な返信テンプレート
-3. フォローアップメッセージのテンプレート
-手順を示してください。`,
-  },
-  {
-    title: '未対応チャット確認',
-    prompt: `未対応のチャットを確認し、対応優先度を整理してください。
-1. 未読・対応中のチャット数を集計
-2. 最終メッセージからの経過時間で優先度を判定
-3. 長時間未対応のチャットへの対応アクションを提案
-結果をレポートしてください。`,
-  },
-]
-
 interface FriendItem {
   id: string
   displayName: string
@@ -274,6 +528,356 @@ interface MessageLog {
   messageType: string
   content: string
   createdAt: string
+}
+
+function mentionNamesFromBody(body: string, staffOptions: string[]): string[] {
+  const matchedKnown = staffOptions.filter((name) => body.includes(`@${name}`))
+  if (matchedKnown.length > 0) return Array.from(new Set(matchedKnown))
+  const names = new Set<string>()
+  for (const match of body.matchAll(/@([^@\s　,、]+)/g)) {
+    const value = match[1]?.trim()
+    if (!value) continue
+    names.add(value)
+  }
+  return Array.from(names)
+}
+
+function insertMention(text: string, name: string): string {
+  const suffix = text.endsWith(' ') || text.endsWith('\n') || text.length === 0 ? '' : ' '
+  return `${text}${suffix}@${name} `
+}
+
+function insertEmoji(text: string, emoji: string): string {
+  const suffix = text.endsWith(' ') || text.endsWith('\n') || text.length === 0 ? '' : ' '
+  return `${text}${suffix}${emoji} `
+}
+
+function ChatInternalComposer({
+  value,
+  onChange,
+  onSubmit,
+  staffOptions,
+  saving,
+  placeholder,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onSubmit: () => void
+  staffOptions: string[]
+  saving: boolean
+  placeholder: string
+}) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
+      {staffOptions.length > 0 && (
+        <div className="mb-2 flex gap-1 overflow-x-auto pb-0.5">
+          {staffOptions.slice(0, 8).map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => onChange(insertMention(value, name))}
+              className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-bold text-sky-700 hover:bg-sky-100"
+            >
+              @{name}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {internalReactionEmojis.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            onClick={() => onChange(insertEmoji(value, emoji))}
+            disabled={saving}
+            className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {emoji}
+          </button>
+        ))}
+      </div>
+      <div className="flex items-end gap-2">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          placeholder={placeholder}
+          className="min-h-12 flex-1 resize-none rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800 outline-none focus:border-slate-400 focus:bg-white focus:ring-2 focus:ring-slate-100"
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || e.keyCode === 229) return
+            if (e.key === 'Enter' && e.shiftKey) {
+              e.preventDefault()
+              onSubmit()
+            }
+          }}
+        />
+        <button
+          type="button"
+          onClick={onSubmit}
+          disabled={saving || !value.trim()}
+          className="h-10 rounded-md bg-slate-900 px-3 text-xs font-bold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {saving ? '投稿中' : '投稿'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ChatInternalReactionRow({
+  message,
+  saving,
+  onReaction,
+}: {
+  message: ChatInternalMessage
+  saving: boolean
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const availableEmojis = internalReactionEmojis.filter((emoji) => (
+    !message.reactions.some((reaction) => reaction.emoji === emoji)
+  ))
+
+  const pickReaction = (emoji: string) => {
+    setPickerOpen(false)
+    void onReaction(message.id, emoji)
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {message.reactions.map((reaction) => (
+        <button
+          key={reaction.emoji}
+          type="button"
+          onClick={() => void onReaction(message.id, reaction.emoji)}
+          disabled={saving}
+          title={reaction.names.join('、')}
+          className={`rounded-full border px-2 py-0.5 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            reaction.reactedByMe
+              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <span aria-hidden="true">{reaction.emoji}</span>
+          <span className="ml-1">{reaction.count}</span>
+        </button>
+      ))}
+      {availableEmojis.length > 0 && (
+        <span className="relative inline-flex">
+          <button
+            type="button"
+            onClick={() => setPickerOpen((value) => !value)}
+            disabled={saving}
+            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-bold text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="リアクションを追加"
+          >
+            ☺
+          </button>
+          {pickerOpen && (
+            <div className="absolute left-0 top-full z-30 mt-1 flex gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-lg">
+              {availableEmojis.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => pickReaction(emoji)}
+                  disabled={saving}
+                  className="rounded-full px-2 py-1 text-sm transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`${emoji}でリアクション`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function ChatInternalBubble({
+  message,
+  replies,
+  staffOptions,
+  saving,
+  onCreate,
+  onReaction,
+}: {
+  message: ChatInternalMessage
+  replies: ChatInternalMessage[]
+  staffOptions: string[]
+  saving: boolean
+  onCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+}) {
+  const [openThread, setOpenThread] = useState(false)
+  const [replyDraft, setReplyDraft] = useState('')
+  const author = message.createdByName || 'スタッフ'
+  const initial = author.charAt(0) || 'S'
+
+  const submitReply = async () => {
+    const body = replyDraft.trim()
+    if (!body) return
+    const ok = await onCreate(body, message.id, mentionNamesFromBody(body, staffOptions))
+    if (ok) {
+      setReplyDraft('')
+      setOpenThread(true)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+      <div className="flex items-start gap-2">
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+          {initial}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-bold text-slate-900">{author}</span>
+            <span className="text-[11px] text-slate-400">{formatDatetime(message.createdAt)}</span>
+            {message.createdByName === '過去メモ' && (
+              <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-700">移行済み</span>
+            )}
+          </div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-800">
+            <MentionText text={message.body} mentions={message.mentions} />
+          </p>
+          {message.mentions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {message.mentions.map((name) => (
+                <span key={name} className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                  @{name}
+                </span>
+              ))}
+            </div>
+          )}
+          <ChatInternalReactionRow message={message} saving={saving} onReaction={onReaction} />
+          <button
+            type="button"
+            onClick={() => setOpenThread((value) => !value)}
+            className="mt-2 text-[11px] font-bold text-slate-500 hover:text-slate-900"
+          >
+            {openThread ? 'スレッドを閉じる' : replies.length > 0 ? `スレッド ${replies.length}件` : '返信'}
+          </button>
+        </div>
+      </div>
+      {openThread && (
+        <div className="mt-3 space-y-2 border-l-2 border-slate-200 pl-4">
+          {replies.map((reply) => (
+            <div key={reply.id} className="rounded-lg bg-slate-50 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[11px] font-bold text-slate-700">{reply.createdByName || 'スタッフ'}</span>
+                <span className="text-[10px] text-slate-400">{formatDatetime(reply.createdAt)}</span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">
+                <MentionText text={reply.body} mentions={reply.mentions} />
+              </p>
+              <ChatInternalReactionRow message={reply} saving={saving} onReaction={onReaction} />
+            </div>
+          ))}
+          <ChatInternalComposer
+            value={replyDraft}
+            onChange={setReplyDraft}
+            onSubmit={submitReply}
+            staffOptions={staffOptions}
+            saving={saving}
+            placeholder="この話題に返信"
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ChatInternalPanel({
+  messages,
+  staffOptions,
+  saving,
+  onCreate,
+  onReaction,
+  onClose,
+}: {
+  messages: ChatInternalMessage[]
+  staffOptions: string[]
+  saving: boolean
+  onCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState('')
+  const repliesByParent = useMemo(() => {
+    const map = new Map<string, ChatInternalMessage[]>()
+    for (const message of messages) {
+      if (!message.parentId) continue
+      const list = map.get(message.parentId) ?? []
+      list.push(message)
+      map.set(message.parentId, list)
+    }
+    return map
+  }, [messages])
+  const roots = useMemo(() => messages.filter((message) => !message.parentId), [messages])
+
+  const submit = async () => {
+    const body = draft.trim()
+    if (!body) return
+    const ok = await onCreate(body, null, mentionNamesFromBody(body, staffOptions))
+    if (ok) setDraft('')
+  }
+
+  return (
+    <div className="flex h-full flex-col bg-slate-50">
+      <div className="shrink-0 border-b border-slate-200 bg-white px-4 py-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-bold text-slate-900">社内チャット</p>
+            <p className="mt-0.5 text-[11px] text-slate-500">一次対応者だけで相談できます。お客様には表示されません。</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+              {messages.length}件
+            </span>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+              aria-label="社内チャットを閉じる"
+            >
+              <XIcon className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3">
+        {roots.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-slate-300 bg-white px-3 py-4 text-center text-xs text-slate-400">
+            まだ社内チャットはありません
+          </div>
+        ) : (
+          roots.map((message) => (
+            <ChatInternalBubble
+              key={message.id}
+              message={message}
+              replies={repliesByParent.get(message.id) ?? []}
+              staffOptions={staffOptions}
+              saving={saving}
+              onCreate={onCreate}
+              onReaction={onReaction}
+            />
+          ))
+        )}
+      </div>
+      <div className="shrink-0 border-t border-slate-200 bg-slate-50 p-3">
+        <ChatInternalComposer
+          value={draft}
+          onChange={setDraft}
+          onSubmit={submit}
+          staffOptions={staffOptions}
+          saving={saving}
+          placeholder="引き継ぎ、確認事項、対応方針を投稿"
+        />
+      </div>
+    </div>
+  )
 }
 
 function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
@@ -434,7 +1038,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
             onKeyDown={(e) => {
               // IME変換確定のEnterでは送信しない
               if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && e.shiftKey) {
                 e.preventDefault()
                 handleSend()
               }
@@ -464,6 +1068,8 @@ export default function ChatsPage() {
   const [selectedFriendId, setSelectedFriendId] = useState<string | null>(null)
   const [chatDetail, setChatDetail] = useState<ChatDetail | null>(null)
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [searchTerm, setSearchTerm] = useState('')
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('')
   const [sortMode, setSortMode] = useState<ChatSortMode>(() => {
     if (typeof window === 'undefined') return 'recent'
     try {
@@ -490,81 +1096,140 @@ export default function ChatsPage() {
     const url = qs ? `${window.location.pathname}?${qs}` : window.location.pathname
     window.history.replaceState(null, '', url)
   }, [unansweredOnly])
-  // Send mode: 'enter' = Enter sends, Shift+Enter = newline; 'shift-enter' = reverse
-  const [sendMode, setSendMode] = useState<'enter' | 'shift-enter'>('enter')
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [quoteTarget, setQuoteTarget] = useState<ChatMessage | null>(null)
   const [supportDraftContext, setSupportDraftContext] = useState<SupportChatDraftContext | null>(null)
   const [supportRecoveryNotice, setSupportRecoveryNotice] = useState<SupportChatRecoveryNotice | null>(null)
-  const [pendingImage, setPendingImage] = useState<ImageUploaderValue | null>(null)
+  const [pendingImage, setPendingImage] = useState<PendingChatAttachment | null>(null)
+  const [uploadingImage, setUploadingImage] = useState(false)
+  const [imageUploadError, setImageUploadError] = useState('')
+  const [mediaPreview, setMediaPreview] = useState<ChatMediaPreview | null>(null)
   const [sending, setSending] = useState(false)
-  const [recordingExternalOutgoing, setRecordingExternalOutgoing] = useState(false)
+  const [markingAsRead, setMarkingAsRead] = useState(false)
+  const [reflectingDeletedMessageId, setReflectingDeletedMessageId] = useState<string | null>(null)
   const sendLockRef = useRef(false)
-  const [notes, setNotes] = useState('')
-  const [savingNotes, setSavingNotes] = useState(false)
-  const [showLoadingIndicator, setShowLoadingIndicator] = useState(false)
-  const [loadingSeconds, setLoadingSeconds] = useState(5)
-  const [markAsReadOnSend, setMarkAsReadOnSend] = useState(false)
-  const lastLoadingTriggerAtRef = useRef<Record<string, number>>({})
-  const [isMessageInputFocused, setIsMessageInputFocused] = useState(false)
+  const [savingInternalChat, setSavingInternalChat] = useState(false)
+  const [staffOptions, setStaffOptions] = useState<string[]>([])
+  const [internalChatOpen, setInternalChatOpen] = useState(false)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const preserveScrollOnNextMessagesChangeRef = useRef(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-
-  useEffect(() => {
-    try {
-      const rawEnabled = localStorage.getItem(SHOW_LOADING_PREF_KEY)
-      const rawSeconds = localStorage.getItem(LOADING_SECONDS_PREF_KEY)
-      const rawMarkAsRead = localStorage.getItem(MARK_AS_READ_ON_SEND_PREF_KEY)
-      if (rawEnabled !== null) setShowLoadingIndicator(rawEnabled === '1')
-      if (rawMarkAsRead !== null) setMarkAsReadOnSend(rawMarkAsRead === '1')
-      if (rawSeconds) {
-        const n = Number.parseInt(rawSeconds, 10)
-        if (Number.isFinite(n) && n >= 5 && n <= 60) setLoadingSeconds(n)
-      }
-    } catch {
-      // localStorage unavailable
-    }
-  }, [])
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(SHOW_LOADING_PREF_KEY, showLoadingIndicator ? '1' : '0')
-      localStorage.setItem(LOADING_SECONDS_PREF_KEY, String(loadingSeconds))
-      localStorage.setItem(MARK_AS_READ_ON_SEND_PREF_KEY, markAsReadOnSend ? '1' : '0')
-    } catch {
-      // localStorage unavailable
-    }
-  }, [showLoadingIndicator, loadingSeconds, markAsReadOnSend])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const typingStopTimeoutRef = useRef<number | null>(null)
+  const lastTypingSentAtRef = useRef(0)
+  const activeTypingChatIdRef = useRef<string | null>(null)
 
   useEffect(() => {
     try { localStorage.setItem('chat.sortMode', sortMode) } catch { /* ignore */ }
   }, [sortMode])
 
-  const loadChats = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm.trim().replace(/\s+/g, ' '))
+    }, CHAT_SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [searchTerm])
+
+  const clearTypingStopTimer = useCallback(() => {
+    if (typingStopTimeoutRef.current != null) {
+      window.clearTimeout(typingStopTimeoutRef.current)
+      typingStopTimeoutRef.current = null
+    }
+  }, [])
+
+  const sendTypingStatus = useCallback(async (chatId: string, active: boolean) => {
     try {
-      const params: { status?: string; accountId?: string; unansweredOnly?: boolean } = {}
+      const res = await api.chats.typing(chatId, { active })
+      if (!res.success || !res.data) return
+      setChatDetail((prev) => (prev && prev.id === chatId) ? {
+        ...prev,
+        status: res.data.status,
+        typingParticipants: res.data.typingParticipants,
+      } : prev)
+      setChats((prev) => prev.map((chat) => chat.id === chatId ? {
+        ...chat,
+        status: res.data.status,
+      } : chat))
+    } catch {
+      // 入力中表示は補助機能なので、失敗しても顧客対応は止めない。
+    }
+  }, [])
+
+  const stopTypingStatus = useCallback((chatId?: string | null) => {
+    clearTypingStopTimer()
+    const targetChatId = chatId ?? activeTypingChatIdRef.current
+    lastTypingSentAtRef.current = 0
+    if (!targetChatId) return
+    if (activeTypingChatIdRef.current === targetChatId) {
+      activeTypingChatIdRef.current = null
+    }
+    void sendTypingStatus(targetChatId, false)
+  }, [clearTypingStopTimer, sendTypingStatus])
+
+  const markTypingActive = useCallback((chatId: string) => {
+    const previousChatId = activeTypingChatIdRef.current
+    if (previousChatId && previousChatId !== chatId) {
+      void sendTypingStatus(previousChatId, false)
+      lastTypingSentAtRef.current = 0
+    }
+    activeTypingChatIdRef.current = chatId
+    const now = Date.now()
+    if (now - lastTypingSentAtRef.current >= 4_000) {
+      lastTypingSentAtRef.current = now
+      void sendTypingStatus(chatId, true)
+    }
+    clearTypingStopTimer()
+    typingStopTimeoutRef.current = window.setTimeout(() => {
+      stopTypingStatus(chatId)
+    }, 8_000)
+  }, [clearTypingStopTimer, sendTypingStatus, stopTypingStatus])
+
+  useEffect(() => {
+    return () => {
+      clearTypingStopTimer()
+      const activeChatId = activeTypingChatIdRef.current
+      if (activeChatId) {
+        activeTypingChatIdRef.current = null
+        void api.chats.typing(activeChatId, { active: false }).catch(() => {})
+      }
+    }
+  }, [clearTypingStopTimer])
+
+  useEffect(() => {
+    const activeChatId = activeTypingChatIdRef.current
+    if (activeChatId && activeChatId !== selectedChatId) {
+      stopTypingStatus(activeChatId)
+    }
+  }, [selectedChatId, stopTypingStatus])
+
+  const loadChats = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (!options.silent) {
+      setLoading(true)
+      setError('')
+    }
+    try {
+      const params: { status?: string; accountId?: string; unansweredOnly?: boolean; search?: string } = {}
       if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
       if (selectedAccountId) params.accountId = selectedAccountId
       if (unansweredOnly) params.unansweredOnly = true
+      if (debouncedSearchTerm) params.search = debouncedSearchTerm
       const chatRes = await api.chats.list(params)
       if (chatRes.success) {
         setChats(chatRes.data as unknown as Chat[])
       } else {
-        setError(chatFailureMessage('list'))
+        if (!options.silent) setError(chatFailureMessage('list'))
       }
     } catch {
-      setError(chatFailureMessage('list'))
+      if (!options.silent) setError(chatFailureMessage('list'))
     } finally {
-      setLoading(false)
+      if (!options.silent) setLoading(false)
     }
-  }, [statusFilter, selectedAccountId, unansweredOnly])
+  }, [statusFilter, selectedAccountId, unansweredOnly, debouncedSearchTerm])
 
   // Friends list (for the "new direct message" modal) — loaded lazily in the background
   // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
@@ -579,31 +1244,33 @@ export default function ChatsPage() {
 
   useEffect(() => { void loadAllFriends() }, [loadAllFriends])
 
+  useEffect(() => {
+    let cancelled = false
+    api.staff.assigneeOptions()
+      .then((res) => {
+        if (cancelled || !res.success) return
+        const names = Array.from(new Set(res.data.filter((staff) => staff.isActive).map((staff) => staff.name).filter(Boolean)))
+        setStaffOptions(names)
+      })
+      .catch(() => {
+        if (!cancelled) setStaffOptions([])
+      })
+    return () => { cancelled = true }
+  }, [])
+
   // Keep refs in sync so setChats updater can read the latest filter without stale closure
   useEffect(() => { statusFilterRef.current = statusFilter }, [statusFilter])
   useEffect(() => { unansweredOnlyRef.current = unansweredOnly }, [unansweredOnly])
 
-  // Load/save sendMode preference (guarded — privacy-restricted browsers throw)
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('chat.sendMode')
-      if (saved === 'enter' || saved === 'shift-enter') setSendMode(saved)
-    } catch { /* localStorage unavailable */ }
-  }, [])
-  useEffect(() => {
-    try { localStorage.setItem('chat.sendMode', sendMode) } catch { /* ignore */ }
-  }, [sendMode])
-
-  const loadChatDetail = useCallback(async (chatId: string) => {
-    setDetailLoading(true)
+  const loadChatDetail = useCallback(async (chatId: string, options: { silent?: boolean } = {}) => {
+    if (!options.silent) setDetailLoading(true)
     setLoadingOlderMessages(false)
-    setError('')
+    if (!options.silent) setError('')
     const loadFriendFallback = async (): Promise<boolean> => {
       try {
         const friendRes = await api.friends.get(chatId)
         if (!friendRes.success || !friendRes.data) return false
         setChatDetail(buildEmptyChatDetailFromFriend(friendRes.data))
-        setNotes('')
         return true
       } catch {
         return false
@@ -613,17 +1280,38 @@ export default function ChatsPage() {
       const res = await api.chats.get(chatId)
       if (res.success) {
         setChatDetail(res.data as unknown as ChatDetail)
-        setNotes((res.data as unknown as ChatDetail).notes || '')
       } else {
         if (await loadFriendFallback()) return
-        setError(chatFailureMessage('detail'))
+        if (!options.silent) setError(chatFailureMessage('detail'))
       }
     } catch (err) {
       if (apiErrorStatus(err) === 404 && await loadFriendFallback()) return
-      setError(chatFailureMessage('detail'))
+      if (!options.silent) setError(chatFailureMessage('detail'))
     } finally {
-      setDetailLoading(false)
+      if (!options.silent) setDetailLoading(false)
     }
+  }, [])
+
+  const handleFriendUpdated = useCallback((friend: { id: string; displayName: string | null; pictureUrl: string | null }) => {
+    const nextName = friend.displayName || '名前なし'
+    setChatDetail((prev) => {
+      if (!prev || prev.friendId !== friend.id) return prev
+      return {
+        ...prev,
+        friendName: nextName,
+        friendPictureUrl: friend.pictureUrl,
+      }
+    })
+    setChats((prev) => prev.map((chat) => chat.friendId === friend.id ? {
+      ...chat,
+      friendName: nextName,
+      friendPictureUrl: friend.pictureUrl,
+    } : chat))
+    setAllFriends((prev) => prev.map((item) => item.id === friend.id ? {
+      ...item,
+      displayName: nextName,
+      pictureUrl: friend.pictureUrl,
+    } : item))
   }, [])
 
   const handleLoadOlderMessages = useCallback(async () => {
@@ -706,6 +1394,35 @@ export default function ChatsPage() {
     }
   }, [selectedChatId, loadChatDetail])
 
+  const refreshVisibleChats = useCallback(() => {
+    if (!selectedAccountId || document.hidden || sending || markingAsRead) return
+    void loadChats({ silent: true })
+    if (selectedChatId) {
+      void loadChatDetail(selectedChatId, { silent: true })
+    }
+  }, [loadChatDetail, loadChats, markingAsRead, selectedAccountId, selectedChatId, sending])
+
+  useEffect(() => {
+    if (!selectedAccountId) return
+    const timer = window.setInterval(refreshVisibleChats, CHAT_REALTIME_POLL_MS)
+    return () => window.clearInterval(timer)
+  }, [refreshVisibleChats, selectedAccountId])
+
+  useEffect(() => {
+    if (!selectedAccountId) return
+    const handleVisibleRefresh = () => {
+      if (!document.hidden) refreshVisibleChats()
+    }
+    window.addEventListener('focus', handleVisibleRefresh)
+    window.addEventListener('online', handleVisibleRefresh)
+    document.addEventListener('visibilitychange', handleVisibleRefresh)
+    return () => {
+      window.removeEventListener('focus', handleVisibleRefresh)
+      window.removeEventListener('online', handleVisibleRefresh)
+      document.removeEventListener('visibilitychange', handleVisibleRefresh)
+    }
+  }, [refreshVisibleChats, selectedAccountId])
+
   // Surface deep-linked chats in the sidebar even when the current account
   // filter or status filter would exclude them — otherwise the user replies
   // and the conversation stays invisible until they refresh.
@@ -733,6 +1450,7 @@ export default function ChatsPage() {
         lastMessageContent: chatDetail.lastMessageContent ?? lastMsg?.content ?? null,
         lastMessageDirection: chatDetail.lastMessageDirection ?? lastMsg?.direction ?? null,
         lastMessageType: chatDetail.lastMessageType ?? lastMsg?.messageType ?? null,
+        activeSupportCase: chatDetail.activeSupportCase ?? null,
         createdAt: chatDetail.createdAt,
         updatedAt: chatDetail.updatedAt,
       }
@@ -778,44 +1496,89 @@ export default function ChatsPage() {
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+    el.style.height = `${Math.min(el.scrollHeight, 120)}px`
   }, [messageContent])
 
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
     setMessageContent('')
+    setQuoteTarget(null)
     setSupportDraftContext(null)
     setSupportRecoveryNotice(null)
     setPendingImage(null)
+    setImageUploadError('')
+    setInternalChatOpen(false)
   }
 
-  const triggerLoadingAnimation = useCallback(async (chatId: string) => {
-    if (!showLoadingIndicator) return
+  const handleSelectQuoteTarget = (message: ChatMessage) => {
+    setQuoteTarget(message)
+    setError('')
+    window.setTimeout(() => textareaRef.current?.focus(), 0)
+  }
 
-    const now = Date.now()
-    const last = lastLoadingTriggerAtRef.current[chatId] ?? 0
-    if (now - last < LOADING_REFRESH_INTERVAL_MS) return
-    lastLoadingTriggerAtRef.current[chatId] = now
-
-    try {
-      const res = await fetchApi<{ success: boolean; error?: string }>(`/api/chats/${chatId}/loading`, {
-        method: 'POST',
-        body: JSON.stringify({ loadingSeconds }),
-      })
-      if (!res.success) {
-        setError(chatFailureMessage('loading'))
-      }
-    } catch {
-      setError(chatFailureMessage('loading'))
+  const handleImageFiles = useCallback(async (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    setImageUploadError('')
+    const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
+    const isLineImage = ['image/jpeg', 'image/png'].includes(file.type)
+    if (!isLineImage && !isPdf) {
+      setImageUploadError('送信できるファイルはPNG、JPEG、PDFです。')
+      return
     }
-  }, [showLoadingIndicator, loadingSeconds])
+    if (isLineImage && file.size > 1024 * 1024) {
+      setImageUploadError('LINE画像は1MB以下にしてください。')
+      return
+    }
+    if (isPdf && file.size > PDF_UPLOAD_MAX_BYTES) {
+      setImageUploadError(`PDFは${PDF_UPLOAD_MAX_LABEL}以下にしてください。`)
+      return
+    }
+    setUploadingImage(true)
+    try {
+      const res = isPdf ? await api.uploads.file(file) : await api.uploads.image(file)
+      if (!res.success) {
+        setImageUploadError('ファイルのアップロードに失敗しました。')
+        return
+      }
+      if (isPdf) {
+        setPendingImage({
+          mode: 'pdf-link',
+          url: res.data.url,
+          fileName: 'filename' in res.data && typeof res.data.filename === 'string' ? res.data.filename : file.name,
+          mimeType: res.data.mimeType,
+          size: res.data.size,
+        })
+      } else {
+        setPendingImage({
+          mode: 'line-image',
+          originalContentUrl: res.data.url,
+          previewImageUrl: res.data.url,
+        })
+      }
+    } catch (err) {
+      setImageUploadError(fileUploadErrorMessage(err))
+    } finally {
+      setUploadingImage(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }, [])
 
   const handleSendMessage = async () => {
     if (!selectedChatId || sending || sendLockRef.current) return
     if (!messageContent.trim() && !pendingImage) return
+    if (quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
+      setError('返信機能を使うときは、返信文を入力して送信してください。')
+      return
+    }
     const sendingChatId = selectedChatId  // capture the chat id for this send
+    const sendingQuoteTarget = quoteTarget
     const supportContext = supportDraftContext
-    const textContent = messageContent.trim()
+    const pdfAttachment = pendingImage?.mode === 'pdf-link' ? pendingImage : null
+    const pdfMessage = pdfAttachment
+      ? `PDF: ${pdfAttachment.fileName}\n${pdfAttachment.url}`
+      : ''
+    const textContent = [messageContent.trim(), pdfMessage].filter(Boolean).join('\n\n')
     const { attachSupportToImage, attachSupportToText } = planSupportChatSendAttachments(supportContext, {
       hasLineImage: pendingImage?.mode === 'line-image',
       hasText: Boolean(textContent),
@@ -836,7 +1599,7 @@ export default function ChatsPage() {
         const imageResult = await api.chats.send(sendingChatId, {
           messageType: 'image',
           content: imgPayload,
-          markAsRead: markAsReadOnSend,
+          markAsRead: true,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
         })
         if (!imageResult.success) {
@@ -862,10 +1625,12 @@ export default function ChatsPage() {
           messages: [
             ...(prev.messages ?? []),
             {
-              id: crypto.randomUUID(),
+              id: imageResult.data.messageId,
               direction: 'outgoing',
               messageType: 'image',
               content: imgPayload,
+              sentByStaffId: imageResult.data.sentByStaffId ?? null,
+              sentByStaffName: imageResult.data.sentByStaffName ?? null,
               createdAt: now,
             },
           ],
@@ -901,7 +1666,8 @@ export default function ChatsPage() {
         const content = textContent
         const sendResult = await api.chats.send(sendingChatId, {
           content,
-          markAsRead: markAsReadOnSend,
+          markAsRead: true,
+          quoteMessageId: sendingQuoteTarget?.id ?? undefined,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
         })
         if (!sendResult.success) {
@@ -916,6 +1682,8 @@ export default function ChatsPage() {
         const markAsReadNotice = markAsReadFailureMessage(sendResult.data.markAsRead)
         if (markAsReadNotice) setError(markAsReadNotice)
         setMessageContent('')
+        setQuoteTarget(null)
+        if (pdfAttachment) setPendingImage(null)
         if (supportContext) setSupportDraftContext(null)
         // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
         // Only mutate chatDetail if it still corresponds to the chat we just sent to
@@ -926,10 +1694,13 @@ export default function ChatsPage() {
           messages: [
             ...(prev.messages ?? []),
             {
-              id: crypto.randomUUID(),
+              id: sendResult.data.messageId,
               direction: 'outgoing',
               messageType: 'text',
               content,
+              quotedMessageId: sendResult.data.quotedMessageId ?? sendingQuoteTarget?.id ?? null,
+              sentByStaffId: sendResult.data.sentByStaffId ?? null,
+              sentByStaffName: sendResult.data.sentByStaffName ?? null,
               createdAt: now,
             },
           ],
@@ -967,49 +1738,53 @@ export default function ChatsPage() {
     } catch (err) {
       setError(chatActionFailureMessage(err, sendFailureFallback))
     } finally {
+      stopTypingStatus(sendingChatId)
       setSending(false)
       sendLockRef.current = false
     }
   }
 
-  const handleRecordExternalOutgoing = async () => {
-    if (!selectedChatId || sending || recordingExternalOutgoing || sendLockRef.current) return
-    const recordingChatId = selectedChatId
-    const content = messageContent.trim()
-    if (!content) return
-    setRecordingExternalOutgoing(true)
+  const handleMarkLatestAsRead = async () => {
+    if (!selectedChatId || sending || markingAsRead || sendLockRef.current) return
+    const targetChatId = selectedChatId
+    const latestMessage = chatDetail?.messages?.slice().reverse().find((message) => !message.deletedAt)
+    if (latestMessage?.direction !== 'incoming') return
+    setMarkingAsRead(true)
     setError('')
     try {
-      const result = await api.chats.recordExternalOutgoing(recordingChatId, { content })
+      const result = await api.chats.markRead(targetChatId)
       if (!result.success) {
-        setError('LINE公式送信の記録に失敗しました。')
+        setError('既読化に失敗しました。もう一度お試しください。')
         return
       }
-      const message = result.data.message
-      setMessageContent('')
-      setChatDetail((prev) => (prev && prev.id === recordingChatId) ? {
+      const notice = markAsReadOnlyFailureMessage(result.data.markAsRead)
+      if (notice) {
+        setError(notice)
+        return
+      }
+      const markedMessageId = result.data.markedMessageId ?? result.data.markAsRead.messageId ?? latestMessage.id
+      const markedAt = result.data.markedAt ?? result.data.markAsRead.markedAt ?? result.data.updatedAt
+      setChatDetail((prev) => (prev && prev.id === targetChatId) ? {
         ...prev,
-        lastMessageAt: message.createdAt,
-        status: 'in_progress',
-        messages: [
-          ...(prev.messages ?? []),
-          message,
-        ],
+        status: result.data.status ?? 'in_progress',
+        updatedAt: result.data.updatedAt,
+        messages: prev.messages?.map((message) => (
+          message.id === markedMessageId
+            ? { ...message, markedAsReadAt: markedAt }
+            : message
+        )),
       } : prev)
       setChats((prev) => {
         const currentFilter = statusFilterRef.current
         const currentUnansweredOnly = unansweredOnlyRef.current
-        const updated = prev.map((chat) => chat.id === recordingChatId ? {
+        const updated = prev.map((chat) => chat.id === targetChatId ? {
           ...chat,
-          lastMessageAt: message.createdAt,
-          status: 'in_progress' as const,
-          lastMessageContent: content,
-          lastMessageDirection: 'outgoing' as const,
-          lastMessageType: 'text' as const,
+          status: (result.data.status ?? 'in_progress') as Chat['status'],
+          updatedAt: result.data.updatedAt,
         } : chat)
         let filtered = currentFilter === 'all' ? updated : updated.filter((chat) => chat.status === currentFilter)
         if (currentUnansweredOnly) {
-          filtered = filtered.filter((chat) => chat.id !== recordingChatId)
+          filtered = filtered.filter((chat) => chat.id !== targetChatId)
         }
         return [...filtered].sort((a, b) => {
           const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
@@ -1017,10 +1792,49 @@ export default function ChatsPage() {
           return bt - at
         })
       })
+      setError('')
     } catch (err) {
-      setError(chatActionFailureMessage(err, 'LINE公式送信の記録に失敗しました。'))
+      setError(chatActionFailureMessage(err, '既読化に失敗しました。もう一度お試しください。'))
     } finally {
-      setRecordingExternalOutgoing(false)
+      setMarkingAsRead(false)
+    }
+  }
+
+  const handleReflectMessageDeleted = async (message: ChatMessage) => {
+    if (!selectedChatId || reflectingDeletedMessageId) return
+    const targetChatId = selectedChatId
+    const isOfficialSideRecord = message.source === 'line_official'
+    const confirmed = window.confirm(
+      isOfficialSideRecord
+        ? 'LINE公式画面で送信取り消し済みの内容を、Lリンク上にも反映します。顧客側のLINEを操作する機能ではありません。続けますか？'
+        : 'LINE APIの仕様上、Lリンクから送ったメッセージは顧客側のLINEから取り消せません。Lリンク上の表示だけ非表示にします。続けますか？',
+    )
+    if (!confirmed) return
+    const messageId = message.id
+    setReflectingDeletedMessageId(messageId)
+    setError('')
+    try {
+      const result = await api.chats.markMessageDeleted(targetChatId, messageId)
+      if (!result.success || !result.data) {
+        setError('送信取り消しの反映に失敗しました。もう一度お試しください。')
+        return
+      }
+      setChatDetail((prev) => (prev && prev.id === targetChatId) ? {
+        ...prev,
+        messages: prev.messages?.map((message) => (
+          message.id === messageId
+            ? {
+                ...message,
+                deletedAt: result.data.deletedAt,
+                deletedReason: 'manual_unsend_reflection',
+              }
+            : message
+        )),
+      } : prev)
+    } catch (err) {
+      setError(chatActionFailureMessage(err, '送信取り消しの反映に失敗しました。もう一度お試しください。'))
+    } finally {
+      setReflectingDeletedMessageId(null)
     }
   }
 
@@ -1040,21 +1854,58 @@ export default function ChatsPage() {
     }
   }
 
-  const handleSaveNotes = async () => {
-    if (!selectedChatId) return
-    setSavingNotes(true)
+  const handleCreateInternalMessage = async (body: string, parentId: string | null, mentions: string[]): Promise<boolean> => {
+    if (!selectedChatId || savingInternalChat) return false
+    const targetChatId = selectedChatId
+    setSavingInternalChat(true)
     try {
-      const res = await api.chats.update(selectedChatId, { notes })
-      if (!res.success) {
-        setError(chatFailureMessage('notes'))
+      const res = await api.chats.addInternalMessage(targetChatId, {
+        body,
+        parentId,
+        mentions,
+      })
+      if (!res.success || !res.data) {
+        setError(chatFailureMessage('internal-chat'))
+        return false
+      }
+      setError('')
+      setChatDetail((prev) => {
+        if (!prev || prev.id !== targetChatId) return prev
+        return {
+          ...prev,
+          internalMessages: [...(prev.internalMessages ?? []), res.data],
+        }
+      })
+      return true
+    } catch (err) {
+      setError(chatActionFailureMessage(err, chatFailureMessage('internal-chat')))
+      return false
+    } finally {
+      setSavingInternalChat(false)
+    }
+  }
+
+  const handleInternalMessageReaction = async (messageId: string, emoji: string): Promise<void> => {
+    if (!selectedChatId || savingInternalChat) return
+    const targetChatId = selectedChatId
+    try {
+      const res = await api.chats.toggleInternalReaction(targetChatId, messageId, emoji)
+      if (!res.success || !res.data) {
+        setError('リアクションの更新に失敗しました。')
         return
       }
       setError('')
-      loadChatDetail(selectedChatId)
-    } catch {
-      setError(chatFailureMessage('notes'))
-    } finally {
-      setSavingNotes(false)
+      setChatDetail((prev) => {
+        if (!prev || prev.id !== targetChatId) return prev
+        return {
+          ...prev,
+          internalMessages: (prev.internalMessages ?? []).map((message) => (
+            message.id === res.data.id ? res.data : message
+          )),
+        }
+      })
+    } catch (err) {
+      setError(chatActionFailureMessage(err, 'リアクションの更新に失敗しました。'))
     }
   }
 
@@ -1062,10 +1913,7 @@ export default function ChatsPage() {
     // IME変換確定のEnterでは送信しない
     if (e.nativeEvent.isComposing || isComposingRef.current || e.keyCode === 229) return
     if (e.key !== 'Enter') return
-    // sendMode 'enter': Enter単体で送信、Shift+Enterは改行
-    // sendMode 'shift-enter': Shift+Enterで送信、Enter単体は改行
-    const shouldSend = sendMode === 'enter' ? !e.shiftKey : e.shiftKey
-    if (shouldSend) {
+    if (e.shiftKey) {
       e.preventDefault()
       handleSendMessage()
     }
@@ -1103,6 +1951,20 @@ export default function ChatsPage() {
   }, [chats, sortMode])
 
   const staleChatCount = useMemo(() => chats.filter(isStaleChat).length, [chats])
+  const selectedSupportBadge = activeSupportCaseBadge(chatDetail?.activeSupportCase)
+  const chatMessagesById = useMemo(
+    () => new Map((chatDetail?.messages ?? []).map((message) => [message.id, message] as const)),
+    [chatDetail?.messages],
+  )
+  const latestChatMessage = chatDetail?.messages?.slice().reverse().find((message) => !message.deletedAt)
+  const latestIncomingMarkedAsRead = latestChatMessage?.direction === 'incoming' && Boolean(latestChatMessage.markedAsReadAt)
+  const canMarkLatestIncomingAsRead = latestChatMessage?.direction === 'incoming' && !latestIncomingMarkedAsRead
+  const markReadButtonLabel = markingAsRead ? '既読中...' : latestIncomingMarkedAsRead ? '既読済み' : '既読にする'
+  const markReadButtonTitle = latestIncomingMarkedAsRead
+    ? '最後の顧客メッセージは既読済みです'
+    : canMarkLatestIncomingAsRead
+      ? '最後の顧客メッセージに既読を付けます'
+      : '最後が顧客メッセージの時だけ使えます'
 
   return (
     <div>
@@ -1123,11 +1985,33 @@ export default function ChatsPage() {
           {/* Filter row */}
           <div className="border-b border-gray-100 bg-white px-3 py-2">
             <div className="mb-2 flex items-center justify-between gap-2 text-xs text-gray-500">
-              <span>{chats.length}件中 {visibleChats.length}件を表示</span>
+              <span>{debouncedSearchTerm ? `検索結果 ${visibleChats.length}件` : `${chats.length}件中 ${visibleChats.length}件を表示`}</span>
               <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-semibold ${staleChatCount > 0 ? 'bg-orange-50 text-orange-700' : 'bg-gray-100 text-gray-500'}`}>
                 <FlameIcon className="h-3 w-3" />
                 24h超過 {staleChatCount}
               </span>
+            </div>
+            <div className="relative mb-2">
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <input
+                type="search"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="顧客名・番号・本文で検索"
+                aria-label="チャット検索"
+                className="h-10 w-full rounded-lg border border-gray-300 bg-white pl-9 pr-10 text-sm font-medium text-gray-900 outline-none transition focus:border-green-500 focus:ring-2 focus:ring-green-100"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                  aria-label="検索をクリア"
+                  title="検索をクリア"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
             {statusFilters.map((f) => (
@@ -1135,7 +2019,7 @@ export default function ChatsPage() {
                 key={f.key}
                 onClick={() => setStatusFilter(f.key)}
                 disabled={unansweredOnly}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                className={`min-h-10 rounded-full px-4 py-2 text-sm font-bold transition-colors ${
                   statusFilter === f.key
                     ? 'bg-green-500 text-white'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -1147,19 +2031,19 @@ export default function ChatsPage() {
             <select
               value={sortMode}
               onChange={(e) => setSortMode(e.target.value as ChatSortMode)}
-              className="ml-auto h-8 rounded-md border border-gray-300 bg-white px-2 text-xs font-medium text-gray-700"
+              className="ml-auto h-10 rounded-md border border-gray-300 bg-white px-3 text-sm font-bold text-gray-700"
               aria-label="チャットの並び順"
             >
               {sortOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
-            <label className="flex items-center gap-1.5 text-xs font-medium whitespace-nowrap cursor-pointer select-none">
+            <label className="flex min-h-10 items-center gap-2 rounded-md bg-gray-100 px-3 text-sm font-bold whitespace-nowrap cursor-pointer select-none">
               <input
                 type="checkbox"
                 checked={unansweredOnly}
                 onChange={(e) => setUnansweredOnly(e.target.checked)}
-                className="rounded"
+                className="h-4 w-4 rounded"
               />
               未対応のみ
             </label>
@@ -1184,7 +2068,16 @@ export default function ChatsPage() {
               </div>
             ) : (
               <>
-                {visibleChats.map((chat) => {
+                {visibleChats.length === 0 ? (
+                  <div className="px-4 py-10 text-center">
+                    <p className="text-sm font-bold text-gray-700">
+                      {debouncedSearchTerm ? '該当するチャットがありません' : 'チャットがありません'}
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400">
+                      {debouncedSearchTerm ? '顧客名・番号・本文を変えて検索してください。' : '新しいトークが届くとここに表示されます。'}
+                    </p>
+                  </div>
+                ) : visibleChats.map((chat) => {
                   const isSelected = selectedChatId === chat.id
                   // 「真の自発（要対応）」= chat.status='unread'。webhook 側で auto_reply に
                   // マッチしなかった incoming のみ unread に設定される。auto_reply trigger
@@ -1193,6 +2086,7 @@ export default function ChatsPage() {
                   // 強調してしまって S/N 比が悪化する。
                   const needsAttention = chat.status === 'unread'
                   const stale = isStaleChat(chat)
+                  const supportBadge = activeSupportCaseBadge(chat.activeSupportCase)
                   // 最新メッセージの本文 preview。flex/image は文字列で見せても意味が薄いので type 表記に置換。
                   const previewRaw = chat.lastMessageContent ?? ''
                   const preview = (() => {
@@ -1239,6 +2133,11 @@ export default function ChatsPage() {
                               24h超過 {formatElapsed(chat.lastMessageAt)}
                             </div>
                           )}
+                          {supportBadge && (
+                            <div className={`mt-1 inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${supportBadge.className}`} title={chat.activeSupportCase?.title || supportBadge.description}>
+                              <span className="truncate">{supportBadge.label}</span>
+                            </div>
+                          )}
                           <p
                             className={`text-xs mt-0.5 truncate ${
                               needsAttention
@@ -1263,7 +2162,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`relative flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -1283,7 +2182,8 @@ export default function ChatsPage() {
           ) : chatDetail ? (
             <>
               {/* Chat Header */}
-              <div className="px-4 py-4 border-b border-gray-200 flex items-center justify-between gap-2">
+              <div className="border-b border-gray-200 bg-white px-4 py-3">
+                <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <button
                     onClick={() => setSelectedChatId(null)}
@@ -1298,23 +2198,47 @@ export default function ChatsPage() {
                     <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0" />
                   )}
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">
+                    <p className="truncate text-base font-semibold text-gray-900">
                       {chatDetail.friendName}
                     </p>
                     <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mt-1 ${statusConfig[chatDetail.status].className}`}
+                      className={`mt-1 inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
                     >
                       {statusConfig[chatDetail.status].label}
                     </span>
                     {isStaleChat(chatDetail) && (
-                      <span className="ml-1 mt-1 inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">
+                      <span className="ml-1 mt-1 inline-flex items-center gap-1 rounded-md bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">
                         <FlameIcon className="h-3 w-3" />
                         24h超過 {formatElapsed(chatDetail.lastMessageAt)}
                       </span>
                     )}
+                    {selectedSupportBadge && chatDetail.activeSupportCase && (
+                      <Link
+                        href={`/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`}
+                        className={`ml-1 mt-1 inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-bold transition-colors hover:bg-white ${selectedSupportBadge.className}`}
+                        title={`${selectedSupportBadge.description}: ${chatDetail.activeSupportCase.title}`}
+                      >
+                        <span>{selectedSupportBadge.label}</span>
+                        {chatDetail.activeSupportCase.escalationAssignee && (
+                          <span className="max-w-[120px] truncate opacity-75">
+                            {chatDetail.activeSupportCase.escalationAssignee}
+                          </span>
+                        )}
+                      </Link>
+                    )}
                   </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setInternalChatOpen(true)}
+                    className="min-h-9 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                  >
+                    社内チャット
+                    <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
+                      {chatDetail.internalMessages?.length ?? 0}
+                    </span>
+                  </button>
                   {unansweredOnly && visibleChats.length > 1 && (
                     <button
                       type="button"
@@ -1326,7 +2250,7 @@ export default function ChatsPage() {
                           setSelectedChatId(next.id)
                         }
                       }}
-                      className="rounded-md bg-emerald-600 px-3 py-1.5 min-h-[44px] lg:min-h-0 text-sm font-medium text-white hover:bg-emerald-700"
+                      className="min-h-9 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                       title="次の未対応 friend に進む"
                     >
                       次の未対応 →
@@ -1335,7 +2259,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-red-600 bg-red-50 hover:bg-red-100 rounded-md transition-colors"
+                      className="min-h-9 rounded-md bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100"
                     >
                       未読に戻す
                     </button>
@@ -1343,7 +2267,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'in_progress' && (
                     <button
                       onClick={() => handleStatusUpdate('in_progress')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-yellow-700 bg-yellow-50 hover:bg-yellow-100 rounded-md transition-colors"
+                      className="min-h-9 rounded-md bg-yellow-50 px-3 py-1.5 text-xs font-semibold text-yellow-700 transition-colors hover:bg-yellow-100"
                     >
                       対応中にする
                     </button>
@@ -1351,11 +2275,12 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
-                      className="px-3 py-1 min-h-[44px] lg:min-h-0 text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 rounded-md transition-colors"
+                      className="min-h-9 rounded-md bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100"
                     >
                       解決済にする
                     </button>
                   )}
+                </div>
                 </div>
               </div>
 
@@ -1382,7 +2307,29 @@ export default function ChatsPage() {
                     const prevMsg = idx > 0 ? (chatDetail.messages ?? [])[idx - 1] : null
                     const showDateSep = !prevMsg || !sameYmd(prevMsg.createdAt, msg.createdAt)
                     const isOutgoing = msg.direction === 'outgoing'
-                    const sourceLabel = chatMessageSourceLabel(msg.source)
+                    const senderLabel = isOutgoing
+                      ? (msg.sentByStaffName?.trim() || (msg.source === 'line_official' ? 'LINE公式' : '送信者不明'))
+                      : ''
+                    const quotedMessage = msg.quotedMessageId ? chatMessagesById.get(msg.quotedMessageId) : null
+
+                    if (msg.deletedAt) {
+                      return (
+                        <div key={msg.id}>
+                          {showDateSep && (
+                            <div className="flex justify-center my-3">
+                              <span className="text-[11px] text-white/85 bg-black/20 px-2.5 py-0.5 rounded-full">
+                                {formatYmdSlash(msg.createdAt)}
+                              </span>
+                            </div>
+                          )}
+                          <div className="flex justify-center py-1">
+                            <span className="rounded-full bg-white/35 px-3 py-1 text-[11px] font-semibold text-white/90 shadow-sm">
+                              メッセージの送信が取り消されました
+                            </span>
+                          </div>
+                        </div>
+                      )
+                    }
 
                     // メッセージ表示の分岐
                     let bubbleContent: React.ReactNode
@@ -1393,18 +2340,64 @@ export default function ChatsPage() {
                         </div>
                       )
                     } else if (msg.messageType === 'image') {
-                      try {
-                        const parsed = JSON.parse(msg.content)
-                        bubbleContent = (
-                          <img src={parsed.originalContentUrl || parsed.previewImageUrl} alt="" className="max-w-[200px] rounded" />
-                        )
-                      } catch {
-                        bubbleContent = <span>🖼️ [画像]</span>
-                      }
+                      const media = parseChatMediaPreview(msg.messageType, msg.content, msg.id)
+                      bubbleContent = media ? (
+                        <button
+                          type="button"
+                          onClick={() => setMediaPreview(media)}
+                          className="block max-w-[220px] rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                        >
+                          <img src={media.previewUrl || media.url} alt="" className="max-h-[220px] max-w-[220px] rounded object-contain" />
+                        </button>
+                      ) : (
+                        <span className="text-xs font-semibold opacity-80">画像を表示できません</span>
+                      )
+                    } else if (msg.messageType === 'file' || msg.messageType === 'video' || msg.messageType === 'audio') {
+                      const media = parseChatMediaPreview(msg.messageType, msg.content, msg.id)
+                      bubbleContent = media ? (
+                        <button
+                          type="button"
+                          onClick={() => setMediaPreview(media)}
+                          className={`flex min-w-[180px] max-w-[260px] items-center justify-between gap-3 rounded-lg px-3 py-2 text-left ${
+                            isOutgoing ? 'bg-white/15 text-white' : 'bg-slate-50 text-slate-800'
+                          }`}
+                        >
+                          <span className="min-w-0">
+                            <span className="block truncate text-sm font-semibold">{media.label}</span>
+                            <span className={`mt-0.5 block text-[11px] ${isOutgoing ? 'text-white/70' : 'text-slate-500'}`}>
+                              {media.description ?? (media.kind === 'pdf' ? 'PDF' : 'ファイル')}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-xs font-bold">開く</span>
+                        </button>
+                      ) : (
+                        <span className="text-xs font-semibold opacity-80">ファイルを表示できません</span>
+                      )
+                    } else if (msg.messageType === 'location') {
+                      const location = parseLocationPreview(msg.content)
+                      bubbleContent = location ? (
+                        <a
+                          href={location.url ?? undefined}
+                          target="_blank"
+                          rel="noreferrer"
+                          className={`block min-w-[180px] max-w-[260px] rounded-lg px-3 py-2 ${
+                            isOutgoing ? 'bg-white/15 text-white' : 'bg-slate-50 text-slate-800'
+                          } ${location.url ? 'hover:underline' : 'pointer-events-none'}`}
+                        >
+                          <span className="block truncate text-sm font-semibold">{location.title}</span>
+                          {location.address && (
+                            <span className={`mt-0.5 block text-[11px] ${isOutgoing ? 'text-white/70' : 'text-slate-500'}`}>
+                              {location.address}
+                            </span>
+                          )}
+                        </a>
+                      ) : (
+                        <LinkifiedText text={msg.content} isOutgoing={isOutgoing} />
+                      )
                     } else if (msg.messageType === 'sticker') {
                       bubbleContent = <StickerMessageImage content={msg.content} />
                     } else {
-                      bubbleContent = <span>{msg.content}</span>
+                      bubbleContent = <LinkifiedText text={msg.content} isOutgoing={isOutgoing} />
                     }
 
                     return (
@@ -1438,14 +2431,56 @@ export default function ChatsPage() {
                               }`}
                               style={isOutgoing ? { backgroundColor: '#06C755' } : undefined}
                             >
+                              {quotedMessage && (
+                                <div
+                                  className={`mb-2 rounded-md border-l-4 px-2 py-1.5 text-xs ${
+                                    isOutgoing
+                                      ? 'border-white/70 bg-white/15 text-white/90'
+                                      : 'border-green-400 bg-green-50 text-slate-700'
+                                  }`}
+                                >
+                                  <div className={`font-bold ${isOutgoing ? 'text-white' : 'text-green-700'}`}>
+                                    {quotedMessage.direction === 'incoming' ? chatDetail.friendName : '担当者'}への返信
+                                  </div>
+                                  <div className="mt-0.5 line-clamp-2 opacity-90">
+                                    {chatMessageQuotePreview(quotedMessage)}
+                                  </div>
+                                </div>
+                              )}
                               {bubbleContent}
                             </div>
+                            {!isOutgoing && msg.canQuote && (
+                              <button
+                                type="button"
+                                onClick={() => handleSelectQuoteTarget(msg)}
+                                className="mt-1 rounded-full bg-white/30 px-2 py-0.5 text-[11px] font-semibold text-white/90 transition-colors hover:bg-white/45 hover:text-white"
+                              >
+                                返信
+                              </button>
+                            )}
                             {/* 時刻 */}
                             <div className="mt-0.5 flex items-center gap-1 px-1 text-xs text-white/50">
-                              {sourceLabel && (
-                                <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] text-white/80">
-                                  {sourceLabel}
+                              {senderLabel && (
+                                <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] text-white/90">
+                                  送信者: {senderLabel}
                                 </span>
+                              )}
+                              {isOutgoing && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleReflectMessageDeleted(msg)}
+                                  disabled={reflectingDeletedMessageId === msg.id}
+                                  className="rounded bg-white/10 px-1.5 py-0.5 text-[10px] font-semibold text-white/70 transition-colors hover:bg-white/20 hover:text-white disabled:cursor-wait disabled:opacity-60"
+                                  title={msg.source === 'line_official'
+                                    ? 'LINE公式側で取り消し済みの送信をLリンクにも反映します'
+                                    : 'LINE APIの仕様上、顧客側からは取り消せません。Lリンク上だけ非表示にします'}
+                                >
+                                  {reflectingDeletedMessageId === msg.id
+                                    ? '反映中'
+                                    : msg.source === 'line_official'
+                                      ? '公式取消反映'
+                                      : '非表示'}
+                                </button>
                               )}
                               <span>{new Date(msg.createdAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })}</span>
                             </div>
@@ -1455,30 +2490,32 @@ export default function ChatsPage() {
                     )
                   })
                 )}
-              </div>
-
-              {/* Notes */}
-              <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="メモを入力..."
-                    className="flex-1 text-xs border border-gray-300 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-green-500"
-                  />
-                  <button
-                    onClick={handleSaveNotes}
-                    disabled={savingNotes}
-                    className="px-2 py-1 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-md transition-colors disabled:opacity-50"
-                  >
-                    {savingNotes ? '保存中...' : 'メモ保存'}
-                  </button>
-                </div>
+                {chatDetail.typingParticipants && chatDetail.typingParticipants.length > 0 && (
+                  <div className="flex justify-end pr-2">
+                    <div className="inline-flex max-w-[240px] items-center gap-2 rounded-2xl bg-white/80 px-3 py-2 text-xs font-semibold text-slate-600 shadow-sm">
+                      <span className="inline-flex h-6 min-w-8 items-center justify-center rounded-full bg-blue-100 text-blue-400">
+                        <span className="tracking-[2px]">•••</span>
+                      </span>
+                      <span className="truncate">
+                        {chatDetail.typingParticipants.map((person) => person.staffName).join('、')}が入力中...
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Send Message Form */}
-              <div className="px-4 py-3 border-t border-gray-200">
+              <div
+                className="border-t border-gray-200 px-4 py-2"
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'copy'
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  void handleImageFiles(e.dataTransfer.files)
+                }}
+              >
                 {supportDraftContext && (
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
                     <span className="font-medium">
@@ -1534,93 +2571,106 @@ export default function ChatsPage() {
                     </div>
                   </div>
                 )}
-                <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-gray-600">
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={showLoadingIndicator}
-                      onChange={(e) => setShowLoadingIndicator(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    入力中ローディングを表示
-                  </label>
-                  <label className="inline-flex items-center gap-2 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={markAsReadOnSend}
-                      onChange={(e) => setMarkAsReadOnSend(e.target.checked)}
-                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    送信時にLINE公式側も既読にする
-                  </label>
-                  <select
-                    value={loadingSeconds}
-                    onChange={(e) => setLoadingSeconds(Number.parseInt(e.target.value, 10))}
-                    disabled={!showLoadingIndicator}
-                    className="border border-gray-300 rounded-md px-2 py-1 bg-white disabled:bg-gray-100 disabled:text-gray-400"
-                  >
-                    {[5, 10, 15, 20, 30, 45, 60].map((sec) => (
-                      <option key={sec} value={sec}>{sec}秒</option>
-                    ))}
-                  </select>
-                  <span className="text-gray-500">送信キー:</span>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'enter'}
-                      onChange={() => setSendMode('enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Enter</span>
-                  </label>
-                  <label className="flex items-center gap-1 cursor-pointer">
-                    <input
-                      type="radio"
-                      checked={sendMode === 'shift-enter'}
-                      onChange={() => setSendMode('shift-enter')}
-                      className="accent-green-600"
-                    />
-                    <span>Shift+Enter</span>
-                  </label>
-                </div>
-                <div className="mb-2">
-                  <ImageUploader
-                    mode="line-image"
-                    value={pendingImage}
-                    onChange={setPendingImage}
-                    label="画像を送る (任意)"
-                  />
-                </div>
+                {quoteTarget && (
+                  <div className="mb-2 flex items-start justify-between gap-3 rounded-lg border border-green-200 border-l-4 border-l-green-500 bg-white px-3 py-2 text-xs shadow-sm">
+                    <div className="min-w-0">
+                      <div className="font-bold text-green-700">
+                        {chatDetail?.friendName ?? '顧客'}への返信
+                      </div>
+                      <div className="mt-0.5 truncate text-slate-600">
+                        {chatMessageQuotePreview(quoteTarget)}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setQuoteTarget(null)}
+                      className="shrink-0 rounded-full p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                      aria-label="返信先を解除"
+                    >
+                      <XIcon className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,application/pdf,.pdf"
+                  className="hidden"
+                  onChange={(e) => void handleImageFiles(e.target.files)}
+                />
+                {(pendingImage || uploadingImage || imageUploadError) && (
+                  <div className="mb-2 flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-xs text-slate-600">
+                    {pendingImage?.mode === 'line-image' && (
+                      <>
+                        <img src={pendingImage.previewImageUrl} alt="" className="h-8 w-8 rounded object-cover" />
+                        <span className="min-w-0 flex-1 truncate font-semibold text-slate-700">画像を添付中</span>
+                        <button
+                          type="button"
+                          onClick={() => setPendingImage(null)}
+                          className="rounded-full p-1 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+                          aria-label="添付画像を削除"
+                        >
+                          <XIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
+                    {pendingImage?.mode === 'pdf-link' && (
+                      <>
+                        <span className="inline-flex h-8 w-8 items-center justify-center rounded bg-red-50 text-[10px] font-bold text-red-600 ring-1 ring-red-100">
+                          PDF
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-semibold text-slate-700">
+                          {pendingImage.fileName}
+                          {formatFileSize(pendingImage.size) ? ` (${formatFileSize(pendingImage.size)})` : ''}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPendingImage(null)}
+                          className="rounded-full p-1 text-slate-400 transition-colors hover:bg-white hover:text-slate-700"
+                          aria-label="添付PDFを削除"
+                        >
+                          <XIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </>
+                    )}
+                    {uploadingImage && <span className="font-semibold text-slate-600">ファイルを準備中...</span>}
+                    {imageUploadError && <span className="font-semibold text-red-600">{imageUploadError}</span>}
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending || markingAsRead || uploadingImage}
+                    className="mb-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label="画像またはPDFを添付"
+                  >
+                    <PaperclipIcon />
+                  </button>
                   <textarea
                     ref={textareaRef}
-                    rows={2}
+                    rows={1}
                     value={messageContent}
-                    style={{ maxHeight: '200px', overflowY: 'auto' }}
+                    style={{ maxHeight: '120px', overflowY: 'auto' }}
                     onChange={(e) => {
                       const value = e.target.value
                       setMessageContent(value)
-                      if (selectedChatId && isMessageInputFocused && value.trim()) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
+                      if (selectedChatId && value.trim()) markTypingActive(selectedChatId)
                     }}
+                    onFocus={() => {
+                      if (selectedChatId && messageContent.trim()) markTypingActive(selectedChatId)
+                    }}
+                    onBlur={() => stopTypingStatus(selectedChatId)}
                     onCompositionStart={() => { isComposingRef.current = true }}
                     onCompositionEnd={() => { isComposingRef.current = false }}
-                    onFocus={() => {
-                      setIsMessageInputFocused(true)
-                      if (selectedChatId) {
-                        void triggerLoadingAnimation(selectedChatId)
-                      }
-                    }}
-                    onBlur={() => setIsMessageInputFocused(false)}
                     onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
-                    className="flex-1 text-sm border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-green-500 resize-none overflow-y-auto"
+                    className="min-h-10 flex-1 resize-none overflow-y-auto rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
                   <div className="flex w-36 flex-col gap-1">
                     <button
                       onClick={handleSendMessage}
-                      disabled={sending || recordingExternalOutgoing || (!messageContent.trim() && !pendingImage)}
+                      disabled={sending || markingAsRead || (!messageContent.trim() && !pendingImage)}
                       className="min-h-9 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ backgroundColor: '#06C755' }}
                     >
@@ -1628,15 +2678,40 @@ export default function ChatsPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={handleRecordExternalOutgoing}
-                      disabled={sending || recordingExternalOutgoing || !messageContent.trim() || Boolean(pendingImage)}
-                      className="min-h-8 whitespace-nowrap rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={handleMarkLatestAsRead}
+                      disabled={sending || markingAsRead || !canMarkLatestIncomingAsRead}
+                      className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                        latestIncomingMarkedAsRead
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'
+                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                      }`}
+                      title={markReadButtonTitle}
                     >
-                      {recordingExternalOutgoing ? '記録中...' : '公式送信を記録'}
+                      {markReadButtonLabel}
                     </button>
                   </div>
                 </div>
               </div>
+              {internalChatOpen && (
+                <div className="absolute inset-0 z-20 flex justify-end bg-slate-900/20">
+                  <button
+                    type="button"
+                    className="absolute inset-0 cursor-default"
+                    onClick={() => setInternalChatOpen(false)}
+                    aria-label="社内チャットを閉じる"
+                  />
+                  <div className="relative h-full w-full max-w-[420px] border-l border-slate-200 bg-slate-50 shadow-2xl">
+                    <ChatInternalPanel
+                      messages={chatDetail.internalMessages ?? []}
+                      staffOptions={staffOptions}
+                      saving={savingInternalChat}
+                      onCreate={handleCreateInternalMessage}
+                      onReaction={handleInternalMessageReaction}
+                      onClose={() => setInternalChatOpen(false)}
+                    />
+                  </div>
+                </div>
+              )}
             </>
           ) : null}
         </div>
@@ -1654,14 +2729,59 @@ export default function ChatsPage() {
               friendId={selectedFriendId || selectedChatId}
               chatStatus={
                 chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
-                  ? { status: chatDetail.status, notes: chatDetail.notes }
+                  ? { status: chatDetail.status }
                   : undefined
               }
+              onFriendUpdated={handleFriendUpdated}
             />
           </div>
         )}
       </div>
-      <CcPromptButton prompts={ccPrompts} />
+      {mediaPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" role="dialog" aria-modal="true">
+          <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+              <p className="min-w-0 truncate text-sm font-bold text-gray-900">{mediaPreview.label}</p>
+              <button
+                type="button"
+                onClick={() => setMediaPreview(null)}
+                className="rounded-full p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
+                aria-label="プレビューを閉じる"
+              >
+                <XIcon />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 bg-gray-100 p-3">
+              {mediaPreview.kind === 'image' ? (
+                <div className="flex h-full min-h-[60vh] items-center justify-center">
+                  <img src={mediaPreview.url} alt="" className="max-h-[78vh] max-w-full rounded-lg object-contain shadow-sm" />
+                </div>
+              ) : mediaPreview.kind === 'pdf' ? (
+                <iframe src={mediaPreview.url} title={mediaPreview.label} className="h-[78vh] w-full rounded-lg bg-white" />
+              ) : mediaPreview.kind === 'video' ? (
+                <div className="flex h-full min-h-[60vh] items-center justify-center">
+                  <video src={mediaPreview.url} controls className="max-h-[78vh] max-w-full rounded-lg bg-black shadow-sm" />
+                </div>
+              ) : mediaPreview.kind === 'audio' ? (
+                <div className="flex min-h-[50vh] items-center justify-center">
+                  <audio src={mediaPreview.url} controls className="w-full max-w-xl" />
+                </div>
+              ) : (
+                <div className="flex min-h-[50vh] items-center justify-center">
+                  <a
+                    href={mediaPreview.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-gray-700"
+                  >
+                    ファイルを開く
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

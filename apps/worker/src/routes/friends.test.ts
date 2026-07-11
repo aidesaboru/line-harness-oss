@@ -136,6 +136,22 @@ function makeFriendsDb(state: {
             const [friendId] = bound as [string];
             return (visible.has(friendId) ? { ok: 1 } : null) as T | null;
           }
+          if (sql.startsWith('SELECT * FROM friends WHERE id = ?')) {
+            const [friendId, lineAccountId] = bound as [string, string | undefined];
+            const row = rows.find((friend) =>
+              friend.id === friendId &&
+              (!lineAccountId || friend.line_account_id === lineAccountId),
+            );
+            return (row ?? null) as T | null;
+          }
+          if (sql.startsWith('SELECT * FROM friends WHERE line_user_id = ?')) {
+            const [lineUserId, lineAccountId] = bound as [string, string | undefined];
+            const row = rows.find((friend) =>
+              friend.line_user_id === lineUserId &&
+              (!lineAccountId || friend.line_account_id === lineAccountId),
+            );
+            return (row ?? null) as T | null;
+          }
           if (sql.includes('SELECT COUNT(*) as count FROM friends')) {
             return { count: scopedRows(sql).filter((row) => row.is_following === 1).length } as T;
           }
@@ -164,6 +180,22 @@ function makeFriendsDb(state: {
         },
         async run() {
           calls.push({ method: 'run', sql, binds: bound });
+          if (sql.startsWith('UPDATE friends SET metadata = ?, display_name = ?')) {
+            const [metadata, displayName, updatedAt, friendId] = bound as [string, string, string, string];
+            const row = rows.find((friend) => friend.id === friendId);
+            if (row) {
+              row.metadata = metadata;
+              row.display_name = displayName;
+              row.updated_at = updatedAt;
+            }
+          } else if (sql.startsWith('UPDATE friends SET metadata = ?')) {
+            const [metadata, updatedAt, friendId] = bound as [string, string, string];
+            const row = rows.find((friend) => friend.id === friendId);
+            if (row) {
+              row.metadata = metadata;
+              row.updated_at = updatedAt;
+            }
+          }
           return { success: true, meta: { changes: 1 } };
         },
       };
@@ -203,6 +235,7 @@ function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
 
 beforeEach(() => {
   for (const fn of Object.values(dbMocks)) fn.mockReset();
+  dbMocks.jstNow.mockReturnValue('2026-06-12T10:00:00.000');
   dbMocks.getFriendTags.mockResolvedValue([]);
   dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
     friendRows.find((friend) => friend.id === id) ?? null,
@@ -211,7 +244,7 @@ beforeEach(() => {
 });
 
 describe('friends support visibility', () => {
-  test('staff friend list only includes friends tied to visible support cases', async () => {
+  test('staff friend list includes all customers in the selected account', async () => {
     const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 
     const res = await setupApp(db, 'staff').request('/api/friends?lineAccountId=acc-1&includeTags=false');
@@ -222,11 +255,11 @@ describe('friends support visibility', () => {
       data: { items: Array<{ id: string; displayName: string }>; total: number };
     };
     expect(body.success).toBe(true);
-    expect(body.data.items.map((item) => item.id)).toEqual(['friend-visible']);
-    expect(body.data.total).toBe(1);
+    expect(body.data.items.map((item) => item.id)).toEqual(['friend-visible', 'friend-hidden']);
+    expect(body.data.total).toBe(2);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM friends f'));
-    expect(listCall?.sql).toContain('support_cases sc_friend_scope');
-    expect(listCall?.binds).toEqual(expect.arrayContaining(['staff-1', '%田島%', '%田島%', '%田島%']));
+    expect(listCall?.sql).not.toContain('support_cases sc_friend_scope');
+    expect(listCall?.binds).toEqual(['acc-1', 50, 0]);
   });
 
   test('friend list clamps invalid limit and fractional offset before SQL bind', async () => {
@@ -264,16 +297,16 @@ describe('friends support visibility', () => {
     expect(listCall?.sql).not.toContain('support_cases sc_friend_scope');
   });
 
-  test('staff friend count uses the same visible support friend scope', async () => {
+  test('staff friend count includes all customers in the selected account', async () => {
     const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 
     const res = await setupApp(db, 'staff').request('/api/friends/count?lineAccountId=acc-1');
 
     expect(res.status).toBe(200);
     const body = (await res.json()) as { data: { count: number } };
-    expect(body.data.count).toBe(1);
+    expect(body.data.count).toBe(2);
     const countCall = calls.find((call) => call.method === 'first' && call.sql.includes('COUNT(*)'));
-    expect(countCall?.sql).toContain('support_cases sc_friend_scope');
+    expect(countCall?.sql).not.toContain('support_cases sc_friend_scope');
   });
 
   test('staff cannot read ref attribution stats', async () => {
@@ -285,13 +318,26 @@ describe('friends support visibility', () => {
     expect(calls).toHaveLength(0);
   });
 
-  test('staff cannot read hidden friend message history', async () => {
-    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+  test('staff can read any customer detail', async () => {
+    const { db } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/friends/friend-hidden');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { id: string; displayName: string } };
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({ id: 'friend-hidden', displayName: '隠れる友だち' });
+  });
+
+  test('staff can read any customer message history', async () => {
+    const { db } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 
     const res = await setupApp(db, 'staff').request('/api/friends/friend-hidden/messages');
 
-    expect(res.status).toBe(404);
-    expect(calls.some((call) => call.sql.includes('FROM messages_log'))).toBe(false);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: Array<{ id: string; content: string }> };
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual([{ id: 'msg-hidden', direction: 'incoming', messageType: 'text', content: '隠れる会話', createdAt: '2026-06-12T11:30:00.000' }]);
   });
 
   test('staff can read visible friend message history', async () => {
@@ -305,18 +351,81 @@ describe('friends support visibility', () => {
     expect(body.data).toEqual([{ id: 'msg-visible', direction: 'incoming', messageType: 'text', content: '確認お願いします', createdAt: '2026-06-12T11:00:00.000' }]);
   });
 
-  test('staff cannot send a direct message to a hidden friend', async () => {
-    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+  test('metadata update changes display name when customer number and contact name are present', async () => {
+    const rows = friendRows.map((row) => ({ ...row }));
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      rows.find((friend) => friend.id === id) ?? null,
+    );
+    const { db, calls } = makeFriendsDb({ rows, visibleFriendIds: ['friend-visible'] });
 
-    const res = await setupApp(db, 'staff').request('/api/friends/friend-hidden/messages', {
-      method: 'POST',
+    const res = await setupApp(db, 'staff').request('/api/friends/friend-visible/metadata', {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: 'hidden friend send' }),
+      body: JSON.stringify({
+        customerNumber: 'C-001',
+        contactName: '林 静香',
+      }),
     });
 
-    expect(res.status).toBe(404);
-    expect(dbMocks.getFriendById).not.toHaveBeenCalled();
-    expect(calls.some((call) => call.method === 'run')).toBe(false);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { displayName: string; metadata: Record<string, unknown> } };
+    expect(body.success).toBe(true);
+    expect(body.data.displayName).toBe('C-001_林 静香');
+    expect(body.data.metadata).toMatchObject({ customerNumber: 'C-001', contactName: '林 静香' });
+    expect(rows[0].display_name).toBe('C-001_林 静香');
+    const updateCall = calls.find((call) => call.sql.startsWith('UPDATE friends SET metadata = ?, display_name = ?'));
+    expect(updateCall?.binds).toEqual([
+      JSON.stringify({ customerNumber: 'C-001', contactName: '林 静香' }),
+      'C-001_林 静香',
+      '2026-06-12T10:00:00.000',
+      'friend-visible',
+    ]);
+  });
+
+  test('owner can bulk update customer metadata by friend id or LINE user id', async () => {
+    const rows = friendRows.map((row) => ({ ...row }));
+    const { db, calls } = makeFriendsDb({ rows, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'owner').request('/api/friends/metadata/bulk', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        rows: [
+          {
+            friendId: 'friend-visible',
+            metadata: { customerNumber: 'C-001', contactName: '田中 太郎', companyName: '株式会社テスト' },
+          },
+          {
+            lineUserId: 'U-hidden',
+            metadata: { customerNumber: 'C-002', storeName: '新宿店' },
+          },
+          {
+            friendId: 'missing-friend',
+            metadata: { customerNumber: 'C-404' },
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { requested: number; updated: number; notFound: Array<{ friendId?: string }> };
+    };
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        requested: 3,
+        updated: 2,
+        notFound: [{ friendId: 'missing-friend' }],
+      },
+    });
+    expect(JSON.parse(rows[0].metadata)).toMatchObject({ customerNumber: 'C-001', contactName: '田中 太郎', companyName: '株式会社テスト' });
+    expect(JSON.parse(rows[1].metadata)).toMatchObject({ customerNumber: 'C-002', storeName: '新宿店' });
+    expect(rows[0].display_name).toBe('C-001_田中 太郎');
+    expect(calls.filter((call) => call.sql.startsWith('UPDATE friends SET metadata = ?'))).toHaveLength(2);
+    expect(calls.filter((call) => call.sql.startsWith('UPDATE friends SET metadata = ?, display_name = ?'))).toHaveLength(1);
   });
 
   test('friend list failure logs only the error kind', async () => {

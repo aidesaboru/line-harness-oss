@@ -11,6 +11,8 @@ import { calculateStaggerDelay, sleep, addMessageVariation } from './stealth.js'
 import { buildSegmentQuery } from './segment-query.js';
 import type { SegmentCondition } from './segment-query.js';
 import { buildMessage } from './broadcast.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from './line-safety.js';
+import { appendBroadcastSafetyFilter } from './broadcast-safety.js';
 
 const MULTICAST_BATCH_SIZE = 500;
 
@@ -21,6 +23,7 @@ function segmentSendLineErrorStatus(err: unknown): number | null {
 }
 
 function segmentSendErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   const status = segmentSendLineErrorStatus(err);
   if (status != null) return `line_http_status_${status}`;
   if (err instanceof TypeError) return 'network_error';
@@ -46,6 +49,8 @@ export async function processSegmentSend(
   if (!broadcast) {
     throw new Error(`Broadcast ${broadcastId} not found`);
   }
+  const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
+  await assertLineSendAllowed(db, broadcastAccountId);
 
   const message = buildMessage(broadcast.message_type, broadcast.message_content);
 
@@ -55,11 +60,10 @@ export async function processSegmentSend(
   try {
     // Build and execute segment query to get matching friends (アカウントで絞り込み)
     const { sql, bindings } = buildSegmentQuery(condition);
-    const broadcastAccountId = (broadcast as unknown as Record<string, unknown>).line_account_id as string | null;
-    let finalSql = sql;
+    let finalSql = appendBroadcastSafetyFilter(sql);
     const finalBindings = [...bindings];
     if (broadcastAccountId) {
-      finalSql = sql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
+      finalSql = finalSql.replace('WHERE', 'WHERE f.line_account_id = ? AND');
       finalBindings.unshift(broadcastAccountId);
     }
     const queryResult = await db

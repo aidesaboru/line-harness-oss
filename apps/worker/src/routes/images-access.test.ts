@@ -6,7 +6,7 @@ const { images } = await import('./images.js');
 type StaffRole = 'owner' | 'admin' | 'staff';
 
 type TestEnv = {
-  Bindings: { IMAGES: R2Bucket; WORKER_URL: string };
+  Bindings: { IMAGES?: R2Bucket; FILES?: KVNamespace; WORKER_URL: string };
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
@@ -18,12 +18,33 @@ function createImagesBucket() {
   } as unknown as R2Bucket;
 }
 
-function setupApp(role: StaffRole = 'staff', bucket = createImagesBucket()) {
+function createFilesKv() {
+  const stored = new Map<string, { value: ArrayBuffer; metadata: unknown }>();
+  return {
+    put: vi.fn(async (key: string, value: ArrayBuffer | string, options?: { metadata?: unknown }) => {
+      const body = typeof value === 'string' ? new TextEncoder().encode(value).buffer : value;
+      stored.set(key, { value: body, metadata: options?.metadata ?? null });
+    }),
+    getWithMetadata: vi.fn(async (key: string) => {
+      const item = stored.get(key);
+      return {
+        value: item?.value ?? null,
+        metadata: item?.metadata ?? null,
+      };
+    }),
+    delete: vi.fn(async (key: string) => {
+      stored.delete(key);
+    }),
+  } as unknown as KVNamespace;
+}
+
+function setupApp(role: StaffRole = 'staff', bucket: R2Bucket | null = createImagesBucket(), files?: KVNamespace) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'staff-1', name: 'Tajima', role });
     c.env = {
-      IMAGES: bucket,
+      ...(bucket ? { IMAGES: bucket } : {}),
+      ...(files ? { FILES: files } : {}),
       WORKER_URL: 'https://worker.example.com',
     };
     await next();
@@ -58,6 +79,129 @@ describe('image upload and delete role guard', () => {
 
     expect(res.status).toBe(201);
     expect(bucket.put).toHaveBeenCalled();
+  });
+
+  test('staff can upload PDF files for chat links', async () => {
+    const { app, bucket } = setupApp('staff');
+
+    const res = await app.request('/api/files', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'X-File-Name': encodeURIComponent('見積書.pdf'),
+      },
+      body: new TextEncoder().encode('%PDF-1.4'),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      data: { url: string; mimeType: string; filename: string };
+    };
+    expect(body.data.url).toMatch(/^https:\/\/worker\.example\.com\/files\/[a-f0-9-]+\.pdf$/);
+    expect(body.data.mimeType).toBe('application/pdf');
+    expect(body.data.filename).toBe('見積書.pdf');
+    expect(bucket.put).toHaveBeenCalledWith(
+      expect.stringMatching(/^[a-f0-9-]+\.pdf$/),
+      expect.any(ArrayBuffer),
+      expect.objectContaining({
+        httpMetadata: { contentType: 'application/pdf' },
+        customMetadata: { originalFilename: '見積書.pdf' },
+      }),
+    );
+  });
+
+  test('accepts PDFs over the former 10MB limit with KV fallback', async () => {
+    const files = createFilesKv();
+    const { app } = setupApp('staff', null, files);
+    const data = new Uint8Array(11 * 1024 * 1024);
+    data.set(new TextEncoder().encode('%PDF-1.7'));
+
+    const res = await app.request('/api/files', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'X-File-Name': encodeURIComponent('大きめ資料.pdf'),
+      },
+      body: data,
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { data: { size: number; filename: string } };
+    expect(body.data.size).toBe(data.byteLength);
+    expect(body.data.filename).toBe('大きめ資料.pdf');
+    expect(files.put).toHaveBeenCalled();
+  });
+
+  test('accepts PDF extension when browser sends octet-stream', async () => {
+    const files = createFilesKv();
+    const { app } = setupApp('staff', null, files);
+
+    const res = await app.request('/api/files', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-File-Name': encodeURIComponent('ブラウザ判定なし.pdf'),
+      },
+      body: new TextEncoder().encode('%PDF-1.7'),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { data: { mimeType: string; filename: string } };
+    expect(body.data.mimeType).toBe('application/pdf');
+    expect(body.data.filename).toBe('ブラウザ判定なし.pdf');
+  });
+
+  test('rejects PDFs over the KV storage limit with a clear message', async () => {
+    const files = createFilesKv();
+    const { app } = setupApp('staff', null, files);
+
+    const res = await app.request('/api/files', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'X-File-Name': encodeURIComponent('大きすぎる資料.pdf'),
+      },
+      body: new Uint8Array(25 * 1024 * 1024 + 1),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ success: false, error: 'PDFは25MB以下にしてください。' });
+    expect(files.put).not.toHaveBeenCalled();
+  });
+
+  test('falls back to KV for PDF upload when R2 is not bound', async () => {
+    const files = createFilesKv();
+    const { app } = setupApp('staff', null, files);
+
+    const uploadRes = await app.request('/api/files', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/pdf',
+        'X-File-Name': encodeURIComponent('請求書.pdf'),
+      },
+      body: new TextEncoder().encode('%PDF-1.7'),
+    });
+
+    expect(uploadRes.status).toBe(201);
+    const body = (await uploadRes.json()) as {
+      data: { key: string; url: string; mimeType: string; filename: string };
+    };
+    expect(body.data.mimeType).toBe('application/pdf');
+    expect(body.data.filename).toBe('請求書.pdf');
+    expect(files.put).toHaveBeenCalledWith(
+      body.data.key,
+      expect.any(ArrayBuffer),
+      expect.objectContaining({
+        metadata: { contentType: 'application/pdf', originalFilename: '請求書.pdf' },
+      }),
+    );
+
+    const readPath = new URL(body.data.url).pathname;
+    const readRes = await app.request(readPath);
+    expect(readRes.status).toBe(200);
+    expect(readRes.headers.get('Content-Type')).toBe('application/pdf');
+    expect(readRes.headers.get('Content-Disposition')).toContain(encodeURIComponent('請求書.pdf'));
+    expect(await readRes.text()).toBe('%PDF-1.7');
   });
 
   test('rejects invalid JSON image payloads before R2 put', async () => {

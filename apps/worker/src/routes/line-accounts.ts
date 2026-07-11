@@ -384,9 +384,9 @@ lineAccounts.get('/api/line-accounts/:id', async (c) => {
       return c.json({ success: false, error: 'LINE account not found' }, 404);
     }
     const staff = c.get('staff');
-    const data = staff?.role === 'staff'
-      ? serializeLineAccount(account)
-      : serializeLineAccountFull(account);
+    const data = staff?.role === 'owner' || staff?.role === 'admin'
+      ? serializeLineAccountFull(account)
+      : serializeLineAccount(account);
     return c.json({ success: true, data });
   } catch (err) {
     console.error(`GET /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);

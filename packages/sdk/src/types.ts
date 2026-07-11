@@ -474,7 +474,7 @@ export interface CalendarBooking {
 }
 
 // ─── Staff ──────────────────────────────────────────────
-export type StaffRole = 'owner' | 'admin' | 'staff'
+export type StaffRole = 'owner' | 'admin' | 'staff' | 'secondary'
 
 export interface StaffMember {
   id: string
@@ -501,7 +501,7 @@ export interface StaffProfile {
 export interface CreateStaffInput {
   name: string
   email?: string
-  role: 'admin' | 'staff'
+  role: 'admin' | 'staff' | 'secondary'
 }
 
 export interface UpdateStaffInput {

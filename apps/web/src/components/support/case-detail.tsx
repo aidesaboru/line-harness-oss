@@ -2,19 +2,18 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import type { SupportCaseDetail, SupportCaseStatus } from '@/lib/api'
-import { textOrMessageTypePreview } from '@/lib/message-type-label'
+import type { SupportCaseDetail, SupportCaseStatus, SupportInternalMessage, SupportMessage } from '@/lib/api'
+import { messageSourceLabel } from '@/lib/message-source-label'
+import { parseSupportMessagePreview } from '@/lib/support-message-preview'
+import MentionText from '@/components/shared/mention-text'
 import {
   categoryLabel,
-  categoryOptions,
   canOpenChatWithDraft,
+  escalationStatusMeta,
   eventTypeLabel,
   formatDateTime,
-  formatElapsed,
   getCaseFormValidationIssues,
-  getVisibleStatusOptions,
   isOverdueCase,
-  isStaleCase,
   priorityClass,
   priorityLabel,
   priorityOptions,
@@ -33,14 +32,10 @@ import {
   DueBadge,
   DueTimePresetRow,
   Field,
-  FlameIcon,
   Pill,
   inputCls,
-  selectCls,
   textareaCls,
 } from './support-ui'
-
-export type DetailTab = 'work' | 'logs'
 
 interface CaseDetailProps {
   detail: SupportCaseDetail | null
@@ -49,19 +44,23 @@ interface CaseDetailProps {
   dirty: boolean
   saving: boolean
   canEditRouting: boolean
-  detailTab: DetailTab
+  staffOptions: string[]
+  staffName: string
   onFormChange: (patch: Partial<CaseFormState>) => void
   onSave: () => void
   onDiscard: () => void
   onQuickStatus: (status: SupportCaseStatus, eventBody: string) => Promise<boolean>
+  onInternalMessageCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
+  onInternalMessageReaction: (messageId: string, emoji: string) => Promise<void>
   onOpenChatWithDraft: () => void
-  onTabChange: (tab: DetailTab) => void
   onCopyReplyDraft: () => void
   emptyState?: Pick<SupportEmptyState, 'title' | 'description'>
   outsideCurrentList?: boolean
   outsideCurrentListActionLabel?: string
   onResetFilters?: () => void
 }
+
+const internalReactionEmojis = ['👍', '🙏', '✅', '👀', '❤️']
 
 function DetailSkeleton() {
   return (
@@ -86,10 +85,28 @@ function EmptyDetail({ emptyState }: { emptyState?: Pick<SupportEmptyState, 'tit
       <span className="rounded-full bg-gray-100 p-3 text-gray-400">
         <ChatIcon className="h-6 w-6" />
       </span>
-      <p className="text-sm font-medium text-gray-600">{emptyState?.title ?? '案件を選択してください'}</p>
+      <p className="text-sm font-medium text-gray-600">{emptyState?.title ?? 'チケットを選択してください'}</p>
       <p className="max-w-sm text-xs leading-relaxed text-gray-400">
         {emptyState?.description ?? '左の一覧、または上部のキューから絞り込めます'}
       </p>
+    </div>
+  )
+}
+
+function ticketShortId(id: string): string {
+  const normalized = id.replace(/-/g, '').trim()
+  return normalized ? normalized.slice(0, 6).toUpperCase() : 'NEW'
+}
+
+function DetailInfoRow({ label, value, tone = 'default' }: { label: string; value: string; tone?: 'default' | 'muted' | 'accent' }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+      <dt className="text-[11px] font-medium text-slate-500">{label}</dt>
+      <dd className={`mt-0.5 break-words text-sm font-semibold ${
+        tone === 'accent' ? 'text-indigo-700' : tone === 'muted' ? 'text-slate-500' : 'text-slate-900'
+      }`}>
+        {value}
+      </dd>
     </div>
   )
 }
@@ -149,104 +166,390 @@ function CompletionPanel({
   )
 }
 
-function compactValue(value: string | null | undefined): string {
-  return value?.trim() || ''
+function SupportMessageContent({ message }: { message: SupportMessage }) {
+  const preview = parseSupportMessagePreview(message.messageType, message.content)
+
+  if (preview.kind === 'text') {
+    return <p className="whitespace-pre-wrap break-words">{preview.text}</p>
+  }
+
+  if (preview.kind === 'image') {
+    return (
+      <a
+        href={preview.originalUrl}
+        target="_blank"
+        rel="noreferrer"
+        className="inline-block max-w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+      >
+        <img
+          src={preview.previewUrl}
+          alt="LINE画像"
+          className="max-h-48 max-w-full rounded-md border border-black/5 object-contain"
+          loading="lazy"
+        />
+      </a>
+    )
+  }
+
+  if (preview.kind === 'file') {
+    const body = (
+      <div className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-gray-200 bg-white px-3 py-2">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-semibold text-gray-800">{preview.label}</p>
+          <p className="mt-0.5 text-[11px] text-gray-400">{preview.isPdf ? 'PDF' : 'ファイル'}</p>
+        </div>
+        {preview.url && <span className="shrink-0 text-xs font-semibold text-green-700">開く</span>}
+      </div>
+    )
+    return preview.url ? (
+      <a href={preview.url} target="_blank" rel="noreferrer" className="block max-w-sm">
+        {body}
+      </a>
+    ) : body
+  }
+
+  return <p className="whitespace-pre-wrap break-words">{preview.label}</p>
 }
 
-function customerDisplayName(detail: SupportCaseDetail, caseForm: CaseFormState): string {
-  const company = compactValue(caseForm.companyName) || compactValue(detail.companyName)
-  const store = compactValue(caseForm.storeName) || compactValue(detail.storeName)
-  const contact = compactValue(caseForm.contactName) || compactValue(detail.contactName)
-  const lineName = compactValue(detail.friendName)
-  const parts = [company, store, contact].filter(Boolean)
-  if (parts.length > 0) return parts.join(' / ')
-  return lineName || '顧客未紐付け'
+function mentionNamesFromBody(body: string, staffOptions: string[]): string[] {
+  const names = new Set<string>()
+  staffOptions.forEach((name) => {
+    const trimmed = name.trim()
+    if (trimmed && body.includes(`@${trimmed}`)) names.add(trimmed)
+  })
+  return Array.from(names)
 }
 
-function getWorkFocus(input: {
-  status: SupportCaseStatus
-  overdue: boolean
-  stale: boolean
-  unassigned: boolean
-  canEditRouting: boolean
-  showChatReplyAction: boolean
-  hasReplyDraft: boolean
-  hasChat: boolean
-}): { title: string; description: string; className: string; labelClassName: string } {
-  if (input.status === 'resolved') {
-    return {
-      title: '対応完了済み',
-      description: '追加連絡が来た場合は再オープンして、会話と履歴を確認してください。',
-      className: 'border-green-200 bg-green-50 text-green-900',
-      labelClassName: 'text-green-700',
-    }
+function insertMention(text: string, name: string): string {
+  const prefix = text.trimEnd()
+  return `${prefix}${prefix ? ' ' : ''}@${name} `
+}
+
+function insertEmoji(text: string, emoji: string): string {
+  const prefix = text.trimEnd()
+  return `${prefix}${prefix ? ' ' : ''}${emoji} `
+}
+
+function InternalReactionRow({
+  message,
+  saving,
+  onReaction,
+}: {
+  message: SupportInternalMessage
+  saving: boolean
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const availableEmojis = internalReactionEmojis.filter((emoji) => (
+    !message.reactions.some((reaction) => reaction.emoji === emoji)
+  ))
+
+  const pickReaction = (emoji: string) => {
+    setPickerOpen(false)
+    void onReaction(message.id, emoji)
   }
-  if (input.overdue) {
-    return {
-      title: '期限超過を先に処理',
-      description: '返信・社内確認・期限再設定のどれが止まっているか確認してください。',
-      className: 'border-red-200 bg-red-50 text-red-900',
-      labelClassName: 'text-red-700',
-    }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {message.reactions.map((reaction) => (
+        <button
+          key={reaction.emoji}
+          type="button"
+          onClick={() => void onReaction(message.id, reaction.emoji)}
+          disabled={saving}
+          title={reaction.names.join('、')}
+          className={`rounded-full border px-2 py-0.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            reaction.reactedByMe
+              ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+          }`}
+        >
+          <span aria-hidden="true">{reaction.emoji}</span>
+          <span className="ml-1">{reaction.count}</span>
+        </button>
+      ))}
+      {availableEmojis.length > 0 && (
+        <span className="relative inline-flex">
+          <button
+            type="button"
+            onClick={() => setPickerOpen((value) => !value)}
+            disabled={saving}
+            className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label="リアクションを追加"
+          >
+            ☺
+          </button>
+          {pickerOpen && (
+            <div className="absolute left-0 top-full z-30 mt-1 flex gap-1 rounded-full border border-slate-200 bg-white p-1 shadow-lg">
+              {availableEmojis.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => pickReaction(emoji)}
+                  disabled={saving}
+                  className="rounded-full px-2 py-1 text-sm transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`${emoji}でリアクション`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          )}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function InternalMessageBubble({
+  message,
+  replies,
+  staffOptions,
+  saving,
+  open,
+  replyDraft,
+  onToggle,
+  onReplyDraftChange,
+  onInsertMention,
+  onSendReply,
+  onReaction,
+}: {
+  message: SupportInternalMessage
+  replies: SupportInternalMessage[]
+  staffOptions: string[]
+  saving: boolean
+  open: boolean
+  replyDraft: string
+  onToggle: () => void
+  onReplyDraftChange: (value: string) => void
+  onInsertMention: (name: string) => void
+  onSendReply: () => void
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+}) {
+  const author = message.createdByName || 'スタッフ'
+  const initial = author.trim().charAt(0) || '社'
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm">
+      <div className="flex gap-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+          {initial}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-slate-900">{author}</p>
+            <span className="text-xs text-slate-400">{formatDateTime(message.createdAt)}</span>
+          </div>
+          <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-800">
+            <MentionText text={message.body} mentions={message.mentions} />
+          </p>
+          {message.mentions.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {message.mentions.map((name) => (
+                <span key={name} className="rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                  @{name}
+                </span>
+              ))}
+            </div>
+          )}
+          <InternalReactionRow message={message} saving={saving} onReaction={onReaction} />
+          <button
+            type="button"
+            onClick={onToggle}
+            className="mt-2 text-xs font-medium text-slate-500 underline-offset-2 hover:text-slate-900 hover:underline"
+          >
+            {open ? 'スレッドを閉じる' : replies.length > 0 ? `スレッド ${replies.length}件` : '返信'}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="mt-3 border-l-2 border-slate-200 pl-4">
+          <div className="space-y-2">
+            {replies.map((reply) => (
+              <div key={reply.id} className="rounded-md bg-slate-50 px-3 py-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-semibold text-slate-800">{reply.createdByName || 'スタッフ'}</p>
+                  <span className="text-[11px] text-slate-400">{formatDateTime(reply.createdAt)}</span>
+                </div>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+                  <MentionText text={reply.body} mentions={reply.mentions} />
+                </p>
+                <InternalReactionRow message={reply} saving={saving} onReaction={onReaction} />
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 rounded-md border border-slate-200 bg-white p-2">
+            {staffOptions.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {staffOptions.slice(0, 8).map((name) => (
+                  <button
+                    key={name}
+                    type="button"
+                    onClick={() => onInsertMention(name)}
+                    disabled={saving}
+                    className="rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    @{name}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {internalReactionEmojis.map((emoji) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  onClick={() => onReplyDraftChange(insertEmoji(replyDraft, emoji))}
+                  disabled={saving}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={replyDraft}
+              onChange={(event) => onReplyDraftChange(event.target.value)}
+              rows={2}
+              placeholder="スレッドに返信"
+              className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-6 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={onSendReply}
+                disabled={saving || !replyDraft.trim()}
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                返信する
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function InternalChatPanel({
+  messages,
+  staffOptions,
+  saving,
+  onCreate,
+  onReaction,
+}: {
+  messages: SupportInternalMessage[]
+  staffOptions: string[]
+  saving: boolean
+  onCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
+  onReaction: (messageId: string, emoji: string) => Promise<void>
+}) {
+  const [draft, setDraft] = useState('')
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({})
+  const [openThreads, setOpenThreads] = useState<Record<string, boolean>>({})
+  const roots = messages.filter((message) => !message.parentId)
+  const repliesByParent = messages.reduce<Record<string, SupportInternalMessage[]>>((acc, message) => {
+    if (!message.parentId) return acc
+    if (!acc[message.parentId]) acc[message.parentId] = []
+    acc[message.parentId].push(message)
+    return acc
+  }, {})
+
+  const submitRoot = async () => {
+    const body = draft.trim()
+    if (!body) return
+    const ok = await onCreate(body, null, mentionNamesFromBody(body, staffOptions))
+    if (ok) setDraft('')
   }
-  if (input.unassigned) {
-    return {
-      title: input.canEditRouting ? '一次担当を決める' : '担当者設定を依頼',
-      description: input.canEditRouting
-        ? '担当が空のままだと対応漏れになりやすいので、先に一次担当を入れてください。'
-        : '担当者が未設定です。owner/adminに担当者設定を依頼してください。',
-      className: 'border-amber-200 bg-amber-50 text-amber-900',
-      labelClassName: 'text-amber-700',
-    }
+
+  const submitReply = async (parentId: string) => {
+    const body = replyDrafts[parentId]?.trim() ?? ''
+    if (!body) return
+    const ok = await onCreate(body, parentId, mentionNamesFromBody(body, staffOptions))
+    if (ok) setReplyDrafts((prev) => ({ ...prev, [parentId]: '' }))
   }
-  if (input.showChatReplyAction) {
-    return {
-      title: '返信案をチャットへ送る',
-      description: '返信案が用意されています。内容を確認して顧客チャットへ引き継げます。',
-      className: 'border-green-200 bg-green-50 text-green-900',
-      labelClassName: 'text-green-700',
-    }
-  }
-  if (input.status === 'open' || input.status === 'reopened') {
-    return {
-      title: '対応を開始する',
-      description: '問い合わせ要約を確認し、対応開始にして担当メモを残してください。',
-      className: 'border-amber-200 bg-amber-50 text-amber-900',
-      labelClassName: 'text-amber-700',
-    }
-  }
-  if (input.status === 'escalated' || input.status === 'waiting_secondary') {
-    return {
-      title: '二次対応の回答を確認',
-      description: 'エスカレ内容と回答状況を確認し、顧客返信案に落とし込んでください。',
-      className: 'border-indigo-200 bg-indigo-50 text-indigo-900',
-      labelClassName: 'text-indigo-700',
-    }
-  }
-  if (input.status === 'customer_reply') {
-    return {
-      title: '顧客からの返信待ち',
-      description: '必要なら次回確認を設定し、期限切れになる前に再確認してください。',
-      className: 'border-blue-200 bg-blue-50 text-blue-900',
-      labelClassName: 'text-blue-700',
-    }
-  }
-  if (input.stale) {
-    return {
-      title: '24時間以上止まっています',
-      description: '内部メモ、返信案、次回確認のどれかを更新して対応を前に進めてください。',
-      className: 'border-orange-200 bg-orange-50 text-orange-900',
-      labelClassName: 'text-orange-700',
-    }
-  }
-  return {
-    title: input.hasReplyDraft && !input.hasChat ? '返信案を保存' : '対応内容を整理',
-    description: input.hasReplyDraft && !input.hasChat
-      ? '会話に紐づかない案件です。返信案をコピーして別経路で送れる状態にしてください。'
-      : '要約、内部メモ、返信案を更新して、次の状態へ進められるようにしてください。',
-    className: 'border-gray-200 bg-gray-50 text-gray-900',
-    labelClassName: 'text-gray-500',
-  }
+
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-slate-50 shadow-sm" aria-label="社内チャット">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <p className="text-sm font-semibold text-slate-900">社内チャット</p>
+        <p className="mt-0.5 text-xs text-slate-500">顧客には送られない、一次対応者同士の相談欄です。</p>
+      </div>
+
+      <div className="max-h-[440px] space-y-3 overflow-y-auto p-3">
+        {roots.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-6 text-center">
+            <p className="text-sm font-medium text-slate-600">まだ社内チャットはありません</p>
+            <p className="mt-1 text-xs text-slate-400">確認事項や引き継ぎをここに残せます。</p>
+          </div>
+        ) : roots.map((message) => (
+          <InternalMessageBubble
+            key={message.id}
+            message={message}
+            replies={repliesByParent[message.id] ?? []}
+            staffOptions={staffOptions}
+            saving={saving}
+            open={Boolean(openThreads[message.id])}
+            replyDraft={replyDrafts[message.id] ?? ''}
+            onToggle={() => setOpenThreads((prev) => ({ ...prev, [message.id]: !prev[message.id] }))}
+            onReplyDraftChange={(value) => setReplyDrafts((prev) => ({ ...prev, [message.id]: value }))}
+            onInsertMention={(name) => setReplyDrafts((prev) => ({ ...prev, [message.id]: insertMention(prev[message.id] ?? '', name) }))}
+            onSendReply={() => void submitReply(message.id)}
+            onReaction={onReaction}
+          />
+        ))}
+      </div>
+
+      <div className="border-t border-slate-200 bg-white p-3">
+        {staffOptions.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {staffOptions.slice(0, 10).map((name) => (
+              <button
+                key={name}
+                type="button"
+                onClick={() => setDraft((prev) => insertMention(prev, name))}
+                disabled={saving}
+                className="rounded-full border border-sky-200 bg-sky-50 px-2 py-1 text-[11px] font-medium text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                @{name}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {internalReactionEmojis.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => setDraft((prev) => insertEmoji(prev, emoji))}
+              disabled={saving}
+              className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-xs hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          rows={3}
+          placeholder="@担当者 を付けて相談内容を入力"
+          className="w-full resize-y rounded-lg border border-slate-300 px-3 py-2 text-sm leading-6 text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        />
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => void submitRoot()}
+            disabled={saving || !draft.trim()}
+            className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            投稿する
+          </button>
+        </div>
+      </div>
+    </section>
+  )
 }
 
 export default function CaseDetail({
@@ -256,13 +559,15 @@ export default function CaseDetail({
   dirty,
   saving,
   canEditRouting,
-  detailTab,
+  staffOptions,
+  staffName,
   onFormChange,
   onSave,
   onDiscard,
   onQuickStatus,
+  onInternalMessageCreate,
+  onInternalMessageReaction,
   onOpenChatWithDraft,
-  onTabChange,
   onCopyReplyDraft,
   emptyState,
   outsideCurrentList = false,
@@ -273,7 +578,7 @@ export default function CaseDetail({
 
   if (detailLoading && !detail) {
     return (
-      <section className="rounded-lg border border-gray-200 bg-white">
+      <section className="h-full min-h-[520px] rounded-lg border border-gray-200 bg-white">
         <DetailSkeleton />
       </section>
     )
@@ -281,19 +586,22 @@ export default function CaseDetail({
 
   if (!detail) {
     return (
-      <section className="rounded-lg border border-gray-200 bg-white">
+      <section className="h-full min-h-[520px] rounded-lg border border-gray-200 bg-white">
         <EmptyDetail emptyState={emptyState} />
       </section>
     )
   }
 
   const overdue = isOverdueCase(detail)
-  const stale = isStaleCase(detail)
-  const unassigned = !caseForm.primaryAssignee.trim()
-  const chatHref = detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
+  const primaryUnassigned = !caseForm.primaryAssignee.trim()
+  const secondaryUnassigned = !caseForm.escalationAssignee.trim()
+  const secondaryAssigneeLabel = caseForm.escalationAssignee.trim() || '未設定'
+  const primaryAssigneeLabel = caseForm.primaryAssignee.trim() || '未設定'
+  const customerLabel = detail.friendName || detail.companyName || detail.contactName || '顧客未紐付け'
+  const customerNumberLabel = detail.customerNumber || ticketShortId(detail.id)
+  const canViewLineConversation = detail.canViewLineConversation !== false
+  const chatHref = canViewLineConversation && detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
   const lockedInputCls = `${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
-  const lockedSelectCls = `${selectCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
-  const visibleStatusOptions = getVisibleStatusOptions(detail.status, caseForm.status)
   const validationIssues = getCaseFormValidationIssues(caseForm, { hasChat: Boolean(chatHref) })
   const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
   const canSave = dirty && blockingValidationIssues.length === 0
@@ -302,33 +610,38 @@ export default function CaseDetail({
     hasDraft: Boolean(caseForm.customerReplyDraft.trim()),
     hasChat: Boolean(chatHref),
   })
-  const workFocus = getWorkFocus({
-    status: caseForm.status,
-    overdue,
-    stale,
-    unassigned,
-    canEditRouting,
-    showChatReplyAction,
-    hasReplyDraft: Boolean(caseForm.customerReplyDraft.trim()),
-    hasChat: Boolean(chatHref),
-  })
-  const summaryText = compactValue(caseForm.customerSummary) || '問い合わせ要約は未記入です'
-  const replyDraftText = compactValue(caseForm.customerReplyDraft)
-
   const handleConfirmComplete = async () => {
     const ok = await onQuickStatus('resolved', '対応を完了しました')
     if (ok) setCompleting(false)
   }
+  const answeredEscalations = detail.escalations.filter((item) => item.status === 'answered' && item.answer.trim())
+  const latestAnsweredEscalation = answeredEscalations.length > 0
+    ? answeredEscalations[answeredEscalations.length - 1]
+    : null
+  const assigneeChoices = Array.from(
+    new Set([caseForm.primaryAssignee, caseForm.escalationAssignee, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
+  ).sort((a, b) => a.localeCompare(b, 'ja'))
+  const chatStaffOptions = Array.from(
+    new Set([staffName, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
+  ).sort((a, b) => {
+    if (a === staffName) return -1
+    if (b === staffName) return 1
+    return a.localeCompare(b, 'ja')
+  })
 
   return (
-    <section className="relative rounded-lg border border-gray-200 bg-white" aria-label="案件詳細">
-      <div className="space-y-4 p-4">
+    <section className="relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm" aria-label="チケット詳細">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {/* ヘッダー: タイトル + 保存 */}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap gap-1.5">
-              <Pill className={statusClass[caseForm.status]}>{statusLabel[caseForm.status]}</Pill>
-              <Pill className={priorityClass[caseForm.priority]}>{priorityLabel[caseForm.priority]}</Pill>
+              <span className={`inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium leading-none shadow-sm ${statusClass[caseForm.status]}`}>
+                {statusLabel[caseForm.status]}
+              </span>
+              <span className={`inline-flex items-center rounded-md border px-3 py-1.5 text-sm font-medium leading-none ${priorityClass[caseForm.priority]}`}>
+                {priorityLabel[caseForm.priority]}
+              </span>
               <Pill className="border-gray-200 bg-gray-50 text-gray-600">
                 {categoryLabel[caseForm.category] || caseForm.category}
               </Pill>
@@ -350,6 +663,13 @@ export default function CaseDetail({
               )}
               <span className="text-xs text-gray-400">更新 {formatDateTime(detail.updatedAt)}</span>
               <DueBadge value={caseForm.status === 'resolved' ? null : detail.dueAt} />
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                secondaryUnassigned
+                  ? 'bg-slate-100 text-slate-500'
+                  : 'bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100'
+              }`}>
+                二次対応先: {secondaryAssigneeLabel}
+              </span>
             </div>
           </div>
           <button
@@ -368,7 +688,7 @@ export default function CaseDetail({
             role="status"
           >
             <div>
-              <p className="font-semibold">この案件は現在の一覧条件外です</p>
+              <p className="font-semibold">このチケットは現在の一覧条件外です</p>
               <p className="mt-0.5 text-xs leading-relaxed text-amber-800">
                 保存中の作業を守るため詳細は残しています。左の一覧とそろえる場合は絞り込みを戻してください。
               </p>
@@ -386,28 +706,9 @@ export default function CaseDetail({
           </div>
         )}
 
-        {/* 注意ストリップ */}
-        {(overdue || stale || unassigned) && caseForm.status !== 'resolved' && (
-          <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-800">
-            <div className="flex flex-wrap items-center gap-2">
-              {overdue && <Pill className="border-red-200 bg-white text-red-700">期限超過</Pill>}
-              {stale && (
-                <Pill className="border-orange-200 bg-white text-orange-700">
-                  <FlameIcon className="mr-1 h-3 w-3" />
-                  24h滞留 {formatElapsed(detail.updatedAt)}
-                </Pill>
-              )}
-              {unassigned && <Pill className="border-amber-200 bg-white text-amber-700">担当者なし</Pill>}
-              <span className="font-medium">
-                {canEditRouting ? '先に担当・期限・返信方針を確定してください' : '担当・期限の調整はowner/adminに依頼してください'}
-              </span>
-            </div>
-          </div>
-        )}
-
         {!canEditRouting && (
           <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
-            staff権限では対応内容だけ編集できます。担当割り、期限、優先度、顧客属性はowner/adminが管理します。
+            staff権限では対応内容だけ編集できます。担当割り、期限、緊急度、顧客属性はowner/adminが管理します。
           </div>
         )}
 
@@ -443,87 +744,186 @@ export default function CaseDetail({
           </div>
         )}
 
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
-          <div className={`rounded-lg border px-4 py-3 ${workFocus.className}`}>
-            <p className={`text-xs font-semibold ${workFocus.labelClassName}`}>次の一手</p>
-            <p className="mt-1 text-base font-semibold">{workFocus.title}</p>
-            <p className="mt-1 text-sm leading-6 opacity-80">{workFocus.description}</p>
-          </div>
-          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-            <dl className="grid gap-3 text-sm sm:grid-cols-2">
-              <div className="min-w-0">
-                <dt className="text-xs font-medium text-gray-400">顧客</dt>
-                <dd className="mt-0.5 break-words font-semibold text-gray-900">{customerDisplayName(detail, caseForm)}</dd>
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="問い合わせ">
+            <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">問い合わせ</p>
+                <p className="mt-0.5 text-xs text-slate-500">件名と相談内容をここで確認します。</p>
               </div>
-              <div className="min-w-0">
-                <dt className="text-xs font-medium text-gray-400">一次担当</dt>
-                <dd className={`mt-0.5 break-words font-semibold ${unassigned ? 'text-amber-700' : 'text-gray-900'}`}>
-                  {caseForm.primaryAssignee.trim() || '担当者なし'}
-                </dd>
-              </div>
-              <div className="min-w-0 sm:col-span-2">
-                <dt className="text-xs font-medium text-gray-400">問い合わせ要約</dt>
-                <dd className="mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words text-gray-700">{summaryText}</dd>
-              </div>
-              <div className="min-w-0 sm:col-span-2">
-                <dt className="text-xs font-medium text-gray-400">顧客向け返信案</dt>
-                <dd className={`mt-0.5 max-h-12 overflow-hidden whitespace-pre-wrap break-words ${replyDraftText ? 'text-gray-700' : 'text-gray-400'}`}>
-                  {replyDraftText || '返信案は未作成です'}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        </div>
+              {overdue && caseForm.status !== 'resolved' && (
+                <Pill className="border-red-200 bg-red-50 text-red-700">期限超過</Pill>
+              )}
+            </div>
+            <div className="space-y-3">
+              <label className="block">
+                <span className="text-xs font-medium text-slate-500">件名</span>
+                <input
+                  value={caseForm.title}
+                  onChange={(e) => onFormChange({ title: e.target.value })}
+                  disabled={!canEditRouting}
+                  className={`${lockedInputCls} mt-1 px-3 py-2 text-sm font-semibold`}
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-slate-500">問い合わせ内容</span>
+                <textarea
+                  value={caseForm.customerSummary}
+                  onChange={(e) => onFormChange({ customerSummary: e.target.value })}
+                  rows={8}
+                  placeholder="顧客からの相談内容を、要約せずにそのまま残す"
+                  className={`${textareaCls} mt-1 min-h-[220px] px-3 py-3 text-sm leading-6`}
+                />
+              </label>
+            </div>
+          </section>
 
-        {/* キーファクト: まず確認する4点 (ステータス / 優先度 / 一次担当 / 期限) */}
-        <div className="rounded-lg border border-gray-200 bg-gray-50/80 p-3">
-          <p className="mb-2 text-xs font-semibold text-gray-500">
-            まず確認する4点
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <Field label="ステータス">
-              <select
-                value={caseForm.status}
-                onChange={(e) => onFormChange({ status: e.target.value as SupportCaseStatus })}
-                className={selectCls}
-              >
-                {visibleStatusOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </Field>
-            <Field label="優先度">
-              <select
-                value={caseForm.priority}
-                onChange={(e) => onFormChange({ priority: e.target.value as CaseFormState['priority'] })}
-                disabled={!canEditRouting}
-                className={lockedSelectCls}
-              >
-                {priorityOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </Field>
-            <Field label="一次担当">
-              <input
-                value={caseForm.primaryAssignee}
-                onChange={(e) => onFormChange({ primaryAssignee: e.target.value })}
-                placeholder="担当者名"
-                disabled={!canEditRouting}
-                className={lockedInputCls}
-                list="support-staff-names"
-              />
-            </Field>
-            <Field label="期限">
-              <input
-                type="datetime-local"
-                value={caseForm.dueAt}
-                onChange={(e) => onFormChange({ dueAt: e.target.value })}
-                disabled={!canEditRouting}
-                className={lockedInputCls}
-              />
-              <DueTimePresetRow
-                hasValue={Boolean(caseForm.dueAt)}
-                onApply={(value) => onFormChange({ dueAt: value })}
-                disabled={!canEditRouting}
-              />
-            </Field>
+          <div className="space-y-4">
+            <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-sm" aria-label="確認情報">
+              <div className="mb-3 border-b border-slate-200 pb-3">
+                <p className="text-sm font-semibold text-slate-900">確認情報</p>
+                <p className="mt-0.5 text-xs text-slate-500">このチケットの基本情報を確認できます。</p>
+              </div>
+              <dl className="grid gap-2">
+                <DetailInfoRow label="顧客" value={customerLabel} />
+                <DetailInfoRow label="顧客番号 / チケットID" value={customerNumberLabel} />
+                <DetailInfoRow label="一次対応者" value={primaryAssigneeLabel} tone={primaryUnassigned ? 'muted' : 'default'} />
+                <DetailInfoRow label="二次対応先" value={secondaryAssigneeLabel} tone={secondaryUnassigned ? 'muted' : 'accent'} />
+                <DetailInfoRow label="最終更新" value={formatDateTime(detail.updatedAt)} />
+              </dl>
+            </section>
+
+            <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-sm" aria-label="対応設定">
+              <div className="mb-3 border-b border-slate-200 pb-3">
+                <p className="text-sm font-semibold text-slate-900">編集する情報</p>
+                <p className="mt-0.5 text-xs text-slate-500">一次対応者、二次対応先、期限、緊急度をここで決めます。</p>
+              </div>
+              <div className="space-y-4">
+              <div>
+                <p className="text-xs font-medium text-slate-500">一次担当者</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onFormChange({ primaryAssignee: '' })}
+                    disabled={!canEditRouting}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                      primaryUnassigned
+                        ? 'border-amber-400 bg-amber-100 text-amber-800'
+                        : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+                    }`}
+                    aria-pressed={primaryUnassigned}
+                  >
+                    未設定
+                  </button>
+                  {assigneeChoices.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => onFormChange({ primaryAssignee: name })}
+                      disabled={!canEditRouting}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                        caseForm.primaryAssignee === name
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                      }`}
+                      aria-pressed={caseForm.primaryAssignee === name}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-indigo-100 bg-white px-3 py-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-medium text-indigo-700">二次対応先</p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-slate-500">
+                      このチケットを誰に二次対応として依頼しているか全員が確認できます。
+                    </p>
+                  </div>
+                  {!secondaryUnassigned && (
+                    <span className="shrink-0 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700">
+                      指定中
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onFormChange({ escalationAssignee: '' })}
+                    disabled={!canEditRouting}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                      secondaryUnassigned
+                        ? 'border-slate-300 bg-slate-100 text-slate-600'
+                        : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
+                    }`}
+                    aria-pressed={secondaryUnassigned}
+                  >
+                    未設定
+                  </button>
+                  {assigneeChoices.map((name) => (
+                    <button
+                      key={name}
+                      type="button"
+                      onClick={() => onFormChange({ escalationAssignee: name })}
+                      disabled={!canEditRouting}
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                        caseForm.escalationAssignee === name
+                          ? 'border-indigo-600 bg-indigo-600 text-white'
+                          : 'border-indigo-100 bg-indigo-50 text-indigo-700 hover:border-indigo-200 hover:bg-indigo-100'
+                      }`}
+                      aria-pressed={caseForm.escalationAssignee === name}
+                    >
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <label className="block">
+                <span className="text-xs font-medium text-slate-500">期限</span>
+                <input
+                  type="datetime-local"
+                  value={caseForm.dueAt}
+                  onChange={(e) => onFormChange({ dueAt: e.target.value })}
+                  disabled={!canEditRouting}
+                  className={`${lockedInputCls} mt-1 px-3 py-2 text-sm`}
+                />
+                <DueTimePresetRow
+                  hasValue={Boolean(caseForm.dueAt)}
+                  onApply={(value) => onFormChange({ dueAt: value })}
+                  disabled={!canEditRouting}
+                />
+              </label>
+
+              <div>
+                <p className="text-xs font-medium text-slate-500">緊急度</p>
+                <div className="mt-2 grid grid-cols-3 gap-2">
+                  {priorityOptions.map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      onClick={() => onFormChange({ priority: item.value })}
+                      disabled={!canEditRouting}
+                      className={`rounded-lg border px-2 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                        caseForm.priority === item.value
+                          ? item.value === 'urgent'
+                            ? 'border-red-200 bg-red-100 text-red-700 ring-1 ring-red-100'
+                            : item.value === 'high'
+                              ? 'border-orange-200 bg-orange-100 text-orange-700 ring-1 ring-orange-100'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-800 ring-1 ring-emerald-100'
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                      }`}
+                      aria-pressed={caseForm.priority === item.value}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              </div>
+            </section>
           </div>
         </div>
 
@@ -548,6 +948,16 @@ export default function CaseDetail({
                 対応開始
               </button>
             )}
+            {(caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
+              <button
+                type="button"
+                onClick={() => void onQuickStatus('in_progress', '二次回答を確認し、一次対応を再開しました')}
+                disabled={saving}
+                className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+              >
+                対応中にする
+              </button>
+            )}
             {caseForm.status !== 'resolved' && (
               <button
                 type="button"
@@ -561,7 +971,7 @@ export default function CaseDetail({
             {caseForm.status === 'resolved' && (
               <button
                 type="button"
-                onClick={() => void onQuickStatus('reopened', '案件を再オープンしました')}
+                onClick={() => void onQuickStatus('reopened', 'チケットを再オープンしました')}
                 disabled={saving}
                 className="rounded-md border border-pink-300 bg-white px-3 py-1.5 text-sm font-semibold text-pink-700 transition-colors hover:bg-pink-50 disabled:opacity-50"
                 title="完了後の再連絡は未対応に戻さず再オープンで扱います"
@@ -595,190 +1005,119 @@ export default function CaseDetail({
           </div>
         )}
 
-        {/* タブ */}
-        <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-1" role="tablist">
-          {[
-            { key: 'work' as DetailTab, label: '対応入力' },
-            { key: 'logs' as DetailTab, label: `会話・履歴 (${detail.recentMessages.length + detail.events.length})` },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={detailTab === tab.key}
-              onClick={() => onTabChange(tab.key)}
-              className={`flex-1 rounded-md px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
-                detailTab === tab.key ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {detailTab === 'work' ? (
-          <div className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-[2fr_1fr]">
-              <Field label="件名">
-                <input
-                  value={caseForm.title}
-                  onChange={(e) => onFormChange({ title: e.target.value })}
-                  disabled={!canEditRouting}
-                  className={lockedInputCls}
-                />
-              </Field>
-              <Field label="種別">
-                <select
-                  value={caseForm.category}
-                  onChange={(e) => onFormChange({ category: e.target.value })}
-                  disabled={!canEditRouting}
-                  className={lockedSelectCls}
-                >
-                  {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </Field>
+        {latestAnsweredEscalation && (
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-950" role="status">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white">二次対応回答済み</span>
+              <span className="text-sm font-semibold">{latestAnsweredEscalation.assignee || '二次対応'}から回答が届いています</span>
+              <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${escalationStatusMeta[latestAnsweredEscalation.status].className}`}>
+                {escalationStatusMeta[latestAnsweredEscalation.status].label}
+              </span>
             </div>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <Field label="二次対応先" hint="エスカレ時の確認先">
-                <input
-                  value={caseForm.escalationAssignee}
-                  onChange={(e) => onFormChange({ escalationAssignee: e.target.value })}
-                  placeholder="二次対応者名"
-                  disabled={!canEditRouting}
-                  className={lockedInputCls}
-                  list="support-staff-names"
-                />
-              </Field>
-              <Field label="次回確認" hint="保留時は必須">
-                <input
-                  type="datetime-local"
-                  value={caseForm.nextCheckAt}
-                  onChange={(e) => onFormChange({ nextCheckAt: e.target.value })}
-                  className={inputCls}
-                />
-                <DueTimePresetRow
-                  hasValue={Boolean(caseForm.nextCheckAt)}
-                  onApply={(value) => onFormChange({ nextCheckAt: value })}
-                />
-              </Field>
-            </div>
-
-            <details className="group rounded-lg border border-gray-200" open={Boolean(caseForm.customerNumber || caseForm.companyName || caseForm.storeName)}>
-              <summary className="cursor-pointer select-none rounded-lg px-3 py-2 text-sm font-semibold text-gray-700 transition-colors hover:bg-gray-50 group-open:rounded-b-none group-open:border-b group-open:border-gray-200">
-                顧客情報
-              </summary>
-              <div className="grid gap-3 p-3 md:grid-cols-3 xl:grid-cols-5">
-                <Field label="顧客番号">
-                  <input value={caseForm.customerNumber} onChange={(e) => onFormChange({ customerNumber: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
-                </Field>
-                <Field label="法人名">
-                  <input value={caseForm.companyName} onChange={(e) => onFormChange({ companyName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
-                </Field>
-                <Field label="担当者名">
-                  <input value={caseForm.contactName} onChange={(e) => onFormChange({ contactName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
-                </Field>
-                <Field label="店舗名">
-                  <input value={caseForm.storeName} onChange={(e) => onFormChange({ storeName: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
-                </Field>
-                <Field label="契約種別">
-                  <input value={caseForm.contractType} onChange={(e) => onFormChange({ contractType: e.target.value })} disabled={!canEditRouting} className={lockedInputCls} />
-                </Field>
-              </div>
-            </details>
-
-            <Field label="問い合わせ要約" hint="エスカレ共有文に載ります">
-              <textarea
-                value={caseForm.customerSummary}
-                onChange={(e) => onFormChange({ customerSummary: e.target.value })}
-                rows={3}
-                placeholder="顧客の状況・要望を短く"
-                className={textareaCls}
-              />
-            </Field>
-
-            <div className="grid gap-3 lg:grid-cols-2">
-              <Field label="内部メモ" hint="社内のみ">
-                <textarea
-                  value={caseForm.internalNote}
-                  onChange={(e) => onFormChange({ internalNote: e.target.value })}
-                  rows={6}
-                  placeholder="判断理由・確認事項など"
-                  className={textareaCls}
-                />
-              </Field>
-              <Field label="顧客向け返信案" hint="チャットで返信へ引き継ぎ">
-                <textarea
-                  value={caseForm.customerReplyDraft}
-                  onChange={(e) => onFormChange({ customerReplyDraft: e.target.value })}
-                  rows={6}
-                  placeholder="顧客へ送る文章の下書き"
-                  className={textareaCls}
-                />
-              </Field>
-            </div>
-
-            <Field label="対応結果メモ" hint="完了時は必須">
-              <textarea
-                value={caseForm.resolutionNote}
-                onChange={(e) => onFormChange({ resolutionNote: e.target.value })}
-                rows={3}
-                placeholder="最終的な対応内容と判断理由"
-                className={textareaCls}
-              />
-            </Field>
-          </div>
-        ) : (
-          <div className="grid gap-3 lg:grid-cols-2">
-            <div className="rounded-lg border border-gray-200">
-              <div className="flex items-center justify-between border-b border-gray-200 px-3 py-2">
-                <span className="text-sm font-semibold text-gray-800">会話ログ</span>
-                {chatHref && (
-                  <Link href={chatHref} className="inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:underline">
-                    <ChatIcon className="h-3.5 w-3.5" />
-                    チャットを開く
-                  </Link>
-                )}
-              </div>
-              <div className="max-h-[420px] space-y-2 overflow-y-auto p-3">
-                {detail.recentMessages.length === 0 ? (
-                  <p className="text-sm text-gray-500">会話ログはありません</p>
-                ) : detail.recentMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={`rounded-md px-3 py-2 text-sm ${message.direction === 'incoming' ? 'bg-green-50 text-gray-800' : 'bg-gray-100 text-gray-700'}`}
-                  >
-                    <div className="mb-1 flex justify-between gap-2 text-[11px] text-gray-500">
-                      <span className="font-medium">{message.direction === 'incoming' ? '顧客' : '運営'}</span>
-                      <span>{formatDateTime(message.createdAt)}</span>
-                    </div>
-                    <p className="whitespace-pre-wrap break-words">
-                      {textOrMessageTypePreview(message.messageType, message.content, 400)}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div className="rounded-lg border border-gray-200">
-              <div className="border-b border-gray-200 px-3 py-2 text-sm font-semibold text-gray-800">対応履歴</div>
-              <div className="max-h-[420px] space-y-3 overflow-y-auto p-3">
-                {detail.events.length === 0 ? (
-                  <p className="text-sm text-gray-500">履歴はありません</p>
-                ) : detail.events.map((event) => (
-                  <div key={event.id} className="border-l-2 border-gray-200 pl-3">
-                    <p className="text-xs text-gray-500">
-                      {formatDateTime(event.createdAt)} / {event.actorName || 'system'}
-                    </p>
-                    <p className="text-sm font-medium text-gray-800">
-                      {eventTypeLabel[event.eventType] || event.eventType}
-                    </p>
-                    {event.body && <p className="mt-1 whitespace-pre-wrap text-sm text-gray-600">{event.body}</p>}
-                  </div>
-                ))}
-              </div>
-            </div>
+            <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-emerald-900">{latestAnsweredEscalation.answer}</p>
+            {latestAnsweredEscalation.answeredAt && (
+              <p className="mt-1 text-xs text-emerald-700">回答日時 {formatDateTime(latestAnsweredEscalation.answeredAt)}</p>
+            )}
           </div>
         )}
+
+        <InternalChatPanel
+          messages={detail.internalMessages ?? []}
+          staffOptions={chatStaffOptions}
+          saving={saving}
+          onCreate={onInternalMessageCreate}
+          onReaction={onInternalMessageReaction}
+        />
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">会話ログ</p>
+                <p className="mt-0.5 text-xs text-slate-500">チケットに紐づくLINE会話</p>
+              </div>
+              {chatHref && (
+                <Link href={chatHref} className="inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:underline">
+                  <ChatIcon className="h-3.5 w-3.5" />
+                  チャットを開く
+                </Link>
+              )}
+            </div>
+            {!canViewLineConversation ? (
+              <div className="flex min-h-[220px] items-center justify-center bg-slate-50 p-4">
+                <div className="max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-5 text-center shadow-sm">
+                  <p className="text-sm font-semibold text-slate-900">会話ログは権限制限中です</p>
+                  <p className="mt-2 text-xs leading-6 text-slate-500">
+                    二次対応のみの権限では、顧客LINEのトーク履歴を表示しません。問い合わせ内容と二次対応への依頼内容を確認してください。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="max-h-[460px] space-y-3 overflow-y-auto p-3" style={{ backgroundColor: '#7494C0' }}>
+                {detail.recentMessages.length === 0 ? (
+                  <p className="rounded-full bg-black/15 px-3 py-2 text-center text-sm text-white/80">会話ログはありません</p>
+                ) : detail.recentMessages.map((message) => {
+                  const isOutgoing = message.direction === 'outgoing'
+                  return (
+                    <div key={message.id} className={`flex ${isOutgoing ? 'justify-end' : 'justify-start'}`}>
+                      <div className={`max-w-[82%] ${isOutgoing ? 'text-right' : 'text-left'}`}>
+                        <div
+                          className={`inline-block rounded-2xl px-3 py-2 text-left text-sm shadow-sm ${
+                            isOutgoing
+                              ? 'rounded-tr-md bg-[#06C755] text-white'
+                              : 'rounded-tl-md bg-white text-gray-900'
+                          }`}
+                        >
+                          <SupportMessageContent message={message} />
+                        </div>
+                        <div className="mt-1 flex items-center gap-1 px-1 text-[11px] text-white/70">
+                          {messageSourceLabel(message.source) && isOutgoing && (
+                            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[10px] text-white/85">
+                              {messageSourceLabel(message.source)}
+                            </span>
+                          )}
+                          <span>{formatDateTime(message.createdAt)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">対応ログ</p>
+                  <p className="mt-0.5 text-xs text-slate-500">作成、更新、二次回答などの記録</p>
+                </div>
+                <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-600">
+                  {detail.events.length}件
+                </span>
+              </div>
+            </div>
+            <div className="max-h-[460px] space-y-3 overflow-y-auto p-4">
+              {detail.events.length === 0 ? (
+                <p className="text-sm text-slate-500">履歴はありません</p>
+              ) : detail.events.map((event) => (
+                <div key={event.id} className="relative border-l-2 border-slate-200 pl-4">
+                  <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-slate-400 ring-2 ring-white" aria-hidden="true" />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                      {eventTypeLabel[event.eventType] || event.eventType}
+                    </span>
+                    <span className="text-xs text-slate-500">
+                      {formatDateTime(event.createdAt)}
+                    </span>
+                    <span className="text-xs text-slate-400">/ {event.actorName || 'system'}</span>
+                  </div>
+                  {event.body && <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-slate-600">{event.body}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* 未保存変更バー */}
@@ -799,7 +1138,7 @@ export default function CaseDetail({
               onClick={onSave}
               disabled={saving || !canSave}
               title={blockingValidationIssues[0]?.message}
-              className="rounded-md bg-gray-900 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-gray-700 disabled:opacity-50"
+              className="rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
             >
               {saving ? '保存中…' : '保存 (⌘S)'}
             </button>

@@ -47,6 +47,25 @@ describe('support access SQL helpers', () => {
     expect(friendScope.binds).toEqual(['staff-1', '%田島\\_\\%%', '%田島\\_\\%%', '%田島\\_\\%%']);
   });
 
+  test('secondary staff only sees their own secondary assignments and no friends', () => {
+    const secondary: SupportAccessStaff = { id: 'secondary-1', name: '松山', role: 'secondary' };
+    const caseScope = supportCaseVisibilitySql(secondary, 'sc', 'se');
+    const escalationScope = supportEscalationVisibilitySql(secondary, 'se', 'sc');
+    const friendScope = supportFriendVisibilitySql(secondary, 'f.id');
+
+    expect(caseScope.sql).toContain('sc.escalation_assignee LIKE ?');
+    expect(caseScope.sql).toContain('FROM support_escalations se');
+    expect(caseScope.sql).not.toContain('sc.created_by = ?');
+    expect(caseScope.sql).not.toContain('sc.primary_assignee LIKE ?');
+    expect(caseScope.binds).toEqual(['%松山%', '%松山%']);
+
+    expect(escalationScope.sql).toContain('se.assignee LIKE ?');
+    expect(escalationScope.sql).not.toContain('FROM support_cases sc');
+    expect(escalationScope.binds).toEqual(['%松山%']);
+
+    expect(friendScope).toEqual({ sql: '(0 = 1)', binds: [] });
+  });
+
   test('blank staff names do not widen LIKE visibility to every assignee', () => {
     const nameless = { ...staff, name: '   ' };
     const caseScope = supportCaseVisibilitySql(nameless, 'sc', 'se');
@@ -60,5 +79,17 @@ describe('support access SQL helpers', () => {
     expect(escalationScope.sql).not.toContain('se.assignee LIKE ?');
     expect(escalationScope.sql).toContain('FROM support_cases sc');
     expect(escalationScope.binds).toEqual(['staff-1']);
+  });
+
+  test('blank secondary staff names cannot see secondary cases or friends', () => {
+    const nameless: SupportAccessStaff = { id: 'secondary-1', name: '   ', role: 'secondary' };
+
+    const caseScope = supportCaseVisibilitySql(nameless, 'sc', 'se');
+    const escalationScope = supportEscalationVisibilitySql(nameless, 'se', 'sc');
+    const friendScope = supportFriendVisibilitySql(nameless, 'f.id');
+
+    expect(caseScope).toEqual({ sql: '(0 = 1)', binds: [] });
+    expect(escalationScope).toEqual({ sql: '(0 = 1)', binds: [] });
+    expect(friendScope).toEqual({ sql: '(0 = 1)', binds: [] });
   });
 });

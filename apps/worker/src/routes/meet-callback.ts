@@ -2,6 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { Env } from '../index.js';
 import { getFriendByLineUserId } from '@line-crm/db';
 import { LineClient } from '@line-crm/line-sdk';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 
 const app = new Hono<Env>();
 const MIN_SECRET_LENGTH = 32;
@@ -96,6 +97,7 @@ function parseBody(rawBody: string): MeetCallbackBody | null {
 }
 
 function errorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   return err instanceof Error && err.name ? err.name : typeof err;
 }
 
@@ -158,6 +160,7 @@ app.post('/api/meet-callback', async (c) => {
   };
 
   try {
+    await assertLineSendAllowed(c.env.DB, (friend as unknown as Record<string, string | null>).line_account_id);
     await lineClient.pushMessage(friend.line_user_id, [
       { type: 'flex', altText: 'ヒアリング結果', contents: resultFlex },
     ]);

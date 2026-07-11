@@ -6,7 +6,7 @@
   "scripts": {
     "dev:worker": "corepack pnpm --filter worker dev",
     "dev:web": "corepack pnpm --filter web dev",
-    "build": "NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://127.0.0.1:8787} corepack pnpm -r build",
+    "build": "test -n \"$NEXT_PUBLIC_API_URL\" || (echo \"NEXT_PUBLIC_API_URL is required for build\" >&2; exit 1); corepack pnpm -r build",
     "sandbox:create-line-harness": "bash scripts/run-create-line-harness-sandbox.sh",
     "deploy:worker": "corepack pnpm --filter worker deploy",
     "deploy:web": "corepack pnpm --filter web build",

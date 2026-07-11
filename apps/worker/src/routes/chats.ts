@@ -17,9 +17,8 @@ import {
 } from '@line-crm/db';
 import type { Env } from '../index.js';
 import {
-  canAccessSupportFriend,
+  isSecondaryOnlySupportStaff,
   supportCaseVisibilitySql,
-  supportFriendVisibilitySql,
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import { requireRole } from '../middleware/role-guard.js';
@@ -28,6 +27,13 @@ import {
   isLineCaptureOnly,
   isLineManualSendEnabled,
 } from '../services/line-capture-only.js';
+import { getLineSendSafetyBlock, type LineSendSafetyBlock } from '../services/line-safety.js';
+import {
+  normalizeInternalReactionEmoji,
+  summarizeInternalReactions,
+  toggleInternalReaction,
+} from '../services/internal-message-reactions.js';
+import { kickWebPushNotifications } from './app-notifications.js';
 
 const chats = new Hono<Env>();
 
@@ -37,17 +43,26 @@ const OPERATOR_EMAIL_MAX_LENGTH = 254;
 const OPERATOR_ROLE_MAX_LENGTH = 64;
 const CHAT_ID_MAX_LENGTH = 128;
 const CHAT_CURSOR_MAX_LENGTH = 64;
+const CHAT_SEARCH_MAX_LENGTH = 120;
 const CHAT_NOTES_MAX_LENGTH = 4096;
+const CHAT_INTERNAL_MESSAGE_MAX_LENGTH = 5000;
+const CHAT_INTERNAL_MENTION_MAX = 20;
+const CHAT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved']);
+const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
+const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
 
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
 }
 
 async function ensureChatFriendAccess(c: Context<Env>, friendId: string): Promise<Response | null> {
-  if (await canAccessSupportFriend(c.env.DB, currentStaff(c), friendId)) return null;
+  if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+    return c.json({ success: false, error: 'Chat not found' }, 404);
+  }
+  if (await getFriendById(c.env.DB, friendId)) return null;
   return c.json({ success: false, error: 'Chat not found' }, 404);
 }
 
@@ -92,10 +107,33 @@ type ChatLike = {
   updated_at: string;
 };
 
+type ChatInternalMessageRow = {
+  id: string;
+  friend_id: string;
+  line_account_id: string | null;
+  parent_id: string | null;
+  body: string;
+  mentions: string;
+  reactions?: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+};
+
 type SupportCaseForChat = {
   id: string;
   title: string;
   status: string;
+};
+
+type ActiveSupportCaseForChat = {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  escalation_assignee: string | null;
+  latest_escalation_status: string | null;
+  updated_at: string;
 };
 
 type ChatSendBody = {
@@ -104,10 +142,18 @@ type ChatSendBody = {
   supportCaseId?: string;
   lineAccountId?: string | null;
   markAsRead?: boolean;
+  quoteMessageId?: string;
 };
 type ExternalOutgoingBody = {
   content: string;
 };
+type ChatInternalMessageBody = {
+  body: string;
+  parentId?: string;
+  mentions: string[];
+};
+type ChatTypingStatusBody = { active: boolean };
+type ChatDeletedMessageResponse = { messageId: string; deletedAt: string };
 
 type OperatorCreateBody = { name: string; email: string; role?: string };
 type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
@@ -117,12 +163,16 @@ type ChatListQuery = {
   operatorId?: string;
   lineAccountId?: string;
   unansweredOnly: boolean;
+  search?: string;
 };
 type ChatCreateInput = { friendId: string; operatorId?: string; lineAccountId?: string };
 type ChatUpdateInput = Partial<{ operatorId: string | null; status: ChatStatus; notes: string | null }>;
 type ChatDetailQuery = { messageLimit: number; beforeCreatedAt?: string; beforeId?: string };
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 type ChatRouteError = Error & { status?: number };
+type LineSentMessageResponse = {
+  sentMessages?: Array<{ id?: string | number; quoteToken?: string }>;
+};
 
 function chatRouteErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
@@ -140,6 +190,8 @@ function initialMarkAsReadResult(requested: boolean): MarkAsReadResult {
     requested,
     marked: false,
     reason: requested ? 'no_token' : 'not_requested',
+    messageId: null,
+    markedAt: null,
   };
 }
 
@@ -179,6 +231,103 @@ function manualLineSendFailureMessage(err: unknown): string {
   return 'LINE送信に失敗しました。もう一度お試しください。';
 }
 
+function extractLineSentMessageId(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const sentMessages = (result as LineSentMessageResponse).sentMessages;
+  if (!Array.isArray(sentMessages) || sentMessages.length === 0) return null;
+  const id = sentMessages[0]?.id;
+  if (typeof id === 'string' && id.trim()) return id.trim();
+  if (typeof id === 'number' && Number.isFinite(id)) return String(id);
+  return null;
+}
+
+function extractLineSentQuoteToken(result: unknown): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const sentMessages = (result as LineSentMessageResponse).sentMessages;
+  if (!Array.isArray(sentMessages) || sentMessages.length === 0) return null;
+  const quoteToken = sentMessages[0]?.quoteToken;
+  return typeof quoteToken === 'string' && quoteToken.trim() ? quoteToken.trim() : null;
+}
+
+function lineSafetyBlockedResponse(c: Context<Env>, block: LineSendSafetyBlock): Response {
+  return c.json({ success: false, error: block.message, lineSafety: block }, 423);
+}
+
+type ChatMediaMessageRow = {
+  id: string;
+  friend_id: string;
+  message_type: string;
+  content: string;
+  line_account_id: string | null;
+  friend_line_account_id: string | null;
+};
+
+type StoredLineMediaPayload = {
+  lineMessageId: string;
+  fileName: string | null;
+  mimeType: string | null;
+};
+
+function safeJsonRecord(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function firstStringValue(record: Record<string, unknown> | null, keys: string[]): string | null {
+  if (!record) return null;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function parseStoredLineMediaPayload(row: ChatMediaMessageRow): StoredLineMediaPayload | null {
+  if (!CHAT_MEDIA_MESSAGE_TYPES.has(row.message_type)) return null;
+  const parsed = safeJsonRecord(row.content);
+  const lineMessageId = firstStringValue(parsed, ['lineMessageId', 'line_message_id', 'messageId', 'message_id']);
+  if (!lineMessageId) return null;
+  return {
+    lineMessageId,
+    fileName: firstStringValue(parsed, ['fileName', 'filename', 'name']),
+    mimeType: firstStringValue(parsed, ['mimeType', 'mime_type', 'contentType', 'content_type']),
+  };
+}
+
+function fallbackMimeType(messageType: string, fileName: string | null): string {
+  if (messageType === 'image') return 'image/jpeg';
+  if (messageType === 'video') return 'video/mp4';
+  if (messageType === 'audio') return 'audio/mpeg';
+  if (fileName && /\.pdf$/i.test(fileName)) return 'application/pdf';
+  return 'application/octet-stream';
+}
+
+function defaultMediaFileName(row: ChatMediaMessageRow, payload: StoredLineMediaPayload): string {
+  if (payload.fileName) return payload.fileName;
+  if (row.message_type === 'image') return 'line-image.jpg';
+  if (row.message_type === 'video') return 'line-video.mp4';
+  if (row.message_type === 'audio') return 'line-audio.m4a';
+  return 'line-file';
+}
+
+function encodeRfc5987Value(value: string): string {
+  return encodeURIComponent(value).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+async function resolveLineAccessTokenByAccount(
+  db: D1Database,
+  accountId: string | null,
+  defaultAccessToken: string,
+): Promise<string> {
+  if (!accountId) return defaultAccessToken;
+  const account = await getLineAccountById(db, accountId);
+  return account?.channel_access_token || defaultAccessToken;
+}
+
 type ChatMessageType = 'text' | 'flex' | 'image';
 
 type NormalizedChatSendPayload =
@@ -198,10 +347,34 @@ type ChatSendFriend = {
   line_account_id?: string | null;
 };
 
+type ChatQuoteTargetRow = {
+  id: string;
+  direction: string;
+  quote_token: string | null;
+  deleted_at: string | null;
+};
+
 type MarkAsReadResult = {
   requested: boolean;
   marked: boolean;
   reason: 'not_requested' | 'no_token' | 'line_error' | null;
+  messageId: string | null;
+  markedAt: string | null;
+};
+
+type ChatMarkAsReadResponse = {
+  markAsRead: MarkAsReadResult;
+  status: string | null;
+  markedMessageId: string | null;
+  markedAt: string | null;
+  updatedAt: string;
+};
+
+type ChatTypingRow = {
+  staff_id: string;
+  staff_name: string;
+  updated_at: string;
+  expires_at: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -250,6 +423,20 @@ function parseOptionalVisibleString(raw: unknown, label: string, maxLength: numb
   return { ok: true, value };
 }
 
+function parseOptionalSearchString(raw: unknown, label: string, maxLength: number): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim().replace(/\s+/g, ' ');
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > maxLength) return { ok: false, error: `${label} is too long` };
+  if (/[\u0000-\u001F\u007F]/.test(value)) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
+}
+
 function parseOptionalNullableVisibleString(
   raw: unknown,
   label: string,
@@ -285,6 +472,12 @@ function parseChatStatus(raw: unknown): ValueResult<ChatStatus | undefined> {
   return { ok: true, value: value as ChatStatus };
 }
 
+function parseChatTypingStatusBody(raw: unknown): ValueResult<ChatTypingStatusBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'payload must be an object' };
+  if (typeof raw.active !== 'boolean') return { ok: false, error: 'active must be a boolean' };
+  return { ok: true, value: { active: raw.active } };
+}
+
 function parseBooleanFlag(raw: unknown, label: string): ValueResult<boolean> {
   if (raw === undefined || raw === null) return { ok: true, value: false };
   if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
@@ -315,6 +508,8 @@ function parseChatListQuery(searchParams: URLSearchParams): ValueResult<ChatList
   if (!lineAccountId.ok) return lineAccountId;
   const unansweredOnly = parseBooleanFlag(searchParams.get('unansweredOnly'), 'unansweredOnly');
   if (!unansweredOnly.ok) return unansweredOnly;
+  const search = parseOptionalSearchString(searchParams.get('q') ?? searchParams.get('search'), 'q', CHAT_SEARCH_MAX_LENGTH);
+  if (!search.ok) return search;
   return {
     ok: true,
     value: {
@@ -322,6 +517,7 @@ function parseChatListQuery(searchParams: URLSearchParams): ValueResult<ChatList
       operatorId: operatorId.value,
       lineAccountId: lineAccountId.value,
       unansweredOnly: unansweredOnly.value,
+      search: search.value,
     },
   };
 }
@@ -428,6 +624,8 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
   if (!supportCaseId.ok) return supportCaseId;
   const lineAccountId = parseOptionalNullableVisibleString(raw.lineAccountId, 'lineAccountId', CHAT_ID_MAX_LENGTH);
   if (!lineAccountId.ok) return lineAccountId;
+  const quoteMessageId = parseOptionalVisibleString(raw.quoteMessageId, 'quoteMessageId', CHAT_ID_MAX_LENGTH);
+  if (!quoteMessageId.ok) return quoteMessageId;
   return {
     ok: true,
     value: {
@@ -436,6 +634,7 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
       supportCaseId: supportCaseId.value,
       lineAccountId: lineAccountId.value ?? undefined,
       markAsRead: raw.markAsRead === true,
+      quoteMessageId: quoteMessageId.value,
     },
   };
 }
@@ -447,6 +646,144 @@ function parseExternalOutgoingBody(raw: unknown): ValueResult<ExternalOutgoingBo
   if (!content) return { ok: false, error: 'content is required' };
   if (content.length > 5000) return { ok: false, error: 'content is too long' };
   return { ok: true, value: { content } };
+}
+
+function parseMentionNames(raw: unknown, body: string): ValueResult<string[]> {
+  const extractFromBody = () => {
+    const names = new Set<string>();
+    for (const match of body.matchAll(/@([^@\s　,、]+)/g)) {
+      const name = match[1]?.trim();
+      if (name) names.add(name.slice(0, CHAT_INTERNAL_MENTION_MAX_LENGTH));
+      if (names.size >= CHAT_INTERNAL_MENTION_MAX) break;
+    }
+    return Array.from(names);
+  };
+
+  if (raw === undefined || raw === null) return { ok: true, value: extractFromBody() };
+  if (!Array.isArray(raw)) return { ok: false, error: 'mentions must be an array' };
+  if (raw.length > CHAT_INTERNAL_MENTION_MAX) return { ok: false, error: 'mentions is too long' };
+  const names = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') return { ok: false, error: 'mentions must contain strings' };
+    const value = item.trim();
+    if (!value) continue;
+    if (value.length > CHAT_INTERNAL_MENTION_MAX_LENGTH) return { ok: false, error: 'mention is too long' };
+    names.add(value);
+  }
+  return { ok: true, value: Array.from(names) };
+}
+
+function parseChatInternalMessageBody(raw: unknown): ValueResult<ChatInternalMessageBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const body = parseRequiredString(raw.body, 'body', CHAT_INTERNAL_MESSAGE_MAX_LENGTH);
+  if (!body.ok) return body;
+  const parentId = parseOptionalVisibleString(raw.parentId, 'parentId', CHAT_ID_MAX_LENGTH);
+  if (!parentId.ok) return parentId;
+  const mentions = parseMentionNames(raw.mentions, body.value);
+  if (!mentions.ok) return mentions;
+  return { ok: true, value: { body: body.value, parentId: parentId.value, mentions: mentions.value } };
+}
+
+function parseStoredMentions(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((item): item is string => typeof item === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeChatInternalMessage(row: ChatInternalMessageRow, staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' }) {
+  return {
+    id: row.id,
+    friendId: row.friend_id,
+    lineAccountId: row.line_account_id,
+    parentId: row.parent_id,
+    body: row.body,
+    mentions: parseStoredMentions(row.mentions),
+    reactions: summarizeInternalReactions(row.reactions, staff),
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+  };
+}
+
+function serializeActiveSupportCaseForChat(row: ActiveSupportCaseForChat | null) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title,
+    status: row.status,
+    priority: row.priority,
+    escalationAssignee: row.escalation_assignee,
+    latestEscalationStatus: row.latest_escalation_status,
+    updatedAt: row.updated_at,
+  };
+}
+
+function activeSupportCaseConditions(staff: SupportAccessStaff, caseAlias = 'sc'): { sql: string; binds: unknown[] } {
+  const conditions = [
+    `${caseAlias}.friend_id IS NOT NULL`,
+    `${caseAlias}.status != 'resolved'`,
+    `(${caseAlias}.status IN ('waiting_secondary', 'escalated', 'secondary_answered', 'customer_reply', 'waiting_primary')
+      OR EXISTS (
+        SELECT 1
+        FROM support_escalations se_active
+        WHERE se_active.case_id = ${caseAlias}.id
+          AND se_active.status != 'closed'
+      ))`,
+  ];
+  const binds: unknown[] = [];
+  const visibility = supportCaseVisibilitySql(staff, caseAlias, 'se_active_scope');
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    binds.push(...visibility.binds);
+  }
+  return {
+    sql: conditions.join(' AND '),
+    binds,
+  };
+}
+
+async function getActiveSupportCaseForFriend(
+  db: D1Database,
+  friendId: string,
+  staff: SupportAccessStaff,
+): Promise<ActiveSupportCaseForChat | null> {
+  const activeConditions = activeSupportCaseConditions(staff, 'sc');
+  return db
+    .prepare(
+      `SELECT
+         sc.id,
+         sc.title,
+         sc.status,
+         sc.priority,
+         sc.escalation_assignee,
+         (
+           SELECT se.status
+           FROM support_escalations se
+           WHERE se.case_id = sc.id
+             AND se.status != 'closed'
+           ORDER BY se.updated_at DESC, se.created_at DESC
+           LIMIT 1
+         ) AS latest_escalation_status,
+         sc.updated_at
+       FROM support_cases sc
+       WHERE sc.friend_id = ?
+         AND ${activeConditions.sql}
+       ORDER BY
+         CASE
+           WHEN sc.status IN ('waiting_secondary', 'escalated') THEN 0
+           WHEN sc.status IN ('secondary_answered', 'customer_reply', 'waiting_primary') THEN 1
+           ELSE 2
+         END,
+         sc.updated_at DESC
+       LIMIT 1`,
+    )
+    .bind(friendId, ...activeConditions.binds)
+    .first<ActiveSupportCaseForChat>();
 }
 
 function isHttpsUrl(value: string): boolean {
@@ -574,6 +911,40 @@ async function validateSupportCaseForSend(
   return { ok: true, supportCase, supportLineAccountId };
 }
 
+async function resolveQuoteTargetForSend(
+  db: D1Database,
+  friendId: string,
+  quoteMessageId: string | undefined,
+  messageType: ChatMessageType,
+): Promise<ValueResult<{ id: string; quoteToken: string } | null>> {
+  const targetId = quoteMessageId?.trim();
+  if (!targetId) return { ok: true, value: null };
+  if (messageType !== 'text') {
+    return { ok: false, error: '返信機能はテキスト送信時だけ使えます' };
+  }
+
+  const row = await db
+    .prepare(
+      `SELECT id, direction, quote_token, deleted_at
+       FROM messages_log
+       WHERE id = ?
+         AND friend_id = ?
+         AND (delivery_type IS NULL OR delivery_type != 'test')
+       LIMIT 1`,
+    )
+    .bind(targetId, friendId)
+    .first<ChatQuoteTargetRow>();
+  if (!row) return { ok: false, error: '返信元メッセージが見つかりません' };
+  if (row.deleted_at) return { ok: false, error: '取り消し済みメッセージには返信できません' };
+  if (row.direction !== 'incoming') {
+    return { ok: false, error: '顧客から届いたメッセージだけ返信元にできます' };
+  }
+  if (!row.quote_token) {
+    return { ok: false, error: 'このメッセージはLINEの返信対象にできません。新しく届いたメッセージでお試しください' };
+  }
+  return { ok: true, value: { id: row.id, quoteToken: row.quote_token } };
+}
+
 async function addSupportReplyEvent(
   db: D1Database,
   supportCase: SupportCaseForChat,
@@ -658,7 +1029,11 @@ async function resolveOrCreateChat(db: D1Database, id: string): Promise<ChatLike
 
   const lastMsg = await db
     .prepare(
-      `SELECT MAX(created_at) AS last FROM messages_log WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')`,
+      `SELECT MAX(created_at) AS last
+       FROM messages_log
+       WHERE friend_id = ?
+         AND (delivery_type IS NULL OR delivery_type != 'test')
+         AND deleted_at IS NULL`,
     )
     .bind(friend.id)
     .first<{ last: string | null }>();
@@ -719,24 +1094,66 @@ async function resolveFriendAndAccessToken(
   return { friend, accessToken: account.channel_access_token };
 }
 
-async function getLatestMarkAsReadToken(
+function jstTimestampAfterMs(ms: number): string {
+  return new Date(Date.now() + 9 * 60 * 60_000 + ms).toISOString().replace('Z', '').slice(0, 23);
+}
+
+async function cleanupExpiredChatTyping(db: D1Database, now: string): Promise<void> {
+  await db
+    .prepare(`DELETE FROM chat_typing_status WHERE expires_at <= ?`)
+    .bind(now)
+    .run();
+}
+
+async function getChatTypingParticipants(
+  db: D1Database,
+  chatId: string,
+  staff: SupportAccessStaff,
+  now: string,
+): Promise<Array<{ staffId: string; staffName: string; updatedAt: string }>> {
+  await cleanupExpiredChatTyping(db, now);
+  const rows = await db
+    .prepare(
+      `SELECT staff_id, staff_name, updated_at, expires_at
+       FROM chat_typing_status
+       WHERE chat_id = ?
+         AND expires_at > ?
+         AND staff_id != ?
+       ORDER BY updated_at DESC
+       LIMIT 5`,
+    )
+    .bind(chatId, now, staff.id)
+    .all<ChatTypingRow>();
+  return rows.results.map((row) => ({
+    staffId: row.staff_id,
+    staffName: row.staff_name,
+    updatedAt: row.updated_at,
+  }));
+}
+
+type LatestIncomingReadMessage = {
+  id: string;
+  mark_as_read_token: string | null;
+  marked_as_read_at: string | null;
+};
+
+async function getLatestIncomingReadMessage(
   db: D1Database,
   friendId: string,
-): Promise<string | null> {
+): Promise<LatestIncomingReadMessage | null> {
   const row = await db
     .prepare(
-      `SELECT mark_as_read_token
+      `SELECT id, mark_as_read_token, marked_as_read_at
        FROM messages_log
        WHERE friend_id = ?
          AND direction = 'incoming'
-         AND mark_as_read_token IS NOT NULL
-         AND mark_as_read_token != ''
+         AND deleted_at IS NULL
        ORDER BY created_at DESC, id DESC
        LIMIT 1`,
     )
     .bind(friendId)
-    .first<{ mark_as_read_token: string | null }>();
-  return row?.mark_as_read_token ?? null;
+    .first<LatestIncomingReadMessage>();
+  return row ?? null;
 }
 
 async function markLatestIncomingAsRead(
@@ -744,19 +1161,42 @@ async function markLatestIncomingAsRead(
   lineClient: { markMessagesAsRead(markAsReadToken: string): Promise<unknown> },
   friendId: string,
   requested: boolean | undefined,
+  actorId?: string | null,
 ): Promise<MarkAsReadResult> {
   const result = initialMarkAsReadResult(requested === true);
   if (!result.requested) return result;
 
-  const token = await getLatestMarkAsReadToken(db, friendId);
-  if (!token) return result;
+  const latest = await getLatestIncomingReadMessage(db, friendId);
+  if (!latest) return result;
+  if (latest.marked_as_read_at) {
+    return {
+      requested: true,
+      marked: true,
+      reason: null,
+      messageId: latest.id,
+      markedAt: latest.marked_as_read_at,
+    };
+  }
+  if (!latest.mark_as_read_token) {
+    return { ...result, messageId: latest.id };
+  }
 
   try {
-    await lineClient.markMessagesAsRead(token);
-    return { requested: true, marked: true, reason: null };
+    await lineClient.markMessagesAsRead(latest.mark_as_read_token);
+    const markedAt = jstNow();
+    await db
+      .prepare(
+        `UPDATE messages_log
+         SET marked_as_read_at = ?,
+             marked_as_read_by = ?
+         WHERE id = ?`,
+      )
+      .bind(markedAt, actorId ?? null, latest.id)
+      .run();
+    return { requested: true, marked: true, reason: null, messageId: latest.id, markedAt };
   } catch (err) {
     console.error(`mark-as-read failed: ${chatRouteErrorKind(err)}`);
-    return { requested: true, marked: false, reason: 'line_error' };
+    return { requested: true, marked: false, reason: 'line_error', messageId: latest.id, markedAt: null };
   }
 }
 
@@ -829,18 +1269,27 @@ chats.get('/api/chats', async (c) => {
   try {
     const parsed = parseChatListQuery(new URL(c.req.url).searchParams);
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
-    const { status, operatorId, lineAccountId, unansweredOnly } = parsed.value;
+    const { status, operatorId, lineAccountId, unansweredOnly, search } = parsed.value;
+    const staff = currentStaff(c);
+    if (isSecondaryOnlySupportStaff(staff)) {
+      return c.json({ success: false, error: '二次対応専用権限では顧客チャットを閲覧できません' }, 403);
+    }
 
     let unansweredIds: Set<string> | null = null;
     if (unansweredOnly) {
       const { getUnansweredFriendIds } = await import('../services/unanswered-inbox.js');
-      unansweredIds = await getUnansweredFriendIds(c.env.DB, currentStaff(c));
+      unansweredIds = await getUnansweredFriendIds(c.env.DB, staff);
       // 空 Set のとき = 未対応ゼロ。早期 return で空配列を返す。
       if (unansweredIds.size === 0) {
         return c.json({ success: true, data: [] });
       }
     }
 
+    const activeCaseConditions = activeSupportCaseConditions(staff, 'sc');
+    const activeCaseAccountClause = lineAccountId ? 'AND sc.line_account_id = ?' : '';
+    const activeCaseBinds = lineAccountId
+      ? [...activeCaseConditions.binds, lineAccountId]
+      : [...activeCaseConditions.binds];
     // List everyone who has any message history (incoming or outgoing — push/broadcast/scenario included)
     // PLUS any chats row that exists even before any messages_log entry is written.
     // Source = messages_log ∪ chats.friend_id; chats は status/operator/notes 用に LEFT JOIN で最新1件だけ採用。
@@ -861,6 +1310,7 @@ chats.get('/api/chats', async (c) => {
         SELECT friend_id, MAX(created_at) AS last_message_at
         FROM messages_log
         WHERE (delivery_type IS NULL OR delivery_type != 'test')
+          AND deleted_at IS NULL
           AND ${accountFilterSql}
         GROUP BY friend_id
         UNION ALL
@@ -873,28 +1323,12 @@ chats.get('/api/chats', async (c) => {
         FROM activity
         GROUP BY friend_id
       ),
-      -- preview は **最新の incoming (ユーザー発)** を優先する。auto_reply / scenario 等の
-      -- outbound が直後に書き込まれて preview を上書きすると「ユーザーが何と言ったか」が
-      -- 一覧から見えなくなる (operator triage の主目的が損なわれる)。
-      -- incoming が無い (broadcast push など outbound only) chat は最新 outbound にフォールバック。
-      -- text 以外 (flex/image/sticker 等) は content を NULL にして payload size を抑える
-      -- (フロントは type で 📋 Flex / 📷 画像 等のラベルを出すので content は不要)。
       -- preview は **常に最新メッセージ** を表示する。postback (rich menu tap) も含む。
-      -- preview text と displayed time を揃えるための単純化 (deprioritize すると
+      -- preview text と displayed time を揃えるための単純化 (incoming を優先すると
       -- 「最新は postback だが preview は古い text」の time mismatch が起きるため)。
       -- 注: postback.data が opaque な JSON token だと一覧で人間には読めない値が出るが、
       -- それは admin が rich menu の postback.data を人間向け文言にすべき config 問題。
       -- (LINE 仕様: postback.displayText は admin が設定可能、それを data に揃えるのが推奨)
-      ranked_in AS (
-        SELECT friend_id,
-          CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
-          direction, message_type, created_at,
-          ROW_NUMBER() OVER (PARTITION BY friend_id ORDER BY created_at DESC) AS rn
-        FROM messages_log
-        WHERE direction = 'incoming'
-          AND (delivery_type IS NULL OR delivery_type != 'test')
-          AND ${accountFilterSql}
-      ),
       ranked_any AS (
         SELECT friend_id,
           CASE WHEN message_type = 'text' THEN SUBSTR(content, 1, 200) ELSE NULL END AS content,
@@ -902,21 +1336,53 @@ chats.get('/api/chats', async (c) => {
           ROW_NUMBER() OVER (PARTITION BY friend_id ORDER BY created_at DESC) AS rn
         FROM messages_log
         WHERE (delivery_type IS NULL OR delivery_type != 'test')
+          AND deleted_at IS NULL
           AND ${accountFilterSql}
       ),
-      -- ra (any direction の最新) を master にして、ri (incoming の最新) を LEFT JOIN。
-      -- COALESCE で ri 優先 → incoming があればそれ、無ければ outbound にフォールバック。
-      -- created_at も preview の元メッセージに合わせて返す (一覧の時刻と preview text が
-      -- 別メッセージを指して mismatch する事故を防ぐ)。
       recent_msg AS (
         SELECT
-          ra.friend_id,
-          COALESCE(ri.content, ra.content) AS content,
-          COALESCE(ri.direction, ra.direction) AS direction,
-          COALESCE(ri.message_type, ra.message_type) AS message_type,
-          COALESCE(ri.created_at, ra.created_at) AS preview_at
-        FROM (SELECT * FROM ranked_any WHERE rn = 1) ra
-        LEFT JOIN (SELECT * FROM ranked_in WHERE rn = 1) ri ON ra.friend_id = ri.friend_id
+          friend_id,
+          content,
+          direction,
+          message_type,
+          created_at AS preview_at
+        FROM ranked_any
+        WHERE rn = 1
+      ),
+      active_support_cases AS (
+        SELECT *
+        FROM (
+          SELECT
+            sc.friend_id,
+            sc.id,
+            sc.title,
+            sc.status,
+            sc.priority,
+            sc.escalation_assignee,
+            (
+              SELECT se.status
+              FROM support_escalations se
+              WHERE se.case_id = sc.id
+                AND se.status != 'closed'
+              ORDER BY se.updated_at DESC, se.created_at DESC
+              LIMIT 1
+            ) AS latest_escalation_status,
+            sc.updated_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY sc.friend_id
+              ORDER BY
+                CASE
+                  WHEN sc.status IN ('waiting_secondary', 'escalated') THEN 0
+                  WHEN sc.status IN ('secondary_answered', 'customer_reply', 'waiting_primary') THEN 1
+                  ELSE 2
+                END,
+                sc.updated_at DESC
+            ) AS rn
+          FROM support_cases sc
+          WHERE ${activeCaseConditions.sql}
+            ${activeCaseAccountClause}
+        ) ranked_support
+        WHERE rn = 1
       )
       SELECT
         f.id AS id,
@@ -935,6 +1401,13 @@ chats.get('/api/chats', async (c) => {
         rm.content AS last_message_content,
         rm.direction AS last_message_direction,
         rm.message_type AS last_message_type,
+        ac.id AS support_case_id,
+        ac.title AS support_case_title,
+        ac.status AS support_case_status,
+        ac.priority AS support_case_priority,
+        ac.escalation_assignee AS support_case_escalation_assignee,
+        ac.latest_escalation_status AS support_case_latest_escalation_status,
+        ac.updated_at AS support_case_updated_at,
         COALESCE(c.created_at, d.last_message_at) AS created_at,
         COALESCE(c.updated_at, d.last_message_at) AS updated_at
       FROM deduped d
@@ -943,11 +1416,12 @@ chats.get('/api/chats', async (c) => {
         SELECT id FROM chats WHERE friend_id = f.id ORDER BY created_at DESC LIMIT 1
       )
       LEFT JOIN recent_msg rm ON rm.friend_id = f.id
+      LEFT JOIN active_support_cases ac ON ac.friend_id = f.id
     `;
-    // accountFilterSql に '?' が複数 (4 箇所) あるので、bindings は事前に積んでおく。
+    // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 3 箇所 → active_support_cases。
     const ctePrebindings: unknown[] = lineAccountId
-      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId]
-      : [];
+      ? [lineAccountId, lineAccountId, lineAccountId, ...activeCaseBinds]
+      : activeCaseBinds;
     const conditions: string[] = [];
     const bindings: unknown[] = [];
 
@@ -963,18 +1437,31 @@ chats.get('/api/chats', async (c) => {
       conditions.push('f.line_account_id = ?');
       bindings.push(lineAccountId);
     }
-    const visibility = supportFriendVisibilitySql(currentStaff(c), 'f.id');
-    if (visibility.sql) {
-      conditions.push(visibility.sql);
-      bindings.push(...visibility.binds);
+    if (search) {
+      const pattern = `%${escapeLikePattern(search)}%`;
+      conditions.push(`(
+        f.display_name LIKE ? ESCAPE '\\'
+        OR f.line_user_id LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.customerNumber') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.customer_number') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.companyName') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.company_name') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.contactName') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.contact_name') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.storeName') LIKE ? ESCAPE '\\'
+        OR json_extract(f.metadata, '$.store_name') LIKE ? ESCAPE '\\'
+        OR rm.content LIKE ? ESCAPE '\\'
+        OR ac.title LIKE ? ESCAPE '\\'
+        OR c.notes LIKE ? ESCAPE '\\'
+      )`);
+      bindings.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
     }
-
     if (conditions.length > 0) {
       sql += ' WHERE ' + conditions.join(' AND ');
     }
     sql += ' ORDER BY d.last_message_at DESC';
 
-    // CTE 内 placeholder (4 個) → 外側 WHERE placeholder の順に bind する
+	    // CTE 内 placeholder → 外側 WHERE placeholder の順に bind する
     const allBindings = [...ctePrebindings, ...bindings];
     const stmt = allBindings.length > 0
       ? c.env.DB.prepare(sql).bind(...allBindings)
@@ -993,6 +1480,15 @@ chats.get('/api/chats', async (c) => {
       lastMessageContent: ch.last_message_content || null,
       lastMessageDirection: ch.last_message_direction || null,
       lastMessageType: ch.last_message_type || null,
+      activeSupportCase: ch.support_case_id ? {
+        id: ch.support_case_id,
+        title: ch.support_case_title,
+        status: ch.support_case_status,
+        priority: ch.support_case_priority,
+        escalationAssignee: ch.support_case_escalation_assignee,
+        latestEscalationStatus: ch.support_case_latest_escalation_status,
+        updatedAt: ch.support_case_updated_at,
+      } : null,
       createdAt: ch.created_at,
       updatedAt: ch.updated_at,
     }));
@@ -1004,6 +1500,67 @@ chats.get('/api/chats', async (c) => {
     return c.json({ success: true, data });
   } catch (err) {
     console.error(`GET /api/chats error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.get('/api/chats/messages/:messageId/media', async (c) => {
+  try {
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+
+    const row = await c.env.DB
+      .prepare(
+        `SELECT
+           ml.id,
+           ml.friend_id,
+           ml.message_type,
+           ml.content,
+           ml.line_account_id,
+           f.line_account_id AS friend_line_account_id
+         FROM messages_log ml
+         LEFT JOIN friends f ON f.id = ml.friend_id
+         WHERE ml.id = ?
+         LIMIT 1`,
+      )
+      .bind(messageId.value)
+      .first<ChatMediaMessageRow>();
+    if (!row) return c.json({ success: false, error: 'Media not found' }, 404);
+
+    const denied = await ensureChatFriendAccess(c, row.friend_id);
+    if (denied) return denied;
+
+    const payload = parseStoredLineMediaPayload(row);
+    if (!payload) {
+      return c.json({ success: false, error: 'Media metadata is not available' }, 404);
+    }
+
+    const accountId = row.line_account_id || row.friend_line_account_id;
+    const accessToken = await resolveLineAccessTokenByAccount(c.env.DB, accountId, c.env.LINE_CHANNEL_ACCESS_TOKEN);
+    const lineResponse = await fetch(`${LINE_CONTENT_API_BASE}/${encodeURIComponent(payload.lineMessageId)}/content`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!lineResponse.ok) {
+      const status = lineResponse.status === 404 ? 404 : 502;
+      return c.json({ success: false, error: 'Media content is not available from LINE' }, status);
+    }
+
+    const contentType =
+      lineResponse.headers.get('Content-Type')?.split(';')[0].trim() ||
+      payload.mimeType ||
+      fallbackMimeType(row.message_type, payload.fileName);
+    const fileName = defaultMediaFileName(row, payload);
+    const headers = new Headers();
+    headers.set('Content-Type', contentType);
+    headers.set('Cache-Control', 'private, max-age=300');
+    headers.set('Content-Disposition', `inline; filename*=UTF-8''${encodeRfc5987Value(fileName)}`);
+    const contentLength = lineResponse.headers.get('Content-Length');
+    if (contentLength) headers.set('Content-Length', contentLength);
+
+    return new Response(lineResponse.body, { status: 200, headers });
+  } catch (err) {
+    console.error(`GET /api/chats/messages/:messageId/media error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1070,7 +1627,7 @@ chats.get('/api/chats/:id', async (c) => {
 
     const messages = await c.env.DB
       .prepare(
-        `SELECT id, friend_id, direction, message_type, content, source, created_at
+        `SELECT id, friend_id, direction, message_type, content, source, quote_token, quoted_message_id, marked_as_read_at, marked_as_read_by, deleted_at, deleted_reason, sent_by_staff_id, sent_by_staff_name, created_at
          FROM messages_log
          WHERE ${messageWhere.join(' AND ')}
          ORDER BY created_at DESC, id DESC LIMIT ?`,
@@ -1081,6 +1638,26 @@ chats.get('/api/chats/:id', async (c) => {
     const hasMoreMessages = rawMessages.length > messageLimit;
     const pageMessages = rawMessages.slice(0, messageLimit).reverse();
     const oldestMessage = pageMessages[0];
+    const internalMessages = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages
+         WHERE friend_id = ?
+         ORDER BY created_at ASC, id ASC
+         LIMIT 300`,
+      )
+      .bind(resolvedFriendId)
+      .all<ChatInternalMessageRow>();
+    const activeSupportCase = await getActiveSupportCaseForFriend(
+      c.env.DB,
+      resolvedFriendId,
+      currentStaff(c),
+    );
+    const staff = currentStaff(c);
+    const now = jstNow();
+    const typingParticipants = chatRow
+      ? await getChatTypingParticipants(c.env.DB, chatRow.id, staff, now)
+      : [];
 
     return c.json({
       success: true,
@@ -1098,12 +1675,23 @@ chats.get('/api/chats/:id', async (c) => {
         nextMessagesBefore: hasMoreMessages && oldestMessage
           ? { createdAt: oldestMessage.created_at, id: oldestMessage.id }
           : null,
+        internalMessages: internalMessages.results.map((message) => serializeChatInternalMessage(message, staff)),
+        activeSupportCase: serializeActiveSupportCaseForChat(activeSupportCase),
+        typingParticipants,
         messages: pageMessages.map((m) => ({
           id: m.id,
           direction: m.direction,
           messageType: m.message_type,
           content: m.content,
           source: m.source,
+          canQuote: m.direction === 'incoming' && typeof m.quote_token === 'string' && m.quote_token.trim() !== '' && !m.deleted_at,
+          quotedMessageId: m.quoted_message_id,
+          markedAsReadAt: m.marked_as_read_at,
+          markedAsReadBy: m.marked_as_read_by,
+          deletedAt: m.deleted_at,
+          deletedReason: m.deleted_reason,
+          sentByStaffId: m.sent_by_staff_id,
+          sentByStaffName: m.sent_by_staff_name,
           createdAt: m.created_at,
         })),
       },
@@ -1157,6 +1745,194 @@ chats.put('/api/chats/:id', async (c) => {
     });
   } catch (err) {
     console.error(`PUT /api/chats/:id error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/typing', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsed = parseChatTypingStatusBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, id.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const friend = await getFriendById(c.env.DB, chat.friend_id) as { line_account_id?: string | null } | null;
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const staff = currentStaff(c);
+    const now = jstNow();
+    await cleanupExpiredChatTyping(c.env.DB, now);
+
+    if (parsed.value.active) {
+      const expiresAt = jstTimestampAfterMs(15_000);
+      await c.env.DB
+        .prepare(
+          `INSERT INTO chat_typing_status (
+             id, chat_id, friend_id, staff_id, staff_name, line_account_id, expires_at, updated_at
+           )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(chat_id, staff_id) DO UPDATE SET
+             staff_name = excluded.staff_name,
+             line_account_id = excluded.line_account_id,
+             expires_at = excluded.expires_at,
+             updated_at = excluded.updated_at`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          chat.id,
+          chat.friend_id,
+          staff.id,
+          staff.name,
+          friend.line_account_id ?? null,
+          expiresAt,
+          now,
+        )
+        .run();
+
+      if (chat.status === 'unread') {
+        await updateChat(c.env.DB, chat.id, { status: 'in_progress' });
+      }
+    } else {
+      await c.env.DB
+        .prepare(`DELETE FROM chat_typing_status WHERE chat_id = ? AND staff_id = ?`)
+        .bind(chat.id, staff.id)
+        .run();
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        active: parsed.value.active,
+        status: parsed.value.active && chat.status === 'unread' ? 'in_progress' : chat.status,
+        typingParticipants: await getChatTypingParticipants(c.env.DB, chat.id, staff, jstNow()),
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/typing error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/internal-messages', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsed = parseChatInternalMessageBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, id.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const friend = await getFriendById(c.env.DB, chat.friend_id) as { line_account_id?: string | null } | null;
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    if (parsed.value.parentId) {
+      const parent = await c.env.DB
+        .prepare(
+          `SELECT id
+           FROM chat_internal_messages
+           WHERE id = ? AND friend_id = ?
+           LIMIT 1`,
+        )
+        .bind(parsed.value.parentId, chat.friend_id)
+        .first<{ id: string }>();
+      if (!parent) return c.json({ success: false, error: 'parent message not found' }, 404);
+    }
+
+    const messageId = crypto.randomUUID();
+    const now = jstNow();
+    const staff = currentStaff(c);
+    await c.env.DB
+      .prepare(
+        `INSERT INTO chat_internal_messages (
+           id, friend_id, line_account_id, parent_id, body, mentions, created_by, created_by_name, created_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        messageId,
+        chat.friend_id,
+        friend.line_account_id ?? null,
+        parsed.value.parentId ?? null,
+        parsed.value.body,
+        JSON.stringify(parsed.value.mentions),
+        staff.id,
+        staff.name,
+        now,
+      )
+      .run();
+
+    const row = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages
+         WHERE id = ?`,
+      )
+      .bind(messageId)
+      .first<ChatInternalMessageRow>();
+
+    kickWebPushNotifications(c);
+    return c.json({ success: true, data: row ? serializeChatInternalMessage(row, staff) : null }, 201);
+  } catch (err) {
+    console.error(`POST /api/chats/:id/internal-messages error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/internal-messages/:messageId/reactions', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const rawBody = await readJsonBody(c);
+    if (!isRecord(rawBody)) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const emoji = normalizeInternalReactionEmoji(rawBody.emoji);
+    if (!emoji.ok) return c.json({ success: false, error: emoji.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, id.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const message = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages
+         WHERE id = ? AND friend_id = ?
+         LIMIT 1`,
+      )
+      .bind(messageId.value, chat.friend_id)
+      .first<ChatInternalMessageRow>();
+    if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+
+    const staff = currentStaff(c);
+    const { reactionsJson } = toggleInternalReaction(message.reactions, emoji.value, staff);
+    await c.env.DB
+      .prepare(`UPDATE chat_internal_messages SET reactions = ? WHERE id = ? AND friend_id = ?`)
+      .bind(reactionsJson, messageId.value, chat.friend_id)
+      .run();
+
+    const updated = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages
+         WHERE id = ? AND friend_id = ?
+         LIMIT 1`,
+      )
+      .bind(messageId.value, chat.friend_id)
+      .first<ChatInternalMessageRow>();
+
+    return c.json({ success: true, data: updated ? serializeChatInternalMessage(updated, staff) : null });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/internal-messages/:messageId/reactions error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1240,6 +2016,8 @@ chats.post('/api/chats/:id/loading', async (c) => {
       c.env.LINE_CHANNEL_ACCESS_TOKEN,
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+    const safetyBlock = await getLineSendSafetyBlock(c.env.DB, friend.line_account_id);
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
 
     await startLoadingAnimation(
       accessToken,
@@ -1278,6 +2056,11 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
 
     const validation = await validateSupportCaseForSend(c, currentStaff(c), friend, body.value);
     if (!validation.ok) return validation.response;
+    const safetyBlock = await getLineSendSafetyBlock(
+      c.env.DB,
+      friend.line_account_id ?? validation.supportLineAccountId,
+    );
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
 
     return c.json({
       success: true,
@@ -1290,6 +2073,112 @@ chats.post('/api/chats/:id/send/validate', async (c) => {
     });
   } catch (err) {
     console.error(`POST /api/chats/:id/send/validate error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// 顧客からの最新メッセージに、LINE公式側の既読だけを付ける。
+// メッセージ送信やログ追加は行わない。
+chats.post('/api/chats/:id/read', async (c) => {
+  try {
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+
+    const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId.value);
+    if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, resolved.friendId);
+    if (denied) return denied;
+
+    const { friend, accessToken } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      resolved.friendId,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const staff = currentStaff(c);
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const lineClient = new LineClient(accessToken, {
+      allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
+    });
+    const markAsRead = await markLatestIncomingAsRead(c.env.DB, lineClient, friend.id, true, staff.id);
+    const nextStatus = markAsRead.marked ? 'in_progress' : resolved.chat?.status ?? null;
+
+    if (markAsRead.marked && resolved.chat) {
+      await updateChat(c.env.DB, resolved.chat.id, { status: 'in_progress' });
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        markAsRead,
+        status: nextStatus,
+        markedMessageId: markAsRead.messageId,
+        markedAt: markAsRead.markedAt,
+        updatedAt: jstNow(),
+      } satisfies ChatMarkAsReadResponse,
+    });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/read error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// LINE公式側で送信取り消しした送信ログを、Harness側でも非表示にする。
+// 公式側のオペレーター操作はWebhookで確実に届かないため、Harness上では明示操作で反映する。
+chats.post('/api/chats/:id/messages/:messageId/deleted', async (c) => {
+  try {
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+
+    const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId.value);
+    if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, resolved.friendId);
+    if (denied) return denied;
+
+    const message = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, direction, deleted_at
+         FROM messages_log
+         WHERE id = ?
+           AND friend_id = ?
+           AND (delivery_type IS NULL OR delivery_type != 'test')
+         LIMIT 1`,
+      )
+      .bind(messageId.value, resolved.friendId)
+      .first<{ id: string; friend_id: string; direction: string; deleted_at: string | null }>();
+
+    if (!message) return c.json({ success: false, error: 'Message not found' }, 404);
+    if (message.direction !== 'outgoing') {
+      return c.json({ success: false, error: 'Only outgoing messages can be marked as deleted' }, 400);
+    }
+
+    const deletedAt = message.deleted_at ?? jstNow();
+    if (!message.deleted_at) {
+      await c.env.DB
+        .prepare(
+          `UPDATE messages_log
+           SET deleted_at = ?,
+               deleted_reason = 'manual_unsend_reflection'
+           WHERE id = ?
+             AND friend_id = ?
+             AND deleted_at IS NULL`,
+        )
+        .bind(deletedAt, messageId.value, resolved.friendId)
+        .run();
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        messageId: messageId.value,
+        deletedAt,
+      } satisfies ChatDeletedMessageResponse,
+    });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/messages/:messageId/deleted error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1323,6 +2212,8 @@ chats.post('/api/chats/:id/send', async (c) => {
     const validation = await validateSupportCaseForSend(c, staff, friend, body.value);
     if (!validation.ok) return validation.response;
     const { supportCase, supportLineAccountId } = validation;
+    const safetyBlock = await getLineSendSafetyBlock(c.env.DB, friend.line_account_id ?? supportLineAccountId);
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
 
     // LINE APIでメッセージ送信
     const { LineClient } = await import('@line-crm/line-sdk');
@@ -1330,16 +2221,26 @@ chats.post('/api/chats/:id/send', async (c) => {
       allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
     });
     const { messageType, content } = normalized.payload;
+    const quoteTarget = await resolveQuoteTargetForSend(
+      c.env.DB,
+      friend.id,
+      body.value.quoteMessageId,
+      messageType,
+    );
+    if (!quoteTarget.ok) return c.json({ success: false, error: quoteTarget.error }, 400);
+    let lineSendResult: unknown = null;
 
     try {
       if (messageType === 'text') {
-        await lineClient.pushTextMessage(friend.line_user_id, content);
+        lineSendResult = quoteTarget.value
+          ? await lineClient.pushTextMessage(friend.line_user_id, content, quoteTarget.value.quoteToken)
+          : await lineClient.pushTextMessage(friend.line_user_id, content);
       } else if (messageType === 'flex') {
         const contents = normalized.payload.flexContents;
-        await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+        lineSendResult = await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
       } else if (messageType === 'image') {
         const parsed = normalized.payload.image;
-        await lineClient.pushImageMessage(
+        lineSendResult = await lineClient.pushImageMessage(
           friend.line_user_id,
           parsed.originalContentUrl,
           parsed.previewImageUrl,
@@ -1355,18 +2256,31 @@ chats.post('/api/chats/:id/send', async (c) => {
       lineClient,
       friend.id,
       body.value.markAsRead,
+      staff.id,
     );
 
     // メッセージログに記録
     const logId = crypto.randomUUID();
     const now = jstNow();
-    await c.env.DB
-      .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
-         VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?)`,
-      )
-      .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, now)
-      .run();
+    const lineMessageId = extractLineSentMessageId(lineSendResult);
+    const lineQuoteToken = extractLineSentQuoteToken(lineSendResult);
+    if (lineQuoteToken || quoteTarget.value) {
+      await c.env.DB
+        .prepare(
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, quote_token, quoted_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
+           VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, lineMessageId, lineQuoteToken, quoteTarget.value?.id ?? null, staff.id, staff.name, now)
+        .run();
+    } else {
+      await c.env.DB
+        .prepare(
+          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
+           VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?, ?, ?, ?)`,
+        )
+        .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, lineMessageId, staff.id, staff.name, now)
+        .run();
+    }
 
     let supportCaseResult: {
       id: string;
@@ -1415,6 +2329,9 @@ chats.post('/api/chats/:id/send', async (c) => {
       data: {
         sent: true,
         messageId: logId,
+        sentByStaffId: staff.id,
+        sentByStaffName: staff.name,
+        quotedMessageId: quoteTarget.value?.id ?? null,
         supportCase: supportCaseResult,
         markAsRead,
       },

@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createBroadcastInsight,
   getBroadcastById,
-  getFriendsByTag,
   updateBroadcastLineRequestId,
   updateBroadcastStatus,
 } from '@line-crm/db';
@@ -19,7 +18,6 @@ vi.mock('@line-crm/db', () => ({
 
 const mockedCreateBroadcastInsight = vi.mocked(createBroadcastInsight);
 const mockedGetBroadcastById = vi.mocked(getBroadcastById);
-const mockedGetFriendsByTag = vi.mocked(getFriendsByTag);
 const mockedUpdateBroadcastLineRequestId = vi.mocked(updateBroadcastLineRequestId);
 const mockedUpdateBroadcastStatus = vi.mocked(updateBroadcastStatus);
 
@@ -49,25 +47,27 @@ describe('processBroadcastSend', () => {
       batch_lock_at: null,
     };
     mockedGetBroadcastById.mockResolvedValue(broadcast as never);
-    mockedGetFriendsByTag.mockResolvedValue([
-      {
-        id: 'friend-secret',
-        line_user_id: 'U-secret',
-        display_name: 'secret',
-        picture_url: null,
-        status_message: null,
-        is_following: 1,
-        line_account_id: 'account-secret',
-        created_at: '2026-05-01T00:00:00+09:00',
-        updated_at: '2026-05-01T00:00:00+09:00',
-      },
-    ] as never);
     const lineClient = {
       multicast: vi.fn().mockRejectedValue(
         new Error('LINE API error: 500 Internal Server Error — token-secret U-secret body-secret'),
       ),
     };
-    const db = { batch: vi.fn() } as unknown as D1Database;
+    const db = {
+      prepare: vi.fn((_sql: string) => ({
+        bind: vi.fn(function bind() {
+          return this;
+        }),
+        all: vi.fn(async () => ({
+          results: [
+            {
+              id: 'friend-secret',
+              line_user_id: 'U-secret',
+            },
+          ],
+        })),
+      })),
+      batch: vi.fn(),
+    } as unknown as D1Database;
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     await processBroadcastSend(db, lineClient as never, 'broadcast-secret');

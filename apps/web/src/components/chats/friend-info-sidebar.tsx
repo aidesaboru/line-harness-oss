@@ -2,6 +2,16 @@
 
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
+import {
+  customerBroadcastExclusionPatch,
+  customerProfileFieldGroups,
+  customerProfileFormFromMetadata,
+  customerProfileFromMetadata,
+  customerProfileMetadataPatch,
+  isCustomerProfileMetadataKey,
+  isCustomerBroadcastExcluded,
+  type CustomerProfileFieldKey,
+} from '@/lib/customer-profile'
 
 interface FriendDetail {
   id: string
@@ -16,15 +26,16 @@ interface FriendDetail {
 
 interface ChatStatusInfo {
   status: 'unread' | 'in_progress' | 'resolved' | null
-  notes: string | null
 }
 
 interface Props {
   friendId: string | null
-  /** 親 (ChatDetail) が持っている chat 側の情報 — status / notes */
+  /** 親 (ChatDetail) が持っている chat 側の対応状況 */
   chatStatus?: ChatStatusInfo
-  /** 担当者名 (ChatDetail で operatorId → name 変換済を渡す想定) */
+  /** 対応中スタッフ名 (ChatDetail で operatorId → name 変換済を渡す想定) */
   operatorName?: string | null
+  /** 顧客情報保存後、親画面のチャット名や一覧表示も即時更新する */
+  onFriendUpdated?: (friend: FriendDetail) => void
 }
 
 function formatDate(iso: string | null): string {
@@ -39,7 +50,8 @@ const statusLabels: Record<NonNullable<ChatStatusInfo['status']>, { label: strin
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
 }
 
-const FRIEND_INFO_ERROR_MESSAGE = '友だち情報の取得に失敗しました。もう一度お試しください。'
+const FRIEND_INFO_ERROR_MESSAGE = '顧客情報の取得に失敗しました。もう一度お試しください。'
+const FRIEND_CUSTOMER_SAVE_ERROR_MESSAGE = '顧客情報の保存に失敗しました。もう一度お試しください。'
 
 /** Render a metadata value safely as text. Objects/arrays → JSON, primitives → as-is. */
 function renderValue(value: unknown): string {
@@ -53,14 +65,31 @@ function renderValue(value: unknown): string {
   }
 }
 
-export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }: Props) {
+function toHttpUrl(value: string): string | null {
+  const trimmed = value.trim()
+  if (/^https?:\/\//i.test(trimmed)) return trimmed
+  return null
+}
+
+export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, onFriendUpdated }: Props) {
   const [friend, setFriend] = useState<FriendDetail | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editingCustomer, setEditingCustomer] = useState(false)
+  const [customerForm, setCustomerForm] = useState<Record<CustomerProfileFieldKey, string>>(
+    () => customerProfileFormFromMetadata({}),
+  )
+  const [broadcastExcluded, setBroadcastExcluded] = useState(false)
+  const [savingCustomer, setSavingCustomer] = useState(false)
+  const [customerError, setCustomerError] = useState<string | null>(null)
+  const [customerSaved, setCustomerSaved] = useState(false)
 
   useEffect(() => {
     if (!friendId) {
       setFriend(null)
+      setEditingCustomer(false)
+      setCustomerError(null)
+      setCustomerSaved(false)
       return
     }
     let cancelled = false
@@ -81,6 +110,15 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
     })
     return () => { cancelled = true }
   }, [friendId])
+
+  useEffect(() => {
+    if (!friend) return
+    setCustomerForm(customerProfileFormFromMetadata(friend.metadata))
+    setBroadcastExcluded(isCustomerBroadcastExcluded(friend.metadata))
+    setEditingCustomer(false)
+    setCustomerError(null)
+    setCustomerSaved(false)
+  }, [friend?.id, friend?.metadata])
 
   // リッチメニュー — loading / error / data を区別して、null=未設定 を取得失敗と
   // 混同しないようにする。Codex review (P3) の指摘で導入。
@@ -113,10 +151,49 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
 
   if (!friendId) return null
 
+  const profile = friend ? customerProfileFromMetadata(friend.metadata) : null
+  const displayName = profile?.displayName || friend?.displayName || '名前なし'
+  const extraMetadataEntries = friend
+    ? Object.entries(friend.metadata ?? {}).filter(([key]) => !isCustomerProfileMetadataKey(key))
+    : []
+
+  const handleCustomerChange = (key: CustomerProfileFieldKey, value: string) => {
+    setCustomerForm((prev) => ({ ...prev, [key]: value }))
+    setCustomerError(null)
+    setCustomerSaved(false)
+  }
+
+  const handleCustomerSave = async () => {
+    if (!friend) return
+    setSavingCustomer(true)
+    setCustomerError(null)
+    setCustomerSaved(false)
+    try {
+      const res = await api.friends.updateMetadata(friend.id, {
+        ...customerProfileMetadataPatch(customerForm),
+        ...customerBroadcastExclusionPatch(broadcastExcluded),
+      })
+      if (res.success && res.data) {
+        const updatedFriend = res.data as unknown as FriendDetail
+        setFriend(updatedFriend)
+        onFriendUpdated?.(updatedFriend)
+        setEditingCustomer(false)
+        setCustomerSaved(true)
+      } else {
+        setCustomerError(FRIEND_CUSTOMER_SAVE_ERROR_MESSAGE)
+      }
+    } catch {
+      setCustomerError(FRIEND_CUSTOMER_SAVE_ERROR_MESSAGE)
+    } finally {
+      setSavingCustomer(false)
+    }
+  }
+
   return (
     <div className="w-full lg:w-80 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
-      <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
-        <h3 className="text-sm font-semibold text-gray-700">友だち詳細</h3>
+      <div className="border-b border-gray-200 bg-white px-4 py-3">
+        <h3 className="text-base font-bold text-gray-900">顧客詳細</h3>
+        <p className="mt-0.5 text-xs text-gray-500">対応に必要な顧客情報を確認</p>
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -135,16 +212,16 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
         ) : friend ? (
           <div className="divide-y divide-gray-100">
             {/* Profile Header */}
-            <div className="p-4 flex items-start gap-3">
+            <div className="bg-gray-50/80 p-4 flex items-start gap-3">
               {friend.pictureUrl ? (
                 <img src={friend.pictureUrl} alt="" className="w-12 h-12 rounded-full flex-shrink-0" />
               ) : (
                 <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0">
-                  <span className="text-gray-500 text-base">{(friend.displayName || '?').charAt(0)}</span>
+                  <span className="text-gray-500 text-base">{displayName.charAt(0)}</span>
                 </div>
               )}
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold text-gray-900 truncate">{friend.displayName || '名前なし'}</p>
+                <p className="text-sm font-semibold text-gray-900 truncate">{displayName}</p>
                 <p className="text-[11px] text-gray-400 mt-0.5">
                   登録日: {formatDate(friend.createdAt)}
                 </p>
@@ -169,43 +246,189 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
                 )}
                 {operatorName && (
                   <div className="flex justify-between items-center">
-                    <span className="text-[11px] text-gray-500">担当者</span>
+                    <span className="text-[11px] text-gray-500">対応中スタッフ</span>
                     <span className="text-xs text-gray-700">{operatorName}</span>
                   </div>
                 )}
               </div>
             )}
 
-            {/* Notes */}
-            {chatStatus?.notes && (
-              <div className="p-4">
-                <h4 className="text-[11px] font-medium text-gray-500 mb-1.5">個別メモ</h4>
-                <p className="text-xs text-gray-700 whitespace-pre-wrap break-words">{chatStatus.notes}</p>
+            {/* Customer Profile */}
+            {profile && (
+              <div className="p-4 space-y-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-gray-900">顧客カード</h4>
+                    <p className="mt-0.5 text-[11px] text-gray-500">
+                      必須 {profile.completionLabel} 入力済み
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (editingCustomer) {
+                        setCustomerForm(customerProfileFormFromMetadata(friend.metadata))
+                        setBroadcastExcluded(isCustomerBroadcastExcluded(friend.metadata))
+                        setCustomerError(null)
+                      }
+                      setEditingCustomer((value) => !value)
+                      setCustomerSaved(false)
+                    }}
+                    className="rounded-md border border-gray-200 px-2 py-1 text-[11px] font-medium text-gray-600 hover:bg-gray-50"
+                  >
+                    {editingCustomer ? '閉じる' : '編集'}
+                  </button>
+                </div>
+
+                {profile.missingRequiredFields.length > 0 && (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                    <p className="text-[11px] font-medium text-amber-800">未入力あり</p>
+                    <p className="mt-0.5 text-[11px] text-amber-700">
+                      {profile.missingRequiredFields.map((field) => field.label).join('、')}
+                    </p>
+                  </div>
+                )}
+                {profile.broadcastExcluded && !editingCustomer && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2">
+                    <p className="text-[11px] font-medium text-red-800">一斉送信から除外中</p>
+                    <p className="mt-0.5 text-[11px] text-red-700">
+                      この顧客には一斉配信や条件配信を送りません。
+                    </p>
+                  </div>
+                )}
+
+                {customerError && (
+                  <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+                    {customerError}
+                  </p>
+                )}
+                {customerSaved && (
+                  <p className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-[11px] text-green-700">
+                    保存しました
+                  </p>
+                )}
+
+                {editingCustomer ? (
+                  <div className="space-y-4">
+                    {customerProfileFieldGroups.map((group) => {
+                      const fields = group.keys
+                        .map((key) => profile.fields.find((field) => field.key === key))
+                        .filter((field): field is NonNullable<typeof field> => Boolean(field))
+                      return (
+                        <section key={group.title} className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                          <div className="mb-2">
+                            <p className="text-xs font-semibold text-gray-800">{group.title}</p>
+                            <p className="mt-0.5 text-[10px] text-gray-500">{group.description}</p>
+                          </div>
+                          <div className="space-y-2">
+                            {fields.map((field) => {
+                              const missing = field.required && !customerForm[field.key]?.trim()
+                              return (
+                                <label key={field.key} className="block">
+                                  <span className="mb-1 flex items-center gap-1 text-[10px] font-medium text-gray-500">
+                                    {field.label}
+                                    {field.required && <span className="text-red-500">必須</span>}
+                                  </span>
+                                  <input
+                                    type={field.key === 'googleFolderUrl' ? 'url' : 'text'}
+                                    value={customerForm[field.key]}
+                                    onChange={(e) => handleCustomerChange(field.key, e.target.value)}
+                                    className={`w-full rounded-md border px-2 py-1.5 text-xs text-gray-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500 ${
+                                      missing ? 'border-amber-300 bg-amber-50' : 'border-gray-300 bg-white'
+                                    }`}
+                                  />
+                                </label>
+                              )
+                            })}
+                          </div>
+                        </section>
+                      )
+                    })}
+                    <label className="flex items-start gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        checked={broadcastExcluded}
+                        onChange={(e) => {
+                          setBroadcastExcluded(e.target.checked)
+                          setCustomerError(null)
+                          setCustomerSaved(false)
+                        }}
+                        className="mt-0.5 h-4 w-4 rounded border-red-300 text-red-600 focus:ring-red-500"
+                      />
+                      <span>
+                        <span className="block text-[11px] font-medium text-red-800">一斉送信から除外</span>
+                        <span className="block text-[10px] leading-relaxed text-red-700">
+                          クレーム対応中、配信停止、個別判断が必要な顧客に使います。
+                        </span>
+                      </span>
+                    </label>
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleCustomerSave}
+                        disabled={savingCustomer}
+                        className="rounded-md px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                        style={{ backgroundColor: '#06C755' }}
+                      >
+                        {savingCustomer ? '保存中...' : '保存'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomerForm(customerProfileFormFromMetadata(friend.metadata))
+                          setBroadcastExcluded(isCustomerBroadcastExcluded(friend.metadata))
+                          setEditingCustomer(false)
+                          setCustomerError(null)
+                          setCustomerSaved(false)
+                        }}
+                        className="rounded-md bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-200"
+                      >
+                        キャンセル
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {customerProfileFieldGroups.map((group) => {
+                      const fields = group.keys
+                        .map((key) => profile.fields.find((field) => field.key === key))
+                        .filter((field): field is NonNullable<typeof field> => Boolean(field))
+                      return (
+                        <section key={group.title} className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                          <div className="mb-2 flex items-center justify-between gap-2">
+                            <p className="text-xs font-semibold text-gray-800">{group.title}</p>
+                            <span className="text-[10px] text-gray-400">
+                              {fields.filter((field) => field.value).length}/{fields.length}
+                            </span>
+                          </div>
+                          <dl className="grid gap-2">
+                            {fields.map((field) => {
+                              const href = field.key === 'googleFolderUrl' && field.value ? toHttpUrl(field.value) : null
+                              return (
+                                <div key={field.key} className={`rounded-md border bg-white px-2.5 py-2 ${
+                                  field.missing ? 'border-amber-200 ring-1 ring-amber-100' : 'border-gray-100'
+                                }`}>
+                                  <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
+                                  <dd className={field.value ? 'mt-0.5 break-words text-sm font-medium text-gray-800' : 'mt-0.5 text-sm font-semibold text-amber-600'}>
+                                    {href ? (
+                                      <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline-offset-2 hover:underline">
+                                        {field.value}
+                                      </a>
+                                    ) : (
+                                      field.value || (field.required ? '未入力' : '-')
+                                    )}
+                                  </dd>
+                                </div>
+                              )
+                            })}
+                          </dl>
+                        </section>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
-
-            {/* Tags */}
-            <div className="p-4">
-              <h4 className="text-[11px] font-medium text-gray-500 mb-1.5">タグ</h4>
-              {friend.tags.length === 0 ? (
-                <p className="text-[11px] text-gray-400 italic">タグなし</p>
-              ) : (
-                <div className="flex flex-wrap gap-1">
-                  {friend.tags.map((tag) => (
-                    <span
-                      key={tag.id}
-                      className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium"
-                      style={{
-                        backgroundColor: `${tag.color}20`,
-                        color: tag.color,
-                      }}
-                    >
-                      {tag.name}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
 
             {/* Rich Menu */}
             <div className="p-4">
@@ -229,11 +452,11 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
             </div>
 
             {/* Metadata custom fields */}
-            {friend.metadata && Object.keys(friend.metadata).length > 0 && (
+            {extraMetadataEntries.length > 0 && (
               <div className="p-4">
-                <h4 className="text-[11px] font-medium text-gray-500 mb-2">友だち情報</h4>
+                <h4 className="text-[11px] font-medium text-gray-500 mb-2">その他の顧客情報</h4>
                 <dl className="space-y-2 text-xs">
-                  {Object.entries(friend.metadata).map(([key, value]) => (
+                  {extraMetadataEntries.map(([key, value]) => (
                     <div key={key}>
                       <dt className="text-[10px] text-gray-400 uppercase tracking-wide">{key}</dt>
                       <dd className="text-gray-700 mt-0.5 whitespace-pre-wrap break-words">{renderValue(value)}</dd>
@@ -250,7 +473,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName }
             */}
           </div>
         ) : (
-          <div className="p-4 text-xs text-gray-400">友だち情報がありません</div>
+          <div className="p-4 text-xs text-gray-400">顧客情報がありません</div>
         )}
       </div>
     </div>

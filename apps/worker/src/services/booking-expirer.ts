@@ -3,6 +3,7 @@
 import type { BookingNotificationSender } from './booking-notifier.js';
 import { purgeExpiredIdempotency } from './booking-idempotency.js';
 import { REQUEST_TTL_HOURS } from './booking-types.js';
+import { getLineSendSafetyBlock } from './line-safety.js';
 
 interface StaleRow {
   id: string;
@@ -11,6 +12,7 @@ interface StaleRow {
   staff_name: string;
   channel_access_token: string;
   line_user_id: string;
+  line_account_id: string;
 }
 
 const JST_OFFSET_MS = 9 * 3600_000;
@@ -36,7 +38,8 @@ export async function runExpirer(
               m.name AS menu_name,
               s.display_name AS staff_name,
               la.channel_access_token,
-              f.line_user_id
+              f.line_user_id,
+              b.line_account_id
          FROM bookings b
          INNER JOIN menus m ON m.id = b.menu_id
          INNER JOIN staff s ON s.id = b.staff_id
@@ -66,6 +69,12 @@ export async function runExpirer(
       .bind(row.id)
       .run();
     try {
+      const safetyBlock = await getLineSendSafetyBlock(db, row.line_account_id);
+      if (safetyBlock) {
+        console.warn('Booking expiry notification blocked by LINE safety mode');
+        expired++;
+        continue;
+      }
       await params.sender({
         channelAccessToken: row.channel_access_token,
         toLineUserId: row.line_user_id,

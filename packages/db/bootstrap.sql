@@ -217,6 +217,30 @@ CREATE TABLE calendar_bookings (
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE chat_internal_messages (
+  id              TEXT PRIMARY KEY,
+  friend_id       TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  line_account_id TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  parent_id       TEXT REFERENCES chat_internal_messages(id) ON DELETE CASCADE,
+  body            TEXT NOT NULL,
+  mentions        TEXT NOT NULL DEFAULT '[]',
+  created_by      TEXT,
+  created_by_name TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+, reactions TEXT NOT NULL DEFAULT '{}');
+
+CREATE TABLE chat_typing_status (
+  id              TEXT PRIMARY KEY,
+  chat_id         TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+  friend_id       TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  staff_id        TEXT NOT NULL,
+  staff_name      TEXT NOT NULL,
+  line_account_id TEXT,
+  expires_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  UNIQUE (chat_id, staff_id)
+);
+
 CREATE TABLE chats (
   id            TEXT PRIMARY KEY,
   friend_id     TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
@@ -513,7 +537,16 @@ CREATE TABLE messages_log (
   delivery_type    TEXT CHECK (delivery_type IN ('push', 'reply', 'test')),
   source           TEXT,
   line_account_id  TEXT,
+  line_message_id  TEXT,
+  quote_token      TEXT,
+  quoted_message_id TEXT,
   mark_as_read_token TEXT,
+  marked_as_read_at TEXT,
+  marked_as_read_by TEXT,
+  deleted_at       TEXT,
+  deleted_reason   TEXT,
+  sent_by_staff_id TEXT,
+  sent_by_staff_name TEXT,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
@@ -693,11 +726,11 @@ CREATE TABLE staff (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 
-CREATE TABLE staff_members (
+CREATE TABLE "staff_members" (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   email      TEXT,
-  role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'staff')),
+  role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'staff', 'secondary')),
   api_key    TEXT UNIQUE NOT NULL,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
@@ -713,6 +746,17 @@ CREATE TABLE staff_menus (
   PRIMARY KEY (staff_id, menu_id),
   FOREIGN KEY (staff_id) REFERENCES staff(id),
   FOREIGN KEY (menu_id) REFERENCES menus(id)
+);
+
+CREATE TABLE staff_presence (
+  staff_id      TEXT PRIMARY KEY,
+  staff_name    TEXT NOT NULL,
+  staff_role    TEXT NOT NULL DEFAULT 'staff' CHECK (staff_role IN ('owner', 'admin', 'staff', 'secondary')),
+  last_seen_at  TEXT NOT NULL,
+  last_login_at TEXT,
+  user_agent    TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE staff_shifts (
@@ -749,7 +793,7 @@ CREATE TABLE support_case_events (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
-CREATE TABLE support_cases (
+CREATE TABLE "support_cases" (
   id                    TEXT PRIMARY KEY,
   line_account_id       TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
   friend_id             TEXT REFERENCES friends(id) ON DELETE SET NULL,
@@ -764,6 +808,7 @@ CREATE TABLE support_cases (
                            'waiting_primary',
                            'escalated',
                            'waiting_secondary',
+                           'secondary_answered',
                            'customer_reply',
                            'on_hold',
                            'resolved',
@@ -810,6 +855,18 @@ CREATE TABLE support_escalations (
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
+
+CREATE TABLE support_internal_messages (
+  id               TEXT PRIMARY KEY,
+  case_id          TEXT NOT NULL REFERENCES support_cases(id) ON DELETE CASCADE,
+  line_account_id  TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  parent_id        TEXT REFERENCES support_internal_messages(id) ON DELETE CASCADE,
+  body             TEXT NOT NULL,
+  mentions         TEXT NOT NULL DEFAULT '[]',
+  created_by       TEXT,
+  created_by_name  TEXT,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+, reactions TEXT NOT NULL DEFAULT '{}');
 
 CREATE TABLE support_manuals (
   id              TEXT PRIMARY KEY,
@@ -894,6 +951,37 @@ CREATE TABLE users (
   updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE web_push_deliveries (
+  id                TEXT PRIMARY KEY,
+  subscription_id   TEXT NOT NULL REFERENCES web_push_subscriptions(id) ON DELETE CASCADE,
+  notification_id   TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending',
+  error             TEXT,
+  sent_at           TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(subscription_id, notification_id)
+);
+
+CREATE TABLE web_push_subscriptions (
+  id                TEXT PRIMARY KEY,
+  staff_id          TEXT NOT NULL,
+  staff_name        TEXT NOT NULL,
+  staff_role        TEXT NOT NULL DEFAULT 'staff',
+  endpoint          TEXT NOT NULL UNIQUE,
+  p256dh            TEXT NOT NULL,
+  auth              TEXT NOT NULL,
+  user_agent        TEXT,
+  is_active         INTEGER NOT NULL DEFAULT 1,
+  notify_urgent     INTEGER NOT NULL DEFAULT 1,
+  notify_secondary  INTEGER NOT NULL DEFAULT 1,
+  notify_mentions   INTEGER NOT NULL DEFAULT 1,
+  last_error        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  last_seen_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE INDEX idx_ad_conversion_logs_friend ON ad_conversion_logs (friend_id);
 
 CREATE INDEX idx_ad_conversion_logs_platform ON ad_conversion_logs (ad_platform_id);
@@ -925,6 +1013,19 @@ CREATE INDEX idx_broadcasts_status ON broadcasts (status);
 CREATE INDEX idx_calendar_bookings_friend ON calendar_bookings (friend_id);
 
 CREATE INDEX idx_calendar_bookings_start ON calendar_bookings (start_at);
+
+CREATE INDEX idx_chat_internal_messages_account
+  ON chat_internal_messages(line_account_id, created_at);
+
+CREATE INDEX idx_chat_internal_messages_friend
+  ON chat_internal_messages(friend_id, created_at);
+
+CREATE INDEX idx_chat_internal_messages_parent
+  ON chat_internal_messages(parent_id, created_at);
+
+CREATE INDEX idx_chat_typing_status_chat ON chat_typing_status (chat_id, expires_at);
+
+CREATE INDEX idx_chat_typing_status_friend ON chat_typing_status (friend_id, expires_at);
 
 CREATE INDEX idx_chats_friend ON chats (friend_id);
 
@@ -1012,6 +1113,10 @@ CREATE INDEX idx_messages_log_friend_id ON messages_log (friend_id);
 
 CREATE INDEX idx_messages_log_friend_source ON messages_log (friend_id, source);
 
+CREATE INDEX idx_messages_log_line_message_id ON messages_log (line_message_id);
+
+CREATE INDEX idx_messages_log_quoted_message_id ON messages_log (quoted_message_id);
+
 CREATE INDEX idx_notifications_created ON notifications (created_at);
 
 CREATE INDEX idx_notifications_status ON notifications (status);
@@ -1039,6 +1144,9 @@ CREATE INDEX idx_staff_account_sort ON staff (line_account_id, sort_order);
 CREATE UNIQUE INDEX idx_staff_members_api_key ON staff_members(api_key);
 
 CREATE INDEX idx_staff_members_role ON staff_members(role);
+
+CREATE INDEX idx_staff_presence_last_seen
+  ON staff_presence(last_seen_at);
 
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
@@ -1071,6 +1179,15 @@ CREATE INDEX idx_support_escalations_assignee
 CREATE INDEX idx_support_escalations_case
   ON support_escalations(case_id, created_at);
 
+CREATE INDEX idx_support_internal_messages_account
+  ON support_internal_messages(line_account_id, created_at);
+
+CREATE INDEX idx_support_internal_messages_case
+  ON support_internal_messages(case_id, created_at);
+
+CREATE INDEX idx_support_internal_messages_parent
+  ON support_internal_messages(parent_id, created_at);
+
 CREATE INDEX idx_support_manuals_account_category
   ON support_manuals(line_account_id, category, is_active);
 
@@ -1083,3 +1200,12 @@ CREATE INDEX idx_users_email ON users (email);
 CREATE INDEX idx_users_external_id ON users (external_id);
 
 CREATE INDEX idx_users_phone ON users (phone);
+
+CREATE INDEX idx_web_push_deliveries_notification
+  ON web_push_deliveries(notification_id);
+
+CREATE INDEX idx_web_push_deliveries_subscription
+  ON web_push_deliveries(subscription_id, created_at);
+
+CREATE INDEX idx_web_push_subscriptions_staff
+  ON web_push_subscriptions(staff_id, is_active, last_seen_at);

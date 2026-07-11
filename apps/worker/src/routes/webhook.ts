@@ -24,6 +24,7 @@ import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { isLineCaptureOnly } from '../services/line-capture-only.js';
+import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -35,6 +36,30 @@ const webhook = new Hono<Env>();
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 const MARK_AS_READ_TOKEN_MAX_LENGTH = 4096;
 
+type IncomingNonTextMessage = {
+  id: string;
+  type: string;
+  markAsReadToken?: string;
+  quoteToken?: string;
+  fileName?: string;
+  fileSize?: number | string;
+  title?: string;
+  address?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+  packageId?: string | number;
+  package_id?: string | number;
+  stickerId?: string | number;
+  sticker_id?: string | number;
+  stickerResourceType?: string | number;
+  sticker_resource_type?: string | number;
+  contentProvider?: {
+    type?: string;
+    originalContentUrl?: string;
+    previewImageUrl?: string;
+  };
+};
+
 function webhookLineErrorStatus(err: unknown): number | null {
   if (!(err instanceof Error)) return null;
   const match = err.message.match(/^LINE API error:\s+(\d{3})\b/);
@@ -42,6 +67,7 @@ function webhookLineErrorStatus(err: unknown): number | null {
 }
 
 function webhookErrorKind(err: unknown): string {
+  if (isLineSafetyBlockedError(err)) return 'line_safety_frozen';
   const status = webhookLineErrorStatus(err);
   if (status != null) return `line_http_status_${status}`;
   if (err instanceof TypeError) return 'network_error';
@@ -56,6 +82,166 @@ function eventMarkAsReadToken(event: WebhookEvent): string | null {
   const value = token.trim();
   if (!value || value.length > MARK_AS_READ_TOKEN_MAX_LENGTH) return null;
   return value;
+}
+
+function eventLineMessageId(event: WebhookEvent): string | null {
+  if (event.type !== 'message') return null;
+  const id = (event.message as { id?: unknown }).id;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function eventQuoteToken(event: WebhookEvent): string | null {
+  if (event.type !== 'message') return null;
+  const token = (event.message as { quoteToken?: unknown }).quoteToken;
+  return typeof token === 'string' && token.trim() ? token.trim() : null;
+}
+
+function isUnsendWebhookEvent(event: WebhookEvent): boolean {
+  return (event as { type?: unknown }).type === 'unsend';
+}
+
+function eventUnsendMessageId(event: WebhookEvent): string | null {
+  if (!isUnsendWebhookEvent(event)) return null;
+  const id = (event as { unsend?: { messageId?: unknown } }).unsend?.messageId;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+async function markLineMessageUnsent(
+  db: D1Database,
+  lineMessageId: string,
+  lineAccountId: string | null,
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `UPDATE messages_log
+       SET deleted_at = ?,
+           deleted_reason = 'line_unsend'
+       WHERE deleted_at IS NULL
+         AND (? IS NULL OR line_account_id IS NULL OR line_account_id = ?)
+         AND (
+           line_message_id = ?
+           OR (
+             line_message_id IS NULL
+             AND json_valid(content)
+             AND (
+               json_extract(content, '$.lineMessageId') = ?
+               OR json_extract(content, '$.messageId') = ?
+             )
+           )
+         )`,
+    )
+    .bind(jstNow(), lineAccountId, lineAccountId, lineMessageId, lineMessageId, lineMessageId)
+    .run();
+  return Number((result as { meta?: { changes?: unknown } }).meta?.changes ?? 0);
+}
+
+function workerMediaUrl(workerUrl: string | undefined, logId: string): string | null {
+  if (!workerUrl) return null;
+  return `${workerUrl.replace(/\/$/, '')}/api/chats/messages/${encodeURIComponent(logId)}/media`;
+}
+
+function externalMediaUrl(msg: IncomingNonTextMessage): { originalContentUrl?: string; previewImageUrl?: string } | null {
+  const provider = msg.contentProvider;
+  if (!provider || provider.type !== 'external') return null;
+  const original = typeof provider.originalContentUrl === 'string' ? provider.originalContentUrl.trim() : '';
+  const preview = typeof provider.previewImageUrl === 'string' ? provider.previewImageUrl.trim() : '';
+  if (!original) return null;
+  return {
+    originalContentUrl: original,
+    previewImageUrl: preview || original,
+  };
+}
+
+function incomingNonTextLabel(msg: IncomingNonTextMessage): string {
+  const labels: Record<string, string> = {
+    sticker: '[スタンプ]',
+    image: '[画像]',
+    audio: '[音声]',
+    video: '[動画]',
+    file: msg.fileName ? `[ファイル: ${msg.fileName}]` : '[ファイル]',
+    location: msg.title ? `[位置情報: ${msg.title}]` : '[位置情報]',
+  };
+  return labels[msg.type] ?? `[${msg.type}]`;
+}
+
+async function buildIncomingNonTextContent(params: {
+  msg: IncomingNonTextMessage;
+  logId: string;
+  lineAccessToken: string;
+  lineAccountId: string | null;
+  workerUrl?: string;
+  r2?: R2Bucket;
+}): Promise<string> {
+  const { msg, logId, lineAccessToken, lineAccountId, workerUrl, r2 } = params;
+
+  if (msg.type === 'sticker') {
+    const stickerContent = createStickerMessageContent(msg);
+    if (stickerContent) return JSON.stringify(stickerContent);
+  }
+
+  if (msg.type === 'location') {
+    const latitude = typeof msg.latitude === 'number' ? msg.latitude : Number(msg.latitude);
+    const longitude = typeof msg.longitude === 'number' ? msg.longitude : Number(msg.longitude);
+    const hasPoint = Number.isFinite(latitude) && Number.isFinite(longitude);
+    return JSON.stringify({
+      lineMessageId: msg.id,
+      title: msg.title ?? '位置情報',
+      address: msg.address ?? '',
+      latitude: hasPoint ? latitude : null,
+      longitude: hasPoint ? longitude : null,
+      url: hasPoint
+        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latitude},${longitude}`)}`
+        : null,
+    });
+  }
+
+  const isMedia = msg.type === 'image' || msg.type === 'file' || msg.type === 'video' || msg.type === 'audio';
+  if (!isMedia) return incomingNonTextLabel(msg);
+
+  const external = externalMediaUrl(msg);
+  if (external) {
+    return JSON.stringify({
+      lineMessageId: msg.id,
+      messageId: msg.id,
+      ...external,
+      contentUrl: external.originalContentUrl,
+      fileName: msg.fileName ?? (msg.type === 'image' ? 'LINE画像' : undefined),
+      fileSize: msg.fileSize ?? null,
+      mediaType: msg.type,
+    });
+  }
+
+  if (msg.type === 'image' && r2 && workerUrl) {
+    const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
+    const refs = await fetchAndStoreIncomingImage({
+      r2,
+      workerUrl,
+      channelAccessToken: lineAccessToken,
+      accountId: lineAccountId ?? 'unknown',
+      messageId: msg.id,
+    });
+    if (refs) {
+      return JSON.stringify({
+        lineMessageId: msg.id,
+        messageId: msg.id,
+        mediaType: msg.type,
+        fileName: 'LINE画像',
+        ...refs,
+      });
+    }
+  }
+
+  const contentUrl = workerMediaUrl(workerUrl, logId);
+  if (!contentUrl) return incomingNonTextLabel(msg);
+
+  return JSON.stringify({
+    lineMessageId: msg.id,
+    messageId: msg.id,
+    mediaType: msg.type,
+    fileName: msg.fileName ?? (msg.type === 'image' ? 'LINE画像' : undefined),
+    fileSize: msg.fileSize ?? null,
+    contentUrl,
+  });
 }
 
 webhook.post('/webhook', async (c) => {
@@ -175,6 +361,12 @@ async function handleCaptureOnlyEvent(
   workerUrl?: string,
   r2?: R2Bucket,
 ): Promise<void> {
+  if (isUnsendWebhookEvent(event)) {
+    const lineMessageId = eventUnsendMessageId(event);
+    if (lineMessageId) await markLineMessageUnsent(db, lineMessageId, lineAccountId);
+    return;
+  }
+
   if (event.type === 'follow') {
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
@@ -215,12 +407,13 @@ async function handleCaptureOnlyEvent(
 
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only text message');
     const markAsReadToken = eventMarkAsReadToken(event);
+    const lineMessageId = eventLineMessageId(event);
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, markAsReadToken, jstNow())
+      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, lineMessageId, eventQuoteToken(event), markAsReadToken, jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
     return;
@@ -231,55 +424,23 @@ async function handleCaptureOnlyEvent(
     if (!userId) return;
 
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only non-text message');
-    const msg = event.message as {
-      id: string;
-      type: string;
-      markAsReadToken?: string;
-      fileName?: string;
-      title?: string;
-      packageId?: string | number;
-      package_id?: string | number;
-      stickerId?: string | number;
-      sticker_id?: string | number;
-      stickerResourceType?: string | number;
-      sticker_resource_type?: string | number;
-    };
-    const labels: Record<string, string> = {
-      sticker: '[スタンプ]',
-      image: '[画像]',
-      audio: '[音声]',
-      video: '[動画]',
-      file: msg.fileName ? `[ファイル: ${msg.fileName}]` : '[ファイル]',
-      location: msg.title ? `[位置情報: ${msg.title}]` : '[位置情報]',
-    };
-    let finalContent = labels[msg.type] ?? `[${msg.type}]`;
-
-    if (msg.type === 'sticker') {
-      const stickerContent = createStickerMessageContent(msg);
-      if (stickerContent) {
-        finalContent = JSON.stringify(stickerContent);
-      }
-    }
-    if (msg.type === 'image' && r2 && workerUrl) {
-      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
-      const refs = await fetchAndStoreIncomingImage({
-        r2,
-        workerUrl,
-        channelAccessToken: lineAccessToken,
-        accountId: lineAccountId ?? 'unknown',
-        messageId: msg.id,
-      });
-      if (refs) {
-        finalContent = JSON.stringify(refs);
-      }
-    }
+    const msg = event.message as IncomingNonTextMessage;
+    const logId = crypto.randomUUID();
+    const finalContent = await buildIncomingNonTextContent({
+      msg,
+      logId,
+      lineAccessToken,
+      lineAccountId,
+      workerUrl,
+      r2,
+    });
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, eventMarkAsReadToken(event), jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
   }
@@ -295,6 +456,12 @@ async function handleEvent(
   liffUrl?: string,
   r2?: R2Bucket,
 ): Promise<void> {
+  if (isUnsendWebhookEvent(event)) {
+    const lineMessageId = eventUnsendMessageId(event);
+    if (lineMessageId) await markLineMessageUnsent(db, lineMessageId, lineAccountId);
+    return;
+  }
+
   if (event.type === 'follow') {
     const userId =
       event.source.type === 'user' ? event.source.userId : undefined;
@@ -387,6 +554,7 @@ async function handleEvent(
                 const resolvedMeta = await resolveMetadata(db, { user_id: (friend as unknown as Record<string, string | null>).user_id, metadata: (friend as unknown as Record<string, string | null>).metadata });
                 const expandedContent = expandVariables(resolved.messageContent, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1]);
                 const message = buildMessage(resolved.messageType, expandedContent);
+                await assertLineSendAllowed(db, lineAccountId);
                 await lineClient.replyMessage(event.replyToken, [message]);
 
                 // Log what was actually delivered (post buildMessage normalization)
@@ -442,6 +610,7 @@ async function handleEvent(
           const template = await getMessageTemplateById(db, referralRoute.intro_template_id);
           if (template) {
             const message = buildMessage(template.message_type, template.message_content);
+            await assertLineSendAllowed(db, lineAccountId);
             await lineClient.pushMessage(userId, [message]);
             console.log(`[follow] referral intro push sent route=${referralRoute.id}`);
           }
@@ -532,6 +701,7 @@ async function handleEvent(
           });
           const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta } as Parameters<typeof expandVariables>[1], workerUrl);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
+          await assertLineSendAllowed(db, lineAccountId);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
 
           // 送信ログ — Rich Menu 経由の Flex 応答もチャット詳細に残るようにする。
@@ -562,59 +732,23 @@ async function handleEvent(
     if (!userId) return;
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'non-text message');
 
-    const msg = event.message as {
-      id: string;
-      type: string;
-      markAsReadToken?: string;
-      fileName?: string;
-      title?: string;
-      packageId?: string | number;
-      package_id?: string | number;
-      stickerId?: string | number;
-      sticker_id?: string | number;
-      stickerResourceType?: string | number;
-      sticker_resource_type?: string | number;
-    };
-    const labels: Record<string, string> = {
-      sticker: '[スタンプ]',
-      image: '[画像]',
-      audio: '[音声]',
-      video: '[動画]',
-      file: msg.fileName ? `[ファイル: ${msg.fileName}]` : '[ファイル]',
-      location: msg.title ? `[位置情報: ${msg.title}]` : '[位置情報]',
-    };
-    const content = labels[msg.type] ?? `[${msg.type}]`;
-
-    // image の場合は LINE Content API でバイナリを取得 → R2 → JSON URL に置換。
-    // 失敗時は labels[msg.type] のラベル文字列のまま (フォールバック)。
-    let finalContent = content;
-    if (msg.type === 'sticker') {
-      const stickerContent = createStickerMessageContent(msg);
-      if (stickerContent) {
-        finalContent = JSON.stringify(stickerContent);
-      }
-    }
-    if (msg.type === 'image' && r2 && workerUrl) {
-      const lineMessageId = msg.id;
-      const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
-      const refs = await fetchAndStoreIncomingImage({
-        r2,
-        workerUrl,
-        channelAccessToken: lineAccessToken,
-        accountId: lineAccountId ?? 'unknown',
-        messageId: lineMessageId,
-      });
-      if (refs) {
-        finalContent = JSON.stringify(refs);
-      }
-    }
+    const msg = event.message as IncomingNonTextMessage;
+    const logId = crypto.randomUUID();
+    const finalContent = await buildIncomingNonTextContent({
+      msg,
+      logId,
+      lineAccessToken,
+      lineAccountId,
+      workerUrl,
+      r2,
+    });
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
       )
-      .bind(crypto.randomUUID(), friend.id, msg.type, finalContent, lineAccountId ?? null, eventMarkAsReadToken(event), jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
       .run();
     return;
   }
@@ -634,10 +768,10 @@ async function handleEvent(
     // 受信メッセージをログに記録
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
       )
-      .bind(logId, friend.id, incomingText, lineAccountId ?? null, eventMarkAsReadToken(event), now)
+      .bind(logId, friend.id, incomingText, lineAccountId ?? null, eventLineMessageId(event), eventQuoteToken(event), eventMarkAsReadToken(event), now)
       .run();
 
     // Cross-account trigger: send message from another account via UUID
@@ -647,12 +781,13 @@ async function handleEvent(
         if (friendRecord?.user_id) {
           // Find the same user on other accounts
           const otherFriends = await db.prepare(
-            'SELECT f.line_user_id, la.channel_access_token FROM friends f INNER JOIN line_accounts la ON la.id = f.line_account_id WHERE f.user_id = ? AND f.line_account_id != ? AND f.is_following = 1'
-          ).bind(friendRecord.user_id, lineAccountId).all<{ line_user_id: string; channel_access_token: string }>();
+            'SELECT f.line_user_id, f.line_account_id, la.channel_access_token FROM friends f INNER JOIN line_accounts la ON la.id = f.line_account_id WHERE f.user_id = ? AND f.line_account_id != ? AND f.is_following = 1'
+          ).bind(friendRecord.user_id, lineAccountId).all<{ line_user_id: string; line_account_id: string; channel_access_token: string }>();
 
           for (const other of otherFriends.results) {
             const otherClient = new LineClient(other.channel_access_token);
             const { buildMessage: bm } = await import('../services/step-delivery.js');
+            await assertLineSendAllowed(db, other.line_account_id);
             await otherClient.pushMessage(other.line_user_id, [bm('flex', JSON.stringify({
               type: 'bubble', size: 'giga',
               header: { type: 'box', layout: 'vertical', paddingAll: '20px', backgroundColor: '#fffbeb',
@@ -676,6 +811,7 @@ async function handleEvent(
           }
 
           // Reply on Account ② confirming
+          await assertLineSendAllowed(db, lineAccountId);
           await lineClient.replyMessage(event.replyToken, [buildMessage('flex', JSON.stringify({
             type: 'bubble',
             body: { type: 'box', layout: 'vertical', paddingAll: '20px',
@@ -736,6 +872,7 @@ async function handleEvent(
           });
           const expandedContent = expandVariables(resolved.content, { ...friend, metadata: resolvedMeta2 } as Parameters<typeof expandVariables>[1], workerUrl);
           const replyMsg = buildMessage(resolved.messageType, expandedContent);
+          await assertLineSendAllowed(db, lineAccountId);
           await lineClient.replyMessage(event.replyToken, [replyMsg]);
           replyTokenConsumed = true;
 
@@ -786,7 +923,17 @@ async function getOrCreateFriendForUser(
   eventContext: string,
 ): Promise<Friend> {
   const existing = await getFriendByLineUserId(db, userId);
-  if (existing) return existing;
+  if (existing) {
+    if (lineAccountId && !existing.line_account_id) {
+      const updatedAt = jstNow();
+      await db
+        .prepare('UPDATE friends SET line_account_id = ?, updated_at = ? WHERE id = ? AND line_account_id IS NULL')
+        .bind(lineAccountId, updatedAt, existing.id)
+        .run();
+      return { ...existing, line_account_id: lineAccountId, updated_at: updatedAt };
+    }
+    return existing;
+  }
 
   let profile: Awaited<ReturnType<LineClient['getProfile']>> | null = null;
   try {

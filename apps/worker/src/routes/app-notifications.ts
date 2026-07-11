@@ -344,8 +344,13 @@ async function fetchUrgentCases(
 
   const rows = await db
     .prepare(
-      `SELECT sc.id, sc.title, sc.friend_name, sc.updated_at
+      `SELECT
+         sc.id,
+         sc.title,
+         COALESCE(NULLIF(f.display_name, ''), NULLIF(sc.contact_name, ''), NULLIF(sc.company_name, ''), NULLIF(sc.customer_number, '')) AS friend_name,
+         sc.updated_at
        FROM support_cases sc
+       LEFT JOIN friends f ON f.id = sc.friend_id
        WHERE ${conditions.join(' AND ')}
        ORDER BY sc.updated_at DESC
        LIMIT ?`,

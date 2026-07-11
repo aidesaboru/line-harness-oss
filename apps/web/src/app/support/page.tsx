@@ -107,6 +107,13 @@ export default function SupportPage() {
   useEffect(() => { detailIdRef.current = detail?.id ?? null }, [detail?.id])
 
   const visibleChats = useMemo(() => chats.slice(0, 80), [chats])
+  const createPanelChats = useMemo(() => {
+    if (!createInitialFriendId || visibleChats.some((chat) => chat.friendId === createInitialFriendId)) {
+      return visibleChats
+    }
+    const linkedChat = chats.find((chat) => chat.friendId === createInitialFriendId)
+    return linkedChat ? [linkedChat, ...visibleChats] : visibleChats
+  }, [chats, createInitialFriendId, visibleChats])
   const displayCases = useMemo(() => getDisplayCases(cases, { caseFocus, sortMode }), [cases, caseFocus, sortMode])
   const displayCaseIds = useMemo(() => displayCases.map((item) => item.id), [displayCases])
   const selectedCaseOutsideList = !loading && !detailLoading && isSelectedCaseOutsideCurrentList({
@@ -837,7 +844,7 @@ export default function SupportPage() {
 
       {canCreateCases && createOpen && (
         <CreateCasePanel
-          chats={visibleChats}
+          chats={createPanelChats}
           staffName={verifiedStaffName}
           staffOptions={assigneeSuggestions}
           initialFriendId={createInitialFriendId}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { SupportManual } from '@/lib/api'
 import { categoryLabel, categoryOptions, getManualEditorValidationIssues } from './support-meta'
 import { CheckIcon, Field, Pill, PlusIcon, SearchIcon, XIcon, btnSecondaryCls, inputCls, selectCls, textareaCls } from './support-ui'
@@ -59,23 +59,93 @@ function manualInputFromManual(manual: SupportManual): ManualEditorInput {
   }
 }
 
-function ManualBody({ body }: { body: string }) {
-  const [expanded, setExpanded] = useState(false)
-  const isLong = body.length > 140
+type ParsedManualBody = {
+  customerInfo: string
+  question: string
+  answer: string
+  rest: string
+  structured: boolean
+}
+
+const manualBodySectionMap: Record<string, keyof Omit<ParsedManualBody, 'structured'>> = {
+  '顧客・案件情報': 'customerInfo',
+  顧客情報: 'customerInfo',
+  案件情報: 'customerInfo',
+  問い合わせ内容: 'question',
+  一次対応の問い合わせ: 'question',
+  質問: 'question',
+  問い: 'question',
+  解決回答: 'answer',
+  対応ナレッジ: 'answer',
+  二次対応の回答: 'answer',
+  回答: 'answer',
+  本文: 'rest',
+}
+
+function cleanManualText(value: string): string {
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/(^|\n)```/g, '$1')
+    .replace(/```\n?/g, '')
+    .replace(/^\s*!channel\s*$/gm, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function appendSectionValue(current: string, next: string): string {
+  const cleaned = cleanManualText(next)
+  if (!cleaned) return current
+  return current ? `${current}\n\n${cleaned}` : cleaned
+}
+
+function parseManualBody(body: string): ParsedManualBody {
+  const result: ParsedManualBody = {
+    customerInfo: '',
+    question: '',
+    answer: '',
+    rest: '',
+    structured: false,
+  }
+  const matches = Array.from(body.matchAll(/【([^】]+)】/g))
+  if (matches.length === 0) {
+    result.rest = cleanManualText(body)
+    return result
+  }
+
+  matches.forEach((match, index) => {
+    const label = cleanManualText(match[1] ?? '')
+    const key = manualBodySectionMap[label] ?? 'rest'
+    const sectionStart = (match.index ?? 0) + match[0].length
+    const sectionEnd = matches[index + 1]?.index ?? body.length
+    const value = body.slice(sectionStart, sectionEnd)
+    result[key] = appendSectionValue(result[key], value)
+    if (key !== 'rest') result.structured = true
+  })
+  return result
+}
+
+function splitAnswerBlocks(answer: string): string[] {
+  const blocks = answer
+    .split(/\n\s*---\s*\n/g)
+    .map(cleanManualText)
+    .filter(Boolean)
+  return blocks.length > 0 ? blocks : (answer ? [answer] : [])
+}
+
+function buildManualPreview(manual: SupportManual): string {
+  const parsed = parseManualBody(manual.body)
+  const source = parsed.question || parsed.answer || parsed.rest || manual.body
+  return cleanManualText(source).slice(0, 180)
+}
+
+function ManualTextBlock({ children, tone = 'default' }: { children: string; tone?: 'default' | 'answer' }) {
+  const toneCls = tone === 'answer'
+    ? 'border-green-100 bg-green-50/60 text-gray-800'
+    : 'border-gray-100 bg-gray-50 text-gray-700'
   return (
-    <div>
-      <p className={`mt-2 whitespace-pre-wrap break-words text-sm text-gray-600 ${expanded ? '' : 'line-clamp-3'}`}>
-        {body}
-      </p>
-      {isLong && (
-        <button
-          type="button"
-          onClick={() => setExpanded((prev) => !prev)}
-          className="mt-1 text-xs font-medium text-gray-400 transition-colors hover:text-gray-600"
-        >
-          {expanded ? '閉じる' : 'もっと見る'}
-        </button>
-      )}
+    <div className={`rounded-md border px-3 py-2 ${toneCls}`}>
+      <p className="whitespace-pre-wrap break-words text-sm leading-6">{children}</p>
     </div>
   )
 }
@@ -104,7 +174,20 @@ export default function ManualPanel({
 }: ManualPanelProps) {
   const [editing, setEditing] = useState<SupportManual | null>(null)
   const [draft, setDraft] = useState<ManualEditorInput>(emptyManualInput)
+  const [selectedManualId, setSelectedManualId] = useState<string | null>(null)
   const formOpen = editing !== null || draft !== emptyManualInput
+  const selectedManual = useMemo(
+    () => manuals.find((manual) => manual.id === selectedManualId) ?? manuals[0] ?? null,
+    [manuals, selectedManualId],
+  )
+  const selectedManualBody = useMemo(
+    () => selectedManual ? parseManualBody(selectedManual.body) : null,
+    [selectedManual],
+  )
+  const selectedAnswerBlocks = useMemo(
+    () => selectedManualBody ? splitAnswerBlocks(selectedManualBody.answer) : [],
+    [selectedManualBody],
+  )
   const validationIssues = getManualEditorValidationIssues(draft)
   const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
   const submitDisabled = saving || blockingValidationIssues.length > 0
@@ -118,12 +201,23 @@ export default function ManualPanel({
       ? '右上の「新規」から、よく使う対応手順を追加できます。'
       : 'owner/adminが作成したマニュアルがここに表示されます。必要な手順がなければ作成を依頼してください。'
 
+  useEffect(() => {
+    if (manuals.length === 0) {
+      setSelectedManualId(null)
+      return
+    }
+    if (!selectedManualId || !manuals.some((manual) => manual.id === selectedManualId)) {
+      setSelectedManualId(manuals[0].id)
+    }
+  }, [manuals, selectedManualId])
+
   const openCreateForm = () => {
     setEditing(null)
     setDraft({ ...emptyManualInput, category: category === 'all' ? 'other' : category })
   }
 
   const openEditForm = (manual: SupportManual) => {
+    setSelectedManualId(manual.id)
     setEditing(manual)
     setDraft(manualInputFromManual(manual))
   }
@@ -322,88 +416,221 @@ export default function ManualPanel({
         {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
       </select>
 
-      <div className="mt-3 max-h-[480px] space-y-3 overflow-y-auto overscroll-contain">
-        {manuals.length === 0 ? (
-          <div className="py-6 text-center">
-            <p className="text-sm font-medium text-gray-600">{manualEmptyTitle}</p>
-            <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-gray-400">{manualEmptyDescription}</p>
-            {hasManualFilters && (
-              <button
-                type="button"
-                onClick={() => {
-                  onSearchChange('')
-                  onCategoryChange('all')
-                }}
-                disabled={saving}
-                className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                検索条件をリセット
-              </button>
-            )}
-          </div>
-        ) : manuals.map((manual) => {
-          const linked = linkedIds.includes(manual.id)
-          return (
-            <div key={manual.id} className="rounded-lg border border-gray-200 p-3 transition-colors hover:border-gray-300">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="break-words text-sm font-semibold text-gray-900">{manual.title}</p>
-                  <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-                    <Pill className="border-gray-200 bg-gray-50 text-gray-600">
-                      {categoryLabel[manual.category] || manual.category}
-                    </Pill>
-                    {manual.owner || '担当未設定'}
-                  </p>
-                </div>
-                {showLinkActions && (
-                  <button
-                    onClick={() => onLink(manual)}
-                    disabled={!canLink || saving || linked}
-                    title={!canLink ? 'チケットを選択すると紐付けできます' : undefined}
-                    className={`shrink-0 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                      linked
-                        ? 'border border-green-200 bg-green-50 text-green-700'
-                        : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50'
-                    }`}
-                  >
-                    {linked ? '紐付済' : '紐付け'}
-                  </button>
-                )}
-              </div>
-              <ManualBody body={manual.body} />
-              {manual.url && (
-                <a
-                  href={manual.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2 inline-block text-sm text-blue-600 underline-offset-2 hover:underline"
+      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+        <div className="max-h-[620px] space-y-2 overflow-y-auto overscroll-contain pr-1">
+          {manuals.length === 0 ? (
+            <div className="py-6 text-center">
+              <p className="text-sm font-medium text-gray-600">{manualEmptyTitle}</p>
+              <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-gray-400">{manualEmptyDescription}</p>
+              {hasManualFilters && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSearchChange('')
+                    onCategoryChange('all')
+                  }}
+                  disabled={saving}
+                  className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  リンクを開く
-                </a>
+                  検索条件をリセット
+                </button>
               )}
-              {canManage && (
+            </div>
+          ) : manuals.map((manual) => {
+            const linked = linkedIds.includes(manual.id)
+            const selected = selectedManual?.id === manual.id
+            const preview = buildManualPreview(manual)
+            return (
+              <article
+                key={manual.id}
+                className={`rounded-lg border p-3 transition-colors ${
+                  selected
+                    ? 'border-green-300 bg-green-50/40'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedManualId(manual.id)}
+                  className="block w-full text-left"
+                  aria-pressed={selected}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="break-words text-sm font-semibold text-gray-900">{manual.title}</p>
+                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
+                        <Pill className="border-gray-200 bg-white text-gray-600">
+                          {categoryLabel[manual.category] || manual.category}
+                        </Pill>
+                        {manual.owner === 'Slack過去ログ' && (
+                          <Pill className="border-green-200 bg-green-50 text-green-700">Slackナレッジ</Pill>
+                        )}
+                        <span>{manual.owner || '担当未設定'}</span>
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs font-medium text-green-700">{selected ? '表示中' : '表示'}</span>
+                  </div>
+                  {preview && (
+                    <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words text-sm leading-6 text-gray-600">
+                      {preview}
+                    </p>
+                  )}
+                </button>
                 <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-2">
+                  {showLinkActions && (
+                    <button
+                      type="button"
+                      onClick={() => onLink(manual)}
+                      disabled={!canLink || saving || linked}
+                      title={!canLink ? 'チケットを選択すると紐付けできます' : undefined}
+                      className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                        linked
+                          ? 'border border-green-200 bg-green-50 text-green-700'
+                          : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                      }`}
+                    >
+                      {linked ? '紐付済' : '紐付け'}
+                    </button>
+                  )}
+                  {manual.url && (
+                    <a
+                      href={manual.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-md border border-blue-100 bg-white px-2 py-1 text-xs font-medium text-blue-600 underline-offset-2 transition-colors hover:bg-blue-50 hover:underline"
+                    >
+                      元スレッド
+                    </a>
+                  )}
+                  {canManage && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => openEditForm(manual)}
+                        disabled={saving}
+                        className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        編集
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onArchiveManual(manual)}
+                        disabled={saving}
+                        className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        無効化
+                      </button>
+                    </>
+                  )}
+                </div>
+              </article>
+            )
+          })}
+        </div>
+
+        <div className="min-h-[420px] border-t border-gray-100 pt-4 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
+          {selectedManual && selectedManualBody ? (
+            <article className="space-y-4">
+              <header className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Pill className="border-gray-200 bg-gray-50 text-gray-600">
+                    {categoryLabel[selectedManual.category] || selectedManual.category}
+                  </Pill>
+                  {selectedManual.owner === 'Slack過去ログ' && (
+                    <Pill className="border-green-200 bg-green-50 text-green-700">Slackナレッジ</Pill>
+                  )}
+                  {selectedManual.revisedAt && (
+                    <span className="text-xs text-gray-400">更新 {selectedManual.revisedAt}</span>
+                  )}
+                </div>
+                <h4 className="break-words text-lg font-semibold leading-7 text-gray-950">{selectedManual.title}</h4>
+                <p className="text-xs text-gray-500">
+                  {selectedManualBody.structured
+                    ? '問い合わせ内容と解決回答を分けて確認できます。'
+                    : '本文をそのまま確認できます。'}
+                </p>
+              </header>
+
+              {selectedManualBody.structured ? (
+                <div className="space-y-4">
+                  {selectedManualBody.customerInfo && (
+                    <section>
+                      <h5 className="text-xs font-semibold text-gray-500">顧客・案件情報</h5>
+                      <div className="mt-2 rounded-md border border-gray-100 bg-white px-3 py-2">
+                        <p className="whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">
+                          {selectedManualBody.customerInfo}
+                        </p>
+                      </div>
+                    </section>
+                  )}
+                  {selectedManualBody.question && (
+                    <section>
+                      <h5 className="text-sm font-semibold text-gray-900">問い合わせ内容</h5>
+                      <div className="mt-2">
+                        <ManualTextBlock>{selectedManualBody.question}</ManualTextBlock>
+                      </div>
+                    </section>
+                  )}
+                  {selectedAnswerBlocks.length > 0 && (
+                    <section>
+                      <h5 className="text-sm font-semibold text-gray-900">解決回答</h5>
+                      <div className="mt-2 space-y-2">
+                        {selectedAnswerBlocks.map((block, index) => (
+                          <div key={`${selectedManual.id}-answer-${index}`} className="space-y-1.5">
+                            {selectedAnswerBlocks.length > 1 && (
+                              <p className="text-xs font-semibold text-green-700">回答メモ {index + 1}</p>
+                            )}
+                            <ManualTextBlock tone="answer">{block}</ManualTextBlock>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                  {selectedManualBody.rest && (
+                    <section>
+                      <h5 className="text-sm font-semibold text-gray-900">補足</h5>
+                      <div className="mt-2">
+                        <ManualTextBlock>{selectedManualBody.rest}</ManualTextBlock>
+                      </div>
+                    </section>
+                  )}
+                </div>
+              ) : (
+                <ManualTextBlock>{selectedManualBody.rest}</ManualTextBlock>
+              )}
+
+              <footer className="flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+                {selectedManual.url && (
+                  <a
+                    href={selectedManual.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-md border border-blue-100 bg-white px-3 py-1.5 text-sm font-medium text-blue-600 underline-offset-2 transition-colors hover:bg-blue-50 hover:underline"
+                  >
+                    元スレッドを開く
+                  </a>
+                )}
+                {canManage && (
                   <button
                     type="button"
-                    onClick={() => openEditForm(manual)}
+                    onClick={() => openEditForm(selectedManual)}
                     disabled={saving}
-                    className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     編集
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => void onArchiveManual(manual)}
-                    disabled={saving}
-                    className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    無効化
-                  </button>
-                </div>
-              )}
+                )}
+              </footer>
+            </article>
+          ) : (
+            <div className="flex min-h-[320px] items-center justify-center text-center">
+              <div>
+                <p className="text-sm font-medium text-gray-600">ナレッジを選択してください</p>
+                <p className="mt-1 text-xs text-gray-400">左の一覧から内容を開けます。</p>
+              </div>
             </div>
-          )
-        })}
+          )}
+        </div>
       </div>
     </section>
   )

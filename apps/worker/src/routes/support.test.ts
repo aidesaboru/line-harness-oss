@@ -361,7 +361,7 @@ function makeSupportDb(state: {
     const lineAccountId = binds.at(-1);
     const row = manuals.find((item) => item.id === id && item.line_account_id === lineAccountId);
     if (!row) return;
-    const setMatch = sql.match(/SET (.+) WHERE /);
+    const setMatch = sql.match(/SET (.+) WHERE /s);
     if (!setMatch) return;
     let bindIndex = 0;
     setMatch[1].split(',').forEach((part) => {
@@ -820,7 +820,7 @@ function makeSupportDb(state: {
               created_at: String(createdAt),
               updated_at: String(updatedAt),
             });
-          } else if (sql.startsWith('UPDATE support_manuals SET')) {
+          } else if (sql.startsWith('UPDATE support_manuals')) {
             applyManualUpdate(sql, bound);
           } else if (sql.includes('INSERT INTO support_knowledge_imports')) {
             const [
@@ -2527,7 +2527,7 @@ describe('support CRM routes', () => {
       status: 'draft',
     });
     expect(state.knowledgeImports[0].question).toContain('[メールアドレス]');
-    expect(state.knowledgeImports[0].body).toContain('【対応ナレッジ】');
+    expect(state.knowledgeImports[0].body).toContain('【解決回答】');
   });
 
   test('owner can import Slack archive threads directly as published manuals', async () => {
@@ -2612,6 +2612,73 @@ describe('support CRM routes', () => {
     });
     expect(state.manuals[0].body).toContain('【顧客・案件情報】');
     expect(state.manuals[0].body).toContain('【問い合わせ内容】');
+    expect(state.manuals[0].body).toContain('【解決回答】');
+  });
+
+  test('owner can normalize published Slack knowledge mentions into readable names', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const user = url.searchParams.get('user');
+      return new Response(JSON.stringify({
+        ok: true,
+        user: {
+          id: user,
+          name: `user-${user}`,
+          profile: { display_name: user === 'U1111' ? '宮本 森一' : '山崎 太郎' },
+        },
+      }));
+    }));
+    const importRow = baseKnowledgeImport({
+      id: 'knowledge-1',
+      line_account_id: 'acc-1',
+      status: 'published',
+      manual_id: 'manual-1',
+      question: '@U1111\n報酬開始時期を確認したいです',
+      answer: '@U2222\n引き継ぎ月を確認してから案内してください',
+      body: '【顧客・案件情報】\n!channel\n*3076*\n\n【問い合わせ内容】\n@U1111\n報酬開始時期を確認したいです\n\n【対応ナレッジ】\n@U2222\n引き継ぎ月を確認してから案内してください',
+      keywords: 'U1111 U2222 報酬',
+    });
+    const { db, state } = makeSupportDb({
+      knowledgeImports: [importRow],
+      manuals: [
+        baseManual({
+          id: 'manual-1',
+          line_account_id: 'acc-1',
+          title: importRow.title,
+          body: importRow.body,
+          keywords: importRow.keywords,
+          owner: 'Slack過去ログ',
+        }),
+      ],
+    });
+    const app = setupApp(
+      db,
+      { id: 'owner-1', name: 'Owner', role: 'owner' },
+      { SLACK_BOT_TOKEN: 'xoxb-test-token' },
+    );
+
+    const res = await app.request('/api/support/manuals/slack-normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { checked: number; resolvedMemberIds: number; updatedImports: number; updatedManuals: number };
+    };
+    expect(body).toMatchObject({
+      success: true,
+      data: { checked: 1, resolvedMemberIds: 2, updatedImports: 1, updatedManuals: 1 },
+    });
+    expect(state.knowledgeImports[0].question).toContain('@宮本 森一');
+    expect(state.knowledgeImports[0].answer).toContain('@山崎 太郎');
+    expect(state.knowledgeImports[0].body).toContain('【解決回答】');
+    expect(state.knowledgeImports[0].body).not.toContain('@U1111');
+    expect(state.manuals[0].body).toContain('@宮本 森一');
+    expect(state.manuals[0].body).toContain('@山崎 太郎');
+    expect(state.manuals[0].body).toContain('【解決回答】');
   });
 
   test('owner can publish a draft knowledge candidate as a support manual', async () => {

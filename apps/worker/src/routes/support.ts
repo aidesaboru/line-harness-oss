@@ -202,6 +202,18 @@ type SlackRepliesResponse = SlackApiResponse<{
   messages?: SlackMessage[];
 }>;
 
+type SlackUserInfoResponse = SlackApiResponse<{
+  user?: {
+    id?: string;
+    name?: string;
+    real_name?: string;
+    profile?: {
+      display_name?: string;
+      real_name?: string;
+    };
+  };
+}>;
+
 type KnowledgeCandidate = {
   sourceChannelId: string;
   sourceChannelName: string | null;
@@ -414,6 +426,12 @@ function clampSlackImportLimit(raw: unknown): number {
   return Math.max(1, Math.min(SUPPORT_SLACK_IMPORT_MAX_LIMIT, Math.floor(n)));
 }
 
+function clampSlackNormalizeLimit(raw: unknown): number {
+  const n = Number(raw ?? 1000);
+  if (!Number.isFinite(n)) return 1000;
+  return Math.max(1, Math.min(1000, Math.floor(n)));
+}
+
 function slackTsToJst(ts: string | undefined): string | null {
   if (!ts) return null;
   const seconds = Number(ts);
@@ -484,6 +502,67 @@ function buildKnowledgeKeywords(textValue: string): string {
       .slice(0, 20),
   ));
   return words.join(' ');
+}
+
+function buildKnowledgeBody(input: { customerInfo?: string | null; question: string; answer: string }): string {
+  const blocks: string[] = [];
+  const customerInfo = normalizeWhitespace(input.customerInfo ?? '');
+  const question = normalizeWhitespace(input.question);
+  const answer = normalizeWhitespace(input.answer);
+  if (customerInfo && customerInfo !== question) blocks.push(`【顧客・案件情報】\n${customerInfo}`);
+  blocks.push(`【問い合わせ内容】\n${question}`);
+  blocks.push(`【解決回答】\n${answer}`);
+  return truncateText(normalizeWhitespace(blocks.join('\n\n')), SUPPORT_LONG_TEXT_MAX_LENGTH);
+}
+
+function extractKnowledgeBodySection(body: string, labels: string[]): string {
+  const matches = Array.from(body.matchAll(/【([^】]+)】/g));
+  for (const [index, match] of matches.entries()) {
+    const label = normalizeWhitespace(match[1] ?? '');
+    if (!labels.includes(label)) continue;
+    const start = (match.index ?? 0) + match[0].length;
+    const end = matches[index + 1]?.index ?? body.length;
+    return normalizeWhitespace(body.slice(start, end));
+  }
+  return '';
+}
+
+function collectSlackMentionIds(value: string): string[] {
+  const ids = new Set<string>();
+  for (const match of value.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]+)?>/g)) {
+    if (match[1]) ids.add(match[1]);
+  }
+  for (const match of value.matchAll(/(^|[^A-Za-z0-9_])@([UW][A-Z0-9]{4,})\b/g)) {
+    if (match[2]) ids.add(match[2]);
+  }
+  return Array.from(ids);
+}
+
+function replaceSlackMentionIds(value: string, displayNames: Map<string, string>): string {
+  if (!value) return value;
+  return normalizeWhitespace(
+    value
+      .replace(/<@([UW][A-Z0-9]+)(?:\|([^>]+))?>/g, (_match, id: string, fallback: string | undefined) => {
+        const name = displayNames.get(id) || fallback || id;
+        return `@${name}`;
+      })
+      .replace(/(^|[^A-Za-z0-9_])@([UW][A-Z0-9]{4,})\b/g, (match, prefix: string, id: string) => {
+        const name = displayNames.get(id);
+        return name ? `${prefix}@${name}` : match;
+      }),
+  );
+}
+
+function slackUserDisplayName(response: SlackUserInfoResponse): string | null {
+  const user = response.user;
+  if (!user) return null;
+  return (
+    user.profile?.display_name?.trim()
+    || user.profile?.real_name?.trim()
+    || user.real_name?.trim()
+    || user.name?.trim()
+    || null
+  );
 }
 
 function isSlackMessageUsable(message: SlackMessage): boolean {
@@ -557,13 +636,11 @@ function buildKnowledgeCandidate(
 
   const answer = normalizeWhitespace(effectiveAnswerMessages.join('\n\n---\n\n'));
   const parentInfo = cleanedSlackMessageText(parent);
-  const parentBlock = parentInfo && parentInfo !== question
-    ? `【顧客・案件情報】\n${parentInfo}\n\n`
-    : '';
-  const body = truncateText(
-    normalizeWhitespace(`${parentBlock}【問い合わせ内容】\n${question}\n\n【対応ナレッジ】\n${answer}`),
-    SUPPORT_LONG_TEXT_MAX_LENGTH,
-  );
+  const body = buildKnowledgeBody({
+    customerInfo: parentInfo && parentInfo !== question ? parentInfo : null,
+    question,
+    answer,
+  });
   const title = buildKnowledgeTitle(question);
   const combined = `${title}\n${question}\n${answer}`;
   return {
@@ -598,6 +675,17 @@ async function fetchSlackApi<T>(
     throw new Error('Slack API request failed');
   }
   return await res.json() as SlackApiResponse<T>;
+}
+
+async function resolveSlackMentionDisplayNames(token: string, ids: string[]): Promise<Map<string, string>> {
+  const displayNames = new Map<string, string>();
+  for (const id of Array.from(new Set(ids))) {
+    const response = await fetchSlackApi<SlackUserInfoResponse>(token, 'users.info', { user: id });
+    if (!response.ok) continue;
+    const displayName = slackUserDisplayName(response);
+    if (displayName) displayNames.set(id, displayName);
+  }
+  return displayNames;
 }
 
 function clampLimit(raw: string | undefined, fallback = 50): number {
@@ -2338,6 +2426,130 @@ support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async 
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/support/manuals/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const limit = clampSlackNormalizeLimit(body.limit);
+
+    const rowsResult = await c.env.DB
+      .prepare(
+        `SELECT *
+         FROM support_knowledge_imports
+         WHERE line_account_id = ?
+           AND source = 'slack'
+           AND status = 'published'
+         ORDER BY updated_at DESC
+         LIMIT ?`,
+      )
+      .bind(lineAccountId.value, limit)
+      .all<SupportKnowledgeImportRow>();
+    const rows = rowsResult.results;
+    const mentionIds = Array.from(new Set(
+      rows.flatMap((row) => [
+        ...collectSlackMentionIds(row.title),
+        ...collectSlackMentionIds(row.question),
+        ...collectSlackMentionIds(row.answer),
+        ...collectSlackMentionIds(row.body),
+        ...collectSlackMentionIds(row.keywords),
+      ]),
+    ));
+
+    const token = c.env.SLACK_BOT_TOKEN?.trim();
+    if (mentionIds.length > 0 && !token) {
+      return c.json({ success: false, error: 'Slack token is not configured' }, 400);
+    }
+    const displayNames = token ? await resolveSlackMentionDisplayNames(token, mentionIds) : new Map<string, string>();
+    const staff = currentStaff(c);
+    const now = jstNow();
+    let updatedImports = 0;
+    let updatedManuals = 0;
+
+    for (const row of rows) {
+      const customerInfo = replaceSlackMentionIds(
+        extractKnowledgeBodySection(row.body, ['顧客・案件情報', '顧客情報', '案件情報']),
+        displayNames,
+      );
+      const questionSource = row.question || extractKnowledgeBodySection(row.body, ['問い合わせ内容', '一次対応の問い合わせ', '質問', '問い']);
+      const answerSource = row.answer || extractKnowledgeBodySection(row.body, ['解決回答', '対応ナレッジ', '二次対応の回答', '回答']);
+      const title = truncateText(replaceSlackMentionIds(row.title, displayNames), SUPPORT_SHORT_TEXT_MAX_LENGTH);
+      const question = truncateText(replaceSlackMentionIds(questionSource, displayNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
+      const answer = truncateText(replaceSlackMentionIds(answerSource, displayNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
+      const knowledgeBody = buildKnowledgeBody({ customerInfo, question, answer });
+      const keywords = truncateText(buildKnowledgeKeywords(`${title}\n${question}\n${answer}`), SUPPORT_LONG_TEXT_MAX_LENGTH);
+
+      if (
+        title !== row.title ||
+        question !== row.question ||
+        answer !== row.answer ||
+        knowledgeBody !== row.body ||
+        keywords !== row.keywords
+      ) {
+        await c.env.DB
+          .prepare(
+            `UPDATE support_knowledge_imports
+             SET title = ?,
+                 question = ?,
+                 answer = ?,
+                 body = ?,
+                 keywords = ?,
+                 updated_at = ?
+             WHERE id = ? AND line_account_id = ?`,
+          )
+          .bind(title, question, answer, knowledgeBody, keywords, now, row.id, lineAccountId.value)
+          .run();
+        updatedImports += 1;
+      }
+
+      if (!row.manual_id) continue;
+      const manual = await c.env.DB
+        .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
+        .bind(row.manual_id, lineAccountId.value)
+        .first<SupportManualRow>();
+      if (!manual) continue;
+      const manualTitle = title;
+      if (
+        manualTitle === manual.title &&
+        knowledgeBody === manual.body &&
+        keywords === manual.keywords
+      ) {
+        continue;
+      }
+      await c.env.DB
+        .prepare(
+          `UPDATE support_manuals
+           SET title = ?,
+               body = ?,
+               keywords = ?,
+               updated_by = ?,
+               updated_at = ?
+           WHERE id = ? AND line_account_id = ?`,
+        )
+        .bind(manualTitle, knowledgeBody, keywords, staff.id, now, manual.id, lineAccountId.value)
+        .run();
+      updatedManuals += 1;
+    }
+
+    return c.json({
+      success: true,
+      data: {
+        checked: rows.length,
+        slackMemberIds: mentionIds.length,
+        resolvedMemberIds: displayNames.size,
+        unresolvedMemberIds: Math.max(0, mentionIds.length - displayNames.size),
+        updatedImports,
+        updatedManuals,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/support/manuals/slack-normalize error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

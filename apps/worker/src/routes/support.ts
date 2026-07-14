@@ -35,6 +35,7 @@ const CASE_STATUSES = new Set([
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 const ESCALATION_STATUSES = new Set(['pending', 'answered', 'needs_info', 'transferred', 'expert_check', 'closed']);
 const ESCALATION_LEVELS = new Set(['L2', 'L3']);
+const SUPPORT_KNOWLEDGE_IMPORT_STATUSES = new Set(['draft', 'published', 'dismissed']);
 const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
   'lineAccountId',
   'status',
@@ -67,6 +68,9 @@ const SUPPORT_EVENT_METADATA_MAX_LENGTH = 16 * 1024;
 const SUPPORT_INTERNAL_MENTION_MAX = 20;
 const SUPPORT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
+const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
+const SLACK_API_BASE = 'https://slack.com/api/';
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -139,6 +143,78 @@ type SupportManualRow = {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type SupportKnowledgeImportRow = {
+  id: string;
+  line_account_id: string;
+  source: string;
+  source_channel_id: string;
+  source_channel_name: string | null;
+  source_message_ts: string;
+  source_thread_ts: string;
+  source_permalink: string | null;
+  source_author: string | null;
+  source_posted_at: string | null;
+  title: string;
+  category: string;
+  question: string;
+  answer: string;
+  body: string;
+  keywords: string;
+  status: string;
+  manual_id: string | null;
+  imported_by: string | null;
+  reviewed_by: string | null;
+  imported_at: string;
+  reviewed_at: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type SlackMessage = {
+  type?: string;
+  subtype?: string;
+  text?: string;
+  user?: string;
+  username?: string;
+  bot_id?: string;
+  ts?: string;
+  thread_ts?: string;
+  reply_count?: number;
+};
+
+type SlackApiResponse<T> = T & {
+  ok?: boolean;
+  error?: string;
+  response_metadata?: {
+    next_cursor?: string;
+  };
+};
+
+type SlackHistoryResponse = SlackApiResponse<{
+  messages?: SlackMessage[];
+  has_more?: boolean;
+}>;
+
+type SlackRepliesResponse = SlackApiResponse<{
+  messages?: SlackMessage[];
+}>;
+
+type KnowledgeCandidate = {
+  sourceChannelId: string;
+  sourceChannelName: string | null;
+  sourceMessageTs: string;
+  sourceThreadTs: string;
+  sourceAuthor: string | null;
+  sourcePostedAt: string | null;
+  title: string;
+  category: string;
+  question: string;
+  answer: string;
+  body: string;
+  keywords: string;
 };
 
 type SupportEventRow = {
@@ -311,6 +387,146 @@ function parseManualIds(value: string | null | undefined): string[] {
   }
 }
 
+function parseKnowledgeImportStatus(raw: unknown): ValueResult<'draft' | 'published' | 'dismissed' | 'all'> {
+  if (raw === undefined || raw === null) return { ok: true, value: 'draft' };
+  if (typeof raw !== 'string') return { ok: false, error: 'status must be a string' };
+  const value = raw.trim();
+  if (value === 'all' || value === 'draft' || value === 'published' || value === 'dismissed') {
+    return { ok: true, value };
+  }
+  return { ok: false, error: 'status is invalid' };
+}
+
+function clampSlackImportLimit(raw: unknown): number {
+  const n = Number(raw ?? SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT);
+  if (!Number.isFinite(n)) return SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(SUPPORT_SLACK_IMPORT_MAX_LIMIT, Math.floor(n)));
+}
+
+function slackTsToJst(ts: string | undefined): string | null {
+  if (!ts) return null;
+  const seconds = Number(ts);
+  if (!Number.isFinite(seconds)) return null;
+  return toJstString(new Date(seconds * 1000));
+}
+
+function normalizeWhitespace(value: string): string {
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function normalizeSlackText(value: string | undefined): string {
+  const raw = value ?? '';
+  return normalizeWhitespace(
+    raw
+      .replace(/<@([A-Z0-9]+)\|([^>]+)>/g, '@$2')
+      .replace(/<@([A-Z0-9]+)>/g, '@$1')
+      .replace(/<#([A-Z0-9]+)\|([^>]+)>/g, '#$2')
+      .replace(/<([^>|]+)\|([^>]+)>/g, '$2')
+      .replace(/<([^>]+)>/g, '$1')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>'),
+  );
+}
+
+function maskSensitiveText(value: string): string {
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[メールアドレス]')
+    .replace(/\b0\d{1,4}[-\s]?\d{1,4}[-\s]?\d{3,4}\b/g, '[電話番号]');
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? value.slice(0, maxLength - 1).trimEnd() + '…' : value;
+}
+
+function inferKnowledgeCategory(textValue: string): string {
+  const value = textValue.toLowerCase();
+  if (/税務|税金|確定申告|税務調査|契約|請求書|領収書|通帳/.test(value)) return 'tax_contract';
+  if (/報酬|支払|支払い|入金|振込|売上|成果/.test(value)) return 'reward';
+  if (/商品|配送|発送|返品|未着|納品|受取/.test(value)) return 'delivery';
+  if (/レビュー|クレーム|返金|苦情|炎上|低評価/.test(value)) return 'claim';
+  if (/権利|商標|著作|侵害|画像使用|知的財産/.test(value)) return 'rights';
+  if (/通達|運営|jo|確認|案内|手続/.test(value)) return 'operation';
+  return 'other';
+}
+
+function buildKnowledgeTitle(question: string): string {
+  const firstLine = question.split('\n').map((line) => line.trim()).find(Boolean) ?? 'Slack二次対応ナレッジ';
+  return truncateText(firstLine.replace(/^```|```$/g, '').trim() || 'Slack二次対応ナレッジ', 80);
+}
+
+function buildKnowledgeKeywords(textValue: string): string {
+  const words = Array.from(new Set(
+    textValue
+      .replace(/[^\p{Letter}\p{Number}ー一-龯ぁ-んァ-ン]+/gu, ' ')
+      .split(/\s+/)
+      .map((word) => word.trim())
+      .filter((word) => word.length >= 2 && word.length <= 18)
+      .slice(0, 20),
+  ));
+  return words.join(' ');
+}
+
+function buildKnowledgeCandidate(
+  parent: SlackMessage,
+  replies: SlackMessage[],
+  input: { channelId: string; channelName: string | null },
+): KnowledgeCandidate | null {
+  const parentTs = parent.ts;
+  if (!parentTs) return null;
+  const question = maskSensitiveText(normalizeSlackText(parent.text));
+  const answerMessages = replies
+    .filter((message) => message.ts !== parentTs)
+    .filter((message) => message.type === 'message' && !message.subtype)
+    .map((message) => maskSensitiveText(normalizeSlackText(message.text)))
+    .filter(Boolean);
+  if (!question || answerMessages.length === 0) return null;
+
+  const answer = normalizeWhitespace(answerMessages.join('\n\n---\n\n'));
+  const body = truncateText(
+    normalizeWhitespace(`【一次対応の問い合わせ】\n${question}\n\n【二次対応の回答】\n${answer}`),
+    SUPPORT_LONG_TEXT_MAX_LENGTH,
+  );
+  const title = buildKnowledgeTitle(question);
+  const combined = `${title}\n${question}\n${answer}`;
+  return {
+    sourceChannelId: input.channelId,
+    sourceChannelName: input.channelName,
+    sourceMessageTs: parentTs,
+    sourceThreadTs: parent.thread_ts ?? parentTs,
+    sourceAuthor: parent.user ?? parent.username ?? parent.bot_id ?? null,
+    sourcePostedAt: slackTsToJst(parentTs),
+    title,
+    category: inferKnowledgeCategory(combined),
+    question: truncateText(question, SUPPORT_LONG_TEXT_MAX_LENGTH),
+    answer: truncateText(answer, SUPPORT_LONG_TEXT_MAX_LENGTH),
+    body,
+    keywords: truncateText(buildKnowledgeKeywords(combined), SUPPORT_LONG_TEXT_MAX_LENGTH),
+  };
+}
+
+async function fetchSlackApi<T>(
+  token: string,
+  method: string,
+  params: Record<string, string | number | undefined>,
+): Promise<SlackApiResponse<T>> {
+  const url = new URL(method, SLACK_API_BASE);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
+  }
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    throw new Error('Slack API request failed');
+  }
+  return await res.json() as SlackApiResponse<T>;
+}
+
 function clampLimit(raw: string | undefined, fallback = 50): number {
   const n = Number(raw ?? fallback);
   if (!Number.isFinite(n)) return fallback;
@@ -421,6 +637,36 @@ function serializeManual(row: SupportManualRow) {
   };
 }
 
+function serializeKnowledgeImport(row: SupportKnowledgeImportRow) {
+  return {
+    id: row.id,
+    lineAccountId: row.line_account_id,
+    source: row.source,
+    sourceChannelId: row.source_channel_id,
+    sourceChannelName: row.source_channel_name,
+    sourceMessageTs: row.source_message_ts,
+    sourceThreadTs: row.source_thread_ts,
+    sourcePermalink: row.source_permalink,
+    sourceAuthor: row.source_author,
+    sourcePostedAt: row.source_posted_at,
+    title: row.title,
+    category: row.category,
+    question: row.question,
+    answer: row.answer,
+    body: row.body,
+    keywords: row.keywords,
+    status: row.status,
+    manualId: row.manual_id,
+    importedBy: row.imported_by,
+    reviewedBy: row.reviewed_by,
+    importedAt: row.imported_at,
+    reviewedAt: row.reviewed_at,
+    publishedAt: row.published_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function serializeEvent(row: SupportEventRow) {
   let metadata: Record<string, unknown> = {};
   try {
@@ -521,6 +767,103 @@ async function validateManualIds(
     return { ok: false, error: 'manualIds contains manuals outside this LINE account' };
   }
   return { ok: true, ids };
+}
+
+async function getKnowledgeImportRow(
+  db: D1Database,
+  id: string,
+  lineAccountId: string,
+): Promise<SupportKnowledgeImportRow | null> {
+  return await db
+    .prepare(`SELECT * FROM support_knowledge_imports WHERE id = ? AND line_account_id = ?`)
+    .bind(id, lineAccountId)
+    .first<SupportKnowledgeImportRow>();
+}
+
+async function upsertKnowledgeImport(
+  db: D1Database,
+  lineAccountId: string,
+  candidate: KnowledgeCandidate,
+  staff: SupportAccessStaff,
+  now: string,
+): Promise<'created' | 'updated' | 'skipped'> {
+  const existing = await db
+    .prepare(
+      `SELECT * FROM support_knowledge_imports
+       WHERE line_account_id = ? AND source_channel_id = ? AND source_thread_ts = ?`,
+    )
+    .bind(lineAccountId, candidate.sourceChannelId, candidate.sourceThreadTs)
+    .first<SupportKnowledgeImportRow>();
+
+  if (existing) {
+    if (existing.status !== 'draft') return 'skipped';
+    await db
+      .prepare(
+        `UPDATE support_knowledge_imports
+         SET source_channel_name = ?,
+             source_message_ts = ?,
+             source_author = ?,
+             source_posted_at = ?,
+             title = ?,
+             category = ?,
+             question = ?,
+             answer = ?,
+             body = ?,
+             keywords = ?,
+             updated_at = ?
+         WHERE id = ? AND line_account_id = ?`,
+      )
+      .bind(
+        candidate.sourceChannelName,
+        candidate.sourceMessageTs,
+        candidate.sourceAuthor,
+        candidate.sourcePostedAt,
+        candidate.title,
+        candidate.category,
+        candidate.question,
+        candidate.answer,
+        candidate.body,
+        candidate.keywords,
+        now,
+        existing.id,
+        lineAccountId,
+      )
+      .run();
+    return 'updated';
+  }
+
+  await db
+    .prepare(
+      `INSERT INTO support_knowledge_imports (
+        id, line_account_id, source, source_channel_id, source_channel_name,
+        source_message_ts, source_thread_ts, source_permalink, source_author, source_posted_at,
+        title, category, question, answer, body, keywords, status, manual_id,
+        imported_by, reviewed_by, imported_at, reviewed_at, published_at, created_at, updated_at
+      ) VALUES (?, ?, 'slack', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, NULL, ?, NULL, NULL, ?, ?)`,
+    )
+    .bind(
+      crypto.randomUUID(),
+      lineAccountId,
+      candidate.sourceChannelId,
+      candidate.sourceChannelName,
+      candidate.sourceMessageTs,
+      candidate.sourceThreadTs,
+      null,
+      candidate.sourceAuthor,
+      candidate.sourcePostedAt,
+      candidate.title,
+      candidate.category,
+      candidate.question,
+      candidate.answer,
+      candidate.body,
+      candidate.keywords,
+      staff.id,
+      now,
+      now,
+      now,
+    )
+    .run();
+  return 'created';
 }
 
 async function addCaseEvent(
@@ -1856,6 +2199,265 @@ support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async 
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/support/manuals/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.get('/api/support/knowledge-imports', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const status = parseKnowledgeImportStatus(c.req.query('status'));
+    if (!status.ok) return c.json({ success: false, error: status.error }, 400);
+    const q = parseOptionalQueryText(c.req.query('q'), 'q');
+    if (!q.ok) return c.json({ success: false, error: q.error }, 400);
+    const limit = clampLimit(c.req.query('limit'), 50);
+    const offset = clampOffset(c.req.query('offset'));
+
+    const conditions = ['line_account_id = ?'];
+    const binds: unknown[] = [lineAccountId.value];
+    if (status.value !== 'all') {
+      conditions.push('status = ?');
+      binds.push(status.value);
+    }
+    if (q.value) {
+      const pattern = `%${q.value}%`;
+      conditions.push('(title LIKE ? OR question LIKE ? OR answer LIKE ? OR keywords LIKE ?)');
+      binds.push(pattern, pattern, pattern, pattern);
+    }
+
+    const result = await c.env.DB
+      .prepare(
+        `SELECT *
+         FROM support_knowledge_imports
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY updated_at DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .bind(...binds, limit, offset)
+      .all<SupportKnowledgeImportRow>();
+    return c.json({ success: true, data: result.results.map(serializeKnowledgeImport) });
+  } catch (err) {
+    console.error(`GET /api/support/knowledge-imports error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/knowledge-imports/slack/sync', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const channelIdInput = parseOptionalVisibleId(body.channelId, 'channelId');
+    if (!channelIdInput.ok) return c.json({ success: false, error: channelIdInput.error }, 400);
+    const channelNameInput = parseOptionalTextField(body.channelName, 'channelName');
+    if (!channelNameInput.ok) return c.json({ success: false, error: channelNameInput.error }, 400);
+    const cursorInput = parseOptionalTextField(body.cursor, 'cursor', SUPPORT_URL_MAX_LENGTH);
+    if (!cursorInput.ok) return c.json({ success: false, error: cursorInput.error }, 400);
+    const oldestInput = parseOptionalTextField(body.oldest, 'oldest', SUPPORT_SHORT_TEXT_MAX_LENGTH);
+    if (!oldestInput.ok) return c.json({ success: false, error: oldestInput.error }, 400);
+    const latestInput = parseOptionalTextField(body.latest, 'latest', SUPPORT_SHORT_TEXT_MAX_LENGTH);
+    if (!latestInput.ok) return c.json({ success: false, error: latestInput.error }, 400);
+
+    const token = c.env.SLACK_BOT_TOKEN?.trim();
+    if (!token) return c.json({ success: false, error: 'Slack token is not configured' }, 400);
+    const channelId = channelIdInput.value ?? c.env.SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?.trim();
+    if (!channelId) return c.json({ success: false, error: 'channelId is required' }, 400);
+    const limit = clampSlackImportLimit(body.limit);
+    const now = jstNow();
+    const staff = currentStaff(c);
+
+    const history = await fetchSlackApi<SlackHistoryResponse>(token, 'conversations.history', {
+      channel: channelId,
+      limit,
+      cursor: cursorInput.value ?? undefined,
+      oldest: oldestInput.value ?? undefined,
+      latest: latestInput.value ?? undefined,
+    });
+    if (!history.ok) {
+      return c.json({ success: false, error: `Slack history fetch failed: ${history.error ?? 'unknown_error'}` }, 502);
+    }
+
+    let imported = 0;
+    let updated = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    for (const parent of history.messages ?? []) {
+      if (parent.type !== 'message' || parent.subtype || !parent.ts || (parent.reply_count ?? 0) < 1) {
+        skipped += 1;
+        continue;
+      }
+      const threadTs = parent.thread_ts ?? parent.ts;
+      const replies = await fetchSlackApi<SlackRepliesResponse>(token, 'conversations.replies', {
+        channel: channelId,
+        ts: threadTs,
+        limit: 1000,
+      });
+      if (!replies.ok) {
+        failed += 1;
+        continue;
+      }
+      const candidate = buildKnowledgeCandidate(parent, replies.messages ?? [], {
+        channelId,
+        channelName: channelNameInput.value,
+      });
+      if (!candidate) {
+        skipped += 1;
+        continue;
+      }
+      const outcome = await upsertKnowledgeImport(c.env.DB, lineAccountId.value, candidate, staff, now);
+      if (outcome === 'created') imported += 1;
+      if (outcome === 'updated') updated += 1;
+      if (outcome === 'skipped') skipped += 1;
+    }
+
+    const nextCursor = history.response_metadata?.next_cursor || null;
+    return c.json({
+      success: true,
+      data: {
+        imported,
+        updated,
+        skipped,
+        failed,
+        nextCursor,
+        hasMore: Boolean(nextCursor || history.has_more),
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/support/knowledge-imports/slack/sync error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.patch('/api/support/knowledge-imports/:id', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'knowledgeImportId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const existing = await getKnowledgeImportRow(c.env.DB, id.value, lineAccountId.value);
+    if (!existing) return c.json({ success: false, error: 'knowledge import not found' }, 404);
+    if (existing.status === 'published') {
+      return c.json({ success: false, error: 'published knowledge imports cannot be edited' }, 409);
+    }
+
+    const fields: Array<[string, unknown]> = [];
+    const textFields: Array<[string, string, number]> = [
+      ['title', 'title', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['category', 'category', SUPPORT_SHORT_TEXT_MAX_LENGTH],
+      ['question', 'question', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['answer', 'answer', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['body', 'body', SUPPORT_LONG_TEXT_MAX_LENGTH],
+      ['keywords', 'keywords', SUPPORT_LONG_TEXT_MAX_LENGTH],
+    ];
+    for (const [column, key, maxLength] of textFields) {
+      if (!(key in body)) continue;
+      const parsed = column === 'title' || column === 'body'
+        ? parseRequiredTextField(body[key], key, maxLength)
+        : parseOptionalTextField(body[key], key, maxLength);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      fields.push([column, parsed.value ?? '']);
+    }
+    if ('status' in body) {
+      const rawStatus = parseOptionalTextField(body.status, 'status');
+      if (!rawStatus.ok) return c.json({ success: false, error: rawStatus.error }, 400);
+      const status = rawStatus.value ?? 'draft';
+      if (!SUPPORT_KNOWLEDGE_IMPORT_STATUSES.has(status) || status === 'published') {
+        return c.json({ success: false, error: 'status is invalid' }, 400);
+      }
+      fields.push(['status', status]);
+      if (status === 'dismissed') {
+        fields.push(['reviewed_by', currentStaff(c).id], ['reviewed_at', jstNow()]);
+      }
+    }
+    if (fields.length === 0) return c.json({ success: true, data: serializeKnowledgeImport(existing) });
+    fields.push(['updated_at', jstNow()]);
+
+    await c.env.DB
+      .prepare(`UPDATE support_knowledge_imports SET ${fields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`)
+      .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
+      .run();
+    const updated = await getKnowledgeImportRow(c.env.DB, id.value, lineAccountId.value);
+    return c.json({ success: true, data: serializeKnowledgeImport(updated!) });
+  } catch (err) {
+    console.error(`PATCH /api/support/knowledge-imports/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/knowledge-imports/:id/publish', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'knowledgeImportId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c, parsedBody.value);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const row = await getKnowledgeImportRow(c.env.DB, id.value, lineAccountId.value);
+    if (!row) return c.json({ success: false, error: 'knowledge import not found' }, 404);
+    if (row.status === 'dismissed') return c.json({ success: false, error: 'dismissed knowledge imports cannot be published' }, 409);
+
+    const existingManual = row.manual_id
+      ? await c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`).bind(row.manual_id, lineAccountId.value).first<SupportManualRow>()
+      : null;
+    if (row.status === 'published' && existingManual) {
+      return c.json({ success: true, data: { import: serializeKnowledgeImport(row), manual: serializeManual(existingManual) } });
+    }
+    if (!row.title.trim() || !row.body.trim()) return c.json({ success: false, error: 'title and body are required' }, 400);
+
+    const staff = currentStaff(c);
+    const now = jstNow();
+    const manualId = crypto.randomUUID();
+    await c.env.DB
+      .prepare(
+        `INSERT INTO support_manuals (
+          id, line_account_id, title, category, body, url, keywords, owner, approved_by,
+          revised_at, is_active, created_by, updated_by, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+      )
+      .bind(
+        manualId,
+        lineAccountId.value,
+        row.title,
+        row.category || 'other',
+        row.body,
+        row.source_permalink,
+        row.keywords,
+        'Slackナレッジ',
+        staff.name || staff.id,
+        now.slice(0, 10),
+        staff.id,
+        staff.id,
+        now,
+        now,
+      )
+      .run();
+    await c.env.DB
+      .prepare(
+        `UPDATE support_knowledge_imports
+         SET status = 'published',
+             manual_id = ?,
+             reviewed_by = ?,
+             reviewed_at = ?,
+             published_at = ?,
+             updated_at = ?
+         WHERE id = ? AND line_account_id = ?`,
+      )
+      .bind(manualId, staff.id, now, now, now, row.id, lineAccountId.value)
+      .run();
+    const [updated, manual] = await Promise.all([
+      getKnowledgeImportRow(c.env.DB, row.id, lineAccountId.value),
+      c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`).bind(manualId, lineAccountId.value).first<SupportManualRow>(),
+    ]);
+    return c.json({ success: true, data: { import: serializeKnowledgeImport(updated!), manual: serializeManual(manual!) } });
+  } catch (err) {
+    console.error(`POST /api/support/knowledge-imports/:id/publish error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

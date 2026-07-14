@@ -6,7 +6,11 @@ type Staff = { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'se
 
 type TestEnv = {
   Variables: { staff: Staff };
-  Bindings: { DB: D1Database };
+  Bindings: {
+    DB: D1Database;
+    SLACK_BOT_TOKEN?: string;
+    SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?: string;
+  };
 };
 
 type SupportCaseRow = {
@@ -114,6 +118,34 @@ type SupportManualRow = {
   updated_at: string;
 };
 
+type SupportKnowledgeImportRow = {
+  id: string;
+  line_account_id: string;
+  source: string;
+  source_channel_id: string;
+  source_channel_name: string | null;
+  source_message_ts: string;
+  source_thread_ts: string;
+  source_permalink: string | null;
+  source_author: string | null;
+  source_posted_at: string | null;
+  title: string;
+  category: string;
+  question: string;
+  answer: string;
+  body: string;
+  keywords: string;
+  status: string;
+  manual_id: string | null;
+  imported_by: string | null;
+  reviewed_by: string | null;
+  imported_at: string;
+  reviewed_at: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type FriendRow = {
   id: string;
   line_account_id: string | null;
@@ -183,6 +215,37 @@ function baseManual(overrides: Partial<SupportManualRow> = {}): SupportManualRow
   };
 }
 
+function baseKnowledgeImport(overrides: Partial<SupportKnowledgeImportRow> = {}): SupportKnowledgeImportRow {
+  return {
+    id: 'knowledge-1',
+    line_account_id: 'acc-1',
+    source: 'slack',
+    source_channel_id: 'C123',
+    source_channel_name: '早急確認',
+    source_message_ts: '1783901707.519169',
+    source_thread_ts: '1783901707.519169',
+    source_permalink: null,
+    source_author: 'U123',
+    source_posted_at: '2026-07-13T09:15:07.000+09:00',
+    title: '税務調査の対応',
+    category: 'tax_contract',
+    question: '税務調査の対応を確認したいです',
+    answer: '必要書類を準備して担当者へ確認してください',
+    body: '【一次対応の問い合わせ】\n税務調査の対応を確認したいです\n\n【二次対応の回答】\n必要書類を準備して担当者へ確認してください',
+    keywords: '税務調査 対応',
+    status: 'draft',
+    manual_id: null,
+    imported_by: 'owner-1',
+    reviewed_by: null,
+    imported_at: '2026-07-13T09:20:00.000+09:00',
+    reviewed_at: null,
+    published_at: null,
+    created_at: '2026-07-13T09:20:00.000+09:00',
+    updated_at: '2026-07-13T09:20:00.000+09:00',
+    ...overrides,
+  };
+}
+
 function baseEscalation(overrides: Partial<SupportEscalationRow> = {}): SupportEscalationRow {
   return {
     id: 'esc-1',
@@ -240,6 +303,7 @@ function makeSupportDb(state: {
   events?: SupportEventRow[];
   friends?: FriendRow[];
   manuals?: SupportManualRow[];
+  knowledgeImports?: SupportKnowledgeImportRow[];
 }) {
   const cases = state.cases ?? [];
   const escalations = state.escalations ?? [];
@@ -248,6 +312,7 @@ function makeSupportDb(state: {
   const events = state.events ?? [];
   const friends = state.friends ?? [];
   const manuals = state.manuals ?? [];
+  const knowledgeImports = state.knowledgeImports ?? [];
   const calls: DbCall[] = [];
 
   function hydrateCase(row: SupportCaseRow): SupportCaseRow {
@@ -285,6 +350,12 @@ function makeSupportDb(state: {
     ) ?? null;
   }
 
+  function findKnowledgeImport(id: string, lineAccountId?: string): SupportKnowledgeImportRow | null {
+    return knowledgeImports.find(
+      (item) => item.id === id && (lineAccountId === undefined || item.line_account_id === lineAccountId),
+    ) ?? null;
+  }
+
   function applyManualUpdate(sql: string, binds: unknown[]) {
     const id = binds.at(-2);
     const lineAccountId = binds.at(-1);
@@ -298,6 +369,23 @@ function makeSupportDb(state: {
       const column = rawColumn.trim();
       const valueToken = rawValue.trim();
       const value = valueToken === '?' ? binds[bindIndex++] : Number(valueToken);
+      (row as unknown as Record<string, unknown>)[column] = value;
+    });
+  }
+
+  function applyKnowledgeImportUpdate(sql: string, binds: unknown[]) {
+    const id = binds.at(-2);
+    const lineAccountId = binds.at(-1);
+    const row = knowledgeImports.find((item) => item.id === id && item.line_account_id === lineAccountId);
+    if (!row) return;
+    const setMatch = sql.match(/SET (.+) WHERE /s);
+    if (!setMatch) return;
+    let bindIndex = 0;
+    setMatch[1].split(',').forEach((part) => {
+      const [rawColumn, rawValue] = part.trim().split('=');
+      const column = rawColumn.trim();
+      const valueToken = rawValue.trim();
+      const value = valueToken === '?' ? binds[bindIndex++] : valueToken.replace(/^'|'$/g, '');
       (row as unknown as Record<string, unknown>)[column] = value;
     });
   }
@@ -429,6 +517,19 @@ function makeSupportDb(state: {
             const [id] = bound as [string];
             return findManual(id) as T | null;
           }
+          if (sql.startsWith('SELECT * FROM support_knowledge_imports WHERE id = ? AND line_account_id = ?')) {
+            const [id, lineAccountId] = bound as [string, string];
+            return findKnowledgeImport(id, lineAccountId) as T | null;
+          }
+          if (sql.includes('FROM support_knowledge_imports') && sql.includes('source_channel_id = ?') && sql.includes('source_thread_ts = ?')) {
+            const [lineAccountId, channelId, threadTs] = bound as [string, string, string];
+            return (knowledgeImports.find(
+              (item) =>
+                item.line_account_id === lineAccountId &&
+                item.source_channel_id === channelId &&
+                item.source_thread_ts === threadTs,
+            ) ?? null) as T | null;
+          }
           if (sql.includes('FROM support_escalations se') && sql.includes('WHERE se.id = ? AND se.line_account_id = ?')) {
             const [id, lineAccountId] = bound as [string, string];
             return findEscalation(id, lineAccountId) as T | null;
@@ -542,6 +643,15 @@ function makeSupportDb(state: {
             const rows = lineAccountId
               ? manuals.filter((item) => item.line_account_id === lineAccountId || item.line_account_id === null)
               : manuals;
+            return { results: rows } as { results: T[] };
+          }
+          if (sql.includes('FROM support_knowledge_imports')) {
+            const lineAccountId = bound[0] as string;
+            let rows = knowledgeImports.filter((item) => item.line_account_id === lineAccountId);
+            if (sql.includes('status = ?')) {
+              const status = bound.find((item, index) => index > 0 && ['draft', 'published', 'dismissed'].includes(String(item)));
+              if (status) rows = rows.filter((item) => item.status === status);
+            }
             return { results: rows } as { results: T[] };
           }
           return { results: [] } as { results: T[] };
@@ -711,6 +821,57 @@ function makeSupportDb(state: {
             });
           } else if (sql.startsWith('UPDATE support_manuals SET')) {
             applyManualUpdate(sql, bound);
+          } else if (sql.includes('INSERT INTO support_knowledge_imports')) {
+            const [
+              id,
+              lineAccountId,
+              sourceChannelId,
+              sourceChannelName,
+              sourceMessageTs,
+              sourceThreadTs,
+              sourcePermalink,
+              sourceAuthor,
+              sourcePostedAt,
+              title,
+              category,
+              question,
+              answer,
+              body,
+              keywords,
+              importedBy,
+              importedAt,
+              createdAt,
+              updatedAt,
+            ] = bound as Array<string | null>;
+            knowledgeImports.push({
+              id: String(id),
+              line_account_id: String(lineAccountId),
+              source: 'slack',
+              source_channel_id: String(sourceChannelId),
+              source_channel_name: sourceChannelName === null ? null : String(sourceChannelName),
+              source_message_ts: String(sourceMessageTs),
+              source_thread_ts: String(sourceThreadTs),
+              source_permalink: sourcePermalink === null ? null : String(sourcePermalink),
+              source_author: sourceAuthor === null ? null : String(sourceAuthor),
+              source_posted_at: sourcePostedAt === null ? null : String(sourcePostedAt),
+              title: String(title),
+              category: String(category),
+              question: String(question),
+              answer: String(answer),
+              body: String(body),
+              keywords: String(keywords),
+              status: 'draft',
+              manual_id: null,
+              imported_by: importedBy === null ? null : String(importedBy),
+              reviewed_by: null,
+              imported_at: String(importedAt),
+              reviewed_at: null,
+              published_at: null,
+              created_at: String(createdAt),
+              updated_at: String(updatedAt),
+            });
+          } else if (sql.includes('UPDATE support_knowledge_imports') && sql.includes('SET')) {
+            applyKnowledgeImportUpdate(sql, bound);
           }
           return { success: true, meta: { changes: 1 } };
         },
@@ -719,14 +880,18 @@ function makeSupportDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals } };
+  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals, knowledgeImports } };
 }
 
-function setupApp(db: D1Database, staff: Staff = { id: 'staff-1', name: '田島', role: 'staff' }) {
+function setupApp(
+  db: D1Database,
+  staff: Staff = { id: 'staff-1', name: '田島', role: 'staff' },
+  envOverrides: Omit<TestEnv['Bindings'], 'DB'> = {},
+) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', staff);
-    c.env = { DB: db };
+    c.env = { DB: db, ...envOverrides };
     await next();
   });
   app.route('/', support);
@@ -2285,6 +2450,113 @@ describe('support CRM routes', () => {
     expect(state.manuals.find((item) => item.id === 'manual-acc1')).toMatchObject({
       is_active: 0,
       updated_by: 'owner-1',
+    });
+  });
+
+  test('owner can import Slack thread replies as draft knowledge candidates', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/conversations.history')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            {
+              type: 'message',
+              text: '税務調査の対応を確認したいです。連絡先は customer@example.com です。',
+              user: 'U111',
+              ts: '1783901707.519169',
+              reply_count: 2,
+            },
+          ],
+          response_metadata: { next_cursor: 'NEXT_CURSOR' },
+        }));
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        messages: [
+          {
+            type: 'message',
+            text: '税務調査の対応を確認したいです。連絡先は customer@example.com です。',
+            user: 'U111',
+            ts: '1783901707.519169',
+          },
+          {
+            type: 'message',
+            text: '必要書類を準備し、調査当日は税理士へ確認してから回答してください。',
+            user: 'U222',
+            ts: '1783912860.000000',
+          },
+        ],
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { db, state } = makeSupportDb({});
+    const app = setupApp(
+      db,
+      { id: 'owner-1', name: 'Owner', role: 'owner' },
+      { SLACK_BOT_TOKEN: 'xoxb-test-token' },
+    );
+
+    const res = await app.request('/api/support/knowledge-imports/slack/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        channelId: 'C123',
+        channelName: '早急確認',
+        limit: 10,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { imported: number; updated: number; skipped: number; nextCursor: string | null };
+    };
+    expect(body).toMatchObject({
+      success: true,
+      data: { imported: 1, updated: 0, skipped: 0, nextCursor: 'NEXT_CURSOR' },
+    });
+    expect(state.knowledgeImports).toHaveLength(1);
+    expect(state.knowledgeImports[0]).toMatchObject({
+      line_account_id: 'acc-1',
+      source_channel_id: 'C123',
+      source_thread_ts: '1783901707.519169',
+      category: 'tax_contract',
+      status: 'draft',
+    });
+    expect(state.knowledgeImports[0].question).toContain('[メールアドレス]');
+    expect(state.knowledgeImports[0].body).toContain('【二次対応の回答】');
+  });
+
+  test('owner can publish a draft knowledge candidate as a support manual', async () => {
+    const { db, state } = makeSupportDb({
+      knowledgeImports: [baseKnowledgeImport({ id: 'knowledge-1', line_account_id: 'acc-1' })],
+    });
+    const app = setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' });
+
+    const res = await app.request('/api/support/knowledge-imports/knowledge-1/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { import: { status: string; manualId: string | null }; manual: { title: string; category: string } };
+    };
+    expect(body.success).toBe(true);
+    expect(body.data.import.status).toBe('published');
+    expect(body.data.import.manualId).toBeTruthy();
+    expect(body.data.manual).toMatchObject({
+      title: '税務調査の対応',
+      category: 'tax_contract',
+    });
+    expect(state.manuals).toHaveLength(1);
+    expect(state.knowledgeImports[0]).toMatchObject({
+      status: 'published',
+      reviewed_by: 'owner-1',
     });
   });
 });

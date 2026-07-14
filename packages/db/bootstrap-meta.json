@@ -63,7 +63,8 @@
     "055_messages_unsend_and_typing.sql",
     "056_messages_quote_reply.sql",
     "057_messages_sender_staff.sql",
-    "058_staff_presence.sql"
+    "058_staff_presence.sql",
+    "059_support_knowledge_imports.sql"
   ],
-  "migrationCount": 64
+  "migrationCount": 65
 }

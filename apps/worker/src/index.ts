@@ -136,6 +136,8 @@ export type Env = {
     WEB_PUSH_VAPID_PUBLIC_KEY?: string;
     WEB_PUSH_VAPID_PRIVATE_KEY?: string;
     WEB_PUSH_CONTACT?: string;
+    SLACK_BOT_TOKEN?: string;
+    SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' };

@@ -363,6 +363,43 @@ export type SupportManual = {
   updatedAt: string
 }
 
+export type SupportKnowledgeImport = {
+  id: string
+  lineAccountId: string
+  source: 'slack'
+  sourceChannelId: string
+  sourceChannelName: string | null
+  sourceMessageTs: string
+  sourceThreadTs: string
+  sourcePermalink: string | null
+  sourceAuthor: string | null
+  sourcePostedAt: string | null
+  title: string
+  category: string
+  question: string
+  answer: string
+  body: string
+  keywords: string
+  status: 'draft' | 'published' | 'dismissed'
+  manualId: string | null
+  importedBy: string | null
+  reviewedBy: string | null
+  importedAt: string
+  reviewedAt: string | null
+  publishedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export type SupportKnowledgeImportSyncResult = {
+  imported: number
+  updated: number
+  skipped: number
+  failed: number
+  nextCursor: string | null
+  hasMore: boolean
+}
+
 export type SupportCaseEvent = {
   id: string
   caseId: string
@@ -1279,6 +1316,54 @@ export const api = {
         }),
       archive: (id: string, accountId: string) =>
         fetchApi<ApiResponse<null>>(`/api/support/manuals/${id}?` + new URLSearchParams({ lineAccountId: accountId }), { method: 'DELETE' }),
+    },
+    knowledgeImports: {
+      list: (params: {
+        accountId: string
+        status?: 'draft' | 'published' | 'dismissed' | 'all'
+        q?: string
+        limit?: number
+        offset?: number
+      }) => {
+        const query: Record<string, string> = { lineAccountId: params.accountId }
+        if (params.status) query.status = params.status
+        if (params.q) query.q = params.q
+        if (params.limit !== undefined) query.limit = String(params.limit)
+        if (params.offset !== undefined) query.offset = String(params.offset)
+        return fetchApi<ApiResponse<SupportKnowledgeImport[]>>('/api/support/knowledge-imports?' + new URLSearchParams(query))
+      },
+      syncSlack: (data: {
+        lineAccountId: string
+        channelId?: string
+        channelName?: string
+        cursor?: string | null
+        oldest?: string | null
+        latest?: string | null
+        limit?: number
+      }) =>
+        fetchApi<ApiResponse<SupportKnowledgeImportSyncResult>>('/api/support/knowledge-imports/slack/sync', {
+          method: 'POST',
+          body: JSON.stringify(data),
+        }),
+      update: (id: string, data: Partial<{
+        lineAccountId: string
+        title: string
+        category: string
+        question: string
+        answer: string
+        body: string
+        keywords: string
+        status: 'draft' | 'dismissed'
+      }>) =>
+        fetchApi<ApiResponse<SupportKnowledgeImport>>(`/api/support/knowledge-imports/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(data),
+        }),
+      publish: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<{ import: SupportKnowledgeImport; manual: SupportManual }>>(`/api/support/knowledge-imports/${id}/publish`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId }),
+        }),
     },
   },
   chats: {

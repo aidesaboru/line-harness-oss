@@ -868,6 +868,36 @@ CREATE TABLE support_internal_messages (
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , reactions TEXT NOT NULL DEFAULT '{}');
 
+CREATE TABLE support_knowledge_imports (
+  id                  TEXT PRIMARY KEY,
+  line_account_id     TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  source              TEXT NOT NULL DEFAULT 'slack' CHECK (source IN ('slack')),
+  source_channel_id   TEXT NOT NULL,
+  source_channel_name TEXT,
+  source_message_ts   TEXT NOT NULL,
+  source_thread_ts    TEXT NOT NULL,
+  source_permalink    TEXT,
+  source_author       TEXT,
+  source_posted_at    TEXT,
+  title               TEXT NOT NULL,
+  category            TEXT NOT NULL DEFAULT 'other',
+  question            TEXT NOT NULL DEFAULT '',
+  answer              TEXT NOT NULL DEFAULT '',
+  body                TEXT NOT NULL DEFAULT '',
+  keywords            TEXT NOT NULL DEFAULT '',
+  status              TEXT NOT NULL DEFAULT 'draft'
+                        CHECK (status IN ('draft', 'published', 'dismissed')),
+  manual_id           TEXT REFERENCES support_manuals(id) ON DELETE SET NULL,
+  imported_by         TEXT,
+  reviewed_by         TEXT,
+  imported_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  reviewed_at         TEXT,
+  published_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(source_channel_id, source_thread_ts)
+);
+
 CREATE TABLE support_manuals (
   id              TEXT PRIMARY KEY,
   line_account_id TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
@@ -1187,6 +1217,12 @@ CREATE INDEX idx_support_internal_messages_case
 
 CREATE INDEX idx_support_internal_messages_parent
   ON support_internal_messages(parent_id, created_at);
+
+CREATE INDEX idx_support_knowledge_imports_account_status
+  ON support_knowledge_imports(line_account_id, status, updated_at);
+
+CREATE INDEX idx_support_knowledge_imports_source
+  ON support_knowledge_imports(source_channel_id, source_thread_ts);
 
 CREATE INDEX idx_support_manuals_account_category
   ON support_manuals(line_account_id, category, is_active);

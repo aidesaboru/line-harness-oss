@@ -553,6 +553,17 @@ function replaceSlackMentionIds(value: string, displayNames: Map<string, string>
   );
 }
 
+function applyFallbackSlackMentionNames(ids: string[], displayNames: Map<string, string>): Map<string, string> {
+  const names = new Map(displayNames);
+  let fallbackIndex = 1;
+  for (const id of Array.from(new Set(ids)).sort()) {
+    if (names.has(id)) continue;
+    names.set(id, `社内メンバー${String(fallbackIndex).padStart(2, '0')}`);
+    fallbackIndex += 1;
+  }
+  return names;
+}
+
 function slackUserDisplayName(response: SlackUserInfoResponse): string | null {
   const user = response.user;
   if (!user) return null;
@@ -2467,6 +2478,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       return c.json({ success: false, error: 'Slack token is not configured' }, 400);
     }
     const displayNames = token ? await resolveSlackMentionDisplayNames(token, mentionIds) : new Map<string, string>();
+    const replacementNames = applyFallbackSlackMentionNames(mentionIds, displayNames);
     const staff = currentStaff(c);
     const now = jstNow();
     let updatedImports = 0;
@@ -2475,13 +2487,13 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
     for (const row of rows) {
       const customerInfo = replaceSlackMentionIds(
         extractKnowledgeBodySection(row.body, ['顧客・案件情報', '顧客情報', '案件情報']),
-        displayNames,
+        replacementNames,
       );
       const questionSource = row.question || extractKnowledgeBodySection(row.body, ['問い合わせ内容', '一次対応の問い合わせ', '質問', '問い']);
       const answerSource = row.answer || extractKnowledgeBodySection(row.body, ['解決回答', '対応ナレッジ', '二次対応の回答', '回答']);
-      const title = truncateText(replaceSlackMentionIds(row.title, displayNames), SUPPORT_SHORT_TEXT_MAX_LENGTH);
-      const question = truncateText(replaceSlackMentionIds(questionSource, displayNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
-      const answer = truncateText(replaceSlackMentionIds(answerSource, displayNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
+      const title = truncateText(replaceSlackMentionIds(row.title, replacementNames), SUPPORT_SHORT_TEXT_MAX_LENGTH);
+      const question = truncateText(replaceSlackMentionIds(questionSource, replacementNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
+      const answer = truncateText(replaceSlackMentionIds(answerSource, replacementNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
       const knowledgeBody = buildKnowledgeBody({ customerInfo, question, answer });
       const keywords = truncateText(buildKnowledgeKeywords(`${title}\n${question}\n${answer}`), SUPPORT_LONG_TEXT_MAX_LENGTH);
 
@@ -2543,7 +2555,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         checked: rows.length,
         slackMemberIds: mentionIds.length,
         resolvedMemberIds: displayNames.size,
-        unresolvedMemberIds: Math.max(0, mentionIds.length - displayNames.size),
+        fallbackMemberIds: Math.max(0, mentionIds.length - displayNames.size),
+        unresolvedMemberIds: 0,
         updatedImports,
         updatedManuals,
       },

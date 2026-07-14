@@ -95,6 +95,7 @@ export default function SlackKnowledgeImportPanel({
   const [draft, setDraft] = useState<KnowledgeImportDraft | null>(null)
   const disabled = saving || syncing || !canManage
   const draftCount = items.filter((item) => item.status === 'draft').length
+  const publishedCount = items.filter((item) => item.status === 'published').length
 
   const openEdit = (item: SupportKnowledgeImport) => {
     setEditingId(item.id)
@@ -113,13 +114,14 @@ export default function SlackKnowledgeImportPanel({
   }
 
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-4" aria-label="Slackナレッジ候補">
+    <section className="rounded-lg border border-slate-200 bg-white p-4" aria-label="Slack過去ログ移行">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-slate-900">Slackナレッジ候補</h2>
-          <p className="mt-0.5 text-xs text-slate-500">二次対応スレッドから作成した公開前の候補です。</p>
+          <h2 className="text-sm font-semibold text-slate-900">Slack過去ログ移行</h2>
+          <p className="mt-0.5 text-xs text-slate-500">使わなくなった通達チャンネルの過去スレッドをL-Linkの公開済みナレッジに移します。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Pill className="border-green-200 bg-green-50 text-green-700">公開済み {publishedCount}</Pill>
           <Pill className="border-amber-200 bg-amber-50 text-amber-700">下書き {draftCount}</Pill>
           {nextCursor && <Pill className="border-blue-200 bg-blue-50 text-blue-700">続きあり</Pill>}
         </div>
@@ -158,7 +160,7 @@ export default function SlackKnowledgeImportPanel({
             disabled={disabled}
             className={btnBrandCls}
           >
-            {syncing ? '取り込み中' : '取り込み'}
+            {syncing ? '移行中' : '全件移行'}
           </button>
           <button
             type="button"
@@ -166,7 +168,7 @@ export default function SlackKnowledgeImportPanel({
             disabled={disabled || !nextCursor}
             className={btnSecondaryCls}
           >
-            続き
+            続きから移行
           </button>
         </div>
       )}
@@ -190,7 +192,7 @@ export default function SlackKnowledgeImportPanel({
         <input
           value={search}
           onChange={(event) => onSearchChange(event.target.value)}
-          placeholder="候補を検索"
+          placeholder="移行済みナレッジを検索"
           className={`${inputCls} min-w-[220px] flex-1`}
         />
       </div>
@@ -198,7 +200,7 @@ export default function SlackKnowledgeImportPanel({
       <div className="mt-4 space-y-3">
         {items.length === 0 ? (
           <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-center">
-            <p className="text-sm font-medium text-slate-600">候補はありません</p>
+            <p className="text-sm font-medium text-slate-600">移行済みのSlackナレッジはありません</p>
           </div>
         ) : items.map((item) => {
           const editing = editingId === item.id && draft

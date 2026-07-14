@@ -27,6 +27,9 @@ import {
 import type { SupportKnowledgeImport } from '@/lib/api'
 
 const SEARCH_DEBOUNCE_MS = 350
+const DEFAULT_SLACK_KNOWLEDGE_CHANNEL_ID = 'C09SPA06P0S'
+const DEFAULT_SLACK_KNOWLEDGE_CHANNEL_NAME = '早急確認-ecオーナー通達'
+const SLACK_KNOWLEDGE_IMPORT_MAX_PAGES = 200
 
 export default function ManualsPage() {
   const { selectedAccountId, selectedAccount, loading: accountLoading } = useAccount()
@@ -39,10 +42,10 @@ export default function ManualsPage() {
   const [knowledgeSearch, setKnowledgeSearch] = useState('')
   const [appliedKnowledgeSearch, setAppliedKnowledgeSearch] = useState('')
   const [category, setCategory] = useState('all')
-  const [knowledgeStatusFilter, setKnowledgeStatusFilter] = useState<'draft' | 'published' | 'dismissed' | 'all'>('draft')
-  const [slackChannelId, setSlackChannelId] = useState('')
-  const [slackChannelName, setSlackChannelName] = useState('早急確認-ecオーナー通達')
-  const [slackImportLimit, setSlackImportLimit] = useState(20)
+  const [knowledgeStatusFilter, setKnowledgeStatusFilter] = useState<'draft' | 'published' | 'dismissed' | 'all'>('published')
+  const [slackChannelId, setSlackChannelId] = useState(DEFAULT_SLACK_KNOWLEDGE_CHANNEL_ID)
+  const [slackChannelName, setSlackChannelName] = useState(DEFAULT_SLACK_KNOWLEDGE_CHANNEL_NAME)
+  const [slackImportLimit, setSlackImportLimit] = useState(50)
   const [slackNextCursor, setSlackNextCursor] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState('')
   const [staffReady, setStaffReady] = useState(false)
@@ -248,31 +251,54 @@ export default function ManualsPage() {
     if (!selectedAccountId || syncing || saving || !canManage) return
     setSyncing(true)
     try {
-      const res = await api.support.knowledgeImports.syncSlack({
-        lineAccountId: selectedAccountId,
-        channelId: slackChannelId.trim() || undefined,
-        channelName: slackChannelName.trim() || undefined,
-        cursor: cursor || undefined,
-        limit: slackImportLimit,
-      })
-      if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'Slackナレッジの取り込みに失敗しました'))
-        return
+      let nextCursor = cursor || null
+      let page = 0
+      const totals = { imported: 0, updated: 0, skipped: 0, failed: 0, published: 0 }
+
+      do {
+        const res = await api.support.knowledgeImports.syncSlack({
+          lineAccountId: selectedAccountId,
+          channelId: slackChannelId.trim() || DEFAULT_SLACK_KNOWLEDGE_CHANNEL_ID,
+          channelName: slackChannelName.trim() || DEFAULT_SLACK_KNOWLEDGE_CHANNEL_NAME,
+          cursor: nextCursor || undefined,
+          limit: slackImportLimit,
+          publish: true,
+        })
+        if (!res.success) {
+          notify('error', supportApiErrorMessage(res, 'Slack過去ログの移行に失敗しました'))
+          return
+        }
+        totals.imported += res.data.imported
+        totals.updated += res.data.updated
+        totals.skipped += res.data.skipped
+        totals.failed += res.data.failed
+        totals.published += res.data.published
+        nextCursor = res.data.nextCursor
+        page += 1
+      } while (nextCursor && page < SLACK_KNOWLEDGE_IMPORT_MAX_PAGES)
+
+      setSlackNextCursor(nextCursor)
+      if (nextCursor) {
+        notify(
+          'error',
+          `途中まで移行しました。公開 ${totals.published}件 / 失敗 ${totals.failed}件。続きボタンで再開してください`,
+        )
+      } else {
+        notify(
+          'success',
+          `Slack過去ログを移行しました。公開 ${totals.published}件 / 候補 ${totals.imported}件 / 更新 ${totals.updated}件 / スキップ ${totals.skipped}件`,
+        )
       }
-      setSlackNextCursor(res.data.nextCursor)
-      notify(
-        'success',
-        `取り込み ${res.data.imported}件 / 更新 ${res.data.updated}件 / スキップ ${res.data.skipped}件`,
-      )
-      await loadKnowledgeImports()
+      await Promise.all([loadKnowledgeImports(), loadManuals()])
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'Slackナレッジの取り込みに失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'Slack過去ログの移行に失敗しました'))
     } finally {
       setSyncing(false)
     }
   }, [
     canManage,
     loadKnowledgeImports,
+    loadManuals,
     notify,
     saving,
     selectedAccountId,

@@ -785,6 +785,7 @@ function makeSupportDb(state: {
           } else if (sql.startsWith('UPDATE support_escalations SET')) {
             applyEscalationUpdate(sql, bound);
           } else if (sql.includes('INSERT INTO support_manuals')) {
+            const hasBoundIsActive = bound.length === 15;
             const [
               id,
               lineAccountId,
@@ -796,12 +797,12 @@ function makeSupportDb(state: {
               owner,
               approvedBy,
               revisedAt,
-              isActive,
-              createdBy,
-              updatedBy,
-              createdAt,
-              updatedAt,
             ] = bound as Array<string | number | null>;
+            const isActive = hasBoundIsActive ? bound[10] : 1;
+            const createdBy = hasBoundIsActive ? bound[11] : bound[10];
+            const updatedBy = hasBoundIsActive ? bound[12] : bound[11];
+            const createdAt = hasBoundIsActive ? bound[13] : bound[12];
+            const updatedAt = hasBoundIsActive ? bound[14] : bound[13];
             manuals.push({
               id: String(id),
               line_account_id: lineAccountId === null ? null : String(lineAccountId),
@@ -2511,11 +2512,11 @@ describe('support CRM routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       success: boolean;
-      data: { imported: number; updated: number; skipped: number; nextCursor: string | null };
+      data: { imported: number; updated: number; skipped: number; published: number; nextCursor: string | null };
     };
     expect(body).toMatchObject({
       success: true,
-      data: { imported: 1, updated: 0, skipped: 0, nextCursor: 'NEXT_CURSOR' },
+      data: { imported: 1, updated: 0, skipped: 0, published: 0, nextCursor: 'NEXT_CURSOR' },
     });
     expect(state.knowledgeImports).toHaveLength(1);
     expect(state.knowledgeImports[0]).toMatchObject({
@@ -2526,7 +2527,91 @@ describe('support CRM routes', () => {
       status: 'draft',
     });
     expect(state.knowledgeImports[0].question).toContain('[メールアドレス]');
-    expect(state.knowledgeImports[0].body).toContain('【二次対応の回答】');
+    expect(state.knowledgeImports[0].body).toContain('【対応ナレッジ】');
+  });
+
+  test('owner can import Slack archive threads directly as published manuals', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith('/conversations.history')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            {
+              type: 'message',
+              text: '4755\nGSKマシナリー株式会社\n後藤 慎治',
+              user: 'U111',
+              ts: '1783394468.542959',
+              reply_count: 2,
+            },
+          ],
+        }));
+      }
+      return new Response(JSON.stringify({
+        ok: true,
+        messages: [
+          {
+            type: 'message',
+            text: '4755\nGSKマシナリー株式会社\n後藤 慎治',
+            user: 'U111',
+            ts: '1783394468.542959',
+          },
+          {
+            type: 'message',
+            text: 'JOより、楽天EC担当からの電話について不安との問い合わせがありました。今後の対応を確認したいです。',
+            user: 'U111',
+            ts: '1783395115.437589',
+          },
+          {
+            type: 'message',
+            text: '楽天担当者には本業都合で本格始動時期が先になる旨をメールで伝えてください。',
+            user: 'U222',
+            ts: '1783411550.479459',
+          },
+        ],
+      }));
+    }));
+    const { db, state } = makeSupportDb({});
+    const app = setupApp(
+      db,
+      { id: 'owner-1', name: 'Owner', role: 'owner' },
+      { SLACK_BOT_TOKEN: 'xoxb-test-token' },
+    );
+
+    const res = await app.request('/api/support/knowledge-imports/slack/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        channelId: 'C123',
+        channelName: '早急確認',
+        publish: true,
+        limit: 10,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { imported: number; published: number; failed: number };
+    };
+    expect(body).toMatchObject({
+      success: true,
+      data: { imported: 1, published: 1, failed: 0 },
+    });
+    expect(state.knowledgeImports[0]).toMatchObject({
+      status: 'published',
+      line_account_id: 'acc-1',
+    });
+    expect(state.knowledgeImports[0].question).toContain('楽天EC担当');
+    expect(state.knowledgeImports[0].question).not.toContain('GSKマシナリー');
+    expect(state.manuals).toHaveLength(1);
+    expect(state.manuals[0]).toMatchObject({
+      owner: 'Slack過去ログ',
+      line_account_id: 'acc-1',
+    });
+    expect(state.manuals[0].body).toContain('【顧客・案件情報】');
+    expect(state.manuals[0].body).toContain('【問い合わせ内容】');
   });
 
   test('owner can publish a draft knowledge candidate as a support manual', async () => {

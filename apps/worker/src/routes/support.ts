@@ -316,6 +316,17 @@ function parseOptionalQueryText(raw: unknown, label: string): ValueResult<string
   return { ok: true, value };
 }
 
+function parseOptionalBooleanFlag(raw: unknown, label: string): ValueResult<boolean> {
+  if (raw === undefined || raw === null) return { ok: true, value: false };
+  if (typeof raw === 'boolean') return { ok: true, value: raw };
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase();
+    if (value === 'true' || value === '1') return { ok: true, value: true };
+    if (value === 'false' || value === '0' || value === '') return { ok: true, value: false };
+  }
+  return { ok: false, error: `${label} must be a boolean` };
+}
+
 function parseManualIdsInput(raw: unknown): ValueResult<string[]> {
   if (raw === undefined) return { ok: true, value: [] };
   if (!Array.isArray(raw)) return { ok: false, error: 'manualIds must be an array' };
@@ -455,8 +466,12 @@ function inferKnowledgeCategory(textValue: string): string {
 }
 
 function buildKnowledgeTitle(question: string): string {
-  const firstLine = question.split('\n').map((line) => line.trim()).find(Boolean) ?? 'Slack二次対応ナレッジ';
-  return truncateText(firstLine.replace(/^```|```$/g, '').trim() || 'Slack二次対応ナレッジ', 80);
+  const firstLine = question
+    .split('\n')
+    .map((line) => line.replace(/^```|```$/g, '').trim())
+    .find((line) => line && !line.startsWith('@') && !/^cc[:：\s]/i.test(line) && !/^お疲れ様です/.test(line))
+    ?? 'Slack二次対応ナレッジ';
+  return truncateText(firstLine || 'Slack二次対応ナレッジ', 80);
 }
 
 function buildKnowledgeKeywords(textValue: string): string {
@@ -471,6 +486,51 @@ function buildKnowledgeKeywords(textValue: string): string {
   return words.join(' ');
 }
 
+function isSlackMessageUsable(message: SlackMessage): boolean {
+  return message.type === 'message' && !message.subtype && Boolean(message.ts);
+}
+
+function cleanedSlackMessageText(message: SlackMessage): string {
+  return maskSensitiveText(normalizeSlackText(message.text));
+}
+
+function isMetadataOnlySlackText(value: string): boolean {
+  const withoutMentions = value.replace(/@[^\s]+/g, '').trim();
+  const lines = withoutMentions.split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return true;
+  const hasQuestionSignal = /問い合わせ|問合せ|ご確認|確認|相談|依頼|希望|対応|至急|早急|クレーム|購入者|お客様|JOより|内容/.test(withoutMentions);
+  if (hasQuestionSignal) return false;
+  return lines.length <= 4 && /^\d{2,6}[\s　]*$/.test(lines[0] ?? '');
+}
+
+function questionSignalScore(value: string): number {
+  let score = 0;
+  if (/問い合わせ|問合せ|ご確認|確認|相談|依頼|希望|対応|至急|早急|クレーム|購入者|お客様|JOより|内容/.test(value)) score += 3;
+  if (/```[\s\S]+```/.test(value)) score += 2;
+  if (value.length >= 60) score += 1;
+  if (isMetadataOnlySlackText(value)) score -= 4;
+  if (/^@|^cc[:：\s]/i.test(value.trim())) score -= 1;
+  return score;
+}
+
+function findQuestionMessage(messages: Array<{ message: SlackMessage; text: string }>) {
+  const candidates = messages.filter((item) => item.text);
+  if (candidates.length === 0) return null;
+  const scored = candidates
+    .map((item, index) => ({ ...item, originalIndex: index, score: questionSignalScore(item.text) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.originalIndex - b.originalIndex);
+  if (scored[0]) return scored[0];
+  return candidates.find((item) => !isMetadataOnlySlackText(item.text)) ?? candidates[0];
+}
+
+function isLowValueSlackAnswer(value: string): boolean {
+  const stripped = value.replace(/@[^\s]+/g, '').replace(/cc[:：]?/gi, '').trim();
+  if (!stripped) return true;
+  if (stripped.length <= 8) return true;
+  return /^(承知しました|承知いたしました|確認します|確認いたします|ありがとうございます|ありがとう|はい|お願いします|よろしくお願いします)[\s!！。]*$/u.test(stripped);
+}
+
 function buildKnowledgeCandidate(
   parent: SlackMessage,
   replies: SlackMessage[],
@@ -478,17 +538,30 @@ function buildKnowledgeCandidate(
 ): KnowledgeCandidate | null {
   const parentTs = parent.ts;
   if (!parentTs) return null;
-  const question = maskSensitiveText(normalizeSlackText(parent.text));
-  const answerMessages = replies
-    .filter((message) => message.ts !== parentTs)
-    .filter((message) => message.type === 'message' && !message.subtype)
-    .map((message) => maskSensitiveText(normalizeSlackText(message.text)))
-    .filter(Boolean);
-  if (!question || answerMessages.length === 0) return null;
+  const threadMessages = [parent, ...replies.filter((message) => message.ts !== parentTs)]
+    .filter(isSlackMessageUsable)
+    .map((message) => ({ message, text: cleanedSlackMessageText(message) }))
+    .filter((item) => item.text);
+  const questionMessage = findQuestionMessage(threadMessages);
+  if (!questionMessage) return null;
 
-  const answer = normalizeWhitespace(answerMessages.join('\n\n---\n\n'));
+  const questionIndex = threadMessages.findIndex((item) => item.message.ts === questionMessage.message.ts);
+  const question = questionMessage.text;
+  const rawAnswerMessages = threadMessages
+    .slice(Math.max(0, questionIndex + 1))
+    .map((item) => item.text)
+    .filter(Boolean);
+  const answerMessages = rawAnswerMessages.filter((message) => !isLowValueSlackAnswer(message));
+  const effectiveAnswerMessages = answerMessages.length > 0 ? answerMessages : rawAnswerMessages;
+  if (!question || effectiveAnswerMessages.length === 0) return null;
+
+  const answer = normalizeWhitespace(effectiveAnswerMessages.join('\n\n---\n\n'));
+  const parentInfo = cleanedSlackMessageText(parent);
+  const parentBlock = parentInfo && parentInfo !== question
+    ? `【顧客・案件情報】\n${parentInfo}\n\n`
+    : '';
   const body = truncateText(
-    normalizeWhitespace(`【一次対応の問い合わせ】\n${question}\n\n【二次対応の回答】\n${answer}`),
+    normalizeWhitespace(`${parentBlock}【問い合わせ内容】\n${question}\n\n【対応ナレッジ】\n${answer}`),
     SUPPORT_LONG_TEXT_MAX_LENGTH,
   );
   const title = buildKnowledgeTitle(question);
@@ -780,6 +853,73 @@ async function getKnowledgeImportRow(
     .first<SupportKnowledgeImportRow>();
 }
 
+async function getKnowledgeImportRowBySource(
+  db: D1Database,
+  lineAccountId: string,
+  sourceChannelId: string,
+  sourceThreadTs: string,
+): Promise<SupportKnowledgeImportRow | null> {
+  return await db
+    .prepare(
+      `SELECT * FROM support_knowledge_imports
+       WHERE line_account_id = ? AND source_channel_id = ? AND source_thread_ts = ?`,
+    )
+    .bind(lineAccountId, sourceChannelId, sourceThreadTs)
+    .first<SupportKnowledgeImportRow>();
+}
+
+async function publishKnowledgeImportRow(
+  db: D1Database,
+  lineAccountId: string,
+  row: SupportKnowledgeImportRow,
+  staff: SupportAccessStaff,
+  now: string,
+): Promise<{ outcome: 'created' | 'already_published' | 'skipped'; manualId: string | null }> {
+  if (row.status === 'dismissed') return { outcome: 'skipped', manualId: null };
+  if (row.status === 'published' && row.manual_id) return { outcome: 'already_published', manualId: row.manual_id };
+  if (!row.title.trim() || !row.body.trim()) return { outcome: 'skipped', manualId: null };
+
+  const manualId = crypto.randomUUID();
+  await db
+    .prepare(
+      `INSERT INTO support_manuals (
+        id, line_account_id, title, category, body, url, keywords, owner, approved_by,
+        revised_at, is_active, created_by, updated_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+    )
+    .bind(
+      manualId,
+      lineAccountId,
+      row.title,
+      row.category || 'other',
+      row.body,
+      row.source_permalink,
+      row.keywords,
+      'Slack過去ログ',
+      staff.name || staff.id,
+      now.slice(0, 10),
+      staff.id,
+      staff.id,
+      now,
+      now,
+    )
+    .run();
+  await db
+    .prepare(
+      `UPDATE support_knowledge_imports
+       SET status = 'published',
+           manual_id = ?,
+           reviewed_by = ?,
+           reviewed_at = ?,
+           published_at = ?,
+           updated_at = ?
+       WHERE id = ? AND line_account_id = ?`,
+    )
+    .bind(manualId, staff.id, now, now, now, row.id, lineAccountId)
+    .run();
+  return { outcome: 'created', manualId };
+}
+
 async function upsertKnowledgeImport(
   db: D1Database,
   lineAccountId: string,
@@ -787,13 +927,12 @@ async function upsertKnowledgeImport(
   staff: SupportAccessStaff,
   now: string,
 ): Promise<'created' | 'updated' | 'skipped'> {
-  const existing = await db
-    .prepare(
-      `SELECT * FROM support_knowledge_imports
-       WHERE line_account_id = ? AND source_channel_id = ? AND source_thread_ts = ?`,
-    )
-    .bind(lineAccountId, candidate.sourceChannelId, candidate.sourceThreadTs)
-    .first<SupportKnowledgeImportRow>();
+  const existing = await getKnowledgeImportRowBySource(
+    db,
+    lineAccountId,
+    candidate.sourceChannelId,
+    candidate.sourceThreadTs,
+  );
 
   if (existing) {
     if (existing.status !== 'draft') return 'skipped';
@@ -2260,6 +2399,8 @@ support.post('/api/support/knowledge-imports/slack/sync', requireRole('owner', '
     if (!oldestInput.ok) return c.json({ success: false, error: oldestInput.error }, 400);
     const latestInput = parseOptionalTextField(body.latest, 'latest', SUPPORT_SHORT_TEXT_MAX_LENGTH);
     if (!latestInput.ok) return c.json({ success: false, error: latestInput.error }, 400);
+    const publishInput = parseOptionalBooleanFlag(body.publish, 'publish');
+    if (!publishInput.ok) return c.json({ success: false, error: publishInput.error }, 400);
 
     const token = c.env.SLACK_BOT_TOKEN?.trim();
     if (!token) return c.json({ success: false, error: 'Slack token is not configured' }, 400);
@@ -2284,6 +2425,7 @@ support.post('/api/support/knowledge-imports/slack/sync', requireRole('owner', '
     let updated = 0;
     let skipped = 0;
     let failed = 0;
+    let published = 0;
 
     for (const parent of history.messages ?? []) {
       if (parent.type !== 'message' || parent.subtype || !parent.ts || (parent.reply_count ?? 0) < 1) {
@@ -2312,6 +2454,16 @@ support.post('/api/support/knowledge-imports/slack/sync', requireRole('owner', '
       if (outcome === 'created') imported += 1;
       if (outcome === 'updated') updated += 1;
       if (outcome === 'skipped') skipped += 1;
+      if (publishInput.value) {
+        const row = await getKnowledgeImportRowBySource(c.env.DB, lineAccountId.value, candidate.sourceChannelId, candidate.sourceThreadTs);
+        if (!row) {
+          failed += 1;
+          continue;
+        }
+        const publishOutcome = await publishKnowledgeImportRow(c.env.DB, lineAccountId.value, row, staff, now);
+        if (publishOutcome.outcome === 'created') published += 1;
+        if (publishOutcome.outcome === 'skipped') skipped += 1;
+      }
     }
 
     const nextCursor = history.response_metadata?.next_cursor || null;
@@ -2322,6 +2474,7 @@ support.post('/api/support/knowledge-imports/slack/sync', requireRole('owner', '
         updated,
         skipped,
         failed,
+        published,
         nextCursor,
         hasMore: Boolean(nextCursor || history.has_more),
       },
@@ -2413,47 +2566,13 @@ support.post('/api/support/knowledge-imports/:id/publish', requireRole('owner', 
 
     const staff = currentStaff(c);
     const now = jstNow();
-    const manualId = crypto.randomUUID();
-    await c.env.DB
-      .prepare(
-        `INSERT INTO support_manuals (
-          id, line_account_id, title, category, body, url, keywords, owner, approved_by,
-          revised_at, is_active, created_by, updated_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
-      )
-      .bind(
-        manualId,
-        lineAccountId.value,
-        row.title,
-        row.category || 'other',
-        row.body,
-        row.source_permalink,
-        row.keywords,
-        'Slackナレッジ',
-        staff.name || staff.id,
-        now.slice(0, 10),
-        staff.id,
-        staff.id,
-        now,
-        now,
-      )
-      .run();
-    await c.env.DB
-      .prepare(
-        `UPDATE support_knowledge_imports
-         SET status = 'published',
-             manual_id = ?,
-             reviewed_by = ?,
-             reviewed_at = ?,
-             published_at = ?,
-             updated_at = ?
-         WHERE id = ? AND line_account_id = ?`,
-      )
-      .bind(manualId, staff.id, now, now, now, row.id, lineAccountId.value)
-      .run();
+    const publishOutcome = await publishKnowledgeImportRow(c.env.DB, lineAccountId.value, row, staff, now);
+    if (publishOutcome.outcome === 'skipped' || !publishOutcome.manualId) {
+      return c.json({ success: false, error: 'knowledge import cannot be published' }, 409);
+    }
     const [updated, manual] = await Promise.all([
       getKnowledgeImportRow(c.env.DB, row.id, lineAccountId.value),
-      c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`).bind(manualId, lineAccountId.value).first<SupportManualRow>(),
+      c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`).bind(publishOutcome.manualId, lineAccountId.value).first<SupportManualRow>(),
     ]);
     return c.json({ success: true, data: { import: serializeKnowledgeImport(updated!), manual: serializeManual(manual!) } });
   } catch (err) {

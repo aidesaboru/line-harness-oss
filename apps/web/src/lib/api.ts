@@ -396,6 +396,7 @@ export type SupportKnowledgeImportSyncResult = {
   updated: number
   skipped: number
   failed: number
+  published: number
   nextCursor: string | null
   hasMore: boolean
 }
@@ -1340,6 +1341,7 @@ export const api = {
         oldest?: string | null
         latest?: string | null
         limit?: number
+        publish?: boolean
       }) =>
         fetchApi<ApiResponse<SupportKnowledgeImportSyncResult>>('/api/support/knowledge-imports/slack/sync', {
           method: 'POST',

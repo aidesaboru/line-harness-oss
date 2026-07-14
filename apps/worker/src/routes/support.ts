@@ -691,10 +691,14 @@ async function fetchSlackApi<T>(
 async function resolveSlackMentionDisplayNames(token: string, ids: string[]): Promise<Map<string, string>> {
   const displayNames = new Map<string, string>();
   for (const id of Array.from(new Set(ids))) {
-    const response = await fetchSlackApi<SlackUserInfoResponse>(token, 'users.info', { user: id });
-    if (!response.ok) continue;
-    const displayName = slackUserDisplayName(response);
-    if (displayName) displayNames.set(id, displayName);
+    try {
+      const response = await fetchSlackApi<SlackUserInfoResponse>(token, 'users.info', { user: id });
+      if (!response.ok) continue;
+      const displayName = slackUserDisplayName(response);
+      if (displayName) displayNames.set(id, displayName);
+    } catch {
+      continue;
+    }
   }
   return displayNames;
 }
@@ -2448,6 +2452,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
     const body = parsedBody.value;
     const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const resolveProfiles = parseOptionalBooleanFlag(body.resolveProfiles, 'resolveProfiles');
+    if (!resolveProfiles.ok) return c.json({ success: false, error: resolveProfiles.error }, 400);
     const limit = clampSlackNormalizeLimit(body.limit);
 
     const rowsResult = await c.env.DB
@@ -2474,10 +2480,10 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
     ));
 
     const token = c.env.SLACK_BOT_TOKEN?.trim();
-    if (mentionIds.length > 0 && !token) {
+    if (mentionIds.length > 0 && resolveProfiles.value && !token) {
       return c.json({ success: false, error: 'Slack token is not configured' }, 400);
     }
-    const displayNames = token ? await resolveSlackMentionDisplayNames(token, mentionIds) : new Map<string, string>();
+    const displayNames = token && resolveProfiles.value ? await resolveSlackMentionDisplayNames(token, mentionIds) : new Map<string, string>();
     const replacementNames = applyFallbackSlackMentionNames(mentionIds, displayNames);
     const staff = currentStaff(c);
     const now = jstNow();
@@ -2554,6 +2560,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       data: {
         checked: rows.length,
         slackMemberIds: mentionIds.length,
+        profileLookupEnabled: resolveProfiles.value,
         resolvedMemberIds: displayNames.size,
         fallbackMemberIds: Math.max(0, mentionIds.length - displayNames.size),
         unresolvedMemberIds: 0,

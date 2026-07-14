@@ -2660,7 +2660,7 @@ describe('support CRM routes', () => {
     const res = await app.request('/api/support/manuals/slack-normalize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      body: JSON.stringify({ lineAccountId: 'acc-1', resolveProfiles: true }),
     });
 
     expect(res.status).toBe(200);

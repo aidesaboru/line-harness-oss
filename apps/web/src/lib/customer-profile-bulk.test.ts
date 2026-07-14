@@ -17,6 +17,19 @@ describe('customer profile bulk parser', () => {
           companyName: '株式会社テスト',
           contactName: '山田',
           storeName: '渋谷店',
+          shopName: '渋谷店',
+          handoverDate: '',
+          minimumGuaranteeStartMonth: '',
+          minimumGuarantee: '',
+          closedAt: '',
+          operationContracts: [
+            {
+              shopName: '渋谷店',
+              handoverDate: '',
+              minimumGuaranteeStartMonth: '',
+              closedAt: '',
+            },
+          ],
         },
       },
     ])
@@ -35,6 +48,7 @@ describe('customer profile bulk parser', () => {
         customerNumber: 'C-002',
         companyName: '合同会社サンプル',
         storeName: '新宿店',
+        shopName: '新宿店',
       },
     })
     expect(parsed.rows[0].metadata.contactName).toBeUndefined()
@@ -42,8 +56,8 @@ describe('customer profile bulk parser', () => {
 
   it('parses new customer memo columns from Japanese headers', () => {
     const parsed = parseCustomerProfileBulkText([
-      'friendId,決算月,最低保証開始月,GoogleフォルダURL',
-      'friend-1,3月,2026年7月,https://drive.google.com/drive/folders/sample',
+      'friendId,決算月,最低保証開始月,GoogleフォルダURL,特記事項',
+      'friend-1,3月,2026年7月,https://drive.google.com/drive/folders/sample,確認メモあり',
     ].join('\n'))
 
     expect(parsed.issues).toEqual([])
@@ -52,9 +66,19 @@ describe('customer profile bulk parser', () => {
       metadata: {
         closingMonth: '3月',
         minimumGuarantee: '2026年7月',
+        minimumGuaranteeStartMonth: '2026年7月',
         googleFolderUrl: 'https://drive.google.com/drive/folders/sample',
+        specialNotes: '確認メモあり',
       },
     })
+    expect(parsed.rows[0].metadata.operationContracts).toEqual([
+      {
+        shopName: '',
+        handoverDate: '',
+        minimumGuaranteeStartMonth: '2026年7月',
+        closedAt: '',
+      },
+    ])
   })
 
   it('parses broadcast exclusion columns for bulk opt-out updates', () => {

@@ -3,14 +3,19 @@
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
 import {
+  customerOperationContractFieldDefinitions,
   customerBroadcastExclusionPatch,
+  customerProfileBasicFieldDefinitions,
   customerProfileFieldGroups,
   customerProfileFormFromMetadata,
   customerProfileFromMetadata,
   customerProfileMetadataPatch,
+  emptyCustomerOperationContract,
   isCustomerProfileMetadataKey,
   isCustomerBroadcastExcluded,
-  type CustomerProfileFieldKey,
+  type CustomerOperationContractFieldKey,
+  type CustomerProfileBasicFieldKey,
+  type CustomerProfileForm,
 } from '@/lib/customer-profile'
 
 interface FriendDetail {
@@ -76,7 +81,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editingCustomer, setEditingCustomer] = useState(false)
-  const [customerForm, setCustomerForm] = useState<Record<CustomerProfileFieldKey, string>>(
+  const [customerForm, setCustomerForm] = useState<CustomerProfileForm>(
     () => customerProfileFormFromMetadata({}),
   )
   const [broadcastExcluded, setBroadcastExcluded] = useState(false)
@@ -157,8 +162,40 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
     ? Object.entries(friend.metadata ?? {}).filter(([key]) => !isCustomerProfileMetadataKey(key))
     : []
 
-  const handleCustomerChange = (key: CustomerProfileFieldKey, value: string) => {
-    setCustomerForm((prev) => ({ ...prev, [key]: value }))
+  const handleCustomerBasicChange = (key: CustomerProfileBasicFieldKey, value: string) => {
+    setCustomerForm((prev) => ({ ...prev, basic: { ...prev.basic, [key]: value } }))
+    setCustomerError(null)
+    setCustomerSaved(false)
+  }
+
+  const handleCustomerOperationChange = (index: number, key: CustomerOperationContractFieldKey, value: string) => {
+    setCustomerForm((prev) => ({
+      ...prev,
+      operationContracts: prev.operationContracts.map((contract, i) => (
+        i === index ? { ...contract, [key]: value } : contract
+      )),
+    }))
+    setCustomerError(null)
+    setCustomerSaved(false)
+  }
+
+  const handleAddCustomerOperation = () => {
+    setCustomerForm((prev) => ({
+      ...prev,
+      operationContracts: [...prev.operationContracts, emptyCustomerOperationContract()],
+    }))
+    setCustomerError(null)
+    setCustomerSaved(false)
+  }
+
+  const handleRemoveCustomerOperation = (index: number) => {
+    setCustomerForm((prev) => {
+      const operationContracts = prev.operationContracts.filter((_, i) => i !== index)
+      return {
+        ...prev,
+        operationContracts: operationContracts.length > 0 ? operationContracts : [emptyCustomerOperationContract()],
+      }
+    })
     setCustomerError(null)
     setCustomerSaved(false)
   }
@@ -310,40 +347,97 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
 
                 {editingCustomer ? (
                   <div className="space-y-4">
-                    {customerProfileFieldGroups.map((group) => {
-                      const fields = group.keys
-                        .map((key) => profile.fields.find((field) => field.key === key))
-                        .filter((field): field is NonNullable<typeof field> => Boolean(field))
-                      return (
-                        <section key={group.title} className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
-                          <div className="mb-2">
-                            <p className="text-xs font-semibold text-gray-800">{group.title}</p>
-                            <p className="mt-0.5 text-[10px] text-gray-500">{group.description}</p>
+                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                      <div className="mb-2">
+                        <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[0].title}</p>
+                        <p className="mt-0.5 text-[10px] text-gray-500">{customerProfileFieldGroups[0].description}</p>
+                      </div>
+                      <div className="space-y-2">
+                        {customerProfileBasicFieldDefinitions.map((field) => {
+                          const key = field.key as CustomerProfileBasicFieldKey
+                          const value = customerForm.basic[key] ?? ''
+                          const missing = field.required && !value.trim()
+                          const isLongText = field.key === 'specialNotes'
+                          return (
+                            <label key={field.key} className="block">
+                              <span className="mb-1 flex items-center gap-1 text-[10px] font-medium text-gray-500">
+                                {field.label}
+                                {field.required && <span className="text-red-500">必須</span>}
+                              </span>
+                              {isLongText ? (
+                                <textarea
+                                  value={value}
+                                  rows={3}
+                                  onChange={(e) => handleCustomerBasicChange(key, e.target.value)}
+                                  className={`w-full rounded-md border px-2 py-1.5 text-xs text-gray-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500 ${
+                                    missing ? 'border-amber-300 bg-amber-50' : 'border-gray-300 bg-white'
+                                  }`}
+                                />
+                              ) : (
+                                <input
+                                  type={field.key === 'googleFolderUrl' ? 'url' : 'text'}
+                                  value={value}
+                                  onChange={(e) => handleCustomerBasicChange(key, e.target.value)}
+                                  className={`w-full rounded-md border px-2 py-1.5 text-xs text-gray-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500 ${
+                                    missing ? 'border-amber-300 bg-amber-50' : 'border-gray-300 bg-white'
+                                  }`}
+                                />
+                              )}
+                            </label>
+                          )
+                        })}
+                      </div>
+                    </section>
+
+                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                      <div className="mb-2 flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[1].title}</p>
+                          <p className="mt-0.5 text-[10px] text-gray-500">{customerProfileFieldGroups[1].description}</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleAddCustomerOperation}
+                          className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-medium text-gray-600 hover:bg-gray-50"
+                        >
+                          追加
+                        </button>
+                      </div>
+                      <div className="space-y-3">
+                        {customerForm.operationContracts.map((contract, index) => (
+                          <div key={index} className="rounded-md border border-gray-100 bg-white p-2">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-semibold text-gray-700">店舗 {index + 1}</p>
+                              {customerForm.operationContracts.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveCustomerOperation(index)}
+                                  className="rounded px-1.5 py-0.5 text-[10px] font-medium text-red-600 hover:bg-red-50"
+                                >
+                                  削除
+                                </button>
+                              )}
+                            </div>
+                            <div className="space-y-2">
+                              {customerOperationContractFieldDefinitions.map((field) => {
+                                const key = field.key as CustomerOperationContractFieldKey
+                                return (
+                                  <label key={field.key} className="block">
+                                    <span className="mb-1 block text-[10px] font-medium text-gray-500">{field.label}</span>
+                                    <input
+                                      type="text"
+                                      value={contract[key] ?? ''}
+                                      onChange={(e) => handleCustomerOperationChange(index, key, e.target.value)}
+                                      className="w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-xs text-gray-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                                    />
+                                  </label>
+                                )
+                              })}
+                            </div>
                           </div>
-                          <div className="space-y-2">
-                            {fields.map((field) => {
-                              const missing = field.required && !customerForm[field.key]?.trim()
-                              return (
-                                <label key={field.key} className="block">
-                                  <span className="mb-1 flex items-center gap-1 text-[10px] font-medium text-gray-500">
-                                    {field.label}
-                                    {field.required && <span className="text-red-500">必須</span>}
-                                  </span>
-                                  <input
-                                    type={field.key === 'googleFolderUrl' ? 'url' : 'text'}
-                                    value={customerForm[field.key]}
-                                    onChange={(e) => handleCustomerChange(field.key, e.target.value)}
-                                    className={`w-full rounded-md border px-2 py-1.5 text-xs text-gray-800 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500 ${
-                                      missing ? 'border-amber-300 bg-amber-50' : 'border-gray-300 bg-white'
-                                    }`}
-                                  />
-                                </label>
-                              )
-                            })}
-                          </div>
-                        </section>
-                      )
-                    })}
+                        ))}
+                      </div>
+                    </section>
                     <label className="flex items-start gap-2 rounded-md border border-red-100 bg-red-50 px-3 py-2">
                       <input
                         type="checkbox"
@@ -389,42 +483,63 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {customerProfileFieldGroups.map((group) => {
-                      const fields = group.keys
-                        .map((key) => profile.fields.find((field) => field.key === key))
-                        .filter((field): field is NonNullable<typeof field> => Boolean(field))
-                      return (
-                        <section key={group.title} className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
-                          <div className="mb-2 flex items-center justify-between gap-2">
-                            <p className="text-xs font-semibold text-gray-800">{group.title}</p>
-                            <span className="text-[10px] text-gray-400">
-                              {fields.filter((field) => field.value).length}/{fields.length}
-                            </span>
+                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[0].title}</p>
+                        <span className="text-[10px] text-gray-400">
+                          {profile.basicFields.filter((field) => field.value).length}/{profile.basicFields.length}
+                        </span>
+                      </div>
+                      <dl className="grid gap-2">
+                        {profile.basicFields.map((field) => {
+                          const href = field.key === 'googleFolderUrl' && field.value ? toHttpUrl(field.value) : null
+                          return (
+                            <div key={field.key} className={`rounded-md border bg-white px-2.5 py-2 ${
+                              field.missing ? 'border-amber-200 ring-1 ring-amber-100' : 'border-gray-100'
+                            }`}>
+                              <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
+                              <dd className={field.value ? 'mt-0.5 break-words text-sm font-medium text-gray-800' : 'mt-0.5 text-sm font-semibold text-amber-600'}>
+                                {href ? (
+                                  <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline-offset-2 hover:underline">
+                                    {field.value}
+                                  </a>
+                                ) : (
+                                  field.value || (field.required ? '未入力' : '-')
+                                )}
+                              </dd>
+                            </div>
+                          )
+                        })}
+                      </dl>
+                    </section>
+
+                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[1].title}</p>
+                        <span className="text-[10px] text-gray-400">{profile.operationContracts.length}店舗</span>
+                      </div>
+                      <div className="space-y-2">
+                        {profile.operationContracts.map((contract, index) => (
+                          <div key={index} className="rounded-md border border-gray-100 bg-white px-2.5 py-2">
+                            <p className="mb-1 text-[11px] font-semibold text-gray-700">店舗 {index + 1}</p>
+                            <dl className="grid gap-1.5">
+                              {customerOperationContractFieldDefinitions.map((field) => {
+                                const key = field.key as CustomerOperationContractFieldKey
+                                const value = contract[key]
+                                return (
+                                  <div key={field.key}>
+                                    <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
+                                    <dd className={value ? 'break-words text-xs font-medium text-gray-800' : 'text-xs text-gray-400'}>
+                                      {value || '-'}
+                                    </dd>
+                                  </div>
+                                )
+                              })}
+                            </dl>
                           </div>
-                          <dl className="grid gap-2">
-                            {fields.map((field) => {
-                              const href = field.key === 'googleFolderUrl' && field.value ? toHttpUrl(field.value) : null
-                              return (
-                                <div key={field.key} className={`rounded-md border bg-white px-2.5 py-2 ${
-                                  field.missing ? 'border-amber-200 ring-1 ring-amber-100' : 'border-gray-100'
-                                }`}>
-                                  <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
-                                  <dd className={field.value ? 'mt-0.5 break-words text-sm font-medium text-gray-800' : 'mt-0.5 text-sm font-semibold text-amber-600'}>
-                                    {href ? (
-                                      <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline-offset-2 hover:underline">
-                                        {field.value}
-                                      </a>
-                                    ) : (
-                                      field.value || (field.required ? '未入力' : '-')
-                                    )}
-                                  </dd>
-                                </div>
-                              )
-                            })}
-                          </dl>
-                        </section>
-                      )
-                    })}
+                        ))}
+                      </div>
+                    </section>
                   </div>
                 )}
               </div>

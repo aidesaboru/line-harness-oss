@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import type { Tag } from '@line-crm/shared'
 import { api } from '@/lib/api'
 import type { FriendListItem } from '@/lib/api'
 import { parseCustomerProfileBulkText } from '@/lib/customer-profile-bulk'
@@ -16,6 +17,7 @@ type SortMode = 'recent' | 'oldest'
 export default function FriendsPage() {
   const { selectedAccountId } = useAccount()
   const [friends, setFriends] = useState<FriendListItem[]>([])
+  const [tags, setTags] = useState<Tag[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [hasNextPage, setHasNextPage] = useState(false)
@@ -41,7 +43,7 @@ export default function FriendsPage() {
         limit: PAGE_SIZE,
         accountId: selectedAccountId || undefined,
         search: searchSubmitted || undefined,
-        includeTags: false,
+        includeTags: true,
         includeChatStatus: false,
         sort: sortMode,
       })
@@ -59,6 +61,15 @@ export default function FriendsPage() {
     }
   }, [page, selectedAccountId, searchSubmitted, sortMode])
 
+  const loadTags = useCallback(async () => {
+    try {
+      const res = await api.tags.list()
+      if (res.success) setTags(res.data)
+    } catch {
+      setTags([])
+    }
+  }, [])
+
   // Reset the URL-style account context to page 1 in a separate effect.
   // For user-driven filter changes (search/sort/handled) we reset
   // page synchronously inside the handlers below — that avoids the
@@ -71,6 +82,10 @@ export default function FriendsPage() {
   useEffect(() => {
     loadFriends()
   }, [loadFriends])
+
+  useEffect(() => {
+    loadTags()
+  }, [loadTags])
 
   // Fan-out helpers: changing a filter also resets pagination synchronously,
   // so React batches both state updates into one re-render and `loadFriends`
@@ -271,7 +286,7 @@ export default function FriendsPage() {
           ))}
         </div>
       ) : (
-        <FriendListTable friends={friends} onRefresh={loadFriends} />
+        <FriendListTable friends={friends} allTags={tags} onRefresh={loadFriends} />
       )}
 
       {!loading && total > 0 && (

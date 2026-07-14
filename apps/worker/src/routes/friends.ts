@@ -35,6 +35,7 @@ const FRIEND_METADATA_VALUE_MAX_LENGTH = 2000;
 const FRIEND_METADATA_MAX_KEYS = 50;
 const FRIEND_METADATA_MAX_BYTES = 16000;
 const FRIEND_METADATA_BULK_MAX_ROWS = 200;
+const FRIEND_OPERATION_CONTRACTS_MAX_ROWS = 30;
 const FRIEND_MESSAGE_CONTENT_MAX_LENGTH = 50000;
 const FRIEND_ALT_TEXT_MAX_LENGTH = 400;
 const FRIEND_URL_MAX_LENGTH = 2048;
@@ -56,6 +57,12 @@ const CONTACT_NAME_METADATA_KEYS = [
   'managerName',
   'manager_name',
 ] as const;
+const OPERATION_CONTRACT_METADATA_KEYS = new Set([
+  'shopName',
+  'handoverDate',
+  'minimumGuaranteeStartMonth',
+  'closedAt',
+]);
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -172,6 +179,12 @@ function parseMetadataPatch(raw: Record<string, unknown>): ValueResult<Record<st
   for (const [key, value] of entries) {
     const parsedKey = parseMetadataKey(key);
     if (!parsedKey.ok) return { ok: false, error: 'invalid_metadata' };
+    if (parsedKey.value === 'operationContracts') {
+      const contracts = parseOperationContractsMetadata(value);
+      if (!contracts.ok) return { ok: false, error: 'invalid_metadata' };
+      normalized[parsedKey.value] = contracts.value;
+      continue;
+    }
     if (value !== null && typeof value === 'object') {
       return { ok: false, error: 'invalid_metadata' };
     }
@@ -181,6 +194,43 @@ function parseMetadataPatch(raw: Record<string, unknown>): ValueResult<Record<st
     normalized[parsedKey.value] = typeof value === 'string' ? value.trim() : value;
   }
   return { ok: true, value: normalized };
+}
+
+function parseOperationContractsMetadata(raw: unknown): ValueResult<Array<Record<string, string>>> {
+  if (!Array.isArray(raw) || raw.length > FRIEND_OPERATION_CONTRACTS_MAX_ROWS) {
+    return { ok: false, error: 'invalid_metadata' };
+  }
+
+  const rows: Array<Record<string, string>> = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { ok: false, error: 'invalid_metadata' };
+    }
+    const row: Record<string, string> = {};
+    for (const [key, value] of Object.entries(item as Record<string, unknown>)) {
+      if (!OPERATION_CONTRACT_METADATA_KEYS.has(key)) {
+        return { ok: false, error: 'invalid_metadata' };
+      }
+      if (value === null || value === undefined) {
+        row[key] = '';
+        continue;
+      }
+      if (typeof value !== 'string') {
+        return { ok: false, error: 'invalid_metadata' };
+      }
+      if (value.length > FRIEND_METADATA_VALUE_MAX_LENGTH) {
+        return { ok: false, error: 'invalid_metadata' };
+      }
+      row[key] = value.trim();
+    }
+    rows.push({
+      shopName: row.shopName ?? '',
+      handoverDate: row.handoverDate ?? '',
+      minimumGuaranteeStartMonth: row.minimumGuaranteeStartMonth ?? '',
+      closedAt: row.closedAt ?? '',
+    });
+  }
+  return { ok: true, value: rows };
 }
 
 function normalizeDisplayNamePart(value: unknown): string {

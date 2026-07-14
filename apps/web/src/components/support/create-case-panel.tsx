@@ -30,6 +30,7 @@ interface CreateCasePanelProps {
   staffName: string
   staffOptions: string[]
   initialFriendId?: string | null
+  draftScope?: string | null
   saving: boolean
   onCreate: (input: CreateCaseInput) => Promise<boolean>
   onClose: () => void
@@ -54,18 +55,63 @@ function uniqueNames(names: Array<string | null | undefined>): string[] {
   return Array.from(new Set(names.map((name) => name?.trim()).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'ja'))
 }
 
+const CREATE_CASE_DRAFT_VERSION = 1
+const CREATE_CASE_DRAFT_STORAGE_PREFIX = 'lh_support_create_case_draft'
+
+type StoredCreateCaseDraft = {
+  version: number
+  savedAt: string
+  linkMode: LinkMode
+  form: CreateCaseInput
+}
+
+function createCaseDraftStorageKey(scope: string | null | undefined): string {
+  return `${CREATE_CASE_DRAFT_STORAGE_PREFIX}:${scope || 'default'}`
+}
+
+function readStoredCreateCaseDraft(key: string): StoredCreateCaseDraft | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredCreateCaseDraft>
+    if (parsed.version !== CREATE_CASE_DRAFT_VERSION || !parsed.form || typeof parsed.form !== 'object') return null
+    return {
+      version: CREATE_CASE_DRAFT_VERSION,
+      savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : '',
+      linkMode: parsed.linkMode === 'manual' ? 'manual' : 'chat',
+      form: {
+        friendId: typeof parsed.form.friendId === 'string' ? parsed.form.friendId : '',
+        title: typeof parsed.form.title === 'string' ? parsed.form.title : '',
+        category: typeof parsed.form.category === 'string' ? parsed.form.category : 'other',
+        priority: ['low', 'medium', 'high', 'urgent'].includes(String(parsed.form.priority)) ? parsed.form.priority as SupportPriority : 'medium',
+        primaryAssignee: typeof parsed.form.primaryAssignee === 'string' ? parsed.form.primaryAssignee : '',
+        escalationAssignee: typeof parsed.form.escalationAssignee === 'string' ? parsed.form.escalationAssignee : '',
+        dueAt: typeof parsed.form.dueAt === 'string' ? parsed.form.dueAt : '',
+        customerSummary: typeof parsed.form.customerSummary === 'string' ? parsed.form.customerSummary : '',
+      },
+    }
+  } catch {
+    return null
+  }
+}
+
 export default function CreateCasePanel({
   chats,
   staffName,
   staffOptions,
   initialFriendId,
+  draftScope,
   saving,
   onCreate,
   onClose,
 }: CreateCasePanelProps) {
   const [form, setForm] = useState<CreateCaseInput>(() => emptyForm(staffName))
   const [linkMode, setLinkMode] = useState<LinkMode>('chat')
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
+  const [draftNotice, setDraftNotice] = useState('')
 
+  const draftStorageKey = useMemo(() => createCaseDraftStorageKey(draftScope), [draftScope])
   const selectedChat = chats.find((chat) => chat.friendId === form.friendId)
   const mergedStaffOptions = useMemo(() => uniqueNames([staffName, ...staffOptions]), [staffName, staffOptions])
   const validationIssues = getCreateCaseValidationIssues(form)
@@ -87,6 +133,19 @@ export default function CreateCasePanel({
   }
 
   useEffect(() => {
+    const stored = readStoredCreateCaseDraft(draftStorageKey)
+    if (!stored) return
+    setForm((prev) => ({
+      ...prev,
+      ...stored.form,
+      primaryAssignee: stored.form.primaryAssignee || prev.primaryAssignee || staffName,
+    }))
+    setLinkMode(stored.linkMode)
+    setDraftSavedAt(stored.savedAt || null)
+    setDraftNotice('保存済みの下書きを復元しました')
+  }, [draftStorageKey, staffName])
+
+  useEffect(() => {
     if (!initialFriendId) return
     setLinkMode('chat')
     setForm((prev) => {
@@ -102,6 +161,26 @@ export default function CreateCasePanel({
     })
   }, [chats, initialFriendId])
 
+  const handleSaveDraft = () => {
+    if (typeof window === 'undefined') return
+    const savedAt = new Date().toISOString()
+    const payload: StoredCreateCaseDraft = {
+      version: CREATE_CASE_DRAFT_VERSION,
+      savedAt,
+      linkMode,
+      form,
+    }
+    window.localStorage.setItem(draftStorageKey, JSON.stringify(payload))
+    setDraftSavedAt(savedAt)
+    setDraftNotice('下書きを保存しました')
+  }
+
+  const handleClearDraft = () => {
+    if (typeof window !== 'undefined') window.localStorage.removeItem(draftStorageKey)
+    setDraftSavedAt(null)
+    setDraftNotice('下書きを削除しました')
+  }
+
   const handleLinkModeChange = (mode: LinkMode) => {
     setLinkMode(mode)
     if (mode === 'manual') setForm((prev) => ({ ...prev, friendId: '' }))
@@ -111,6 +190,9 @@ export default function CreateCasePanel({
     if (submitDisabled) return
     const ok = await onCreate(form)
     if (ok) {
+      if (typeof window !== 'undefined') window.localStorage.removeItem(draftStorageKey)
+      setDraftSavedAt(null)
+      setDraftNotice('')
       setForm(emptyForm(staffName))
       setLinkMode('chat')
       onClose()
@@ -130,6 +212,16 @@ export default function CreateCasePanel({
           <p className="text-[11px] font-semibold uppercase text-slate-400">Create Ticket</p>
           <h2 className="mt-1 text-lg font-semibold text-slate-950">新規チケット</h2>
           <p className="mt-1 text-sm text-slate-500">LINE会話を紐付けるか、内容を手入力してチケットを作成します。</p>
+        </div>
+        <div className="text-right">
+          {draftSavedAt && (
+            <p className="text-[11px] text-slate-400">
+              下書き保存 {draftSavedAt.slice(0, 10).replace(/-/g, '/')} {draftSavedAt.slice(11, 16)}
+            </p>
+          )}
+          {draftNotice && (
+            <p className="mt-1 text-xs font-medium text-emerald-700" role="status">{draftNotice}</p>
+          )}
         </div>
         <button
           type="button"
@@ -359,6 +451,19 @@ export default function CreateCasePanel({
       </fieldset>
 
       <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-4">
+        <button type="button" onClick={handleSaveDraft} disabled={saving} className={btnSecondaryCls}>
+          下書き保存
+        </button>
+        {draftSavedAt && (
+          <button
+            type="button"
+            onClick={handleClearDraft}
+            disabled={saving}
+            className="rounded-lg px-4 py-2 text-sm font-semibold text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-50"
+          >
+            下書き削除
+          </button>
+        )}
         <button type="button" onClick={onClose} disabled={saving} className={btnSecondaryCls}>
           キャンセル
         </button>

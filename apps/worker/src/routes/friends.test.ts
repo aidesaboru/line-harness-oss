@@ -382,6 +382,55 @@ describe('friends support visibility', () => {
     ]);
   });
 
+  test('metadata update accepts operation contract sets for customer cards', async () => {
+    const rows = friendRows.map((row) => ({ ...row }));
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      rows.find((friend) => friend.id === id) ?? null,
+    );
+    const { db } = makeFriendsDb({ rows, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/friends/friend-visible/metadata', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        customerNumber: 'C-001',
+        contactName: '林 静香',
+        operationContracts: [
+          {
+            shopName: '渋谷店',
+            handoverDate: '2026-07-01',
+            minimumGuaranteeStartMonth: '2026年7月',
+            closedAt: '',
+          },
+          {
+            shopName: '新宿店',
+            handoverDate: '2026-08-01',
+            minimumGuaranteeStartMonth: '2026年9月',
+            closedAt: '2027/03/31 18:00',
+          },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { success: boolean; data: { metadata: Record<string, unknown> } };
+    expect(body.success).toBe(true);
+    expect(body.data.metadata.operationContracts).toEqual([
+      {
+        shopName: '渋谷店',
+        handoverDate: '2026-07-01',
+        minimumGuaranteeStartMonth: '2026年7月',
+        closedAt: '',
+      },
+      {
+        shopName: '新宿店',
+        handoverDate: '2026-08-01',
+        minimumGuaranteeStartMonth: '2026年9月',
+        closedAt: '2027/03/31 18:00',
+      },
+    ]);
+  });
+
   test('owner can bulk update customer metadata by friend id or LINE user id', async () => {
     const rows = friendRows.map((row) => ({ ...row }));
     const { db, calls } = makeFriendsDb({ rows, visibleFriendIds: ['friend-visible'] });

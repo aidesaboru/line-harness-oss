@@ -1,12 +1,16 @@
 import {
+  customerOperationContractFieldDefinitions,
   customerProfileFieldDefinitions,
+  emptyCustomerOperationContract,
+  type CustomerOperationContract,
+  type CustomerOperationContractFieldKey,
   type CustomerProfileFieldKey,
 } from './customer-profile'
 
 export type CustomerProfileBulkRow = {
   friendId?: string
   lineUserId?: string
-  metadata: Partial<Record<CustomerProfileFieldKey, string>> & { broadcastExcluded?: boolean }
+  metadata: Record<string, unknown> & { operationContracts?: CustomerOperationContract[] }
 }
 
 export type CustomerProfileBulkParseResult = {
@@ -29,6 +33,10 @@ const profileHeaderMap = new Map<string, CustomerProfileFieldKey>(
     [normalizeHeader(field.key), field.key],
     ...field.aliases.map((alias) => [normalizeHeader(alias), field.key] as const),
   ]),
+)
+
+const operationFieldKeys = new Set<CustomerProfileFieldKey>(
+  customerOperationContractFieldDefinitions.map((field) => field.key),
 )
 
 const broadcastExclusionHeaders = new Set([
@@ -96,6 +104,7 @@ export function parseCustomerProfileBulkText(input: string): CustomerProfileBulk
   lines.slice(1).forEach((line, index) => {
     const cells = splitLine(line, delimiter)
     const metadata: CustomerProfileBulkRow['metadata'] = {}
+    const operationContract = emptyCustomerOperationContract()
     let friendId = ''
     let lineUserId = ''
     let hasProfileValue = false
@@ -118,7 +127,11 @@ export function parseCustomerProfileBulkText(input: string): CustomerProfileBulk
         }
       }
       else {
-        metadata[key] = value
+        if (operationFieldKeys.has(key)) {
+          operationContract[key as CustomerOperationContractFieldKey] = value
+        } else {
+          metadata[key] = value
+        }
         if (value) hasProfileValue = true
       }
     })
@@ -135,6 +148,15 @@ export function parseCustomerProfileBulkText(input: string): CustomerProfileBulk
     if (!hasProfileValue) {
       issues.push(`${rowNumber}行目: 更新する顧客情報がありません。`)
       return
+    }
+    if (customerOperationContractFieldDefinitions.some((field) => operationContract[field.key as CustomerOperationContractFieldKey].trim())) {
+      metadata.operationContracts = [operationContract]
+      metadata.shopName = operationContract.shopName
+      metadata.storeName = operationContract.shopName
+      metadata.handoverDate = operationContract.handoverDate
+      metadata.minimumGuaranteeStartMonth = operationContract.minimumGuaranteeStartMonth
+      metadata.minimumGuarantee = operationContract.minimumGuaranteeStartMonth
+      metadata.closedAt = operationContract.closedAt
     }
     rows.push({
       ...(friendId ? { friendId } : {}),

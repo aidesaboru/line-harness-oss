@@ -14,25 +14,35 @@ describe('customer profile', () => {
       customerNumber: ' C-001 ',
       companyName: '株式会社テスト',
       contactName: '山田さん',
-      storeName: '渋谷店',
-      handoverDate: '2026-07-01',
-      contractType: '運用代行',
+      operationContracts: [
+        {
+          shopName: '渋谷店',
+          handoverDate: '2026-07-01',
+          minimumGuaranteeStartMonth: '2026年7月',
+          closedAt: '',
+        },
+        {
+          shopName: '新宿店',
+          handoverDate: '2026-08-01',
+          minimumGuaranteeStartMonth: '2026年9月',
+          closedAt: '2027/03/31 18:00',
+        },
+      ],
       closingMonth: '3月',
-      minimumGuarantee: 300000,
       googleFolderUrl: 'https://drive.google.com/drive/folders/example',
-      stores: ['渋谷店', '新宿店'],
+      specialNotes: '決算前は早めに確認',
     })
 
-    expect(profile.completionLabel).toBe('4/4')
+    expect(profile.completionLabel).toBe('3/3')
     expect(profile.missingRequiredFields).toHaveLength(0)
     expect(profile.displayName).toBe('C-001_山田さん')
     expect(profile.primaryLine).toBe('株式会社テスト / 渋谷店')
     expect(profile.secondaryLine).toBe('C-001 / 山田さん')
-    expect(profile.fields.find((field) => field.key === 'contactName')?.label).toBe('顧客名')
-    expect(profile.fields.find((field) => field.key === 'closingMonth')?.value).toBe('3月')
-    expect(profile.fields.find((field) => field.key === 'minimumGuarantee')?.label).toBe('最低保証開始月')
-    expect(profile.fields.find((field) => field.key === 'googleFolderUrl')?.value).toBe('https://drive.google.com/drive/folders/example')
-    expect(profile.fields.find((field) => field.key === 'stores')?.value).toBe('渋谷店、新宿店')
+    expect(profile.basicFields.find((field) => field.key === 'contactName')?.label).toBe('顧客名')
+    expect(profile.basicFields.find((field) => field.key === 'closingMonth')?.value).toBe('3月')
+    expect(profile.basicFields.find((field) => field.key === 'googleFolderUrl')?.value).toBe('https://drive.google.com/drive/folders/example')
+    expect(profile.operationContracts).toHaveLength(2)
+    expect(profile.operationContracts[1]).toMatchObject({ shopName: '新宿店', closedAt: '2027/03/31 18:00' })
     expect(profile.broadcastExcluded).toBe(false)
   })
 
@@ -42,8 +52,8 @@ describe('customer profile', () => {
       company_name: '合同会社サンプル',
     })
 
-    expect(profile.completionLabel).toBe('2/4')
-    expect(profile.missingRequiredFields.map((field) => field.key)).toEqual(['contactName', 'storeName'])
+    expect(profile.completionLabel).toBe('2/3')
+    expect(profile.missingRequiredFields.map((field) => field.key)).toEqual(['contactName'])
     expect(profile.displayName).toBeNull()
     expect(profile.primaryLine).toBe('合同会社サンプル')
     expect(profile.secondaryLine).toBe('C-002')
@@ -66,12 +76,20 @@ describe('customer profile', () => {
       contactName: '佐藤',
       storeName: '名古屋店',
       handoverDate: '',
-      contractType: '',
       closingMonth: '5月',
       minimumGuarantee: '2026年7月',
+      minimumGuaranteeStartMonth: '2026年7月',
       googleFolderUrl: 'https://drive.google.com/drive/folders/sample',
-      stores: '',
+      specialNotes: '',
     })
+    expect(customerProfileMetadataPatch(form).operationContracts).toEqual([
+      {
+        shopName: '名古屋店',
+        handoverDate: '',
+        minimumGuaranteeStartMonth: '2026年7月',
+        closedAt: '',
+      },
+    ])
   })
 
   it('identifies keys that should not be duplicated in extra metadata', () => {

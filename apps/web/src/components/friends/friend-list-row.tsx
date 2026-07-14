@@ -2,6 +2,7 @@
 
 import type { FriendListItem } from '@/lib/api'
 import { customerProfileFromMetadata } from '@/lib/customer-profile'
+import TagBadge from './tag-badge'
 
 interface Props {
   friend: FriendListItem
@@ -71,6 +72,16 @@ export default function FriendListRow({ friend, expanded = false, onEditClick }:
           <p className="mt-2 text-xs leading-5 text-amber-800">
             未入力: {customerProfile.missingRequiredFields.map((field) => field.label).join('、')}
           </p>
+        )}
+        {friend.tags.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {friend.tags.slice(0, 4).map((tag) => <TagBadge key={tag.id} tag={tag} />)}
+            {friend.tags.length > 4 && (
+              <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+                +{friend.tags.length - 4}
+              </span>
+            )}
+          </div>
         )}
       </div>
 

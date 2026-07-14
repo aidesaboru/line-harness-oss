@@ -848,6 +848,7 @@ export default function SupportPage() {
           staffName={verifiedStaffName}
           staffOptions={assigneeSuggestions}
           initialFriendId={createInitialFriendId}
+          draftScope={selectedAccountId}
           saving={saving}
           onCreate={handleCreate}
           onClose={() => {

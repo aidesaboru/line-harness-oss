@@ -179,6 +179,7 @@ CREATE TABLE IF NOT EXISTS messages_log (
   source           TEXT,
   line_account_id  TEXT,
   line_message_id  TEXT,
+  webhook_event_id TEXT,
   quote_token      TEXT,
   quoted_message_id TEXT,
   mark_as_read_token TEXT,
@@ -198,7 +199,24 @@ CREATE INDEX IF NOT EXISTS idx_messages_log_created_at ON messages_log (created_
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_source ON messages_log (friend_id, source);
 CREATE INDEX IF NOT EXISTS idx_messages_log_friend_direction_created ON messages_log (friend_id, direction, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_log_line_message_id ON messages_log (line_message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_log_webhook_event_id ON messages_log (webhook_event_id) WHERE webhook_event_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_messages_log_quoted_message_id ON messages_log (quoted_message_id);
+
+CREATE TABLE IF NOT EXISTS line_webhook_inbox (
+  webhook_event_id TEXT PRIMARY KEY,
+  line_account_id  TEXT,
+  event_payload    TEXT NOT NULL CHECK (json_valid(event_payload)),
+  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_error_kind  TEXT,
+  received_at      TEXT NOT NULL,
+  processed_at     TEXT,
+  next_attempt_at  TEXT,
+  updated_at       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_line_webhook_inbox_status_attempt
+ON line_webhook_inbox (status, next_attempt_at, updated_at);
 
 CREATE TABLE IF NOT EXISTS chat_typing_status (
   id              TEXT PRIMARY KEY,

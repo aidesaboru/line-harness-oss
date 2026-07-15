@@ -15,3 +15,4 @@ apps/web/out/
 apps/worker/dist/
 .worktrees/
 .claude/worktrees/
+tmp/*.sql

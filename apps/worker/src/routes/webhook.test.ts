@@ -89,22 +89,29 @@ beforeEach(() => {
   vi.mocked(jstNow).mockReturnValue('2026-06-11T17:45:17.000+09:00');
 });
 
-function createDbMock() {
+function createDbMock(inboxRows: Array<Record<string, unknown>> = []) {
   const statements: Array<{ sql: string; binds: unknown[] }> = [];
 
   const db = {
+    batch: vi.fn(async (batchStatements: D1PreparedStatement[]) =>
+      batchStatements.map(() => ({ success: true, meta: { changes: 1 } })),
+    ),
     prepare: vi.fn((sql: string) => ({
       bind: (...binds: unknown[]) => {
         statements.push({ sql, binds });
         return {
-          run: vi.fn().mockResolvedValue({ success: true }),
+          run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } }),
           first: vi.fn().mockResolvedValue(null),
-          all: vi.fn().mockResolvedValue({ results: [] }),
+          all: vi.fn().mockResolvedValue({
+            results: sql.includes('FROM line_webhook_inbox') ? inboxRows : [],
+          }),
         };
       },
-      run: vi.fn().mockResolvedValue({ success: true }),
+      run: vi.fn().mockResolvedValue({ success: true, meta: { changes: 1 } }),
       first: vi.fn().mockResolvedValue(null),
-      all: vi.fn().mockResolvedValue({ results: [] }),
+      all: vi.fn().mockResolvedValue({
+        results: sql.includes('FROM line_webhook_inbox') ? inboxRows : [],
+      }),
     })),
   } as unknown as D1Database;
 
@@ -431,7 +438,7 @@ describe('POST /webhook — message intake', () => {
     );
   });
 
-  test('capture-only mode logs text messages without replies, scenarios, or automations', async () => {
+  test('capture-only mode durably queues text messages before deferred projection', async () => {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
       {
@@ -469,32 +476,39 @@ describe('POST /webhook — message intake', () => {
     });
     vi.mocked(upsertChatOnMessage).mockResolvedValue(undefined);
 
-    const { db, statements } = createDbMock();
+    const event = {
+      type: 'message',
+      mode: 'active',
+      timestamp: 1781167517000,
+      source: { type: 'user', userId: 'Urealuser' },
+      webhookEventId: '01JXCAPTUREONLY',
+      deliveryContext: { isRedelivery: false },
+      replyToken: 'reply-token',
+      message: {
+        id: 'msg-1',
+        type: 'text',
+        quoteToken: 'quote-token',
+        markAsReadToken: 'read-token-1',
+        text: '体験を完了する',
+      },
+    };
+    const { db, statements } = createDbMock([
+      {
+        webhook_event_id: '01JXCAPTUREONLY',
+        line_account_id: 'acc-1',
+        event_payload: JSON.stringify(event),
+        attempts: 0,
+      },
+    ]);
     const app = setupApp();
+    const waitUntil = vi.fn();
     const ctx = {
       ...baseExecutionCtx,
-      waitUntil: vi.fn(),
+      waitUntil,
     } as unknown as ExecutionContext;
     const body = JSON.stringify({
       destination: 'Ubot',
-      events: [
-        {
-          type: 'message',
-          mode: 'active',
-          timestamp: 1781167517000,
-          source: { type: 'user', userId: 'Urealuser' },
-          webhookEventId: '01JXCAPTUREONLY',
-          deliveryContext: { isRedelivery: false },
-          replyToken: 'reply-token',
-          message: {
-            id: 'msg-1',
-            type: 'text',
-            quoteToken: 'quote-token',
-            markAsReadToken: 'read-token-1',
-            text: '体験を完了する',
-          },
-        },
-      ],
+      events: [event],
     });
 
     const res = await app.request(
@@ -516,8 +530,8 @@ describe('POST /webhook — message intake', () => {
     );
 
     expect(res.status).toBe(200);
-    const processingPromise = vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>;
-    await processingPromise;
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    await waitUntil.mock.calls[0]?.[0];
 
     expect(lineClientMethods.replyMessage).not.toHaveBeenCalled();
     expect(lineClientMethods.pushMessage).not.toHaveBeenCalled();
@@ -528,13 +542,24 @@ describe('POST /webhook — message intake', () => {
     expect(statements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          sql: expect.stringContaining('INSERT INTO messages_log'),
+          sql: expect.stringContaining('INSERT INTO line_webhook_inbox'),
+          binds: [
+            '01JXCAPTUREONLY',
+            'acc-1',
+            expect.stringContaining('体験を完了する'),
+            '2026-06-11T17:45:17.000+09:00',
+            '2026-06-11T17:45:17.000+09:00',
+          ],
+        }),
+        expect.objectContaining({
+          sql: expect.stringContaining('ON CONFLICT(webhook_event_id)'),
           binds: [
             expect.any(String),
             'friend-1',
             '体験を完了する',
             'acc-1',
             'msg-1',
+            '01JXCAPTUREONLY',
             'quote-token',
             'read-token-1',
             '2026-06-11T17:45:17.000+09:00',
@@ -542,6 +567,97 @@ describe('POST /webhook — message intake', () => {
         }),
       ]),
     );
+  });
+
+  test('returns 503 when capture-only persistence still fails after a retry', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-existing',
+      line_user_id: 'Urealuser',
+      display_name: 'Existing User',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'acc-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-06-10T17:45:17.000+09:00',
+      updated_at: '2026-06-10T17:45:17.000+09:00',
+    });
+
+    const batch = vi.fn().mockRejectedValue(new Error('D1 unavailable'));
+    const db = {
+      prepare: vi.fn(() => ({
+        bind: vi.fn(() => ({})),
+      })),
+      batch,
+    } as unknown as D1Database;
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({
+          destination: 'Ubot',
+          events: [
+            {
+              type: 'message',
+              mode: 'active',
+              timestamp: 1781167517000,
+              source: { type: 'user', userId: 'Urealuser' },
+              webhookEventId: '01JXCAPTUREFAIL',
+              deliveryContext: { isRedelivery: false },
+              replyToken: 'reply-token',
+              message: { id: 'msg-fail', type: 'text', text: '保存失敗テスト' },
+            },
+          ],
+        }),
+      },
+      {
+        ...baseEnv,
+        DB: db,
+        LINE_CAPTURE_ONLY: '1',
+      },
+      ctx,
+    );
+
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({ status: 'retry' });
+    expect(batch).toHaveBeenCalledTimes(2);
+    expect(ctx.waitUntil).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('Capture-only webhook inbox persistence failed'));
+    consoleError.mockRestore();
   });
 
   test('marks unsent LINE messages as deleted in Harness', async () => {

@@ -64,7 +64,9 @@
     "056_messages_quote_reply.sql",
     "057_messages_sender_staff.sql",
     "058_staff_presence.sql",
-    "059_support_knowledge_imports.sql"
+    "059_support_knowledge_imports.sql",
+    "060_messages_webhook_event_id.sql",
+    "061_line_webhook_inbox.sql"
   ],
-  "migrationCount": 65
+  "migrationCount": 67
 }

@@ -25,6 +25,11 @@ import { fireEvent } from '../services/event-bus.js';
 import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { isLineCaptureOnly } from '../services/line-capture-only.js';
 import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
+import {
+  drainWebhookInbox,
+  persistWebhookInboxEvents,
+  type WebhookInboxInput,
+} from '../services/webhook-inbox.js';
 import type { Env } from '../index.js';
 
 const webhook = new Hono<Env>();
@@ -35,6 +40,8 @@ const webhook = new Hono<Env>();
 // 128 MB Cloudflare Workers memory ceiling.
 const MAX_WEBHOOK_BODY_SIZE = 1024 * 1024; // 1 MiB
 const MARK_AS_READ_TOKEN_MAX_LENGTH = 4096;
+const WEBHOOK_EVENT_ID_MAX_LENGTH = 128;
+const WEBHOOK_RESPONSE_BUDGET_MS = 1500;
 
 type IncomingNonTextMessage = {
   id: string;
@@ -88,6 +95,25 @@ function eventLineMessageId(event: WebhookEvent): string | null {
   if (event.type !== 'message') return null;
   const id = (event.message as { id?: unknown }).id;
   return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+function eventWebhookEventId(event: WebhookEvent): string | null {
+  const id = (event as { webhookEventId?: unknown }).webhookEventId;
+  if (typeof id !== 'string') return null;
+  const value = id.trim();
+  if (!value || value.length > WEBHOOK_EVENT_ID_MAX_LENGTH) return null;
+  return value;
+}
+
+async function durableWebhookEventId(event: WebhookEvent, payload: string): Promise<string> {
+  const eventId = eventWebhookEventId(event);
+  if (eventId) return eventId;
+
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
+  const hex = [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+  return `fallback:${hex}`;
 }
 
 function eventQuoteToken(event: WebhookEvent): string | null {
@@ -245,6 +271,7 @@ async function buildIncomingNonTextContent(params: {
 }
 
 webhook.post('/webhook', async (c) => {
+  const requestStartedAt = Date.now();
   // Pre-read size guard: reject before reading the body if Content-Length is oversized.
   const contentLengthHeader = c.req.header('Content-Length');
   if (contentLengthHeader) {
@@ -332,15 +359,82 @@ webhook.post('/webhook', async (c) => {
   const lineClient = new LineClient(channelAccessToken);
   const captureOnly = isLineCaptureOnly(c.env);
 
-  // 非同期処理 — LINE は ~1s 以内のレスポンスを要求
+  // Capture-only is the production CRM intake path. Persist the signed raw
+  // events in one D1 batch before returning 2xx. Profile lookups, media fetches,
+  // and chat projection happen after the response and are retried by cron.
+  if (captureOnly) {
+    const receivedAt = jstNow();
+    const inboxEvents: WebhookInboxInput[] = await Promise.all(
+      body.events.map(async (event) => {
+        const payload = JSON.stringify(event);
+        return {
+          eventId: await durableWebhookEventId(event, payload),
+          lineAccountId: matchedAccountId,
+          payload,
+          receivedAt,
+        };
+      }),
+    );
+
+    try {
+      await persistWebhookInboxEvents(db, inboxEvents, {
+        deadlineAtMs: requestStartedAt + WEBHOOK_RESPONSE_BUDGET_MS,
+      });
+    } catch (err) {
+      console.error(JSON.stringify({
+        message: 'Capture-only webhook inbox persistence failed',
+        errorKind: webhookErrorKind(err),
+      }));
+      return c.json({ status: 'retry' }, 503);
+    }
+
+    if (inboxEvents.length > 0) {
+      const processingPromise = drainWebhookInbox<WebhookEvent>(
+        db,
+        async (record) => {
+          await handleCaptureOnlyEvent(
+            db,
+            lineClient,
+            record.payload,
+            channelAccessToken,
+            record.lineAccountId,
+            c.env.WORKER_URL || new URL(c.req.url).origin,
+            c.env.IMAGES,
+            record.eventId,
+          );
+        },
+        {
+          eventIds: inboxEvents.map((event) => event.eventId),
+          now: jstNow,
+          errorKind: webhookErrorKind,
+        },
+      )
+        .then((result) => {
+          if (result.failed > 0) {
+            console.error(JSON.stringify({
+              message: 'Capture-only webhook projection deferred',
+              failed: result.failed,
+            }));
+          }
+        })
+        .catch((error) => {
+          console.error(JSON.stringify({
+            message: 'Capture-only webhook inbox drain failed',
+            errorKind: webhookErrorKind(error),
+          }));
+        });
+      c.executionCtx.waitUntil(processingPromise);
+    }
+
+    return c.json({ status: 'ok' }, 200);
+  }
+
+  // Automation mode can include external replies and scenario work, so it
+  // remains off the response path.
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        if (captureOnly) {
-          await handleCaptureOnlyEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.IMAGES);
-        } else {
-          await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
-        }
+        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
       } catch (err) {
         console.error(`Error handling webhook event: ${webhookErrorKind(err)}`);
       }
@@ -360,6 +454,7 @@ async function handleCaptureOnlyEvent(
   lineAccountId: string | null = null,
   workerUrl?: string,
   r2?: R2Bucket,
+  durableEventId?: string,
 ): Promise<void> {
   if (isUnsendWebhookEvent(event)) {
     const lineMessageId = eventUnsendMessageId(event);
@@ -392,10 +487,11 @@ async function handleCaptureOnlyEvent(
     const postbackData = (event as unknown as { postback: { data: string } }).postback.data;
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'postback', ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, webhook_event_id, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'postback', ?, ?, ?)
+         ON CONFLICT(webhook_event_id) WHERE webhook_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(crypto.randomUUID(), friend.id, postbackData, lineAccountId ?? null, jstNow())
+      .bind(crypto.randomUUID(), friend.id, postbackData, lineAccountId ?? null, durableEventId ?? eventWebhookEventId(event), jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
     return;
@@ -410,10 +506,11 @@ async function handleCaptureOnlyEvent(
     const lineMessageId = eventLineMessageId(event);
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, webhook_event_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(webhook_event_id) WHERE webhook_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, lineMessageId, eventQuoteToken(event), markAsReadToken, jstNow())
+      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, lineMessageId, durableEventId ?? eventWebhookEventId(event), eventQuoteToken(event), markAsReadToken, jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
     return;
@@ -437,13 +534,54 @@ async function handleCaptureOnlyEvent(
 
     await db
       .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
-         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, webhook_event_id, quote_token, mark_as_read_token, created_at)
+         VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(webhook_event_id) WHERE webhook_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, durableEventId ?? eventWebhookEventId(event), eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
       .run();
     await upsertChatOnMessage(db, friend.id);
   }
+}
+
+export async function processPendingCaptureOnlyWebhookEvents(params: {
+  db: D1Database;
+  accounts: Array<{ id: string; channel_access_token: string; is_active: number }>;
+  defaultAccessToken: string;
+  workerUrl?: string;
+  r2?: R2Bucket;
+}): Promise<{ processed: number; failed: number; skipped: number }> {
+  const accountsById = new Map(
+    params.accounts
+      .filter((account) => account.is_active)
+      .map((account) => [account.id, account]),
+  );
+
+  return drainWebhookInbox<WebhookEvent>(
+    params.db,
+    async (record) => {
+      const account = record.lineAccountId
+        ? accountsById.get(record.lineAccountId)
+        : null;
+      if (record.lineAccountId && !account) {
+        const error = new Error('Webhook line account is unavailable');
+        error.name = 'LineAccountUnavailableError';
+        throw error;
+      }
+      const accessToken = account?.channel_access_token ?? params.defaultAccessToken;
+      await handleCaptureOnlyEvent(
+        params.db,
+        new LineClient(accessToken),
+        record.payload,
+        accessToken,
+        record.lineAccountId,
+        params.workerUrl,
+        params.r2,
+        record.eventId,
+      );
+    },
+    { now: jstNow, errorKind: webhookErrorKind },
+  );
 }
 
 async function handleEvent(

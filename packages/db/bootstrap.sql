@@ -492,6 +492,19 @@ CREATE TABLE line_accounts (
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , login_channel_id TEXT, login_channel_secret TEXT, liff_id TEXT, token_expires_at TEXT, og_site_name TEXT, og_default_image_url TEXT, og_default_description TEXT);
 
+CREATE TABLE line_webhook_inbox (
+  webhook_event_id TEXT PRIMARY KEY,
+  line_account_id  TEXT,
+  event_payload    TEXT NOT NULL CHECK (json_valid(event_payload)),
+  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'processed', 'failed')),
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_error_kind  TEXT,
+  received_at      TEXT NOT NULL,
+  processed_at     TEXT,
+  next_attempt_at  TEXT,
+  updated_at       TEXT NOT NULL
+);
+
 CREATE TABLE link_clicks (
   id TEXT PRIMARY KEY,
   tracked_link_id TEXT NOT NULL REFERENCES tracked_links (id) ON DELETE CASCADE,
@@ -538,6 +551,7 @@ CREATE TABLE messages_log (
   source           TEXT,
   line_account_id  TEXT,
   line_message_id  TEXT,
+  webhook_event_id TEXT,
   quote_token      TEXT,
   quoted_message_id TEXT,
   mark_as_read_token TEXT,
@@ -1127,6 +1141,9 @@ CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
 
+CREATE INDEX idx_line_webhook_inbox_status_attempt
+ON line_webhook_inbox (status, next_attempt_at, updated_at);
+
 CREATE INDEX idx_link_clicks_friend ON link_clicks (friend_id);
 
 CREATE INDEX idx_link_clicks_link ON link_clicks (tracked_link_id);
@@ -1146,6 +1163,8 @@ CREATE INDEX idx_messages_log_friend_source ON messages_log (friend_id, source);
 CREATE INDEX idx_messages_log_line_message_id ON messages_log (line_message_id);
 
 CREATE INDEX idx_messages_log_quoted_message_id ON messages_log (quoted_message_id);
+
+CREATE UNIQUE INDEX idx_messages_log_webhook_event_id ON messages_log (webhook_event_id) WHERE webhook_event_id IS NOT NULL;
 
 CREATE INDEX idx_notifications_created ON notifications (created_at);
 

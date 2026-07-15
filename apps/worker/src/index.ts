@@ -24,7 +24,7 @@ import { DEFAULT_ACCOUNT_SETTINGS } from './services/booking-types.js';
 import { authMiddleware } from './middleware/auth.js';
 import { credentialedCors } from './middleware/cors.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
-import { webhook } from './routes/webhook.js';
+import { processPendingCaptureOnlyWebhookEvents, webhook } from './routes/webhook.js';
 import { friends } from './routes/friends.js';
 import { tags } from './routes/tags.js';
 import { scenarios } from './routes/scenarios.js';
@@ -748,6 +748,21 @@ async function scheduled(
   }
   const defaultLineClient = new LineClient(env.LINE_CHANNEL_ACCESS_TOKEN);
   const activeAccountIds = dbAccounts.filter((account) => account.is_active).map((account) => account.id);
+
+  try {
+    const result = await processPendingCaptureOnlyWebhookEvents({
+      db: env.DB,
+      accounts: dbAccounts,
+      defaultAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN,
+      workerUrl: env.WORKER_URL,
+      r2: env.IMAGES,
+    });
+    if (result.processed + result.failed > 0) {
+      console.log(`[line-webhook-inbox] processed=${result.processed} failed=${result.failed} skipped=${result.skipped}`);
+    }
+  } catch (e) {
+    console.error(`line-webhook-inbox error: ${scheduledErrorKind(e)}`);
+  }
 
   try {
     const result = await processSupportNotificationDigests(env.DB, {

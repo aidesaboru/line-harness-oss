@@ -71,6 +71,7 @@ const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
 const SUPPORT_CASE_CREATE_RETRY_DELAYS_MS = [100, 250, 500, 1_000] as const;
+const SUPPORT_CASE_DIAGNOSTIC_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SLACK_API_BASE = 'https://slack.com/api/';
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -277,6 +278,31 @@ function supportRouteErrorCode(err: unknown): string {
   if (details.includes('d1_error') || details.includes('sqlite_')) return 'database_error';
   if (err instanceof TypeError) return 'network_error';
   return 'unknown';
+}
+
+function persistSupportCaseCreateFailure(
+  c: Context<Env>,
+  diagnostic: { phase: string; code: string; kind: string },
+): string {
+  const diagnosticId = crypto.randomUUID();
+  const files = c.env.FILES;
+  if (!files) return diagnosticId;
+
+  const key = `diagnostics/support-case-create/${Date.now()}-${diagnosticId}`;
+  const payload = JSON.stringify({
+    diagnosticId,
+    occurredAt: jstNow(),
+    ...diagnostic,
+  });
+  const write = files.put(key, payload, { expirationTtl: SUPPORT_CASE_DIAGNOSTIC_TTL_SECONDS }).catch(() => {
+    console.warn(`[support_case_create] diagnostic_write_failed id=${diagnosticId}`);
+  });
+  try {
+    c.executionCtx.waitUntil(write);
+  } catch {
+    console.warn(`[support_case_create] diagnostic_wait_until_failed id=${diagnosticId}`);
+  }
+  return diagnosticId;
 }
 
 function text(value: unknown): string | null {
@@ -1632,8 +1658,15 @@ support.post('/api/support/cases', async (c) => {
     if (!created) throw new Error('Created support case could not be read back');
     return c.json({ success: true, data: serializeCase(created) }, 201);
   } catch (err) {
+    const errorKind = supportRouteErrorKind(err);
+    const errorCode = supportRouteErrorCode(err);
+    const diagnosticId = persistSupportCaseCreateFailure(c, {
+      phase: failurePhase,
+      code: errorCode,
+      kind: errorKind,
+    });
     console.error(
-      `POST /api/support/cases error: ${supportRouteErrorKind(err)} phase=${failurePhase} code=${supportRouteErrorCode(err)}`,
+      `POST /api/support/cases error: ${errorKind} phase=${failurePhase} code=${errorCode} diagnostic=${diagnosticId}`,
     );
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }

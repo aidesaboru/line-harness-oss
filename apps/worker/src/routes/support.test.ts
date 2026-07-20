@@ -8,6 +8,7 @@ type TestEnv = {
   Variables: { staff: Staff };
   Bindings: {
     DB: D1Database;
+    FILES?: KVNamespace;
     SLACK_BOT_TOKEN?: string;
     SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?: string;
   };
@@ -948,9 +949,17 @@ describe('support CRM routes', () => {
   test('case creation failure does not log raw customer payload details', async () => {
     const db = makeThrowingDb('D1_ERROR: FOREIGN KEY constraint failed customer secret account-token friend-1');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const put = vi.fn().mockResolvedValue(undefined);
+    const files = { put } as unknown as KVNamespace;
 
     try {
-      const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+      const app = setupApp(
+        db,
+        { id: 'owner-1', name: 'Owner', role: 'owner' },
+        { FILES: files },
+      );
+      const res = await app.request('/api/support/cases', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -962,7 +971,7 @@ describe('support CRM routes', () => {
           customerSummary: 'customer secret account-token friend-1',
           primaryAssignee: '松山',
         }),
-      });
+      }, { DB: db, FILES: files });
 
       expect(res.status).toBe(500);
       const body = (await res.json()) as { success: boolean; error: string };
@@ -975,8 +984,21 @@ describe('support CRM routes', () => {
       expect(logged).not.toContain('customer secret');
       expect(logged).not.toContain('account-token');
       expect(logged).not.toContain('friend-1');
+      expect(put).toHaveBeenCalledOnce();
+      const [diagnosticKey, diagnosticPayload, diagnosticOptions] = put.mock.calls[0] as [string, string, { expirationTtl: number }];
+      expect(diagnosticKey).toContain('diagnostics/support-case-create/');
+      expect(JSON.parse(diagnosticPayload)).toMatchObject({
+        phase: 'validation',
+        code: 'foreign_key_constraint',
+        kind: 'Error',
+      });
+      expect(diagnosticPayload).not.toContain('customer secret');
+      expect(diagnosticPayload).not.toContain('account-token');
+      expect(diagnosticPayload).not.toContain('friend-1');
+      expect(diagnosticOptions.expirationTtl).toBe(7 * 24 * 60 * 60);
     } finally {
       errorSpy.mockRestore();
+      warnSpy.mockRestore();
     }
   });
 

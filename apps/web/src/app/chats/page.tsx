@@ -2727,8 +2727,8 @@ export default function ChatsPage() {
             <>
               {/* Chat Header */}
               <div className="border-b border-gray-200 bg-white px-4 py-3">
-                <div className="flex items-start justify-between gap-3">
-                <div className="flex items-center gap-2 min-w-0">
+                <div className="flex min-w-0 flex-col gap-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <button
                     onClick={() => setSelectedChatId(null)}
                     className="lg:hidden flex-shrink-0 p-1 -ml-1 text-gray-500 hover:text-gray-700"
@@ -2772,7 +2772,7 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                <div className="flex w-full flex-wrap items-center justify-end gap-1.5">
                   <Link
                     href={chatDetail.activeSupportCase
                       ? `/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`

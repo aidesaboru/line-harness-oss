@@ -3385,7 +3385,7 @@ export default function ChatsPage() {
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
         {(selectedChatId || selectedFriendId) && (
-          <div className="hidden xl:flex">
+          <div className="hidden w-80 min-w-0 shrink-0 xl:flex">
             <FriendInfoSidebar
               friendId={selectedFriendId || selectedChatId}
               chatStatus={

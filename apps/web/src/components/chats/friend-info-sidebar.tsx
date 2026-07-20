@@ -228,13 +228,13 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
   }
 
   return (
-    <div className="w-full lg:w-80 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex flex-col overflow-hidden">
+    <div className="flex w-full min-w-0 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-200 bg-white px-4 py-3">
         <h3 className="text-base font-bold text-gray-900">顧客詳細</h3>
         <p className="mt-0.5 text-xs text-gray-500">対応に必要な顧客情報を確認</p>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
         {loading ? (
           <div className="p-4 space-y-3 animate-pulse">
             <div className="flex items-center gap-3">
@@ -248,7 +248,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
         ) : error ? (
           <div className="p-4 text-xs text-red-600">{error}</div>
         ) : friend ? (
-          <div className="divide-y divide-gray-100">
+          <div className="min-w-0 divide-y divide-gray-100">
             {/* Profile Header */}
             <div className="bg-gray-50/80 p-4 flex items-start gap-3">
               {friend.pictureUrl ? (
@@ -293,7 +293,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
 
             {/* Customer Profile */}
             {profile && (
-              <div className="p-4 space-y-3">
+              <div className="min-w-0 space-y-3 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h4 className="text-sm font-bold text-gray-900">顧客カード</h4>
@@ -483,26 +483,32 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                     </div>
                   </div>
                 ) : (
-                  <div className="space-y-3">
-                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                  <div className="min-w-0 space-y-3">
+                    <section className="min-w-0 rounded-lg border border-gray-100 bg-gray-50/70 p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[0].title}</p>
                         <span className="text-[10px] text-gray-400">
                           {profile.basicFields.filter((field) => field.value).length}/{profile.basicFields.length}
                         </span>
                       </div>
-                      <dl className="grid gap-2">
+                      <dl className="grid min-w-0 gap-2">
                         {profile.basicFields.map((field) => {
                           const href = field.key === 'googleFolderUrl' && field.value ? toHttpUrl(field.value) : null
                           return (
-                            <div key={field.key} className={`rounded-md border bg-white px-2.5 py-2 ${
+                            <div key={field.key} className={`min-w-0 rounded-md border bg-white px-2.5 py-2 ${
                               field.missing ? 'border-amber-200 ring-1 ring-amber-100' : 'border-gray-100'
                             }`}>
                               <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
-                              <dd className={field.value ? 'mt-0.5 break-words text-sm font-medium text-gray-800' : 'mt-0.5 text-sm font-semibold text-amber-600'}>
+                              <dd className={field.value ? 'mt-0.5 min-w-0 break-words text-sm font-medium text-gray-800 [overflow-wrap:anywhere]' : 'mt-0.5 text-sm font-semibold text-amber-600'}>
                                 {href ? (
-                                  <a href={href} target="_blank" rel="noreferrer" className="text-blue-600 underline-offset-2 hover:underline">
-                                    {field.value}
+                                  <a
+                                    href={href}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex max-w-full items-center text-blue-600 underline-offset-2 hover:underline"
+                                    title={field.value}
+                                  >
+                                    Googleフォルダーを開く
                                   </a>
                                 ) : (
                                   field.value || (field.required ? '未入力' : '-')
@@ -514,14 +520,14 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                       </dl>
                     </section>
 
-                    <section className="rounded-lg border border-gray-100 bg-gray-50/70 p-3">
+                    <section className="min-w-0 rounded-lg border border-gray-100 bg-gray-50/70 p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <p className="text-xs font-semibold text-gray-800">{customerProfileFieldGroups[1].title}</p>
                         <span className="text-[10px] text-gray-400">{profile.operationContracts.length}店舗</span>
                       </div>
                       <div className="space-y-2">
                         {profile.operationContracts.map((contract, index) => (
-                          <div key={index} className="rounded-md border border-gray-100 bg-white px-2.5 py-2">
+                          <div key={index} className="min-w-0 rounded-md border border-gray-100 bg-white px-2.5 py-2">
                             <p className="mb-1 text-[11px] font-semibold text-gray-700">店舗 {index + 1}</p>
                             <dl className="grid gap-1.5">
                               {customerOperationContractFieldDefinitions.map((field) => {
@@ -530,7 +536,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                                 return (
                                   <div key={field.key}>
                                     <dt className="text-[10px] font-semibold text-gray-400">{field.label}</dt>
-                                    <dd className={value ? 'break-words text-xs font-medium text-gray-800' : 'text-xs text-gray-400'}>
+                                    <dd className={value ? 'min-w-0 break-words text-xs font-medium text-gray-800 [overflow-wrap:anywhere]' : 'text-xs text-gray-400'}>
                                       {value || '-'}
                                     </dd>
                                   </div>
@@ -575,7 +581,7 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                   {extraMetadataEntries.map(([key, value]) => (
                     <div key={key}>
                       <dt className="text-[10px] text-gray-400 uppercase tracking-wide">{key}</dt>
-                      <dd className="text-gray-700 mt-0.5 whitespace-pre-wrap break-words">{renderValue(value)}</dd>
+                      <dd className="mt-0.5 min-w-0 whitespace-pre-wrap break-words text-gray-700 [overflow-wrap:anywhere]">{renderValue(value)}</dd>
                     </div>
                   ))}
                 </dl>

@@ -1095,6 +1095,44 @@ describe('support CRM routes', () => {
     expect(state.events.map((event) => event.event_type)).toEqual(['created', 'escalated']);
   });
 
+  test('does not retry a deterministic case creation constraint failure', async () => {
+    const { db } = makeSupportDb({
+      friends: [{
+        id: 'friend-1',
+        line_account_id: 'acc-1',
+        display_name: '山田さん',
+        picture_url: null,
+        line_user_id: 'U123',
+      }],
+    });
+    let batchAttempts = 0;
+    const constraintDb = {
+      prepare: db.prepare.bind(db),
+      async batch() {
+        batchAttempts += 1;
+        throw new Error('D1_ERROR: FOREIGN KEY constraint failed');
+      },
+    } as unknown as D1Database;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const res = await setupApp(constraintDb, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          friendId: 'friend-1',
+          customerSummary: '報酬が反映されていない',
+        }),
+      });
+
+      expect(res.status).toBe(500);
+      expect(batchAttempts).toBe(1);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   test('staff can create support cases for visible friends', async () => {
     const { db, state } = makeSupportDb({
       friends: [{

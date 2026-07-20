@@ -70,8 +70,7 @@ const SUPPORT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
-const SUPPORT_CASE_CREATE_ATTEMPTS = 2;
-const SUPPORT_CASE_CREATE_RETRY_DELAY_MS = 75;
+const SUPPORT_CASE_CREATE_RETRY_DELAYS_MS = [100, 250, 500, 1_000] as const;
 const SLACK_API_BASE = 'https://slack.com/api/';
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -1175,15 +1174,18 @@ async function createSupportCaseWithRetry(
   prepareStatements: () => D1PreparedStatement[],
 ) {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= SUPPORT_CASE_CREATE_ATTEMPTS; attempt += 1) {
+  const maxAttempts = SUPPORT_CASE_CREATE_RETRY_DELAYS_MS.length + 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       await db.batch(prepareStatements());
       return;
     } catch (err) {
       lastError = err;
-      if (attempt < SUPPORT_CASE_CREATE_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, SUPPORT_CASE_CREATE_RETRY_DELAY_MS));
-      }
+      const code = supportRouteErrorCode(err);
+      const retryable = ['database_busy', 'database_error', 'network_error', 'unknown'].includes(code);
+      if (!retryable || attempt >= maxAttempts) break;
+      console.warn(`[support_case_create] retry attempt=${attempt} code=${code}`);
+      await new Promise((resolve) => setTimeout(resolve, SUPPORT_CASE_CREATE_RETRY_DELAYS_MS[attempt - 1]));
     }
   }
   throw lastError;

@@ -70,6 +70,8 @@ const SUPPORT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
+const SUPPORT_CASE_CREATE_ATTEMPTS = 2;
+const SUPPORT_CASE_CREATE_RETRY_DELAY_MS = 75;
 const SLACK_API_BASE = 'https://slack.com/api/';
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -1108,6 +1110,35 @@ async function upsertKnowledgeImport(
   return 'created';
 }
 
+function prepareCaseEvent(
+  db: D1Database,
+  caseId: string,
+  eventType: string,
+  actorId: string | null,
+  actorName: string | null,
+  body = '',
+  metadata: Record<string, unknown> = {},
+  id = crypto.randomUUID(),
+  createdAt = jstNow(),
+) {
+  return db
+    .prepare(
+      `INSERT INTO support_case_events
+       (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      id,
+      caseId,
+      eventType,
+      actorId,
+      actorName,
+      body,
+      JSON.stringify(metadata),
+      createdAt,
+    );
+}
+
 async function addCaseEvent(
   db: D1Database,
   caseId: string,
@@ -1117,23 +1148,26 @@ async function addCaseEvent(
   body = '',
   metadata: Record<string, unknown> = {},
 ) {
-  await db
-    .prepare(
-      `INSERT INTO support_case_events
-       (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      crypto.randomUUID(),
-      caseId,
-      eventType,
-      actorId,
-      actorName,
-      body,
-      JSON.stringify(metadata),
-      jstNow(),
-    )
-    .run();
+  await prepareCaseEvent(db, caseId, eventType, actorId, actorName, body, metadata).run();
+}
+
+async function createSupportCaseWithRetry(
+  db: D1Database,
+  prepareStatements: () => D1PreparedStatement[],
+) {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SUPPORT_CASE_CREATE_ATTEMPTS; attempt += 1) {
+    try {
+      await db.batch(prepareStatements());
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt < SUPPORT_CASE_CREATE_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, SUPPORT_CASE_CREATE_RETRY_DELAY_MS));
+      }
+    }
+  }
+  throw lastError;
 }
 
 function validateCaseState(payload: {
@@ -1357,6 +1391,7 @@ support.get('/api/support/cases', async (c) => {
 });
 
 support.post('/api/support/cases', async (c) => {
+  let failurePhase = 'validation';
   try {
     const parsedBody = await readJsonRecord(c);
     if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
@@ -1460,88 +1495,110 @@ support.post('/api/support/cases', async (c) => {
       return c.json({ success: false, error: 'invalid level' }, 400);
     }
     if (escalationAssignee && status === 'open') status = 'waiting_secondary';
+    const createdEventId = crypto.randomUUID();
+    const escalationId = escalationAssignee ? crypto.randomUUID() : null;
+    const escalatedEventId = escalationAssignee ? crypto.randomUUID() : null;
+    const effectiveEscalationLevel = escalationLevel === 'L1' ? 'L2' : escalationLevel;
+    const question = customerSummary.trim() || title;
 
-    await c.env.DB
-      .prepare(
-        `INSERT INTO support_cases (
-          id, line_account_id, friend_id, title, category, priority, status,
-          primary_assignee, escalation_assignee, escalation_level, due_at, next_check_at,
-          customer_number, company_name, contact_name, store_name, contract_type,
-          customer_summary, internal_note, customer_reply_draft, resolution_note, manual_ids,
-          created_by, updated_by, closed_at, reopened_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        id,
-        lineAccountId,
-        friendId,
-        title,
-        category,
-        priority,
-        status,
-        parsedPrimaryAssignee.value,
-        escalationAssignee,
-        escalationLevel,
-        parsedDueAt.value,
-        nextCheckAt,
-        parsedCustomerNumber.value,
-        parsedCompanyName.value,
-        parsedContactName.value,
-        parsedStoreName.value,
-        parsedContractType.value,
-        customerSummary,
-        internalNote,
-        parsedCustomerReplyDraft.value ?? '',
-        resolutionNote,
-        manualIds,
-        staff.id,
-        staff.id,
-        status === 'resolved' ? now : null,
-        status === 'reopened' ? now : null,
-        now,
-        now,
-      )
-      .run();
-
-    await addCaseEvent(c.env.DB, id, 'created', staff.id, staff.name, 'チケットを作成しました', {
-      status,
-      priority,
-      category,
-      friendId,
-    });
-    if (escalationAssignee) {
-      const escalationId = crypto.randomUUID();
-      const effectiveEscalationLevel = escalationLevel === 'L1' ? 'L2' : escalationLevel;
-      const question = customerSummary.trim() || title;
-      await c.env.DB
-        .prepare(
-          `INSERT INTO support_escalations (
-            id, case_id, line_account_id, assignee, level, status, question, answer,
-            due_at, answered_at, created_by, updated_by, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
-        )
-        .bind(
-          escalationId,
+    failurePhase = 'database_write';
+    await createSupportCaseWithRetry(c.env.DB, () => {
+      const statements: D1PreparedStatement[] = [
+        c.env.DB
+          .prepare(
+            `INSERT INTO support_cases (
+              id, line_account_id, friend_id, title, category, priority, status,
+              primary_assignee, escalation_assignee, escalation_level, due_at, next_check_at,
+              customer_number, company_name, contact_name, store_name, contract_type,
+              customer_summary, internal_note, customer_reply_draft, resolution_note, manual_ids,
+              created_by, updated_by, closed_at, reopened_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .bind(
+            id,
+            lineAccountId,
+            friendId,
+            title,
+            category,
+            priority,
+            status,
+            parsedPrimaryAssignee.value,
+            escalationAssignee,
+            escalationLevel,
+            parsedDueAt.value,
+            nextCheckAt,
+            parsedCustomerNumber.value,
+            parsedCompanyName.value,
+            parsedContactName.value,
+            parsedStoreName.value,
+            parsedContractType.value,
+            customerSummary,
+            internalNote,
+            parsedCustomerReplyDraft.value ?? '',
+            resolutionNote,
+            manualIds,
+            staff.id,
+            staff.id,
+            status === 'resolved' ? now : null,
+            status === 'reopened' ? now : null,
+            now,
+            now,
+          ),
+        prepareCaseEvent(
+          c.env.DB,
           id,
-          lineAccountId,
-          escalationAssignee,
-          effectiveEscalationLevel,
-          question,
-          parsedDueAt.value,
+          'created',
           staff.id,
-          staff.id,
+          staff.name,
+          'チケットを作成しました',
+          { status, priority, category, friendId },
+          createdEventId,
           now,
-          now,
-        )
-        .run();
-      await addCaseEvent(c.env.DB, id, 'escalated', staff.id, staff.name, question, {
-        escalationId,
-        assignee: escalationAssignee,
-        level: effectiveEscalationLevel,
-        dueAt: parsedDueAt.value,
-        createdFrom: 'case_create',
-      });
-    }
+        ),
+      ];
+      if (escalationAssignee && escalationId && escalatedEventId) {
+        statements.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO support_escalations (
+                id, case_id, line_account_id, assignee, level, status, question, answer,
+                due_at, answered_at, created_by, updated_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
+            )
+            .bind(
+              escalationId,
+              id,
+              lineAccountId,
+              escalationAssignee,
+              effectiveEscalationLevel,
+              question,
+              parsedDueAt.value,
+              staff.id,
+              staff.id,
+              now,
+              now,
+            ),
+          prepareCaseEvent(
+            c.env.DB,
+            id,
+            'escalated',
+            staff.id,
+            staff.name,
+            question,
+            {
+              escalationId,
+              assignee: escalationAssignee,
+              level: effectiveEscalationLevel,
+              dueAt: parsedDueAt.value,
+              createdFrom: 'case_create',
+            },
+            escalatedEventId,
+            now,
+          ),
+        );
+      }
+      return statements;
+    });
     if (priority === 'urgent' && status !== 'resolved') {
       c.executionCtx.waitUntil(notifyUrgentSupportCase(c.env.DB, lineAccountId, id, {
         adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
@@ -1549,10 +1606,12 @@ support.post('/api/support/cases', async (c) => {
     }
     kickWebPushNotifications(c);
 
+    failurePhase = 'database_readback';
     const created = await getCaseRow(c.env.DB, id, lineAccountId, staff);
-    return c.json({ success: true, data: serializeCase(created!) }, 201);
+    if (!created) throw new Error('Created support case could not be read back');
+    return c.json({ success: true, data: serializeCase(created) }, 201);
   } catch (err) {
-    console.error(`POST /api/support/cases error: ${supportRouteErrorKind(err)}`);
+    console.error(`POST /api/support/cases error: ${supportRouteErrorKind(err)} phase=${failurePhase}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

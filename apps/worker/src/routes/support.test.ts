@@ -879,6 +879,13 @@ function makeSupportDb(state: {
       };
       return stmt;
     },
+    async batch(statements: D1PreparedStatement[]) {
+      const results = [];
+      for (const statement of statements) {
+        results.push(await statement.run());
+      }
+      return results;
+    },
   } as unknown as D1Database;
 
   return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals, knowledgeImports } };
@@ -1043,6 +1050,47 @@ describe('support CRM routes', () => {
         actor_name: 'Owner',
       }),
     ]);
+  });
+
+  test('retries an atomic case creation batch after a temporary write failure', async () => {
+    const { db, state } = makeSupportDb({
+      friends: [{
+        id: 'friend-1',
+        line_account_id: 'acc-1',
+        display_name: '山田さん',
+        picture_url: null,
+        line_user_id: 'U123',
+      }],
+    });
+    const originalBatch = db.batch.bind(db);
+    let batchAttempts = 0;
+    const flakyDb = {
+      prepare: db.prepare.bind(db),
+      async batch(statements: D1PreparedStatement[]) {
+        batchAttempts += 1;
+        if (batchAttempts === 1) throw new Error('temporary D1 write failure');
+        return originalBatch(statements);
+      },
+    } as unknown as D1Database;
+
+    const res = await setupApp(flakyDb, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        friendId: 'friend-1',
+        customerSummary: '報酬が反映されていない',
+        primaryAssignee: '林 静香',
+        escalationAssignee: '梶原 麻奈美',
+        dueAt: '2026-07-23T10:54:00.000+09:00',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(batchAttempts).toBe(2);
+    expect(state.cases).toHaveLength(1);
+    expect(state.escalations).toHaveLength(1);
+    expect(state.events.map((event) => event.event_type)).toEqual(['created', 'escalated']);
   });
 
   test('staff can create support cases for visible friends', async () => {

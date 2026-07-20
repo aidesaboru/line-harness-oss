@@ -8,12 +8,16 @@ compatibility_date = "2024-12-01"
 # fail at runtime. compatibility_date 2024-09-23+ is required for the flag.
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+account_id = "fd23c99ff238478f219c521454f26f43"
+
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 # ═══════════════════════════════════════════════════════════════
 # デフォルト = テスト環境 (noda@)
 # 使い方: npx wrangler deploy
 # ═══════════════════════════════════════════════════════════════
-account_id = "fd23c99ff238478f219c521454f26f43"
 
 [assets]
 directory = "dist/client"

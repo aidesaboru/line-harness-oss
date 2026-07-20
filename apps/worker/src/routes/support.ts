@@ -261,6 +261,25 @@ function supportRouteErrorKind(err: unknown): string {
   return typeof err;
 }
 
+function supportRouteErrorCode(err: unknown): string {
+  const cause = err instanceof Error ? err.cause : undefined;
+  const details = [
+    err instanceof Error ? err.message : '',
+    cause instanceof Error ? cause.message : '',
+  ].join(' ').toLowerCase();
+
+  if (details.includes('foreign key')) return 'foreign_key_constraint';
+  if (details.includes('check constraint')) return 'check_constraint';
+  if (details.includes('not null')) return 'not_null_constraint';
+  if (details.includes('unique constraint')) return 'unique_constraint';
+  if (details.includes('no such table') || details.includes('no such column')) return 'schema_mismatch';
+  if (details.includes('locked') || details.includes('busy')) return 'database_busy';
+  if (details.includes('too many sql variables') || details.includes('statement too long')) return 'database_limit';
+  if (details.includes('d1_error') || details.includes('sqlite_')) return 'database_error';
+  if (err instanceof TypeError) return 'network_error';
+  return 'unknown';
+}
+
 function text(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -1611,7 +1630,9 @@ support.post('/api/support/cases', async (c) => {
     if (!created) throw new Error('Created support case could not be read back');
     return c.json({ success: true, data: serializeCase(created) }, 201);
   } catch (err) {
-    console.error(`POST /api/support/cases error: ${supportRouteErrorKind(err)} phase=${failurePhase}`);
+    console.error(
+      `POST /api/support/cases error: ${supportRouteErrorKind(err)} phase=${failurePhase} code=${supportRouteErrorCode(err)}`,
+    );
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

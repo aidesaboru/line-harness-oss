@@ -946,7 +946,7 @@ describe('support CRM routes', () => {
   });
 
   test('case creation failure does not log raw customer payload details', async () => {
-    const db = makeThrowingDb('DB write failed customer secret account-token friend-1');
+    const db = makeThrowingDb('D1_ERROR: FOREIGN KEY constraint failed customer secret account-token friend-1');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
@@ -969,7 +969,9 @@ describe('support CRM routes', () => {
       expect(body).toEqual({ success: false, error: 'Internal server error' });
       const logged = loggedText(errorSpy);
       expect(logged).toContain('POST /api/support/cases error: Error');
+      expect(logged).toContain('code=foreign_key_constraint');
       expect(logged).not.toContain('DB write failed');
+      expect(logged).not.toContain('FOREIGN KEY constraint failed');
       expect(logged).not.toContain('customer secret');
       expect(logged).not.toContain('account-token');
       expect(logged).not.toContain('friend-1');

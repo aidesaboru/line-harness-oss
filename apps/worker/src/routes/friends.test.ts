@@ -284,6 +284,32 @@ describe('friends support visibility', () => {
     expect(listCall?.binds.slice(-2)).toEqual([50, 0]);
   });
 
+  test('friend list supports customer-number sorting and closing-month filtering', async () => {
+    const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request(
+      '/api/friends?includeTags=false&sort=customer_number&closingMonth=3',
+    );
+
+    expect(res.status).toBe(200);
+    const countCall = calls.find((call) => call.method === 'first' && call.sql.includes('COUNT(*)'));
+    const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM friends f'));
+    expect(countCall?.sql).toContain("REPLACE(TRIM(CAST(COALESCE(json_extract(f.metadata, '$.closingMonth')");
+    expect(countCall?.binds).toEqual([3]);
+    expect(listCall?.sql).toContain("json_extract(f.metadata, '$.customerNumber')");
+    expect(listCall?.sql).toContain('COLLATE NOCASE ASC');
+    expect(listCall?.binds).toEqual([3, 50, 0]);
+  });
+
+  test('friend list rejects an invalid closing month', async () => {
+    const { db } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/friends?closingMonth=13');
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ success: false, error: 'invalid_closing_month' });
+  });
+
   test('owner friend list remains unrestricted', async () => {
     const { db, calls } = makeFriendsDb({ visibleFriendIds: ['friend-visible'] });
 

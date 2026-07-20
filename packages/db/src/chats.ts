@@ -16,6 +16,7 @@ export interface ChatRow {
   friend_id: string;
   operator_id: string | null;
   status: string;
+  is_long_term: number;
   notes: string | null;
   last_message_at: string | null;
   created_at: string;
@@ -70,13 +71,20 @@ export async function deleteOperator(db: D1Database, id: string): Promise<void> 
 
 export async function getChats(db: D1Database, opts: { status?: string; operatorId?: string } = {}): Promise<ChatRow[]> {
   if (opts.status && opts.operatorId) {
-    const result = await db.prepare(`SELECT * FROM chats WHERE status = ? AND operator_id = ? ORDER BY last_message_at DESC`)
-      .bind(opts.status, opts.operatorId).all<ChatRow>();
+    const statusSql = opts.status === 'long_term'
+      ? 'is_long_term = 1'
+      : 'is_long_term = 0 AND status = ?';
+    const binds = opts.status === 'long_term' ? [opts.operatorId] : [opts.status, opts.operatorId];
+    const result = await db.prepare(`SELECT * FROM chats WHERE ${statusSql} AND operator_id = ? ORDER BY last_message_at DESC`)
+      .bind(...binds).all<ChatRow>();
     return result.results;
   }
   if (opts.status) {
-    const result = await db.prepare(`SELECT * FROM chats WHERE status = ? ORDER BY last_message_at DESC`)
-      .bind(opts.status).all<ChatRow>();
+    const statusSql = opts.status === 'long_term'
+      ? 'is_long_term = 1'
+      : 'is_long_term = 0 AND status = ?';
+    const stmt = db.prepare(`SELECT * FROM chats WHERE ${statusSql} ORDER BY last_message_at DESC`);
+    const result = await (opts.status === 'long_term' ? stmt : stmt.bind(opts.status)).all<ChatRow>();
     return result.results;
   }
   if (opts.operatorId) {
@@ -110,12 +118,19 @@ export async function createChat(
 export async function updateChat(
   db: D1Database,
   id: string,
-  updates: Partial<{ operatorId: string | null; status: string; notes: string | null; lastMessageAt: string }>,
+  updates: Partial<{
+    operatorId: string | null;
+    status: string;
+    isLongTerm: boolean;
+    notes: string | null;
+    lastMessageAt: string;
+  }>,
 ): Promise<void> {
   const sets: string[] = [];
   const values: unknown[] = [];
   if (updates.operatorId !== undefined) { sets.push('operator_id = ?'); values.push(updates.operatorId); }
   if (updates.status !== undefined) { sets.push('status = ?'); values.push(updates.status); }
+  if (updates.isLongTerm !== undefined) { sets.push('is_long_term = ?'); values.push(updates.isLongTerm ? 1 : 0); }
   if (updates.notes !== undefined) { sets.push('notes = ?'); values.push(updates.notes); }
   if (updates.lastMessageAt !== undefined) { sets.push('last_message_at = ?'); values.push(updates.lastMessageAt); }
   if (sets.length === 0) return;
@@ -130,9 +145,9 @@ export async function upsertChatOnMessage(db: D1Database, friendId: string): Pro
   const existing = await getChatByFriendId(db, friendId);
   const now = jstNow();
   if (existing) {
-    // resolvedだった場合はunreadに戻す
-    const newStatus = existing.status === 'resolved' ? 'unread' : existing.status;
-    await updateChat(db, existing.id, { status: newStatus, lastMessageAt: now });
+    // 中長期対応中に新しい顧客メッセージが届いた場合は再び要対応として扱う。
+    const newStatus = existing.status === 'resolved' || existing.is_long_term === 1 ? 'unread' : existing.status;
+    await updateChat(db, existing.id, { status: newStatus, isLongTerm: false, lastMessageAt: now });
     return (await getChatById(db, existing.id))!;
   }
   return createChat(db, { friendId });

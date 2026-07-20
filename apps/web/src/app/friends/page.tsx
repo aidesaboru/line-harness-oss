@@ -12,7 +12,7 @@ import { useAccount } from '@/contexts/account-context'
 const PAGE_SIZE = 20
 const FRIENDS_LOAD_ERROR_MESSAGE = '顧客一覧の読み込みに失敗しました。もう一度お試しください。'
 
-type SortMode = 'recent' | 'oldest'
+type SortMode = 'recent' | 'oldest' | 'customer_number'
 
 export default function FriendsPage() {
   const { selectedAccountId } = useAccount()
@@ -24,6 +24,7 @@ export default function FriendsPage() {
   const [searchInput, setSearchInput] = useState('')
   const [searchSubmitted, setSearchSubmitted] = useState('')
   const [sortMode, setSortMode] = useState<SortMode>('recent')
+  const [closingMonth, setClosingMonth] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -46,6 +47,7 @@ export default function FriendsPage() {
         includeTags: true,
         includeChatStatus: false,
         sort: sortMode,
+        closingMonth: closingMonth ?? undefined,
       })
       if (res.success) {
         setFriends(res.data.items)
@@ -59,7 +61,7 @@ export default function FriendsPage() {
     } finally {
       setLoading(false)
     }
-  }, [page, selectedAccountId, searchSubmitted, sortMode])
+  }, [page, selectedAccountId, searchSubmitted, sortMode, closingMonth])
 
   const loadTags = useCallback(async () => {
     try {
@@ -110,6 +112,9 @@ export default function FriendsPage() {
     }
   }
   const handleSortChange = (v: SortMode) => updateAndResetPage(() => setSortMode(v))
+  const handleClosingMonthChange = (v: string) => {
+    updateAndResetPage(() => setClosingMonth(v ? Number(v) : null))
+  }
   const handleBulkSubmit = async () => {
     if (bulkParsed.rows.length === 0 || bulkParsed.issues.length > 0 || bulkSaving) return
     setBulkSaving(true)
@@ -158,10 +163,23 @@ export default function FriendsPage() {
           <select
             value={sortMode}
             onChange={(e) => handleSortChange(e.target.value as SortMode)}
+            aria-label="並び順"
             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
           >
             <option value="recent">追加日の新しい順</option>
             <option value="oldest">追加日の古い順</option>
+            <option value="customer_number">顧客番号順</option>
+          </select>
+          <select
+            value={closingMonth ?? ''}
+            onChange={(e) => handleClosingMonthChange(e.target.value)}
+            aria-label="決算月で絞り込み"
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+          >
+            <option value="">決算月: すべて</option>
+            {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+              <option key={month} value={month}>{month}月</option>
+            ))}
           </select>
           <button
             type="submit"

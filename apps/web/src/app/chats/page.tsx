@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import Link from 'next/link'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
-import { ApiRequestError, api, buildApiUrl, fetchApi, type ChatActiveSupportCase, type ChatInternalMessage, type ChatMessageCursor, type ChatTypingParticipant } from '@/lib/api'
+import { ApiRequestError, api, buildApiUrl, fetchApi, type ChatActiveSupportCase, type ChatInternalMessage, type ChatMessageCursor, type ChatTypingParticipant, type ScheduledChatMessage } from '@/lib/api'
 import { messageTypePreview } from '@/lib/message-type-label'
 import {
   buildSupportChatRecoveryNotice,
@@ -28,7 +28,7 @@ interface Chat {
   friendName: string
   friendPictureUrl: string | null
   operatorId: string | null
-  status: 'unread' | 'in_progress' | 'resolved'
+  status: 'unread' | 'in_progress' | 'resolved' | 'long_term'
   notes: string | null
   lastMessageAt: string | null
   lastMessageContent: string | null
@@ -65,9 +65,10 @@ interface ChatDetail extends Chat {
   internalMessages?: ChatInternalMessage[]
   typingParticipants?: ChatTypingParticipant[]
   activeSupportCase?: ChatActiveSupportCase | null
+  scheduledMessages?: ScheduledChatMessage[]
 }
 
-type StatusFilter = 'all' | 'unread' | 'in_progress' | 'resolved'
+type StatusFilter = 'all' | 'unread' | 'in_progress' | 'long_term' | 'resolved'
 type ChatSortMode = 'recent' | 'oldest' | 'stale' | 'unanswered'
 type PendingChatAttachment = ImageUploaderValue | {
   mode: 'pdf-link'
@@ -97,6 +98,7 @@ const statusConfig: Record<Chat['status'], { label: string; className: string }>
   unread: { label: '未読', className: 'bg-red-100 text-red-700' },
   in_progress: { label: '対応中', className: 'bg-yellow-100 text-yellow-700' },
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
+  long_term: { label: '中長期対応', className: 'bg-blue-100 text-blue-700' },
 }
 
 function activeSupportCaseBadge(supportCase?: ChatActiveSupportCase | null): {
@@ -145,6 +147,7 @@ const statusFilters: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: '全て' },
   { key: 'unread', label: '未読' },
   { key: 'in_progress', label: '対応中' },
+  { key: 'long_term', label: '中長期対応' },
   { key: 'resolved', label: '解決済' },
 ]
 
@@ -184,6 +187,39 @@ function formatDatetime(iso: string | null): string {
   })
 }
 
+function toDatetimeLocalValue(date: Date): string {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
+  return local.toISOString().slice(0, 16)
+}
+
+function defaultScheduledAt(): string {
+  const now = new Date()
+  const next = new Date(now)
+  next.setHours(9, 0, 0, 0)
+  if (next.getTime() <= now.getTime() + 60_000) next.setDate(next.getDate() + 1)
+  return toDatetimeLocalValue(next)
+}
+
+function scheduledMessagePreview(item: ScheduledChatMessage): string {
+  return item.messages
+    .map((message) => message.messageType === 'image' ? '画像' : message.content.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' / ')
+    .slice(0, 90)
+}
+
+const scheduledStatusConfig: Record<
+  ScheduledChatMessage['status'],
+  { label: string; className: string }
+> = {
+  pending: { label: '予約中', className: 'bg-blue-50 text-blue-700' },
+  processing: { label: '送信処理中', className: 'bg-amber-50 text-amber-700' },
+  sent: { label: '送信済み', className: 'bg-emerald-50 text-emerald-700' },
+  failed: { label: '再試行待ち', className: 'bg-red-50 text-red-700' },
+  failed_permanent: { label: '送信失敗', className: 'bg-red-100 text-red-800' },
+  cancelled: { label: '取消済み', className: 'bg-slate-100 text-slate-600' },
+}
+
 function getTime(iso: string | null): number {
   if (!iso) return 0
   const t = new Date(iso).getTime()
@@ -191,7 +227,7 @@ function getTime(iso: string | null): number {
 }
 
 function isStaleChat(chat: Pick<Chat, 'lastMessageAt' | 'status'>): boolean {
-  if (chat.status === 'resolved') return false
+  if (chat.status === 'resolved' || chat.status === 'long_term') return false
   const t = getTime(chat.lastMessageAt)
   return t > 0 && Date.now() - t >= CHAT_STALE_MS
 }
@@ -245,7 +281,8 @@ function chatWorkRank(chat: Chat): number {
   if (chat.status === 'unread') return 2
   if (chat.activeSupportCase?.latestEscalationStatus === 'pending') return 3
   if (chat.status === 'in_progress') return 4
-  return 5
+  if (chat.status === 'long_term') return 5
+  return 6
 }
 
 function apiErrorStatus(err: unknown): number | null {
@@ -1401,6 +1438,10 @@ export default function ChatsPage() {
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
   const [error, setError] = useState('')
   const [messageContent, setMessageContent] = useState('')
+  const [scheduleOpen, setScheduleOpen] = useState(false)
+  const [scheduledAt, setScheduledAt] = useState('')
+  const [scheduling, setScheduling] = useState(false)
+  const [scheduledActionId, setScheduledActionId] = useState<string | null>(null)
   const [quoteTarget, setQuoteTarget] = useState<ChatMessage | null>(null)
   const [supportDraftContext, setSupportDraftContext] = useState<SupportChatDraftContext | null>(null)
   const [supportRecoveryNotice, setSupportRecoveryNotice] = useState<SupportChatRecoveryNotice | null>(null)
@@ -1802,6 +1843,8 @@ export default function ChatsPage() {
   const handleSelectChat = (chatId: string) => {
     setSelectedChatId(chatId)
     setMessageContent('')
+    setScheduleOpen(false)
+    setScheduledAt('')
     setQuoteTarget(null)
     setSupportDraftContext(null)
     setSupportRecoveryNotice(null)
@@ -1878,7 +1921,7 @@ export default function ChatsPage() {
   }, [])
 
   const handleSendMessage = async () => {
-    if (!selectedChatId || sending || sendLockRef.current) return
+    if (!selectedChatId || sending || scheduling || sendLockRef.current) return
     if (!messageContent.trim() && !pendingImage) return
     if (quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
       setError('返信機能を使うときは、返信文を入力して送信してください。')
@@ -2057,8 +2100,115 @@ export default function ChatsPage() {
     }
   }
 
+  const handleScheduleMessage = async () => {
+    if (!selectedChatId || scheduling || sending || !scheduledAt) return
+    if (!messageContent.trim() && !pendingImage) return
+    if (quoteTarget) {
+      setError('返信指定中のメッセージは予約送信できません。返信指定を解除してから予約してください。')
+      return
+    }
+    const scheduledTime = new Date(scheduledAt)
+    if (Number.isNaN(scheduledTime.getTime()) || scheduledTime.getTime() < Date.now() + 60_000) {
+      setError('予約日時は1分以上先を指定してください。')
+      return
+    }
+
+    const targetChatId = selectedChatId
+    const pdfAttachment = pendingImage?.mode === 'pdf-link' ? pendingImage : null
+    const pdfMessage = pdfAttachment ? `PDF: ${pdfAttachment.fileName}\n${pdfAttachment.url}` : ''
+    const textContent = [messageContent.trim(), pdfMessage].filter(Boolean).join('\n\n')
+    const messages: Array<{ content: string; messageType?: 'text' | 'image' }> = []
+    if (pendingImage?.mode === 'line-image') {
+      messages.push({
+        messageType: 'image',
+        content: JSON.stringify({
+          originalContentUrl: pendingImage.originalContentUrl,
+          previewImageUrl: pendingImage.previewImageUrl,
+        }),
+      })
+    }
+    if (textContent) messages.push({ messageType: 'text', content: textContent })
+    if (messages.length === 0) return
+
+    setScheduling(true)
+    setError('')
+    try {
+      const result = await api.chats.schedule(targetChatId, {
+        scheduledAt: scheduledTime.toISOString(),
+        messages,
+        ...(supportDraftContext ? {
+          supportCaseId: supportDraftContext.caseId,
+          lineAccountId: supportDraftContext.lineAccountId,
+        } : {}),
+      })
+      if (!result.success) {
+        setError('予約送信を登録できませんでした。もう一度お試しください。')
+        return
+      }
+      setChatDetail((prev) => (prev && prev.id === targetChatId) ? {
+        ...prev,
+        status: 'in_progress',
+        scheduledMessages: [...(prev.scheduledMessages ?? []), result.data]
+          .sort((a, b) => getTime(a.scheduledAt) - getTime(b.scheduledAt)),
+      } : prev)
+      setChats((prev) => prev.map((chat) => chat.id === targetChatId ? {
+        ...chat,
+        status: 'in_progress',
+      } : chat))
+      setMessageContent('')
+      setPendingImage(null)
+      setQuoteTarget(null)
+      setSupportDraftContext(null)
+      setScheduleOpen(false)
+      setScheduledAt('')
+      stopTypingStatus(targetChatId)
+    } catch (err) {
+      setError(chatActionFailureMessage(err, '予約送信を登録できませんでした。もう一度お試しください。'))
+    } finally {
+      setScheduling(false)
+    }
+  }
+
+  const handleCancelScheduled = async (item: ScheduledChatMessage) => {
+    if (!selectedChatId || scheduledActionId) return
+    setScheduledActionId(item.id)
+    setError('')
+    try {
+      await api.chats.cancelScheduled(selectedChatId, item.id)
+      setChatDetail((prev) => prev ? {
+        ...prev,
+        scheduledMessages: (prev.scheduledMessages ?? []).filter((scheduled) => scheduled.id !== item.id),
+      } : prev)
+    } catch (err) {
+      setError(chatActionFailureMessage(err, '予約送信を取り消せませんでした。もう一度お試しください。'))
+    } finally {
+      setScheduledActionId(null)
+    }
+  }
+
+  const handleRetryScheduled = async (item: ScheduledChatMessage) => {
+    if (!selectedChatId || scheduledActionId) return
+    setScheduledActionId(item.id)
+    setError('')
+    try {
+      await api.chats.retryScheduled(selectedChatId, item.id)
+      setChatDetail((prev) => prev ? {
+        ...prev,
+        scheduledMessages: (prev.scheduledMessages ?? []).map((scheduled) => (
+          scheduled.id === item.id
+            ? { ...scheduled, status: 'pending', attempts: 0, lastError: null }
+            : scheduled
+        )),
+      } : prev)
+    } catch (err) {
+      setError(chatActionFailureMessage(err, '予約送信を再試行できませんでした。もう一度お試しください。'))
+    } finally {
+      setScheduledActionId(null)
+    }
+  }
+
   const handleMarkLatestAsRead = async () => {
-    if (!selectedChatId || sending || markingAsRead || sendLockRef.current) return
+    if (!selectedChatId || sending || scheduling || markingAsRead || sendLockRef.current) return
     const targetChatId = selectedChatId
     const latestMessage = chatDetail?.messages?.slice().reverse().find((message) => !message.deletedAt)
     if (latestMessage?.direction !== 'incoming') return
@@ -2228,6 +2378,7 @@ export default function ChatsPage() {
     if (e.key !== 'Enter') return
     if (e.shiftKey) {
       e.preventDefault()
+      if (scheduleOpen) return
       handleSendMessage()
     }
   }
@@ -2283,7 +2434,9 @@ export default function ChatsPage() {
   ), [chats])
   const firstActionableChat = useMemo(() => (
     chats
-      .filter((chat) => chat.status !== 'resolved' || Boolean(activeSupportCaseBadge(chat.activeSupportCase)))
+      .filter((chat) => (
+        (chat.status !== 'resolved' && chat.status !== 'long_term') || Boolean(activeSupportCaseBadge(chat.activeSupportCase))
+      ))
       .sort((a, b) => {
         const ar = chatWorkRank(a)
         const br = chatWorkRank(b)
@@ -2294,7 +2447,9 @@ export default function ChatsPage() {
   ), [chats])
   const priorityChats = useMemo(() => (
     chats
-      .filter((chat) => chat.status !== 'resolved' || Boolean(activeSupportCaseBadge(chat.activeSupportCase)))
+      .filter((chat) => (
+        (chat.status !== 'resolved' && chat.status !== 'long_term') || Boolean(activeSupportCaseBadge(chat.activeSupportCase))
+      ))
       .sort((a, b) => {
         const ar = chatWorkRank(a)
         const br = chatWorkRank(b)
@@ -2661,6 +2816,15 @@ export default function ChatsPage() {
                       対応中にする
                     </button>
                   )}
+                  {chatDetail.status !== 'long_term' && (
+                    <button
+                      onClick={() => handleStatusUpdate('long_term')}
+                      className="min-h-9 rounded-md bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
+                      title="24時間超過と未対応キューの対象から外します"
+                    >
+                      中長期対応にする
+                    </button>
+                  )}
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
@@ -2905,6 +3069,53 @@ export default function ChatsPage() {
                   void handleImageFiles(e.dataTransfer.files)
                 }}
               >
+                {chatDetail.scheduledMessages && chatDetail.scheduledMessages.length > 0 && (
+                  <div className="mb-2 border-b border-slate-200 pb-2">
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <p className="text-xs font-semibold text-slate-700">予約送信</p>
+                      <span className="text-[11px] text-slate-500">最大5分以内に配信</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {chatDetail.scheduledMessages.map((item) => {
+                        const config = scheduledStatusConfig[item.status]
+                        const canRetry = item.status === 'failed' || item.status === 'failed_permanent'
+                        const canCancel = item.status !== 'processing'
+                        return (
+                          <div key={item.id} className="flex min-h-11 items-center gap-2 rounded-md bg-slate-50 px-2.5 py-2 text-xs">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className={`rounded px-1.5 py-0.5 font-semibold ${config.className}`}>{config.label}</span>
+                                <span className="font-semibold text-slate-700">{formatDatetime(item.scheduledAt)}</span>
+                                {item.createdByName && <span className="text-slate-400">{item.createdByName}</span>}
+                              </div>
+                              <p className="mt-1 truncate text-slate-600">{scheduledMessagePreview(item)}</p>
+                            </div>
+                            {canRetry && (
+                              <button
+                                type="button"
+                                onClick={() => void handleRetryScheduled(item)}
+                                disabled={scheduledActionId === item.id}
+                                className="shrink-0 rounded border border-blue-200 bg-white px-2 py-1 font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                              >
+                                再試行
+                              </button>
+                            )}
+                            {canCancel && (
+                              <button
+                                type="button"
+                                onClick={() => void handleCancelScheduled(item)}
+                                disabled={scheduledActionId === item.id}
+                                className="shrink-0 rounded border border-slate-300 bg-white px-2 py-1 font-semibold text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                              >
+                                取消
+                              </button>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                 {supportDraftContext && (
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
                     <span className="font-medium">
@@ -3026,15 +3237,64 @@ export default function ChatsPage() {
                     {imageUploadError && <span className="font-semibold text-red-600">{imageUploadError}</span>}
                   </div>
                 )}
+                {scheduleOpen && (
+                  <div className="mb-2 flex flex-wrap items-end gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                    <label className="min-w-[220px] flex-1 text-xs font-semibold text-blue-900">
+                      送信日時
+                      <input
+                        type="datetime-local"
+                        value={scheduledAt}
+                        min={toDatetimeLocalValue(new Date(Date.now() + 60_000))}
+                        onChange={(event) => setScheduledAt(event.target.value)}
+                        className="mt-1 h-10 w-full rounded-md border border-blue-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setScheduledAt(defaultScheduledAt())}
+                      className="h-10 rounded-md border border-blue-200 bg-white px-3 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                    >
+                      翌朝9:00
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleScheduleMessage()}
+                      disabled={scheduling || !scheduledAt || (!messageContent.trim() && !pendingImage)}
+                      className="h-10 rounded-md bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {scheduling ? '予約中...' : '予約する'}
+                    </button>
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    disabled={sending || markingAsRead || uploadingImage}
+                    disabled={sending || scheduling || markingAsRead || uploadingImage}
                     className="mb-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-gray-300 bg-white text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                     aria-label="画像またはPDFを添付"
                   >
                     <PaperclipIcon />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScheduleOpen((open) => {
+                        if (!open && !scheduledAt) setScheduledAt(defaultScheduledAt())
+                        return !open
+                      })
+                      setError('')
+                    }}
+                    disabled={sending || scheduling || markingAsRead}
+                    aria-expanded={scheduleOpen}
+                    className={`mb-0.5 inline-flex h-10 shrink-0 items-center justify-center rounded-md border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                      scheduleOpen
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                    }`}
+                    title="日時を指定して送信"
+                  >
+                    予約
                   </button>
                   <textarea
                     ref={textareaRef}
@@ -3059,7 +3319,7 @@ export default function ChatsPage() {
                   <div className="flex w-36 flex-col gap-1">
                     <button
                       onClick={handleSendMessage}
-                      disabled={sending || markingAsRead || (!messageContent.trim() && !pendingImage)}
+                      disabled={sending || scheduling || markingAsRead || (!messageContent.trim() && !pendingImage)}
                       className="min-h-9 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       style={{ backgroundColor: '#06C755' }}
                     >
@@ -3068,7 +3328,7 @@ export default function ChatsPage() {
                     <button
                       type="button"
                       onClick={handleMarkLatestAsRead}
-                      disabled={sending || markingAsRead || !canMarkLatestIncomingAsRead}
+                      disabled={sending || scheduling || markingAsRead || !canMarkLatestIncomingAsRead}
                       className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
                         latestIncomingMarkedAsRead
                           ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'

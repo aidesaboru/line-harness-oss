@@ -49,6 +49,16 @@ const CUSTOMER_NUMBER_METADATA_KEYS = [
   'clientNumber',
   'client_number',
 ] as const;
+const CLOSING_MONTH_METADATA_KEYS = [
+  'closingMonth',
+  'closing_month',
+  'fiscalClosingMonth',
+  'fiscal_closing_month',
+  'fiscalMonth',
+  'fiscal_month',
+  'settlementMonth',
+  'settlement_month',
+] as const;
 const CONTACT_NAME_METADATA_KEYS = [
   'contactName',
   'contact_name',
@@ -63,6 +73,14 @@ const OPERATION_CONTRACT_METADATA_KEYS = new Set([
   'minimumGuaranteeStartMonth',
   'closedAt',
 ]);
+const CUSTOMER_NUMBER_SQL = `TRIM(CAST(COALESCE(${CUSTOMER_NUMBER_METADATA_KEYS
+  .map((key) => `json_extract(f.metadata, '$.${key}')`)
+  .join(', ')}, '') AS TEXT))`;
+const CLOSING_MONTH_SQL = `TRIM(CAST(COALESCE(${CLOSING_MONTH_METADATA_KEYS
+  .map((key) => `json_extract(f.metadata, '$.${key}')`)
+  .join(', ')}, '') AS TEXT))`;
+
+type FriendSort = 'recent' | 'oldest' | 'customer_number';
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -148,6 +166,23 @@ function parseOptionalSearch(raw: unknown): ValueResult<string | undefined> {
   const value = raw.trim();
   if (!value) return { ok: true, value: undefined };
   if (value.length > FRIEND_SEARCH_MAX_LENGTH) return { ok: false, error: 'invalid_search' };
+  return { ok: true, value };
+}
+
+function parseFriendSort(raw: unknown): FriendSort {
+  if (raw === 'oldest' || raw === 'customer_number') return raw;
+  return 'recent';
+}
+
+function parseClosingMonth(raw: unknown): ValueResult<number | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  if (typeof raw !== 'string' || !/^\d{1,2}$/.test(raw.trim())) {
+    return { ok: false, error: 'invalid_closing_month' };
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > 12) {
+    return { ok: false, error: 'invalid_closing_month' };
+  }
   return { ok: true, value };
 }
 
@@ -428,7 +463,7 @@ function serializeFriendListRow(
     // chats.status defaulted to 'resolved' for friends without a chats row
     // (matches /api/chats listing). Friend-list and chats-list now agree on
     // 未対応/対応中/対応済み state.
-    chatStatus: (row.chat_status ?? 'resolved') as 'unread' | 'in_progress' | 'resolved',
+    chatStatus: (row.chat_status ?? 'resolved') as 'unread' | 'in_progress' | 'resolved' | 'long_term',
   };
 }
 
@@ -453,6 +488,8 @@ friends.get('/api/friends', async (c) => {
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const search = parseOptionalSearch(c.req.query('search'));
     if (!search.ok) return c.json({ success: false, error: search.error }, 400);
+    const closingMonth = parseClosingMonth(c.req.query('closingMonth'));
+    if (!closingMonth.ok) return c.json({ success: false, error: closingMonth.error }, 400);
     // ?includeTags=false skips per-row tag enrichment (N+1 of getFriendTags
     // → ~50 extra D1 reads on a wide list query). The list view needs tags
     // for filter chips, but autocomplete-style consumers (test-recipient
@@ -465,10 +502,11 @@ friends.get('/api/friends', async (c) => {
     // each friend. Used by the L-step-style /friends listing; off by
     // default to keep the simple list / autocomplete paths cheap.
     const includeChatStatus = c.req.query('includeChatStatus') === 'true';
-    // ?sort=oldest reverses default created_at DESC. Default = recent-first.
+    // ?sort=oldest reverses default created_at DESC. customer_number sorts
+    // by the customer number stored in metadata and keeps missing values last.
     // Search mode (when `search` is set) overrides both — we keep the
     // match-quality ranking and only flip the secondary `created_at` tier.
-    const sort: 'recent' | 'oldest' = c.req.query('sort') === 'oldest' ? 'oldest' : 'recent';
+    const sort = parseFriendSort(c.req.query('sort'));
     // ?handled=unhandled filters to friends whose latest activity is an
     // incoming message (mirroring the L-step "未対応" tab). Done in SQL so
     // pagination + total counts are correct; client-side filter would only
@@ -494,6 +532,10 @@ friends.get('/api/friends', async (c) => {
       conditions.push('f.display_name LIKE ?');
       binds.push(`%${search.value}%`);
     }
+    if (closingMonth.value) {
+      conditions.push(`CAST(REPLACE(${CLOSING_MONTH_SQL}, '月', '') AS INTEGER) = ?`);
+      binds.push(closingMonth.value);
+    }
     // Unhandled filter: chats.status === 'unread'.
     //
     // We derive 対応マーク from chats.status — the same model the /chats UI
@@ -511,7 +553,7 @@ friends.get('/api/friends', async (c) => {
       // resolved-then-reopened conversation correctly resurfaces as 未対応.
       conditions.push(
         `COALESCE(
-           (SELECT status FROM chats c
+           (SELECT CASE WHEN COALESCE(is_long_term, 0) = 1 THEN 'long_term' ELSE status END FROM chats c
             WHERE c.friend_id = f.id
             ORDER BY c.created_at DESC LIMIT 1),
            'resolved'
@@ -563,7 +605,7 @@ friends.get('/api/friends', async (c) => {
     const baseSelect = includeChatStatus
       ? `f.*, tl.name AS first_tracked_link_name,
          COALESCE(
-           (SELECT status FROM chats c
+           (SELECT CASE WHEN COALESCE(is_long_term, 0) = 1 THEN 'long_term' ELSE status END FROM chats c
             WHERE c.friend_id = f.id
             ORDER BY c.created_at DESC LIMIT 1),
            'resolved'
@@ -575,6 +617,12 @@ friends.get('/api/friends', async (c) => {
     // Secondary tier of the search-mode ORDER BY (after match_score) and the
     // primary tier in non-search mode. Switched by ?sort=oldest|recent.
     const createdOrder = sort === 'oldest' ? 'ASC' : 'DESC';
+    const selectedOrder = sort === 'customer_number'
+      ? `CASE WHEN ${CUSTOMER_NUMBER_SQL} = '' THEN 1 ELSE 0 END ASC,
+         CASE WHEN ${CUSTOMER_NUMBER_SQL} GLOB '[0-9]*' THEN CAST(${CUSTOMER_NUMBER_SQL} AS INTEGER) END ASC,
+         ${CUSTOMER_NUMBER_SQL} COLLATE NOCASE ASC,
+         f.created_at DESC`
+      : `f.created_at ${createdOrder}`;
     let listStmt;
     let listBinds: unknown[];
     if (search.value) {
@@ -591,13 +639,13 @@ friends.get('/api/friends', async (c) => {
                   ELSE 3
                 END AS match_score
          ${baseFrom} ${where}
-         ORDER BY match_score ASC, f.created_at ${createdOrder}
+         ORDER BY match_score ASC, ${selectedOrder}
          LIMIT ? OFFSET ?`,
       );
       listBinds = [exactPattern, prefixPattern, wordStartAscii, wordStartFullWidth, ...binds, limit, offset];
     } else {
       listStmt = db.prepare(
-        `SELECT ${baseSelect} ${baseFrom} ${where} ORDER BY f.created_at ${createdOrder} LIMIT ? OFFSET ?`,
+        `SELECT ${baseSelect} ${baseFrom} ${where} ORDER BY ${selectedOrder} LIMIT ? OFFSET ?`,
       );
       listBinds = [...binds, limit, offset];
     }
@@ -677,7 +725,7 @@ friends.get('/api/friends', async (c) => {
       // We're inside `if (includeChatStatus)` so every row was emitted by
       // serializeFriendListRow with chatStatus populated. TS can't narrow
       // through the union, so assert the populated shape locally.
-      type WithChatStatus = (typeof itemsWithTags)[number] & { chatStatus: 'unread' | 'in_progress' | 'resolved' };
+      type WithChatStatus = (typeof itemsWithTags)[number] & { chatStatus: 'unread' | 'in_progress' | 'resolved' | 'long_term' };
       itemsWithTags = (itemsWithTags as WithChatStatus[]).map((f) => {
         const inc = incomingByFriend.get(f.id);
         const outAt = outgoingByFriend.get(f.id);

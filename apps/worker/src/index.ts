@@ -79,7 +79,12 @@ import { processSupportNotificationDigests } from './services/support-notificati
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 import { updateHistory } from './routes/update-history.js';
-import { isLineCaptureOnly } from './services/line-capture-only.js';
+import {
+  canUseManualLineSend,
+  isLineCaptureOnly,
+  isLineManualSendEnabled,
+} from './services/line-capture-only.js';
+import { processDueScheduledChatMessages } from './services/scheduled-chat-messages.js';
 
 function scheduledErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
@@ -787,6 +792,21 @@ async function scheduled(
     }
   } catch (e) {
     console.error(`web-push error: ${scheduledErrorKind(e)}`);
+  }
+
+  if (canUseManualLineSend(env)) {
+    try {
+      const result = await processDueScheduledChatMessages(env.DB, {
+        now: new Date(),
+        defaultAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN,
+        allowMutationsWhenDisabled: captureOnly && isLineManualSendEnabled(env),
+      });
+      if (result.sent + result.failed > 0) {
+        console.log(`[scheduled-chat] sent=${result.sent} failed=${result.failed} skipped=${result.skipped}`);
+      }
+    } catch (e) {
+      console.error(`scheduled-chat error: ${scheduledErrorKind(e)}`);
+    }
   }
 
   if (captureOnly) {

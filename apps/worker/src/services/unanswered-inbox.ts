@@ -115,6 +115,10 @@ const CANDIDATES_BASE_SQL = `
   JOIN agg ON agg.friend_id = f.id
   WHERE f.is_following = 1
     AND (la.id IS NULL OR la.is_active = 1)
+    AND COALESCE(
+      (SELECT is_long_term FROM chats c WHERE c.friend_id = f.id ORDER BY c.created_at DESC LIMIT 1),
+      0
+    ) = 0
     AND agg.last_incoming IS NOT NULL
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
 `;

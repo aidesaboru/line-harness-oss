@@ -66,7 +66,8 @@
     "058_staff_presence.sql",
     "059_support_knowledge_imports.sql",
     "060_messages_webhook_event_id.sql",
-    "061_line_webhook_inbox.sql"
+    "061_line_webhook_inbox.sql",
+    "062_chat_scheduling_and_long_term.sql"
   ],
-  "migrationCount": 67
+  "migrationCount": 68
 }

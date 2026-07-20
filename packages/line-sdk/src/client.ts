@@ -43,6 +43,7 @@ export class LineClient {
     method: string,
     path: string,
     body?: unknown,
+    extraHeaders?: Record<string, string>,
   ): Promise<{ data: unknown; headers: Headers }> {
     if (method !== 'GET') {
       this.assertMutationsAllowed();
@@ -55,6 +56,7 @@ export class LineClient {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.channelAccessToken}`,
+        ...extraHeaders,
       },
     };
 
@@ -95,9 +97,14 @@ export class LineClient {
 
   // ─── Messaging ───────────────────────────────────────────────────────────
 
-  async pushMessage(to: string, messages: Message[]): Promise<unknown> {
+  async pushMessage(to: string, messages: Message[], retryKey?: string): Promise<unknown> {
     const body: PushMessageRequest = { to, messages };
-    const { data } = await this.request('POST', '/v2/bot/message/push', body);
+    const { data } = await this.request(
+      'POST',
+      '/v2/bot/message/push',
+      body,
+      retryKey ? { 'X-Line-Retry-Key': retryKey } : undefined,
+    );
     return data;
   }
 
@@ -221,8 +228,8 @@ export class LineClient {
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
-  async pushTextMessage(to: string, text: string, quoteToken?: string): Promise<unknown> {
-    return this.pushMessage(to, [{ type: 'text', text, ...(quoteToken ? { quoteToken } : {}) }]);
+  async pushTextMessage(to: string, text: string, quoteToken?: string, retryKey?: string): Promise<unknown> {
+    return this.pushMessage(to, [{ type: 'text', text, ...(quoteToken ? { quoteToken } : {}) }], retryKey);
   }
 
   async pushFlexMessage(
@@ -237,8 +244,9 @@ export class LineClient {
     to: string,
     originalContentUrl: string,
     previewImageUrl: string,
+    retryKey?: string,
   ): Promise<unknown> {
-    return this.pushMessage(to, [{ type: 'image', originalContentUrl, previewImageUrl }]);
+    return this.pushMessage(to, [{ type: 'image', originalContentUrl, previewImageUrl }], retryKey);
   }
 
   // ─── Rich Menu Image Upload ─────────────────────────────────────────────

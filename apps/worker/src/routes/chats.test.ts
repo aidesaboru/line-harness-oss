@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { ScheduledChatMessageRow } from '../services/scheduled-chat-messages.js';
 
 const lineSdkMocks = vi.hoisted(() => {
   const mocks = {
@@ -136,6 +137,7 @@ function makeChatDb(state: {
   supportCases?: SupportCaseRow[];
   supportEvents?: SupportEventRow[];
   chatInternalMessages?: ChatInternalMessageRow[];
+  scheduledMessages?: ScheduledChatMessageRow[];
 }) {
   const calls: Array<{ method: 'first' | 'all' | 'run'; sql: string; binds: unknown[] }> = [];
   const visible = new Set(state.visibleFriendIds);
@@ -143,6 +145,7 @@ function makeChatDb(state: {
   const supportCases = state.supportCases ?? [];
   const supportEvents = state.supportEvents ?? [];
   const chatInternalMessages = state.chatInternalMessages ?? [];
+  const scheduledMessages = state.scheduledMessages ?? [];
 
   const db = {
     prepare(sql: string) {
@@ -258,6 +261,10 @@ function makeChatDb(state: {
               deleted_at: row.deleted_at ?? null,
             } : null) as T | null;
           }
+          if (sql.startsWith('SELECT * FROM scheduled_chat_messages WHERE id = ?')) {
+            const [messageId] = bound as [string];
+            return (scheduledMessages.find((message) => message.id === messageId) ?? null) as T | null;
+          }
           return null as T | null;
         },
         async all<T>() {
@@ -311,6 +318,12 @@ function makeChatDb(state: {
               .filter((item) => item.friend_id === friendId)
               .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
             return { results: rows } as { results: T[] };
+          }
+          if (sql.includes('FROM scheduled_chat_messages')) {
+            const [chatId] = bound as [string];
+            return {
+              results: scheduledMessages.filter((message) => message.chat_id === chatId),
+            } as { results: T[] };
           }
           return { results: [] } as { results: T[] };
         },
@@ -411,6 +424,40 @@ function makeChatDb(state: {
             } else {
               changes = 0;
             }
+          } else if (sql.includes('INSERT INTO scheduled_chat_messages')) {
+            const [
+              id,
+              chatId,
+              friendId,
+              lineAccountId,
+              messagesJson,
+              supportCaseId,
+              scheduledAt,
+              nextAttemptAt,
+              createdBy,
+              createdByName,
+              createdAt,
+              updatedAt,
+            ] = bound as string[];
+            scheduledMessages.push({
+              id,
+              chat_id: chatId,
+              friend_id: friendId,
+              line_account_id: lineAccountId ?? null,
+              messages_json: messagesJson,
+              support_case_id: supportCaseId ?? null,
+              scheduled_at: scheduledAt,
+              next_attempt_at: nextAttemptAt,
+              status: 'pending',
+              attempts: 0,
+              last_error: null,
+              created_by: createdBy ?? null,
+              created_by_name: createdByName ?? null,
+              sent_at: null,
+              cancelled_at: null,
+              created_at: createdAt,
+              updated_at: updatedAt,
+            });
           }
           return { success: true, meta: { changes } };
         },
@@ -419,7 +466,7 @@ function makeChatDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { messages, supportCases, supportEvents, chatInternalMessages } };
+  return { db, calls, state: { messages, supportCases, supportEvents, chatInternalMessages, scheduledMessages } };
 }
 
 function setupApp(
@@ -1129,9 +1176,95 @@ describe('chat support visibility', () => {
     expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-friend-visible', {
       operatorId: 'operator-1',
       status: 'resolved',
+      isLongTerm: false,
       notes: '次回確認',
     });
     expect(dbMocks.getChatById).toHaveBeenCalledWith(db, 'chat-friend-visible');
+  });
+
+  test('stores long-term support without changing the legacy chat status constraint', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    let isLongTerm = 0;
+    dbMocks.getChatById.mockImplementation(async (_db: D1Database, id: string) => {
+      if (id === 'friend-visible') return null;
+      if (id !== 'chat-friend-visible') return null;
+      return {
+        id: 'chat-friend-visible',
+        friend_id: 'friend-visible',
+        operator_id: null,
+        status: 'in_progress',
+        is_long_term: isLongTerm,
+        notes: null,
+        last_message_at: '2026-06-12T10:00:00.000',
+        created_at: '2026-06-12T09:00:00.000',
+        updated_at: '2026-06-12T10:00:00.000',
+      };
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.updateChat.mockImplementation(async (_db, _id, update) => {
+      isLongTerm = update.isLongTerm ? 1 : 0;
+    });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'long_term' }),
+    });
+    const body = await res.json() as { data: { status: string } };
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-friend-visible', {
+      status: 'in_progress',
+      isLongTerm: true,
+    });
+    expect(body.data.status).toBe('long_term');
+  });
+
+  test('creates a scheduled message for an accessible chat', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue(null);
+    dbMocks.updateChat.mockResolvedValue(undefined);
+
+    const scheduledAt = new Date(Date.now() + 2 * 60 * 60_000).toISOString();
+    const res = await setupApp(db, 'staff').request('/api/chats/friend-visible/scheduled-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scheduledAt,
+        messages: [{ messageType: 'text', content: '翌朝ご連絡します' }],
+      }),
+    });
+    const body = await res.json() as { data: { scheduledAt: string; status: string; messages: unknown[] } };
+
+    expect(res.status).toBe(201);
+    expect(body.data).toMatchObject({ scheduledAt, status: 'pending' });
+    expect(body.data.messages).toEqual([{ messageType: 'text', content: '翌朝ご連絡します' }]);
+    expect(state.scheduledMessages).toHaveLength(1);
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-friend-visible', {
+      status: 'in_progress',
+      isLongTerm: false,
+    });
+  });
+
+  test('rejects a scheduled message less than one minute in the future', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/friend-visible/scheduled-messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scheduledAt: new Date(Date.now() + 10_000).toISOString(),
+        messages: [{ messageType: 'text', content: '近すぎる予約' }],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      success: false,
+      error: '予約日時は1分以上先を指定してください',
+    });
   });
 
   test('sending a support reply records the chat message and support case event', async () => {
@@ -1243,6 +1376,7 @@ describe('chat support visibility', () => {
     expect(metadata.messageId).toEqual(state.messages.at(-1)!.id);
     expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', {
       status: 'in_progress',
+      isLongTerm: false,
       lastMessageAt: '2026-06-12T10:00:00.000',
     });
   });
@@ -1573,7 +1707,7 @@ describe('chat support visibility', () => {
     expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('account-token', { allowMutationsWhenDisabled: true });
     expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
     expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('read-token-thanks');
-    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', { status: 'in_progress' });
+    expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', { status: 'in_progress', isLongTerm: false });
     expect(body.data).toMatchObject({
       markAsRead: { requested: true, marked: true, reason: null, messageId: 'incoming-1' },
       status: 'in_progress',
@@ -1635,6 +1769,7 @@ describe('chat support visibility', () => {
     });
     expect(dbMocks.updateChat).toHaveBeenCalledWith(db, 'chat-visible', {
       status: 'in_progress',
+      isLongTerm: false,
       lastMessageAt: '2026-06-12T10:00:00.000',
     });
   });

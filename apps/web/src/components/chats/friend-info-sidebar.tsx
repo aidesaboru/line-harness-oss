@@ -30,7 +30,7 @@ interface FriendDetail {
 }
 
 interface ChatStatusInfo {
-  status: 'unread' | 'in_progress' | 'resolved' | null
+  status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
 }
 
 interface Props {
@@ -53,6 +53,7 @@ const statusLabels: Record<NonNullable<ChatStatusInfo['status']>, { label: strin
   unread: { label: '未対応', className: 'bg-red-100 text-red-700' },
   in_progress: { label: '対応中', className: 'bg-yellow-100 text-yellow-700' },
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
+  long_term: { label: '中長期対応', className: 'bg-blue-100 text-blue-700' },
 }
 
 const FRIEND_INFO_ERROR_MESSAGE = '顧客情報の取得に失敗しました。もう一度お試しください。'

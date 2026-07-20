@@ -117,6 +117,26 @@ export type ChatDetailResponse = Chat & {
   internalMessages?: ChatInternalMessage[]
   typingParticipants?: ChatTypingParticipant[]
   activeSupportCase?: ChatActiveSupportCase | null
+  scheduledMessages?: ScheduledChatMessage[]
+}
+
+export type ScheduledChatMessage = {
+  id: string
+  chatId: string
+  friendId: string
+  lineAccountId: string | null
+  messages: Array<{ messageType: 'text' | 'image'; content: string }>
+  supportCaseId: string | null
+  scheduledAt: string
+  status: 'pending' | 'processing' | 'sent' | 'failed' | 'failed_permanent' | 'cancelled'
+  attempts: number
+  lastError: string | null
+  createdBy: string | null
+  createdByName: string | null
+  sentAt: string | null
+  cancelledAt: string | null
+  createdAt: string
+  updatedAt: string
 }
 
 export type ChatTypingResponse = {
@@ -528,8 +548,10 @@ export type FriendListParams = {
    * handled を付与。L-step 風友だちリスト UI 用。デフォルトは false。
    */
   includeChatStatus?: boolean
-  /** 並び替え。`oldest` で created_at ASC、未指定 / `recent` で DESC. */
-  sort?: 'recent' | 'oldest'
+  /** 並び替え。追加日または顧客番号。 */
+  sort?: 'recent' | 'oldest' | 'customer_number'
+  /** 決算月。1〜12。 */
+  closingMonth?: number
   /** `unhandled` で「最新が未返信の incoming」だけに絞る (サーバ側 SQL filter). */
   handled?: 'unhandled'
 }
@@ -555,6 +577,7 @@ export const api = {
       if (params?.includeTags === false) query.includeTags = 'false'
       if (params?.includeChatStatus) query.includeChatStatus = 'true'
       if (params?.sort) query.sort = params.sort
+      if (params?.closingMonth) query.closingMonth = String(params.closingMonth)
       if (params?.handled) query.handled = params.handled
       return fetchApi<ApiResponse<PaginatedResponse<FriendListItem>>>(
         '/api/friends?' + new URLSearchParams(query)
@@ -1323,6 +1346,26 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
+    schedule: (id: string, data: {
+      scheduledAt: string
+      messages: Array<{ content: string; messageType?: 'text' | 'image' }>
+      supportCaseId?: string
+      lineAccountId?: string | null
+    }) =>
+      fetchApi<ApiResponse<ScheduledChatMessage>>(`/api/chats/${id}/scheduled-messages`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    cancelScheduled: (id: string, scheduledMessageId: string) =>
+      fetchApi<ApiResponse<{ id: string; status: 'cancelled'; cancelledAt: string }>>(
+        `/api/chats/${id}/scheduled-messages/${scheduledMessageId}`,
+        { method: 'DELETE' },
+      ),
+    retryScheduled: (id: string, scheduledMessageId: string) =>
+      fetchApi<ApiResponse<{ id: string; status: 'pending'; nextAttemptAt: string }>>(
+        `/api/chats/${id}/scheduled-messages/${scheduledMessageId}/retry`,
+        { method: 'POST' },
+      ),
     markRead: (id: string) =>
       fetchApi<ApiResponse<ChatMarkReadResponse>>(`/api/chats/${id}/read`, {
         method: 'POST',

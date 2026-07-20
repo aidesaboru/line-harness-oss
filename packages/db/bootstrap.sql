@@ -250,7 +250,7 @@ CREATE TABLE chats (
   last_message_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, line_account_id TEXT);
+, line_account_id TEXT, is_long_term INTEGER NOT NULL DEFAULT 0 CHECK (is_long_term IN (0, 1)));
 
 CREATE TABLE conversion_events (
   id                  TEXT PRIMARY KEY,
@@ -713,6 +713,27 @@ CREATE TABLE scenarios (
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , line_account_id TEXT);
 
+CREATE TABLE scheduled_chat_messages (
+  id                  TEXT PRIMARY KEY,
+  chat_id             TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
+  friend_id           TEXT NOT NULL REFERENCES friends (id) ON DELETE CASCADE,
+  line_account_id     TEXT,
+  messages_json       TEXT NOT NULL,
+  support_case_id     TEXT,
+  scheduled_at        TEXT NOT NULL,
+  next_attempt_at     TEXT NOT NULL,
+  status              TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'failed_permanent', 'cancelled')),
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  last_error          TEXT,
+  created_by          TEXT,
+  created_by_name     TEXT,
+  sent_at             TEXT,
+  cancelled_at        TEXT,
+  created_at          TEXT NOT NULL,
+  updated_at          TEXT NOT NULL
+);
+
 CREATE TABLE scoring_rules (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
@@ -1073,6 +1094,9 @@ CREATE INDEX idx_chat_typing_status_friend ON chat_typing_status (friend_id, exp
 
 CREATE INDEX idx_chats_friend ON chats (friend_id);
 
+CREATE INDEX idx_chats_long_term
+  ON chats (is_long_term, last_message_at);
+
 CREATE INDEX idx_chats_operator ON chats (operator_id);
 
 CREATE INDEX idx_chats_status ON chats (status);
@@ -1185,6 +1209,12 @@ CREATE INDEX idx_rich_menu_groups_account ON rich_menu_groups(account_id, status
 CREATE INDEX idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_index);
 
 CREATE INDEX idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
+
+CREATE INDEX idx_scheduled_chat_messages_chat
+  ON scheduled_chat_messages (chat_id, scheduled_at DESC);
+
+CREATE INDEX idx_scheduled_chat_messages_due
+  ON scheduled_chat_messages (status, next_attempt_at);
 
 CREATE INDEX idx_shifts_staff_date ON staff_shifts (staff_id, work_date);
 

@@ -42,9 +42,10 @@ export interface Friend {
    *   unread       未対応 (incoming あり、operator が読んでない)
    *   in_progress  対応中 (operator が見て、まだ閉じてない)
    *   resolved     対応済み (デフォルト. chats 行がない friend もここ)
+   *   long_term    中長期対応 (24時間超過・未対応キューの対象外)
    * 一覧 API の chat-status hydration が有効なときのみ付与.
    */
-  chatStatus?: 'unread' | 'in_progress' | 'resolved';
+  chatStatus?: 'unread' | 'in_progress' | 'resolved' | 'long_term';
   /** 作成日時 (ISO 8601) */
   createdAt: string;
   /** 更新日時 (ISO 8601) */
@@ -719,7 +720,7 @@ export interface Chat {
   id: string;
   friendId: string;
   operatorId: string | null;
-  status: "unread" | "in_progress" | "resolved";
+  status: "unread" | "in_progress" | "resolved" | "long_term";
   notes: string | null;
   lastMessageAt: string | null;
   createdAt: string;

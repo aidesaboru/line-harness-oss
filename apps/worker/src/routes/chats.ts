@@ -34,6 +34,12 @@ import {
   toggleInternalReaction,
 } from '../services/internal-message-reactions.js';
 import { kickWebPushNotifications } from './app-notifications.js';
+import {
+  getActiveScheduledChatMessages,
+  serializeScheduledChatMessage,
+  type ScheduledChatMessagePart,
+  type ScheduledChatMessageRow,
+} from '../services/scheduled-chat-messages.js';
 
 const chats = new Hono<Env>();
 
@@ -48,9 +54,11 @@ const CHAT_NOTES_MAX_LENGTH = 4096;
 const CHAT_INTERNAL_MESSAGE_MAX_LENGTH = 5000;
 const CHAT_INTERNAL_MENTION_MAX = 20;
 const CHAT_INTERNAL_MENTION_MAX_LENGTH = 80;
+const CHAT_SCHEDULE_MAX_DAYS = 90;
+const CHAT_SCHEDULE_MIN_LEAD_MS = 60 * 1000;
 const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved']);
+const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved', 'long_term']);
 const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
 const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
 
@@ -101,6 +109,7 @@ type ChatLike = {
   friend_id: string;
   operator_id: string | null;
   status: string;
+  is_long_term?: number;
   notes: string | null;
   last_message_at: string | null;
   created_at: string;
@@ -144,6 +153,12 @@ type ChatSendBody = {
   markAsRead?: boolean;
   quoteMessageId?: string;
 };
+type ChatScheduleBody = {
+  scheduledAt: string;
+  messages: ScheduledChatMessagePart[];
+  supportCaseId?: string;
+  lineAccountId?: string | null;
+};
 type ExternalOutgoingBody = {
   content: string;
 };
@@ -157,7 +172,7 @@ type ChatDeletedMessageResponse = { messageId: string; deletedAt: string };
 
 type OperatorCreateBody = { name: string; email: string; role?: string };
 type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
-type ChatStatus = 'unread' | 'in_progress' | 'resolved';
+type ChatStatus = 'unread' | 'in_progress' | 'resolved' | 'long_term';
 type ChatListQuery = {
   status?: ChatStatus;
   operatorId?: string;
@@ -639,6 +654,54 @@ function parseChatSendBody(raw: unknown): ValueResult<ChatSendBody> {
   };
 }
 
+function parseChatScheduleBody(raw: unknown, now = new Date()): ValueResult<ChatScheduleBody> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  if (typeof raw.scheduledAt !== 'string') return { ok: false, error: 'scheduledAt must be a string' };
+  const scheduledTime = new Date(raw.scheduledAt.trim()).getTime();
+  if (!Number.isFinite(scheduledTime)) return { ok: false, error: 'scheduledAt is invalid' };
+  if (scheduledTime < now.getTime() + CHAT_SCHEDULE_MIN_LEAD_MS) {
+    return { ok: false, error: '予約日時は1分以上先を指定してください' };
+  }
+  if (scheduledTime > now.getTime() + CHAT_SCHEDULE_MAX_DAYS * 24 * 60 * 60 * 1000) {
+    return { ok: false, error: `予約日時は${CHAT_SCHEDULE_MAX_DAYS}日以内で指定してください` };
+  }
+  if (!Array.isArray(raw.messages) || raw.messages.length === 0 || raw.messages.length > 5) {
+    return { ok: false, error: 'messages must contain between 1 and 5 items' };
+  }
+
+  const messages: ScheduledChatMessagePart[] = [];
+  for (const item of raw.messages) {
+    const parsed = parseChatSendBody(item);
+    if (!parsed.ok) return parsed;
+    if (parsed.value.quoteMessageId) {
+      return { ok: false, error: '返信指定中のメッセージは予約送信できません' };
+    }
+    const normalized = normalizeChatSendPayload(parsed.value);
+    if (!normalized.ok) return normalized;
+    if (normalized.payload.messageType !== 'text' && normalized.payload.messageType !== 'image') {
+      return { ok: false, error: '予約送信はテキストと画像に対応しています' };
+    }
+    messages.push({
+      messageType: normalized.payload.messageType,
+      content: normalized.payload.content,
+    });
+  }
+
+  const supportCaseId = parseOptionalVisibleString(raw.supportCaseId, 'supportCaseId', CHAT_ID_MAX_LENGTH);
+  if (!supportCaseId.ok) return supportCaseId;
+  const lineAccountId = parseOptionalNullableVisibleString(raw.lineAccountId, 'lineAccountId', CHAT_ID_MAX_LENGTH);
+  if (!lineAccountId.ok) return lineAccountId;
+  return {
+    ok: true,
+    value: {
+      scheduledAt: new Date(scheduledTime).toISOString(),
+      messages,
+      supportCaseId: supportCaseId.value,
+      lineAccountId: lineAccountId.value,
+    },
+  };
+}
+
 function parseExternalOutgoingBody(raw: unknown): ValueResult<ExternalOutgoingBody> {
   if (!isRecord(raw)) return { ok: false, error: 'body must be an object' };
   if (typeof raw.content !== 'string') return { ok: false, error: 'content must be a string' };
@@ -721,6 +784,12 @@ function serializeActiveSupportCaseForChat(row: ActiveSupportCaseForChat | null)
     latestEscalationStatus: row.latest_escalation_status,
     updatedAt: row.updated_at,
   };
+}
+
+function publicChatStatus(status: string | null | undefined, isLongTerm: number | null | undefined): ChatStatus {
+  if (isLongTerm === 1) return 'long_term';
+  if (status === 'unread' || status === 'in_progress' || status === 'resolved') return status;
+  return 'resolved';
 }
 
 function activeSupportCaseConditions(staff: SupportAccessStaff, caseAlias = 'sc'): { sql: string; binds: unknown[] } {
@@ -1392,7 +1461,10 @@ chats.get('/api/chats', async (c) => {
         f.line_user_id,
         f.line_account_id,
         c.operator_id,
-        COALESCE(c.status, 'resolved') AS status,
+        CASE
+          WHEN COALESCE(c.is_long_term, 0) = 1 THEN 'long_term'
+          ELSE COALESCE(c.status, 'resolved')
+        END AS status,
         c.notes,
         -- last_message_at は preview メッセージの時刻に揃える (一覧 row の時刻表示と preview が
         -- 別メッセージを指す mismatch を防ぐ)。preview が無い (chats 行のみ存在) ケースは
@@ -1426,8 +1498,12 @@ chats.get('/api/chats', async (c) => {
     const bindings: unknown[] = [];
 
     if (status) {
-      conditions.push(`COALESCE(c.status, 'resolved') = ?`);
-      bindings.push(status);
+      if (status === 'long_term') {
+        conditions.push('COALESCE(c.is_long_term, 0) = 1');
+      } else {
+        conditions.push(`COALESCE(c.is_long_term, 0) = 0 AND COALESCE(c.status, 'resolved') = ?`);
+        bindings.push(status);
+      }
     }
     if (operatorId) {
       conditions.push('c.operator_id = ?');
@@ -1586,7 +1662,7 @@ chats.get('/api/chats/:id', async (c) => {
       const existing = await c.env.DB
         .prepare(`SELECT * FROM chats WHERE friend_id = ? ORDER BY created_at DESC LIMIT 1`)
         .bind(friendRow.id)
-        .first<{ id: string; friend_id: string; operator_id: string | null; status: string; notes: string | null; last_message_at: string | null; created_at: string; updated_at: string }>();
+        .first<{ id: string; friend_id: string; operator_id: string | null; status: string; is_long_term: number; notes: string | null; last_message_at: string | null; created_at: string; updated_at: string }>();
       if (existing) {
         chatRow = existing as Awaited<ReturnType<typeof getChatById>>;
       }
@@ -1599,7 +1675,7 @@ chats.get('/api/chats/:id', async (c) => {
     // 公開 ID は常に friend_id に統一する（lazy-create で ID が変わるのを防ぐため）。
     const responseId = resolvedFriendId;
     const operatorId = chatRow?.operator_id ?? null;
-    const status = chatRow?.status ?? 'resolved';
+    const status = publicChatStatus(chatRow?.status, chatRow?.is_long_term);
     const notes = chatRow?.notes ?? null;
     const lastMessageAt = chatRow?.last_message_at ?? null;
     const createdAt = chatRow?.created_at ?? null;
@@ -1658,6 +1734,9 @@ chats.get('/api/chats/:id', async (c) => {
     const typingParticipants = chatRow
       ? await getChatTypingParticipants(c.env.DB, chatRow.id, staff, now)
       : [];
+    const scheduledMessages = chatRow
+      ? await getActiveScheduledChatMessages(c.env.DB, chatRow.id)
+      : [];
 
     return c.json({
       success: true,
@@ -1678,6 +1757,7 @@ chats.get('/api/chats/:id', async (c) => {
         internalMessages: internalMessages.results.map((message) => serializeChatInternalMessage(message, staff)),
         activeSupportCase: serializeActiveSupportCaseForChat(activeSupportCase),
         typingParticipants,
+        scheduledMessages: scheduledMessages.map(serializeScheduledChatMessage),
         messages: pageMessages.map((m) => ({
           id: m.id,
           direction: m.direction,
@@ -1735,13 +1815,25 @@ chats.put('/api/chats/:id', async (c) => {
     const denied = await ensureChatFriendAccess(c, resolved.friend_id);
     if (denied) return denied;
 
-    await updateChat(c.env.DB, resolved.id, parsed.value);
+    const update = parsed.value.status === 'long_term'
+      ? { ...parsed.value, status: 'in_progress', isLongTerm: true }
+      : {
+          ...parsed.value,
+          ...(parsed.value.status ? { isLongTerm: false } : {}),
+        };
+    await updateChat(c.env.DB, resolved.id, update);
     const updated = await getChatById(c.env.DB, resolved.id);
     if (!updated) return c.json({ success: false, error: 'Not found' }, 404);
     return c.json({
       success: true,
       // 公開 ID は friend_id に統一
-      data: { id: updated.friend_id, friendId: updated.friend_id, operatorId: updated.operator_id, status: updated.status, notes: updated.notes },
+      data: {
+        id: updated.friend_id,
+        friendId: updated.friend_id,
+        operatorId: updated.operator_id,
+        status: publicChatStatus(updated.status, updated.is_long_term),
+        notes: updated.notes,
+      },
     });
   } catch (err) {
     console.error(`PUT /api/chats/:id error: ${chatRouteErrorKind(err)}`);
@@ -1794,8 +1886,8 @@ chats.post('/api/chats/:id/typing', async (c) => {
         )
         .run();
 
-      if (chat.status === 'unread') {
-        await updateChat(c.env.DB, chat.id, { status: 'in_progress' });
+      if (chat.status === 'unread' || chat.is_long_term === 1) {
+        await updateChat(c.env.DB, chat.id, { status: 'in_progress', isLongTerm: false });
       }
     } else {
       await c.env.DB
@@ -1808,7 +1900,9 @@ chats.post('/api/chats/:id/typing', async (c) => {
       success: true,
       data: {
         active: parsed.value.active,
-        status: parsed.value.active && chat.status === 'unread' ? 'in_progress' : chat.status,
+        status: parsed.value.active && (chat.status === 'unread' || chat.is_long_term === 1)
+          ? 'in_progress'
+          : publicChatStatus(chat.status, chat.is_long_term),
         typingParticipants: await getChatTypingParticipants(c.env.DB, chat.id, staff, jstNow()),
       },
     });
@@ -1965,7 +2059,7 @@ chats.post('/api/chats/:id/external-outgoing', async (c) => {
       )
       .bind(messageId, friend.id, body.value.content, friend.line_account_id ?? null, now)
       .run();
-    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: now });
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', isLongTerm: false, lastMessageAt: now });
 
     return c.json({
       success: true,
@@ -2105,7 +2199,7 @@ chats.post('/api/chats/:id/read', async (c) => {
     const nextStatus = markAsRead.marked ? 'in_progress' : resolved.chat?.status ?? null;
 
     if (markAsRead.marked && resolved.chat) {
-      await updateChat(c.env.DB, resolved.chat.id, { status: 'in_progress' });
+      await updateChat(c.env.DB, resolved.chat.id, { status: 'in_progress', isLongTerm: false });
     }
 
     return c.json({
@@ -2179,6 +2273,137 @@ chats.post('/api/chats/:id/messages/:messageId/deleted', async (c) => {
     });
   } catch (err) {
     console.error(`POST /api/chats/:id/messages/:messageId/deleted error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/scheduled-messages', async (c) => {
+  try {
+    if (!canUseManualLineSend(c.env)) {
+      return c.json({ success: false, error: 'Manual LINE sending is disabled' }, 403);
+    }
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const body = parseChatScheduleBody(await readJsonBody(c));
+    if (!body.ok) return c.json({ success: false, error: body.error }, 400);
+
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const { friend } = await resolveFriendAndAccessToken(
+      c.env.DB,
+      chat.friend_id,
+      c.env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
+
+    const staff = currentStaff(c);
+    const validation = await validateSupportCaseForSend(c, staff, friend, body.value);
+    if (!validation.ok) return validation.response;
+    const lineAccountId = friend.line_account_id || validation.supportLineAccountId || null;
+    const safetyBlock = await getLineSendSafetyBlock(c.env.DB, lineAccountId);
+    if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
+
+    const id = crypto.randomUUID();
+    const now = jstNow();
+    await c.env.DB
+      .prepare(
+        `INSERT INTO scheduled_chat_messages
+         (id, chat_id, friend_id, line_account_id, messages_json, support_case_id,
+          scheduled_at, next_attempt_at, status, attempts, created_by, created_by_name,
+          created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)`,
+      )
+      .bind(
+        id,
+        chat.id,
+        friend.id,
+        lineAccountId,
+        JSON.stringify(body.value.messages),
+        validation.supportCase?.id ?? null,
+        body.value.scheduledAt,
+        body.value.scheduledAt,
+        staff.id,
+        staff.name,
+        now,
+        now,
+      )
+      .run();
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', isLongTerm: false });
+    const created = await c.env.DB
+      .prepare('SELECT * FROM scheduled_chat_messages WHERE id = ?')
+      .bind(id)
+      .first<ScheduledChatMessageRow>();
+    if (!created) return c.json({ success: false, error: 'Scheduled message was not created' }, 500);
+    return c.json({ success: true, data: serializeScheduledChatMessage(created) }, 201);
+  } catch (err) {
+    console.error(`POST /api/chats/:id/scheduled-messages error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.delete('/api/chats/:id/scheduled-messages/:messageId', async (c) => {
+  try {
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const now = jstNow();
+    const result = await c.env.DB
+      .prepare(
+        `UPDATE scheduled_chat_messages
+         SET status = 'cancelled', cancelled_at = ?, updated_at = ?
+         WHERE id = ? AND chat_id = ? AND status IN ('pending', 'failed', 'failed_permanent')`,
+      )
+      .bind(now, now, messageId.value, chat.id)
+      .run();
+    if (Number(result.meta?.changes ?? 0) === 0) {
+      return c.json({ success: false, error: '取消できる予約が見つかりません' }, 409);
+    }
+    return c.json({ success: true, data: { id: messageId.value, status: 'cancelled', cancelledAt: now } });
+  } catch (err) {
+    console.error(`DELETE /api/chats/:id/scheduled-messages/:messageId error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/scheduled-messages/:messageId/retry', async (c) => {
+  try {
+    if (!canUseManualLineSend(c.env)) {
+      return c.json({ success: false, error: 'Manual LINE sending is disabled' }, 403);
+    }
+    const chatId = parseChatPathId(c.req.param('id'));
+    if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+
+    const now = jstNow();
+    const nextAttemptAt = new Date().toISOString();
+    const result = await c.env.DB
+      .prepare(
+        `UPDATE scheduled_chat_messages
+         SET status = 'pending', attempts = 0, next_attempt_at = ?, last_error = NULL, updated_at = ?
+         WHERE id = ? AND chat_id = ? AND status IN ('failed', 'failed_permanent')`,
+      )
+      .bind(nextAttemptAt, now, messageId.value, chat.id)
+      .run();
+    if (Number(result.meta?.changes ?? 0) === 0) {
+      return c.json({ success: false, error: '再試行できる予約が見つかりません' }, 409);
+    }
+    return c.json({ success: true, data: { id: messageId.value, status: 'pending', nextAttemptAt } });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/scheduled-messages/:messageId/retry error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -2322,7 +2547,7 @@ chats.post('/api/chats/:id/send', async (c) => {
     }
 
     // チャットの最終メッセージ日時を更新（chat.id を直接使う — friend_id で呼ばれても resolveOrCreateChat 済み）
-    await updateChat(c.env.DB, chat.id, { status: 'in_progress', lastMessageAt: now });
+    await updateChat(c.env.DB, chat.id, { status: 'in_progress', isLongTerm: false, lastMessageAt: now });
 
     return c.json({
       success: true,

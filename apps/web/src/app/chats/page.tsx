@@ -2773,6 +2773,18 @@ export default function ChatsPage() {
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                  <Link
+                    href={chatDetail.activeSupportCase
+                      ? `/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`
+                      : `/support?create=1&friend=${encodeURIComponent(chatDetail.friendId)}`}
+                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+                    title={chatDetail.activeSupportCase
+                      ? `チケット「${chatDetail.activeSupportCase.title}」を開く`
+                      : 'このチャットをチケット化'}
+                  >
+                    <TicketIcon className="h-3.5 w-3.5" />
+                    {chatDetail.activeSupportCase ? 'チケットを開く' : 'チケット化'}
+                  </Link>
                   <button
                     type="button"
                     onClick={() => setInternalChatOpen(true)}

@@ -17,6 +17,11 @@ export type LineClientOptions = {
   allowMutationsWhenDisabled?: boolean;
 };
 
+export type FollowersPage = {
+  userIds: string[];
+  next?: string;
+};
+
 export function setLineMutationsDisabled(disabled: boolean): void {
   lineMutationsDisabled = disabled;
 }
@@ -93,6 +98,14 @@ export class LineClient {
       `/v2/bot/profile/${encodeURIComponent(userId)}`,
     );
     return data as UserProfile;
+  }
+
+  async getFollowers(options: { limit?: number; start?: string } = {}): Promise<FollowersPage> {
+    const params = new URLSearchParams();
+    params.set('limit', String(Math.max(1, Math.min(1000, Math.floor(options.limit ?? 200)))));
+    if (options.start) params.set('start', options.start);
+    const { data } = await this.request('GET', `/v2/bot/followers/ids?${params.toString()}`);
+    return data as FollowersPage;
   }
 
   // ─── Messaging ───────────────────────────────────────────────────────────

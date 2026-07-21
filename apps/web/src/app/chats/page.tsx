@@ -191,6 +191,13 @@ function formatDatetime(iso: string | null): string {
   })
 }
 
+function formatAddedDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('ja-JP', {
+    month: '2-digit',
+    day: '2-digit',
+  })
+}
+
 function toDatetimeLocalValue(date: Date): string {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
   return local.toISOString().slice(0, 16)
@@ -2810,7 +2817,9 @@ export default function ChatsPage() {
                               )}
                               <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
                             </div>
-                            <span className="text-[10px] text-gray-400 flex-shrink-0">{formatDatetime(chat.lastMessageAt)}</span>
+                            <span className="text-[10px] text-gray-400 flex-shrink-0">
+                              {chat.lastMessageAt ? formatDatetime(chat.lastMessageAt) : `追加 ${formatAddedDate(chat.createdAt)}`}
+                            </span>
                           </div>
                           {stale && (
                             <div className="mt-1 inline-flex items-center gap-1 rounded-full border border-orange-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-orange-700">
@@ -2834,7 +2843,7 @@ export default function ChatsPage() {
                             {chat.lastMessageDirection === 'outgoing' && (
                               <span className="text-gray-400 mr-1">↪</span>
                             )}
-                            {preview || <span className="italic text-gray-300">(まだメッセージなし)</span>}
+                            {preview || <span className="font-medium text-emerald-600">メッセージを開始</span>}
                           </p>
                         </div>
                       </div>

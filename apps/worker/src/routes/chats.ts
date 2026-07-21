@@ -47,6 +47,7 @@ import {
   type ScheduledChatMessagePart,
   type ScheduledChatMessageRow,
 } from '../services/scheduled-chat-messages.js';
+import { syncFollowerPage } from '../services/follower-sync.js';
 
 const chats = new Hono<Env>();
 
@@ -56,6 +57,7 @@ const OPERATOR_EMAIL_MAX_LENGTH = 254;
 const OPERATOR_ROLE_MAX_LENGTH = 64;
 const CHAT_ID_MAX_LENGTH = 128;
 const CHAT_CURSOR_MAX_LENGTH = 64;
+const CHAT_FOLLOWER_CURSOR_MAX_LENGTH = 1024;
 const CHAT_SEARCH_MAX_LENGTH = 120;
 const CHAT_NOTES_MAX_LENGTH = 4096;
 const CHAT_INTERNAL_MESSAGE_MAX_LENGTH = 5000;
@@ -199,6 +201,7 @@ type ChatListQuery = {
 type ChatCreateInput = { friendId: string; operatorId?: string; lineAccountId?: string };
 type ChatUpdateInput = Partial<{ operatorId: string | null; status: ChatStatus; notes: string | null }>;
 type ChatDetailQuery = { messageLimit: number; beforeCreatedAt?: string; beforeId?: string };
+type ChatFollowerSyncInput = { lineAccountId: string; start?: string };
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
 type ChatRouteError = Error & { status?: number };
 type LineSentMessageResponse = {
@@ -551,6 +554,24 @@ function parseChatListQuery(searchParams: URLSearchParams): ValueResult<ChatList
       search: search.value,
     },
   };
+}
+
+function parseChatFollowerSyncBody(raw: unknown): ValueResult<ChatFollowerSyncInput> {
+  if (!isRecord(raw)) return { ok: false, error: 'Invalid payload' };
+  const lineAccountId = parseRequiredString(
+    raw.lineAccountId,
+    'lineAccountId',
+    CHAT_ID_MAX_LENGTH,
+    VISIBLE_ASCII_PATTERN,
+  );
+  if (!lineAccountId.ok) return lineAccountId;
+  const start = parseOptionalVisibleString(
+    raw.start,
+    'start',
+    CHAT_FOLLOWER_CURSOR_MAX_LENGTH,
+  );
+  if (!start.ok) return start;
+  return { ok: true, value: { lineAccountId: lineAccountId.value, start: start.value } };
 }
 
 function parseChatDetailQuery(searchParams: URLSearchParams): ValueResult<ChatDetailQuery> {
@@ -1358,6 +1379,37 @@ chats.delete('/api/operators/:id', requireRole('owner', 'admin'), async (c) => {
 
 // ========== チャットCRUD ==========
 
+chats.post('/api/chats/sync-followers', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsed = parseChatFollowerSyncBody(await readJsonBody(c));
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+
+    const account = await getLineAccountById(c.env.DB, parsed.value.lineAccountId);
+    if (!account || !account.is_active) {
+      return c.json({ success: false, error: 'LINEアカウントが見つかりません' }, 404);
+    }
+
+    const { LineClient } = await import('@line-crm/line-sdk');
+    const result = await syncFollowerPage(
+      c.env.DB,
+      new LineClient(account.channel_access_token),
+      account.id,
+      parsed.value.start,
+    );
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    const status = lineApiErrorStatus(err);
+    if (status === 403) {
+      return c.json({
+        success: false,
+        error: 'LINE友だち一覧の取得には認証済みアカウントまたはプレミアムアカウントが必要です',
+      }, 403);
+    }
+    console.error(`POST /api/chats/sync-followers error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'LINE友だち一覧の同期に失敗しました' }, 502);
+  }
+});
+
 chats.get('/api/chats', async (c) => {
   try {
     const parsed = parseChatListQuery(new URL(c.req.url).searchParams);
@@ -1373,9 +1425,9 @@ chats.get('/api/chats', async (c) => {
     const activeCaseBinds = lineAccountId
       ? [...activeCaseConditions.binds, lineAccountId]
       : [...activeCaseConditions.binds];
-    // List everyone who has any message history (incoming or outgoing — push/broadcast/scenario included)
-    // PLUS any chats row that exists even before any messages_log entry is written.
-    // Source = messages_log ∪ chats.friend_id; chats は status/operator/notes 用に LEFT JOIN で最新1件だけ採用。
+    // List everyone who has any message history, any chats row, OR is currently following.
+    // The third source makes follow-only users available for an operator-initiated first message.
+    // Historical message/chat sources remain, so unfollowed customers and their logs do not disappear.
     //
     // recent_msg CTE で friend_id ごとに最新の messages_log 行をひとつ取得し、本文 preview と
     // direction (incoming/outgoing) を一覧に出す。
@@ -1400,6 +1452,11 @@ chats.get('/api/chats', async (c) => {
         SELECT friend_id, last_message_at
         FROM chats
         WHERE ${accountFilterSql}
+        UNION ALL
+        SELECT id AS friend_id, created_at AS last_message_at
+        FROM friends
+        WHERE is_following = 1
+          ${lineAccountId ? 'AND line_account_id = ?' : ''}
       ),
       deduped AS (
         SELECT friend_id, MAX(last_message_at) AS last_message_at
@@ -1483,7 +1540,7 @@ chats.get('/api/chats', async (c) => {
         -- last_message_at は preview メッセージの時刻に揃える (一覧 row の時刻表示と preview が
         -- 別メッセージを指す mismatch を防ぐ)。preview が無い (chats 行のみ存在) ケースは
         -- d.last_message_at にフォールバック。
-        COALESCE(rm.preview_at, d.last_message_at) AS last_message_at,
+        COALESCE(rm.preview_at, c.last_message_at) AS last_message_at,
         rm.content AS last_message_content,
         rm.direction AS last_message_direction,
         rm.message_type AS last_message_type,
@@ -1494,8 +1551,8 @@ chats.get('/api/chats', async (c) => {
         ac.escalation_assignee AS support_case_escalation_assignee,
         ac.latest_escalation_status AS support_case_latest_escalation_status,
         ac.updated_at AS support_case_updated_at,
-        COALESCE(c.created_at, d.last_message_at) AS created_at,
-        COALESCE(c.updated_at, d.last_message_at) AS updated_at
+        COALESCE(c.created_at, f.created_at) AS created_at,
+        COALESCE(c.updated_at, f.updated_at) AS updated_at
       FROM deduped d
       INNER JOIN friends f ON f.id = d.friend_id
       LEFT JOIN chats c ON c.id = (
@@ -1504,9 +1561,9 @@ chats.get('/api/chats', async (c) => {
       LEFT JOIN recent_msg rm ON rm.friend_id = f.id
       LEFT JOIN active_support_cases ac ON ac.friend_id = f.id
     `;
-    // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 3 箇所 → active_support_cases。
+    // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 3 箇所 + following friend source → active cases.
     const ctePrebindings: unknown[] = lineAccountId
-      ? [lineAccountId, lineAccountId, lineAccountId, ...activeCaseBinds]
+      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, ...activeCaseBinds]
       : activeCaseBinds;
     const conditions: string[] = [];
     const bindings: unknown[] = [];

@@ -19,6 +19,10 @@ const lineSdkMocks = vi.hoisted(() => {
   return mocks;
 });
 
+const followerSyncMocks = vi.hoisted(() => ({
+  syncFollowerPage: vi.fn(),
+}));
+
 const dbMocks = {
   getOperators: vi.fn(),
   getOperatorById: vi.fn(),
@@ -35,6 +39,7 @@ const dbMocks = {
 };
 vi.mock('@line-crm/db', () => dbMocks);
 vi.mock('@line-crm/line-sdk', () => ({ LineClient: lineSdkMocks.LineClient }));
+vi.mock('../services/follower-sync.js', () => followerSyncMocks);
 
 const { chats } = await import('./chats.js');
 
@@ -550,6 +555,7 @@ beforeEach(() => {
   lineSdkMocks.pushFlexMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.pushImageMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.markMessagesAsRead.mockReset().mockResolvedValue(undefined);
+  followerSyncMocks.syncFollowerPage.mockReset();
   dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
     friends.find((friend) => friend.id === id) ?? null,
   );
@@ -569,6 +575,56 @@ describe('chat support visibility', () => {
     expect(listCall?.sql).not.toContain('support_cases sc_friend_scope');
     expect(listCall?.sql).toContain("sc.status != 'resolved'");
     expect(listCall?.sql).not.toContain("sc.status != 'resolved' AND (sc.status IN");
+    expect(listCall?.sql).toContain('FROM friends');
+    expect(listCall?.sql).toContain('WHERE is_following = 1');
+  });
+
+  test('syncs a page of current LINE followers without removing existing history', async () => {
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getLineAccountById.mockResolvedValue({
+      id: 'acc-1',
+      is_active: 1,
+      channel_access_token: 'account-token',
+    });
+    followerSyncMocks.syncFollowerPage.mockResolvedValue({
+      fetched: 2,
+      created: 1,
+      updated: 1,
+      profileFailures: 0,
+      next: null,
+    });
+
+    const res = await setupApp(db, 'admin').request('/api/chats/sync-followers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: { fetched: 2, created: 1, updated: 1, next: null },
+    });
+    expect(followerSyncMocks.syncFollowerPage).toHaveBeenCalledWith(
+      db,
+      expect.any(Object),
+      'acc-1',
+      undefined,
+    );
+    expect(calls.every((call) => !call.sql.includes('DELETE'))).toBe(true);
+  });
+
+  test('limits full follower reconciliation to owners and admins', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/sync-followers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(403);
+    expect(followerSyncMocks.syncFollowerPage).not.toHaveBeenCalled();
   });
 
   test('chat list searches by customer name and latest message', async () => {
@@ -903,6 +959,7 @@ describe('chat support visibility', () => {
     expect(res.status).toBe(200);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
     expect(listCall?.binds).toEqual([
+      'acc-1',
       'acc-1',
       'acc-1',
       'acc-1',

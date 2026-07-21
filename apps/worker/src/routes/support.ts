@@ -70,7 +70,13 @@ const SUPPORT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
-const SUPPORT_CASE_CREATE_RETRY_DELAYS_MS = [100, 250, 500, 1_000] as const;
+const SUPPORT_CASE_CREATE_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const;
+const SUPPORT_CASE_CREATE_RETRYABLE_CODES = new Set([
+  'database_busy',
+  'database_error',
+  'network_error',
+  'unknown',
+]);
 const SUPPORT_CASE_DIAGNOSTIC_TTL_SECONDS = 7 * 24 * 60 * 60;
 const SLACK_API_BASE = 'https://slack.com/api/';
 
@@ -255,17 +261,34 @@ type SupportInternalMessageRow = {
   created_at: string;
 };
 
+class SupportCaseCreateError extends Error {
+  constructor(
+    readonly originalError: unknown,
+    readonly attempts: number,
+  ) {
+    super('Support case creation failed');
+    this.name = 'SupportCaseCreateError';
+  }
+}
+
+function originalSupportRouteError(err: unknown): unknown {
+  return err instanceof SupportCaseCreateError ? err.originalError : err;
+}
+
 function supportRouteErrorKind(err: unknown): string {
-  if (err instanceof TypeError) return 'network_error';
-  if (err instanceof Error) return err.name || 'error';
-  return typeof err;
+  const originalError = originalSupportRouteError(err);
+  if (originalError instanceof TypeError) return 'network_error';
+  if (originalError instanceof Error) return originalError.name || 'error';
+  return typeof originalError;
 }
 
 function supportRouteErrorCode(err: unknown): string {
-  const cause = err instanceof Error ? err.cause : undefined;
+  const originalError = originalSupportRouteError(err);
+  const cause = originalError instanceof Error ? originalError.cause : undefined;
   const details = [
-    err instanceof Error ? err.message : '',
+    originalError instanceof Error ? originalError.message : '',
     cause instanceof Error ? cause.message : '',
+    String(originalError),
   ].join(' ').toLowerCase();
 
   if (details.includes('foreign key')) return 'foreign_key_constraint';
@@ -276,13 +299,13 @@ function supportRouteErrorCode(err: unknown): string {
   if (details.includes('locked') || details.includes('busy')) return 'database_busy';
   if (details.includes('too many sql variables') || details.includes('statement too long')) return 'database_limit';
   if (details.includes('d1_error') || details.includes('sqlite_')) return 'database_error';
-  if (err instanceof TypeError) return 'network_error';
+  if (originalError instanceof TypeError) return 'network_error';
   return 'unknown';
 }
 
 function persistSupportCaseCreateFailure(
   c: Context<Env>,
-  diagnostic: { phase: string; code: string; kind: string },
+  diagnostic: { phase: string; code: string; kind: string; attempts?: number },
 ): string {
   const diagnosticId = crypto.randomUUID();
   const files = c.env.FILES;
@@ -1200,21 +1223,27 @@ async function createSupportCaseWithRetry(
   prepareStatements: () => D1PreparedStatement[],
 ) {
   let lastError: unknown;
+  let attempts = 0;
   const maxAttempts = SUPPORT_CASE_CREATE_RETRY_DELAYS_MS.length + 1;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
     try {
       await db.batch(prepareStatements());
       return;
     } catch (err) {
       lastError = err;
       const code = supportRouteErrorCode(err);
-      const retryable = ['database_busy', 'database_error', 'network_error', 'unknown'].includes(code);
+      const retryable = SUPPORT_CASE_CREATE_RETRYABLE_CODES.has(code);
       if (!retryable || attempt >= maxAttempts) break;
       console.warn(`[support_case_create] retry attempt=${attempt} code=${code}`);
-      await new Promise((resolve) => setTimeout(resolve, SUPPORT_CASE_CREATE_RETRY_DELAYS_MS[attempt - 1]));
+      const baseDelay = SUPPORT_CASE_CREATE_RETRY_DELAYS_MS[attempt - 1];
+      const randomBytes = new Uint16Array(1);
+      crypto.getRandomValues(randomBytes);
+      const jitter = 0.75 + ((randomBytes[0] ?? 0) / 65_535) * 0.5;
+      await new Promise((resolve) => setTimeout(resolve, Math.round(baseDelay * jitter)));
     }
   }
-  throw lastError;
+  throw new SupportCaseCreateError(lastError, attempts);
 }
 
 function validateCaseState(payload: {
@@ -1445,7 +1474,8 @@ support.post('/api/support/cases', async (c) => {
     const body = parsedBody.value;
     const parsedFriendId = parseOptionalVisibleId(body.friendId, 'friendId');
     if (!parsedFriendId.ok) return c.json({ success: false, error: parsedFriendId.error }, 400);
-    const friendId = parsedFriendId.value;
+    // D1 bind values cannot contain undefined; manual tickets intentionally store SQL NULL.
+    const friendId = parsedFriendId.value ?? null;
     const parsedLineAccountId = parseOptionalVisibleId(body.lineAccountId, 'lineAccountId');
     if (!parsedLineAccountId.ok) return c.json({ success: false, error: parsedLineAccountId.error }, 400);
     let lineAccountId: string | undefined | null = parsedLineAccountId.value;
@@ -1646,6 +1676,7 @@ support.post('/api/support/cases', async (c) => {
       }
       return statements;
     });
+    failurePhase = 'notifications';
     if (priority === 'urgent' && status !== 'resolved') {
       c.executionCtx.waitUntil(notifyUrgentSupportCase(c.env.DB, lineAccountId, id, {
         adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
@@ -1664,6 +1695,7 @@ support.post('/api/support/cases', async (c) => {
       phase: failurePhase,
       code: errorCode,
       kind: errorKind,
+      attempts: err instanceof SupportCaseCreateError ? err.attempts : undefined,
     });
     console.error(
       `POST /api/support/cases error: ${errorKind} phase=${failurePhase} code=${errorCode} diagnostic=${diagnosticId}`,

@@ -659,6 +659,9 @@ function makeSupportDb(state: {
         },
         async run() {
           calls.push({ method: 'run', sql, binds: bound });
+          if (bound.includes(undefined)) {
+            throw new Error("D1_TYPE_ERROR: Type 'undefined' not supported for value");
+          }
           if (sql.includes('INSERT INTO support_cases')) {
             const [
               id,
@@ -1226,6 +1229,45 @@ describe('support CRM routes', () => {
       event_type: 'created',
       actor_name: '林 静香',
     }));
+  });
+
+  test('staff can create a manually entered case without a linked LINE conversation', async () => {
+    const { db, state } = makeSupportDb({});
+    const customerSummary = '税務署からの確認について二次対応をお願いします。'.repeat(20);
+
+    const res = await setupApp(db, { id: 'staff-hayashi', name: '林 静香', role: 'staff' }).request('/api/support/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        friendId: null,
+        title: '手入力の税務相談',
+        category: 'tax_contract',
+        priority: 'high',
+        customerSummary,
+        primaryAssignee: '林 静香',
+        escalationAssignee: '吉田 京平',
+        dueAt: '2026-07-21T17:00:00+09:00',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as {
+      success: boolean;
+      data: { friendId: string | null; friendName: string | null; status: string; createdBy: string | null };
+    };
+    expect(body).toMatchObject({
+      success: true,
+      data: {
+        friendId: null,
+        friendName: null,
+        status: 'waiting_secondary',
+        createdBy: 'staff-hayashi',
+      },
+    });
+    expect(state.cases).toHaveLength(1);
+    expect(state.escalations).toHaveLength(1);
+    expect(state.events.map((event) => event.event_type)).toEqual(['created', 'escalated']);
   });
 
   test('case creation requires either a linked friend or a customer summary', async () => {

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { ApiRequestError, api, buildApiUrl, fetchApi, type ChatActiveSupportCase, type ChatInternalMessage, type ChatMessageCursor, type ChatTypingParticipant, type ScheduledChatMessage } from '@/lib/api'
 import { messageTypePreview } from '@/lib/message-type-label'
+import { isStaleChat } from '@/lib/chat-staleness'
 import {
   buildSupportChatRecoveryNotice,
   buildSupportChatSendCasePayload,
@@ -78,7 +79,6 @@ type PendingChatAttachment = ImageUploaderValue | {
   size: number
 }
 
-const CHAT_STALE_MS = 24 * 60 * 60 * 1000
 const CHAT_REALTIME_POLL_MS = 5 * 1000
 const PDF_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
 const PDF_UPLOAD_MAX_LABEL = '25MB'
@@ -224,12 +224,6 @@ function getTime(iso: string | null): number {
   if (!iso) return 0
   const t = new Date(iso).getTime()
   return Number.isNaN(t) ? 0 : t
-}
-
-function isStaleChat(chat: Pick<Chat, 'lastMessageAt' | 'status'>): boolean {
-  if (chat.status === 'resolved' || chat.status === 'long_term') return false
-  const t = getTime(chat.lastMessageAt)
-  return t > 0 && Date.now() - t >= CHAT_STALE_MS
 }
 
 function chatMessagePreview(chat: Pick<Chat, 'lastMessageContent' | 'lastMessageType'>): string {

@@ -19,14 +19,9 @@ export function isSecondaryOnlySupportStaff(staff: SupportAccessStaff): boolean 
   return SECONDARY_ONLY_SUPPORT_MODE && staff.role === 'secondary';
 }
 
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (char) => `\\${char}`);
-}
-
-export function supportStaffLikePattern(staff: SupportAccessStaff): string | null {
+export function supportStaffAssignmentName(staff: SupportAccessStaff): string | null {
   const name = staff.name.trim();
-  if (!name) return null;
-  return `%${escapeLike(name)}%`;
+  return name || null;
 }
 
 export function supportCaseVisibilitySql(
@@ -36,39 +31,39 @@ export function supportCaseVisibilitySql(
 ): SqlScope {
   if (!isRestrictedSupportStaff(staff)) return { sql: '', binds: [] };
 
-  const pattern = supportStaffLikePattern(staff);
+  const assignmentName = supportStaffAssignmentName(staff);
   if (isSecondaryOnlySupportStaff(staff)) {
-    if (!pattern) return { sql: '(0 = 1)', binds: [] };
+    if (!assignmentName) return { sql: '(0 = 1)', binds: [] };
     return {
       sql: `(
-        ${caseAlias}.escalation_assignee LIKE ? ESCAPE '\\'
+        ${caseAlias}.escalation_assignee = ?
         OR EXISTS (
           SELECT 1
           FROM support_escalations ${escalationAlias}
           WHERE ${escalationAlias}.case_id = ${caseAlias}.id
             AND ${escalationAlias}.status != 'closed'
-            AND ${escalationAlias}.assignee LIKE ? ESCAPE '\\'
+            AND ${escalationAlias}.assignee = ?
         )
       )`,
-      binds: [pattern, pattern],
+      binds: [assignmentName, assignmentName],
     };
   }
 
   const parts = [`${caseAlias}.created_by = ?`];
   const binds: unknown[] = [staff.id];
-  if (pattern) {
+  if (assignmentName) {
     parts.push(
-      `${caseAlias}.primary_assignee LIKE ? ESCAPE '\\'`,
-      `${caseAlias}.escalation_assignee LIKE ? ESCAPE '\\'`,
+      `${caseAlias}.primary_assignee = ?`,
+      `${caseAlias}.escalation_assignee = ?`,
       `EXISTS (
         SELECT 1
         FROM support_escalations ${escalationAlias}
         WHERE ${escalationAlias}.case_id = ${caseAlias}.id
           AND ${escalationAlias}.status != 'closed'
-          AND ${escalationAlias}.assignee LIKE ? ESCAPE '\\'
+          AND ${escalationAlias}.assignee = ?
       )`,
     );
-    binds.push(pattern, pattern, pattern);
+    binds.push(assignmentName, assignmentName, assignmentName);
   }
 
   return {
@@ -84,18 +79,18 @@ export function supportEscalationVisibilitySql(
 ): SqlScope {
   if (!isRestrictedSupportStaff(staff)) return { sql: '', binds: [] };
 
-  const pattern = supportStaffLikePattern(staff);
+  const assignmentName = supportStaffAssignmentName(staff);
   if (isSecondaryOnlySupportStaff(staff)) {
-    if (!pattern) return { sql: '(0 = 1)', binds: [] };
+    if (!assignmentName) return { sql: '(0 = 1)', binds: [] };
     return {
-      sql: `(${escalationAlias}.assignee LIKE ? ESCAPE '\\')`,
-      binds: [pattern],
+      sql: `(${escalationAlias}.assignee = ?)`,
+      binds: [assignmentName],
     };
   }
 
   const caseScope = supportCaseVisibilitySql(staff, caseAlias, 'se_case_scope');
-  const parts = pattern ? [`${escalationAlias}.assignee LIKE ? ESCAPE '\\'`] : [];
-  const binds: unknown[] = pattern ? [pattern] : [];
+  const parts = assignmentName ? [`${escalationAlias}.assignee = ?`] : [];
+  const binds: unknown[] = assignmentName ? [assignmentName] : [];
   parts.push(`EXISTS (
         SELECT 1
         FROM support_cases ${caseAlias}

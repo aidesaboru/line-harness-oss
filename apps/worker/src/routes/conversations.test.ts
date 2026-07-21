@@ -115,9 +115,9 @@ describe('GET /api/conversations support visibility', () => {
       0,
       'acc-1',
       'staff-1',
-      '%田島%',
-      '%田島%',
-      '%田島%',
+      '田島',
+      '田島',
+      '田島',
       10,
       5,
     ]);
@@ -128,9 +128,9 @@ describe('GET /api/conversations support visibility', () => {
       0,
       'acc-1',
       'staff-1',
-      '%田島%',
-      '%田島%',
-      '%田島%',
+      '田島',
+      '田島',
+      '田島',
     ]);
   });
 
@@ -164,9 +164,9 @@ describe('GET /api/conversations support visibility', () => {
       12,
       'acc-1',
       'staff-1',
-      '%田島%',
-      '%田島%',
-      '%田島%',
+      '田島',
+      '田島',
+      '田島',
       200,
       0,
     ]);
@@ -176,9 +176,9 @@ describe('GET /api/conversations support visibility', () => {
       12,
       'acc-1',
       'staff-1',
-      '%田島%',
-      '%田島%',
-      '%田島%',
+      '田島',
+      '田島',
+      '田島',
     ]);
   });
 
@@ -192,9 +192,9 @@ describe('GET /api/conversations support visibility', () => {
     expect(queueCall?.binds).toEqual([
       0,
       'staff-1',
-      '%田島%',
-      '%田島%',
-      '%田島%',
+      '田島',
+      '田島',
+      '田島',
       50,
       0,
     ]);
@@ -255,7 +255,7 @@ describe('GET /api/conversations support visibility', () => {
       .request('/api/conversations/%20friend-visible%20?before=%202026-06-13T10:00:00.000%2B09:00%20&limit=999');
 
     expect(res.status).toBe(200);
-    expect(calls[0]).toMatchObject({ binds: ['friend-visible', 'staff-1', '%田島%', '%田島%', '%田島%'] });
+    expect(calls[0]).toMatchObject({ binds: ['friend-visible', 'staff-1', '田島', '田島', '田島'] });
     const messageCall = calls.find((call) => call.sql.includes('FROM messages_log WHERE friend_id'));
     expect(messageCall?.binds).toEqual([
       'friend-visible',

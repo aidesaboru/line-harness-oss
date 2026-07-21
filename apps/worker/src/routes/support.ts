@@ -6,7 +6,7 @@ import { requireRole } from '../middleware/role-guard.js';
 import {
   isSecondaryOnlySupportStaff,
   supportCaseVisibilitySql,
-  supportStaffLikePattern,
+  supportStaffAssignmentName,
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import { notifyUrgentSupportCase } from '../services/support-notifications.js';
@@ -795,7 +795,7 @@ function canManageSupportCaseRouting(staff: SupportAccessStaff): boolean {
 
 function supportStaffMatchesText(staff: SupportAccessStaff, text: string | null | undefined): boolean {
   const name = staff.name.trim();
-  return Boolean(name && (text ?? '').includes(name));
+  return Boolean(name && (text ?? '').trim() === name);
 }
 
 function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): ValueResult<string> {
@@ -1269,7 +1269,7 @@ support.get('/api/support/summary', async (c) => {
     const now = jstNow();
     const dueSoonAt = toJstString(new Date(Date.now() + 4 * 60 * 60 * 1000));
     const staff = currentStaff(c);
-    const myEscalationPattern = supportStaffLikePattern(staff);
+    const myEscalationName = supportStaffAssignmentName(staff);
     const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_summary_scope');
     const caseWhere = ['sc.line_account_id = ?'];
     const caseBinds: unknown[] = [lineAccountId.value];
@@ -1287,13 +1287,13 @@ support.get('/api/support/summary', async (c) => {
           SUM(CASE WHEN sc.status = 'secondary_answered' THEN 1 ELSE 0 END) AS secondary_answered,
           SUM(CASE WHEN sc.status != 'resolved'
             AND (
-              sc.escalation_assignee LIKE ? ESCAPE '\\'
+              sc.escalation_assignee = ?
               OR EXISTS (
                 SELECT 1
                 FROM support_escalations se
                 WHERE se.case_id = sc.id
                   AND se.status != 'closed'
-                  AND se.assignee LIKE ? ESCAPE '\\'
+                  AND se.assignee = ?
               )
             )
             THEN 1 ELSE 0 END) AS my_escalations,
@@ -1306,7 +1306,7 @@ support.get('/api/support/summary', async (c) => {
          FROM support_cases sc
          WHERE ${caseWhere.join(' AND ')}`,
       )
-      .bind(myEscalationPattern, myEscalationPattern, now, now, dueSoonAt, ...caseBinds)
+      .bind(myEscalationName, myEscalationName, now, now, dueSoonAt, ...caseBinds)
       .first<Record<string, number | null>>();
 
     const [byStatus, byCategory, byAssignee] = await Promise.all([
@@ -1411,18 +1411,18 @@ support.get('/api/support/cases', async (c) => {
     }
 
     if (isMyEscalationScope) {
-      const pattern = supportStaffLikePattern(staff);
+      const assignmentName = supportStaffAssignmentName(staff);
       conditions.push(`sc.status != 'resolved' AND (
-        sc.escalation_assignee LIKE ? ESCAPE '\\'
+        sc.escalation_assignee = ?
         OR EXISTS (
           SELECT 1
           FROM support_escalations se
           WHERE se.case_id = sc.id
             AND se.status != 'closed'
-            AND se.assignee LIKE ? ESCAPE '\\'
+            AND se.assignee = ?
         )
       )`);
-      binds.push(pattern, pattern);
+      binds.push(assignmentName, assignmentName);
     }
 
     if (assignee.value) {
@@ -1896,16 +1896,40 @@ support.patch('/api/support/cases/:id', async (c) => {
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
     const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
-    await c.env.DB
-      .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-      .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
-      .run();
-
-    await addCaseEvent(c.env.DB, id.value, 'updated', staff.id, staff.name, text(body.eventBody) ?? '案件を更新しました', {
-      changed: fields.map(([column]) => column),
-      fromStatus: existing.status,
-      toStatus: next.status,
-    });
+    const statements = [
+      c.env.DB
+        .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ? AND line_account_id = ?`)
+        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value),
+    ];
+    if (next.status === 'resolved') {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE support_escalations
+             SET status = 'closed', updated_by = ?, updated_at = ?
+             WHERE case_id = ? AND line_account_id = ? AND status != 'closed'`,
+          )
+          .bind(staff.id, now, id.value, lineAccountId.value),
+      );
+    }
+    statements.push(
+      prepareCaseEvent(
+        c.env.DB,
+        id.value,
+        'updated',
+        staff.id,
+        staff.name,
+        text(body.eventBody) ?? '案件を更新しました',
+        {
+          changed: fields.map(([column]) => column),
+          fromStatus: existing.status,
+          toStatus: next.status,
+        },
+        crypto.randomUUID(),
+        now,
+      ),
+    );
+    await c.env.DB.batch(statements);
     if (existing.priority !== 'urgent' && next.priority === 'urgent' && next.status !== 'resolved') {
       c.executionCtx.waitUntil(notifyUrgentSupportCase(c.env.DB, lineAccountId.value, id.value, {
         adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
@@ -2131,18 +2155,18 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     const parsedDueAt = canRouteEscalation ? parseOptionalTextField(body.dueAt, 'dueAt') : { ok: true as const, value: null };
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
     const dueAt = parsedDueAt.value;
-    await c.env.DB
+    const escalationInsert = c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
           id, case_id, line_account_id, assignee, level, status, question, answer,
           due_at, answered_at, created_by, updated_by, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
       )
-      .bind(id, caseId.value, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now)
-      .run();
+      .bind(id, caseId.value, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now);
 
+    let caseUpdate: D1PreparedStatement;
     if (canRouteEscalation) {
-      await c.env.DB
+      caseUpdate = c.env.DB
         .prepare(
           `UPDATE support_cases
            SET status = 'waiting_secondary',
@@ -2153,10 +2177,9 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
                updated_at = ?
            WHERE id = ? AND line_account_id = ?`,
         )
-        .bind(assignee, level, dueAt, staff.id, now, caseId.value, lineAccountId.value)
-        .run();
+        .bind(assignee, level, dueAt, staff.id, now, caseId.value, lineAccountId.value);
     } else {
-      await c.env.DB
+      caseUpdate = c.env.DB
         .prepare(
           `UPDATE support_cases
            SET status = 'waiting_secondary',
@@ -2164,16 +2187,24 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
                updated_at = ?
            WHERE id = ? AND line_account_id = ?`,
         )
-        .bind(staff.id, now, caseId.value, lineAccountId.value)
-        .run();
+        .bind(staff.id, now, caseId.value, lineAccountId.value);
     }
 
-    await addCaseEvent(c.env.DB, caseId.value, 'escalated', staff.id, staff.name, question, {
-      escalationId: id,
-      assignee,
-      level,
-      dueAt,
-    });
+    await c.env.DB.batch([
+      escalationInsert,
+      caseUpdate,
+      prepareCaseEvent(
+        c.env.DB,
+        caseId.value,
+        'escalated',
+        staff.id,
+        staff.name,
+        question,
+        { escalationId: id, assignee, level, dueAt },
+        crypto.randomUUID(),
+        now,
+      ),
+    ]);
 
     const escalation = await c.env.DB
       .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
@@ -2209,19 +2240,19 @@ support.get('/api/support/escalations', async (c) => {
       binds.push(status.value);
     }
     if (isSecondaryOnlySupportStaff(staff)) {
-      const pattern = supportStaffLikePattern(staff);
-      if (!pattern) return c.json({ success: true, data: [] });
-      conditions.push(`se.assignee LIKE ? ESCAPE '\\'`);
-      binds.push(pattern);
+      const assignmentName = supportStaffAssignmentName(staff);
+      if (!assignmentName) return c.json({ success: true, data: [] });
+      conditions.push(`se.assignee = ?`);
+      binds.push(assignmentName);
     } else if (assignee.value) {
       conditions.push('se.assignee LIKE ?');
       binds.push(`%${assignee.value}%`);
     }
     if (!isSecondaryOnlySupportStaff(staff) && (scope.value === 'my_escalations' || queue.value === 'my_escalations')) {
-      const pattern = supportStaffLikePattern(staff);
-      if (!pattern) return c.json({ success: true, data: [] });
-      conditions.push(`se.assignee LIKE ? ESCAPE '\\'`);
-      binds.push(pattern);
+      const assignmentName = supportStaffAssignmentName(staff);
+      if (!assignmentName) return c.json({ success: true, data: [] });
+      conditions.push(`se.assignee = ?`);
+      binds.push(assignmentName);
     }
     if (queue.value === 'due') {
       conditions.push(`se.status = 'pending' AND se.due_at IS NOT NULL AND se.due_at <= ?`);
@@ -2322,7 +2353,8 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (statusRequested) {
       if (status === 'answered') nextCaseStatus = 'secondary_answered';
       if (status === 'needs_info') nextCaseStatus = 'waiting_primary';
-      if (status === 'transferred' || status === 'expert_check') nextCaseStatus = 'waiting_secondary';
+      if (status === 'pending' || status === 'transferred' || status === 'expert_check') nextCaseStatus = 'waiting_secondary';
+      if (status === 'closed') nextCaseStatus = 'in_progress';
     }
     if (nextCaseStatus) {
       const linkedCase = await c.env.DB
@@ -2342,28 +2374,53 @@ support.patch('/api/support/escalations/:id', async (c) => {
     }
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
-    if (fields.length > 0) {
-      const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
-      await c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
-        .run();
-    }
+    const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
+    const statements = [
+      c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ? AND line_account_id = ?`)
+        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value),
+    ];
 
     if (nextCaseStatus) {
-      await c.env.DB.prepare(`UPDATE support_cases SET status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
-        .bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId.value)
-        .run();
+      statements.push(
+        c.env.DB.prepare(
+          `UPDATE support_cases
+           SET status = CASE
+                 WHEN EXISTS (
+                   SELECT 1 FROM support_escalations se
+                   WHERE se.case_id = support_cases.id AND se.status = 'needs_info'
+                 ) THEN 'waiting_primary'
+                 WHEN EXISTS (
+                   SELECT 1 FROM support_escalations se
+                   WHERE se.case_id = support_cases.id
+                     AND se.status IN ('pending', 'transferred', 'expert_check')
+                 ) THEN 'waiting_secondary'
+                 WHEN EXISTS (
+                   SELECT 1 FROM support_escalations se
+                   WHERE se.case_id = support_cases.id AND se.status = 'answered'
+                 ) THEN 'secondary_answered'
+                 ELSE ?
+               END,
+               updated_by = ?,
+               updated_at = ?
+           WHERE id = ? AND line_account_id = ?`,
+        ).bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId.value),
+      );
     }
 
-    await addCaseEvent(
-      c.env.DB,
-      existing.case_id,
-      'escalation_updated',
-      staff.id,
-      staff.name,
-      parsedEventBody.value ?? parsedAnswer.value ?? 'エスカレーションを更新しました',
-      { escalationId: id.value, status, nextCaseStatus },
+    statements.push(
+      prepareCaseEvent(
+        c.env.DB,
+        existing.case_id,
+        'escalation_updated',
+        staff.id,
+        staff.name,
+        parsedEventBody.value ?? parsedAnswer.value ?? 'エスカレーションを更新しました',
+        { escalationId: id.value, status, nextCaseStatus },
+        crypto.randomUUID(),
+        now,
+      ),
     );
+    await c.env.DB.batch(statements);
 
     const updated = await c.env.DB
       .prepare(

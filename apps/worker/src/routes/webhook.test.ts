@@ -7,6 +7,10 @@ const lineClientMethods = vi.hoisted(() => ({
   replyMessage: vi.fn(),
 }));
 
+const supportCaseReplyMethods = vi.hoisted(() => ({
+  restoreSupportCasesFromCustomerMessage: vi.fn(),
+}));
+
 // Stub the DB graph — these tests only exercise the size guard and
 // signature-verify-before-parse path; webhook event handling is out of scope.
 vi.mock('@line-crm/db', () => ({
@@ -40,6 +44,8 @@ vi.mock('@line-crm/line-sdk', async () => {
 vi.mock('../services/event-bus.js', () => ({
   fireEvent: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock('../services/support-case-customer-reply.js', () => supportCaseReplyMethods);
 
 vi.mock('../services/step-delivery.js', () => ({
   buildMessage: vi.fn(),
@@ -85,6 +91,10 @@ beforeEach(() => {
   });
   lineClientMethods.pushMessage.mockResolvedValue(undefined);
   lineClientMethods.replyMessage.mockResolvedValue(undefined);
+  supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage.mockResolvedValue({
+    restored: 0,
+    caseIds: [],
+  });
   vi.mocked(getLineAccounts).mockResolvedValue([]);
   vi.mocked(jstNow).mockReturnValue('2026-06-11T17:45:17.000+09:00');
 });
@@ -304,6 +314,14 @@ describe('POST /webhook — message intake', () => {
       statusMessage: 'hello',
     });
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage).toHaveBeenCalledWith(db, {
+      friendId: 'friend-1',
+      lineAccountId: 'acc-1',
+      messageType: 'text',
+      lineMessageId: 'msg-1',
+      webhookEventId: '01JXHARNESSTEST',
+      receivedAt: '2026-06-11T17:45:17.000+09:00',
+    });
 
     expect(statements).toEqual(
       expect.arrayContaining([
@@ -438,6 +456,175 @@ describe('POST /webhook — message intake', () => {
     );
   });
 
+  test('restores customer-reply cases when a non-text message arrives', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-existing',
+      line_user_id: 'Urealuser',
+      display_name: 'Existing User',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'acc-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-06-10T17:45:17.000+09:00',
+      updated_at: '2026-06-10T17:45:17.000+09:00',
+    });
+
+    const { db } = createDbMock();
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const body = JSON.stringify({
+      destination: 'Ubot',
+      events: [
+        {
+          type: 'message',
+          mode: 'active',
+          timestamp: 1781167517000,
+          source: { type: 'user', userId: 'Urealuser' },
+          webhookEventId: '01JXIMAGETEST',
+          deliveryContext: { isRedelivery: false },
+          replyToken: 'reply-token',
+          message: {
+            id: 'msg-image',
+            type: 'image',
+            contentProvider: {
+              type: 'external',
+              originalContentUrl: 'https://example.com/image.jpg',
+              previewImageUrl: 'https://example.com/image-preview.jpg',
+            },
+          },
+        },
+      ],
+    });
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body,
+      },
+      { ...baseEnv, DB: db },
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    await (vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>);
+    expect(supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage).toHaveBeenCalledWith(db, {
+      friendId: 'friend-existing',
+      lineAccountId: 'acc-1',
+      messageType: 'image',
+      lineMessageId: 'msg-image',
+      webhookEventId: '01JXIMAGETEST',
+      receivedAt: '2026-06-11T17:45:17.000+09:00',
+    });
+  });
+
+  test('does not restore support cases for postback events', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    vi.mocked(getFriendByLineUserId).mockResolvedValue({
+      id: 'friend-existing',
+      line_user_id: 'Urealuser',
+      display_name: 'Existing User',
+      picture_url: null,
+      status_message: null,
+      is_following: 1,
+      user_id: null,
+      line_account_id: 'acc-1',
+      metadata: '{}',
+      first_tracked_link_id: null,
+      created_at: '2026-06-10T17:45:17.000+09:00',
+      updated_at: '2026-06-10T17:45:17.000+09:00',
+    });
+
+    const { db } = createDbMock();
+    const app = setupApp();
+    const ctx = {
+      ...baseExecutionCtx,
+      waitUntil: vi.fn(),
+    } as unknown as ExecutionContext;
+    const body = JSON.stringify({
+      destination: 'Ubot',
+      events: [
+        {
+          type: 'postback',
+          mode: 'active',
+          timestamp: 1781167517000,
+          source: { type: 'user', userId: 'Urealuser' },
+          webhookEventId: '01JXPOSTBACKTEST',
+          deliveryContext: { isRedelivery: false },
+          replyToken: 'reply-token',
+          postback: { data: 'action=confirm' },
+        },
+      ],
+    });
+
+    const res = await app.request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body,
+      },
+      { ...baseEnv, DB: db },
+      ctx,
+    );
+
+    expect(res.status).toBe(200);
+    await (vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>);
+    expect(supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage).not.toHaveBeenCalled();
+  });
+
   test('capture-only mode durably queues text messages before deferred projection', async () => {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
@@ -538,6 +725,14 @@ describe('POST /webhook — message intake', () => {
     expect(getScenarios).not.toHaveBeenCalled();
     expect(fireEvent).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).toHaveBeenCalledWith(db, 'friend-1');
+    expect(supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage).toHaveBeenCalledWith(db, {
+      friendId: 'friend-1',
+      lineAccountId: 'acc-1',
+      messageType: 'text',
+      lineMessageId: 'msg-1',
+      webhookEventId: '01JXCAPTUREONLY',
+      receivedAt: '2026-06-11T17:45:17.000+09:00',
+    });
 
     expect(statements).toEqual(
       expect.arrayContaining([

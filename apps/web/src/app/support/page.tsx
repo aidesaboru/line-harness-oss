@@ -57,6 +57,25 @@ import {
 
 const SEARCH_DEBOUNCE_MS = 350
 const SUPPORT_REALTIME_POLL_MS = 8 * 1000
+const SUPPORT_CASE_PAGE_SIZE = 100
+
+async function loadAllSupportCases(
+  params: Omit<Parameters<typeof api.support.cases.list>[0], 'limit' | 'offset'>,
+): Promise<Awaited<ReturnType<typeof api.support.cases.list>>> {
+  const rows: SupportCase[] = []
+  for (let offset = 0; ; offset += SUPPORT_CASE_PAGE_SIZE) {
+    const response = await api.support.cases.list({
+      ...params,
+      limit: SUPPORT_CASE_PAGE_SIZE,
+      offset,
+    })
+    if (!response.success) return response
+    rows.push(...response.data)
+    if (response.data.length < SUPPORT_CASE_PAGE_SIZE) {
+      return { ...response, data: rows }
+    }
+  }
+}
 
 export default function SupportPage() {
   const { selectedAccountId, selectedAccount, loading: accountLoading } = useAccount()
@@ -244,7 +263,7 @@ export default function SupportPage() {
     try {
       [summaryRes, casesRes] = await Promise.all([
         api.support.summary({ accountId: selectedAccountId }),
-        api.support.cases.list({
+        loadAllSupportCases({
           accountId: selectedAccountId,
           status: statusFilter === 'all' ? undefined : statusFilter,
           queue: queueFilter !== 'all'

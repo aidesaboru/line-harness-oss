@@ -1022,6 +1022,7 @@ export default function CaseDetail({
         )}
 
         <InternalChatPanel
+          key={detail.id}
           messages={detail.internalMessages ?? []}
           staffOptions={chatStaffOptions}
           saving={saving}

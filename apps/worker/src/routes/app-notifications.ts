@@ -4,7 +4,7 @@ import type { Env } from '../index.js';
 import {
   supportCaseVisibilitySql,
   supportFriendVisibilitySql,
-  supportStaffLikePattern,
+  supportStaffAssignmentName,
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import {
@@ -374,14 +374,14 @@ async function fetchSecondaryAssigned(
   after: string,
   lineAccountId?: string,
 ): Promise<AppNotificationItem[]> {
-  const pattern = supportStaffLikePattern(staff);
-  if (!pattern) return [];
+  const assignmentName = supportStaffAssignmentName(staff);
+  if (!assignmentName) return [];
   const conditions = [
     'se.created_at > ?',
     'se.status != ?',
-    `se.assignee LIKE ? ESCAPE '\\'`,
+    `se.assignee = ?`,
   ];
-  const binds: unknown[] = [after, 'closed', pattern];
+  const binds: unknown[] = [after, 'closed', assignmentName];
   if (lineAccountId) {
     conditions.push('se.line_account_id = ?');
     binds.push(lineAccountId);
@@ -420,15 +420,15 @@ async function fetchSecondaryAnswered(
   after: string,
   lineAccountId?: string,
 ): Promise<AppNotificationItem[]> {
-  const pattern = supportStaffLikePattern(staff);
-  if (!pattern) return [];
+  const assignmentName = supportStaffAssignmentName(staff);
+  if (!assignmentName) return [];
   const conditions = [
     'se.updated_at > ?',
     'se.status = ?',
-    '(sc.primary_assignee LIKE ? ESCAPE \'\\\' OR sc.created_by = ?)',
+    '(sc.primary_assignee = ? OR sc.created_by = ?)',
     '(se.updated_by IS NULL OR se.updated_by != ?)',
   ];
-  const binds: unknown[] = [after, 'answered', pattern, staff.id, staff.id];
+  const binds: unknown[] = [after, 'answered', assignmentName, staff.id, staff.id];
   if (lineAccountId) {
     conditions.push('se.line_account_id = ?');
     binds.push(lineAccountId);

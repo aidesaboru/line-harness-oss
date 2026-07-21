@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'vitest';
-import { computeUnansweredInbox, countUnanswered } from './unanswered-inbox.js';
+import {
+  computeUnansweredInbox,
+  countUnanswered,
+  getChatReplyRequirements,
+} from './unanswered-inbox.js';
 import type { SupportAccessStaff } from './support-access.js';
 
 // 候補 friend のメタ + タイムスタンプ
@@ -112,6 +116,39 @@ const staff: SupportAccessStaff = { id: 'staff-1', name: '田島', role: 'staff'
 const owner: SupportAccessStaff = { id: 'owner-1', name: 'Owner', role: 'owner' };
 
 describe('computeUnansweredInbox', () => {
+  test.each(['scheduled_manual', 'line_official'])(
+    '%s を人間返信としてすべての返信境界で扱う',
+    async (source) => {
+      const db = stubDB({
+        rows: [
+          {
+            friend_id: 'f1',
+            display_name: '山田',
+            picture_url: null,
+            line_account_id: 'a1',
+            account_name: 'L ①',
+            last_incoming: '2026-05-08T10:00:00+09:00',
+            last_manual: null,
+            last_machine: null,
+            last_incoming_type: 'text',
+            last_incoming_content: '確認をお願いします',
+          },
+        ],
+      });
+
+      await computeUnansweredInbox(db);
+
+      const replyBoundaryQueries = db.calls.filter((call) =>
+        call.sql.includes('messages_log'),
+      );
+      expect(replyBoundaryQueries).toHaveLength(3);
+      for (const call of replyBoundaryQueries) {
+        expect(call.sql).toContain("source IN ('manual', 'scheduled_manual', 'line_official')");
+        expect(call.sql).toContain(`'${source}'`);
+      }
+    },
+  );
+
   test('incoming のみ / manual 無しの friend は 1 行として返る', async () => {
     const db = stubDB({
       rows: [
@@ -708,6 +745,50 @@ describe('auto_reply マッチ除外', () => {
     expect(ids.has('f_drop')).toBe(false);
     expect(ids.size).toBe(1);
   });
+
+  test('getChatReplyRequirements は返信要否と最新未回答受信時刻を同じ判定から返す', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({
+          friend_id: 'f_unanswered',
+          last_incoming: '2026-05-08T10:00:00+09:00',
+          last_incoming_content: '確認をお願いします',
+        }),
+        baseRow({
+          friend_id: 'f_auto_replied',
+          last_incoming: '2026-05-08T10:05:00+09:00',
+          last_incoming_content: '導入相談',
+        }),
+      ],
+      autoReplies: [
+        { keyword: '導入相談', match_type: 'exact', line_account_id: null },
+      ],
+    });
+
+    const requirements = await getChatReplyRequirements(db, [
+      'f_unanswered',
+      'f_auto_replied',
+      'f_answered',
+      'f_unanswered',
+    ]);
+
+    expect(requirements.size).toBe(3);
+    expect(requirements.get('f_unanswered')).toEqual({
+      needsReply: true,
+      lastUnansweredIncomingAt: '2026-05-08T10:00:00+09:00',
+    });
+    expect(requirements.get('f_auto_replied')).toEqual({
+      needsReply: false,
+      lastUnansweredIncomingAt: null,
+    });
+    expect(requirements.get('f_answered')).toEqual({
+      needsReply: false,
+      lastUnansweredIncomingAt: null,
+    });
+    const scopedMessageQueries = db.calls.filter((call) => call.sql.includes('ml.friend_id IN'));
+    expect(scopedMessageQueries).toHaveLength(2);
+    expect(scopedMessageQueries.every((call) => call.binds.length === 3)).toBe(true);
+  });
 });
 
 describe('support staff visibility scope', () => {
@@ -740,7 +821,7 @@ describe('support staff visibility scope', () => {
     expect(result.rows.map((row) => row.friendId)).toEqual(['f-visible']);
     const candidateCall = db.calls.find((call) => call.sql.includes('FROM friends f') && call.sql.includes('JOIN agg'));
     expect(candidateCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
-    expect(candidateCall?.binds).toEqual(['staff-1', '%田島%', '%田島%', '%田島%']);
+    expect(candidateCall?.binds).toEqual(['staff-1', '田島', '田島', '田島']);
   });
 
   test('owner unanswered list keeps the global inbox scope', async () => {

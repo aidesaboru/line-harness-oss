@@ -26,6 +26,10 @@ import { buildMessage, expandVariables } from '../services/step-delivery.js';
 import { isLineCaptureOnly } from '../services/line-capture-only.js';
 import { assertLineSendAllowed, isLineSafetyBlockedError } from '../services/line-safety.js';
 import {
+  restoreSupportCasesFromCustomerMessage,
+  type RestoreSupportCasesFromCustomerMessageParams,
+} from '../services/support-case-customer-reply.js';
+import {
   drainWebhookInbox,
   persistWebhookInboxEvents,
   type WebhookInboxInput,
@@ -80,6 +84,19 @@ function webhookErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+async function restoreSupportCasesBestEffort(
+  db: D1Database,
+  params: RestoreSupportCasesFromCustomerMessageParams,
+): Promise<void> {
+  try {
+    await restoreSupportCasesFromCustomerMessage(db, params);
+  } catch (err) {
+    // Automation-mode intake has no durable retry queue. Keep existing message
+    // processing alive while making the failed projection visible in logs.
+    console.error(`Failed to restore support case after customer message: ${webhookErrorKind(err)}`);
+  }
 }
 
 function eventMarkAsReadToken(event: WebhookEvent): string | null {
@@ -504,14 +521,24 @@ async function handleCaptureOnlyEvent(
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only text message');
     const markAsReadToken = eventMarkAsReadToken(event);
     const lineMessageId = eventLineMessageId(event);
+    const receivedAt = jstNow();
+    const webhookEventId = durableEventId ?? eventWebhookEventId(event);
     await db
       .prepare(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, webhook_event_id, quote_token, mark_as_read_token, created_at)
          VALUES (?, ?, 'incoming', 'text', ?, NULL, NULL, 'user', ?, ?, ?, ?, ?, ?)
          ON CONFLICT(webhook_event_id) WHERE webhook_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, lineMessageId, durableEventId ?? eventWebhookEventId(event), eventQuoteToken(event), markAsReadToken, jstNow())
+      .bind(crypto.randomUUID(), friend.id, (event.message as TextEventMessage).text, lineAccountId ?? null, lineMessageId, webhookEventId, eventQuoteToken(event), markAsReadToken, receivedAt)
       .run();
+    await restoreSupportCasesFromCustomerMessage(db, {
+      friendId: friend.id,
+      lineAccountId,
+      messageType: 'text',
+      lineMessageId,
+      webhookEventId,
+      receivedAt,
+    });
     await upsertChatOnMessage(db, friend.id);
     return;
   }
@@ -523,6 +550,8 @@ async function handleCaptureOnlyEvent(
     const friend = await getOrCreateFriendForUser(db, lineClient, userId, lineAccountId, 'capture-only non-text message');
     const msg = event.message as IncomingNonTextMessage;
     const logId = crypto.randomUUID();
+    const receivedAt = jstNow();
+    const webhookEventId = durableEventId ?? eventWebhookEventId(event);
     const finalContent = await buildIncomingNonTextContent({
       msg,
       logId,
@@ -538,8 +567,16 @@ async function handleCaptureOnlyEvent(
          VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?, ?)
          ON CONFLICT(webhook_event_id) WHERE webhook_event_id IS NOT NULL DO NOTHING`,
       )
-      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, durableEventId ?? eventWebhookEventId(event), eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, webhookEventId, eventQuoteToken(event), eventMarkAsReadToken(event), receivedAt)
       .run();
+    await restoreSupportCasesFromCustomerMessage(db, {
+      friendId: friend.id,
+      lineAccountId,
+      messageType: msg.type,
+      lineMessageId: msg.id,
+      webhookEventId,
+      receivedAt,
+    });
     await upsertChatOnMessage(db, friend.id);
   }
 }
@@ -872,6 +909,7 @@ async function handleEvent(
 
     const msg = event.message as IncomingNonTextMessage;
     const logId = crypto.randomUUID();
+    const receivedAt = jstNow();
     const finalContent = await buildIncomingNonTextContent({
       msg,
       logId,
@@ -886,8 +924,16 @@ async function handleEvent(
         `INSERT INTO messages_log (id, friend_id, direction, message_type, content, broadcast_id, scenario_step_id, source, line_account_id, line_message_id, quote_token, mark_as_read_token, created_at)
          VALUES (?, ?, 'incoming', ?, ?, NULL, NULL, 'user', ?, ?, ?, ?, ?)`,
       )
-      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, eventQuoteToken(event), eventMarkAsReadToken(event), jstNow())
+      .bind(logId, friend.id, msg.type, finalContent, lineAccountId ?? null, msg.id, eventQuoteToken(event), eventMarkAsReadToken(event), receivedAt)
       .run();
+    await restoreSupportCasesBestEffort(db, {
+      friendId: friend.id,
+      lineAccountId,
+      messageType: msg.type,
+      lineMessageId: msg.id,
+      webhookEventId: eventWebhookEventId(event),
+      receivedAt,
+    });
     return;
   }
 
@@ -911,6 +957,15 @@ async function handleEvent(
       )
       .bind(logId, friend.id, incomingText, lineAccountId ?? null, eventLineMessageId(event), eventQuoteToken(event), eventMarkAsReadToken(event), now)
       .run();
+
+    await restoreSupportCasesBestEffort(db, {
+      friendId: friend.id,
+      lineAccountId,
+      messageType: 'text',
+      lineMessageId: eventLineMessageId(event),
+      webhookEventId: eventWebhookEventId(event),
+      receivedAt: now,
+    });
 
     // Cross-account trigger: send message from another account via UUID
     if (incomingText === '体験を完了する' && lineAccountId) {

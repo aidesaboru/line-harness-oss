@@ -57,6 +57,7 @@ const CHAT_INTERNAL_MENTION_MAX_LENGTH = 80;
 const CHAT_SCHEDULE_MAX_DAYS = 90;
 const CHAT_SCHEDULE_MIN_LEAD_MS = 60 * 1000;
 const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved', 'long_term']);
 const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
@@ -64,6 +65,13 @@ const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
 
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
+}
+
+function parseChatIdempotencyKey(raw: string | undefined): ValueResult<string | null> {
+  if (raw === undefined) return { ok: true, value: null };
+  const value = raw.trim();
+  if (!UUID_PATTERN.test(value)) return { ok: false, error: 'Invalid Idempotency-Key' };
+  return { ok: true, value: value.toLowerCase() };
 }
 
 async function ensureChatFriendAccess(c: Context<Env>, friendId: string): Promise<Response | null> {
@@ -796,13 +804,6 @@ function activeSupportCaseConditions(staff: SupportAccessStaff, caseAlias = 'sc'
   const conditions = [
     `${caseAlias}.friend_id IS NOT NULL`,
     `${caseAlias}.status != 'resolved'`,
-    `(${caseAlias}.status IN ('waiting_secondary', 'escalated', 'secondary_answered', 'customer_reply', 'waiting_primary')
-      OR EXISTS (
-        SELECT 1
-        FROM support_escalations se_active
-        WHERE se_active.case_id = ${caseAlias}.id
-          AND se_active.status != 'closed'
-      ))`,
   ];
   const binds: unknown[] = [];
   const visibility = supportCaseVisibilitySql(staff, caseAlias, 'se_active_scope');
@@ -1033,12 +1034,12 @@ async function addSupportReplyEvent(
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO support_case_events
+      `INSERT OR IGNORE INTO support_case_events
        (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
-      crypto.randomUUID(),
+      `${params.messageId}:customer_reply_sent`,
       supportCase.id,
       'customer_reply_sent',
       staff.id,
@@ -1344,16 +1345,6 @@ chats.get('/api/chats', async (c) => {
       return c.json({ success: false, error: '二次対応専用権限では顧客チャットを閲覧できません' }, 403);
     }
 
-    let unansweredIds: Set<string> | null = null;
-    if (unansweredOnly) {
-      const { getUnansweredFriendIds } = await import('../services/unanswered-inbox.js');
-      unansweredIds = await getUnansweredFriendIds(c.env.DB, staff);
-      // 空 Set のとき = 未対応ゼロ。早期 return で空配列を返す。
-      if (unansweredIds.size === 0) {
-        return c.json({ success: true, data: [] });
-      }
-    }
-
     const activeCaseConditions = activeSupportCaseConditions(staff, 'sc');
     const activeCaseAccountClause = lineAccountId ? 'AND sc.line_account_id = ?' : '';
     const activeCaseBinds = lineAccountId
@@ -1544,7 +1535,16 @@ chats.get('/api/chats', async (c) => {
       : c.env.DB.prepare(sql);
     const result = await stmt.all();
 
-    let data = result.results.map((ch: Record<string, unknown>) => ({
+    const { getChatReplyRequirements } = await import('../services/unanswered-inbox.js');
+    const replyRequirements = await getChatReplyRequirements(
+      c.env.DB,
+      result.results.map((ch: Record<string, unknown>) => String(ch.friend_id)),
+      staff,
+    );
+
+    let data = result.results.map((ch: Record<string, unknown>) => {
+      const replyRequirement = replyRequirements.get(String(ch.friend_id));
+      return {
       id: ch.id as string,
       friendId: ch.friend_id,
       friendName: ch.display_name || '名前なし',
@@ -1556,6 +1556,8 @@ chats.get('/api/chats', async (c) => {
       lastMessageContent: ch.last_message_content || null,
       lastMessageDirection: ch.last_message_direction || null,
       lastMessageType: ch.last_message_type || null,
+      needsReply: replyRequirement?.needsReply ?? false,
+      lastUnansweredAt: replyRequirement?.lastUnansweredIncomingAt ?? null,
       activeSupportCase: ch.support_case_id ? {
         id: ch.support_case_id,
         title: ch.support_case_title,
@@ -1567,10 +1569,11 @@ chats.get('/api/chats', async (c) => {
       } : null,
       createdAt: ch.created_at,
       updatedAt: ch.updated_at,
-    }));
+      };
+    });
 
-    if (unansweredIds) {
-      data = data.filter((row) => unansweredIds!.has(row.id));
+    if (unansweredOnly) {
+      data = data.filter((row) => row.needsReply);
     }
 
     return c.json({ success: true, data });
@@ -1737,6 +1740,13 @@ chats.get('/api/chats/:id', async (c) => {
     const scheduledMessages = chatRow
       ? await getActiveScheduledChatMessages(c.env.DB, chatRow.id)
       : [];
+    const { getChatReplyRequirements } = await import('../services/unanswered-inbox.js');
+    const replyRequirement = (await getChatReplyRequirements(
+      c.env.DB,
+      [resolvedFriendId],
+      staff,
+    )).get(resolvedFriendId);
+    const latestMessage = pageMessages.at(-1);
 
     return c.json({
       success: true,
@@ -1748,7 +1758,12 @@ chats.get('/api/chats/:id', async (c) => {
         operatorId,
         status,
         notes,
-        lastMessageAt,
+        lastMessageAt: latestMessage?.created_at ?? lastMessageAt,
+        lastMessageContent: latestMessage?.content ?? null,
+        lastMessageDirection: latestMessage?.direction ?? null,
+        lastMessageType: latestMessage?.message_type ?? null,
+        needsReply: replyRequirement?.needsReply ?? false,
+        lastUnansweredAt: replyRequirement?.lastUnansweredIncomingAt ?? null,
         createdAt,
         hasMoreMessages,
         nextMessagesBefore: hasMoreMessages && oldestMessage
@@ -2420,6 +2435,8 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (!body.ok) return c.json({ success: false, error: body.error }, 400);
     const normalized = normalizeChatSendPayload(body.value);
     if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
+    const idempotencyKey = parseChatIdempotencyKey(c.req.header('Idempotency-Key'));
+    if (!idempotencyKey.ok) return c.json({ success: false, error: idempotencyKey.error }, 400);
 
     const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
@@ -2457,23 +2474,45 @@ chats.post('/api/chats/:id/send', async (c) => {
 
     try {
       if (messageType === 'text') {
-        lineSendResult = quoteTarget.value
-          ? await lineClient.pushTextMessage(friend.line_user_id, content, quoteTarget.value.quoteToken)
-          : await lineClient.pushTextMessage(friend.line_user_id, content);
+        if (idempotencyKey.value) {
+          lineSendResult = await lineClient.pushTextMessage(
+            friend.line_user_id,
+            content,
+            quoteTarget.value?.quoteToken,
+            idempotencyKey.value,
+          );
+        } else {
+          lineSendResult = quoteTarget.value
+            ? await lineClient.pushTextMessage(friend.line_user_id, content, quoteTarget.value.quoteToken)
+            : await lineClient.pushTextMessage(friend.line_user_id, content);
+        }
       } else if (messageType === 'flex') {
         const contents = normalized.payload.flexContents;
-        lineSendResult = await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
+        lineSendResult = idempotencyKey.value
+          ? await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents, idempotencyKey.value)
+          : await lineClient.pushFlexMessage(friend.line_user_id, extractFlexAltText(contents), contents);
       } else if (messageType === 'image') {
         const parsed = normalized.payload.image;
-        lineSendResult = await lineClient.pushImageMessage(
-          friend.line_user_id,
-          parsed.originalContentUrl,
-          parsed.previewImageUrl,
-        );
+        lineSendResult = idempotencyKey.value
+          ? await lineClient.pushImageMessage(
+              friend.line_user_id,
+              parsed.originalContentUrl,
+              parsed.previewImageUrl,
+              idempotencyKey.value,
+            )
+          : await lineClient.pushImageMessage(
+              friend.line_user_id,
+              parsed.originalContentUrl,
+              parsed.previewImageUrl,
+            );
       }
     } catch (err) {
-      console.error(`manual LINE send failed: ${chatRouteErrorKind(err)}`);
-      return c.json({ success: false, error: manualLineSendFailureMessage(err) }, 502);
+      if (idempotencyKey.value && lineApiErrorStatus(err) === 409) {
+        lineSendResult = null;
+      } else {
+        console.error(`manual LINE send failed: ${chatRouteErrorKind(err)}`);
+        return c.json({ success: false, error: manualLineSendFailureMessage(err) }, 502);
+      }
     }
 
     const markAsRead = await markLatestIncomingAsRead(
@@ -2485,14 +2524,14 @@ chats.post('/api/chats/:id/send', async (c) => {
     );
 
     // メッセージログに記録
-    const logId = crypto.randomUUID();
+    const logId = idempotencyKey.value ?? crypto.randomUUID();
     const now = jstNow();
     const lineMessageId = extractLineSentMessageId(lineSendResult);
     const lineQuoteToken = extractLineSentQuoteToken(lineSendResult);
     if (lineQuoteToken || quoteTarget.value) {
       await c.env.DB
         .prepare(
-        `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, quote_token, quoted_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
+        `INSERT OR IGNORE INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, quote_token, quoted_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
            VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?, ?, ?, ?, ?, ?)`,
         )
         .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, lineMessageId, lineQuoteToken, quoteTarget.value?.id ?? null, staff.id, staff.name, now)
@@ -2500,7 +2539,7 @@ chats.post('/api/chats/:id/send', async (c) => {
     } else {
       await c.env.DB
         .prepare(
-          `INSERT INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
+          `INSERT OR IGNORE INTO messages_log (id, friend_id, direction, message_type, content, source, line_account_id, line_message_id, sent_by_staff_id, sent_by_staff_name, created_at)
            VALUES (?, ?, 'outgoing', ?, ?, 'manual', ?, ?, ?, ?, ?)`,
         )
         .bind(logId, friend.id, messageType, content, friend.line_account_id ?? null, lineMessageId, staff.id, staff.name, now)

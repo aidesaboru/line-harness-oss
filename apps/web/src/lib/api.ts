@@ -1341,9 +1341,10 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null; markAsRead?: boolean; quoteMessageId?: string | null }) =>
+    send: (id: string, data: { content: string; messageType?: 'text' | 'flex' | 'image'; supportCaseId?: string; lineAccountId?: string | null; markAsRead?: boolean; quoteMessageId?: string | null }, idempotencyKey?: string) =>
       fetchApi<ApiResponse<ChatSendResponse>>(`/api/chats/${id}/send`, {
         method: 'POST',
+        headers: idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined,
         body: JSON.stringify(data),
       }),
     schedule: (id: string, data: {

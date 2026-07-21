@@ -426,20 +426,23 @@ function makeSupportDb(state: {
   }
 
   function visibilityParts(sql: string, binds: unknown[]) {
-    const patternIndex = binds.findIndex((item) => typeof item === 'string' && item.startsWith('%') && item.endsWith('%'));
-    if (patternIndex < 0) return null;
-    const staffName = String(binds[patternIndex]).replaceAll('%', '');
+    const stringCounts = new Map<string, number>();
+    for (const item of binds) {
+      if (typeof item === 'string') stringCounts.set(item, (stringCounts.get(item) ?? 0) + 1);
+    }
+    const staffName = [...stringCounts].find(([, count]) => count >= 2)?.[0] ?? null;
     if (!sql.includes('created_by = ?')) {
-      if (!sql.includes("sc.escalation_assignee LIKE ? ESCAPE '\\'")) return null;
+      if (!sql.includes('sc.escalation_assignee = ?') || !staffName) return null;
       return {
         staffId: null,
         staffName,
         secondaryOnly: true,
       };
     }
-    if (patternIndex < 1) return null;
+    const staffId = binds.find((item) => typeof item === 'string' && /^(staff|secondary)-/.test(item));
+    if (!staffId) return null;
     return {
-      staffId: String(binds[patternIndex - 1]),
+      staffId: String(staffId),
       staffName,
       secondaryOnly: false,
     };
@@ -450,24 +453,24 @@ function makeSupportDb(state: {
     if (!scope) return true;
     if (scope.secondaryOnly) {
       return (
-        (row.escalation_assignee ?? '').includes(scope.staffName) ||
+        (row.escalation_assignee ?? '').trim() === scope.staffName ||
         escalations.some(
           (item) =>
             item.case_id === row.id &&
             item.status !== 'closed' &&
-            item.assignee.includes(scope.staffName),
+            item.assignee.trim() === scope.staffName,
         )
       );
     }
     return (
       row.created_by === scope.staffId ||
-      (row.primary_assignee ?? '').includes(scope.staffName) ||
-      (row.escalation_assignee ?? '').includes(scope.staffName) ||
+      (row.primary_assignee ?? '').trim() === scope.staffName ||
+      (row.escalation_assignee ?? '').trim() === scope.staffName ||
       escalations.some(
         (item) =>
           item.case_id === row.id &&
           item.status !== 'closed' &&
-          item.assignee.includes(scope.staffName),
+          item.assignee.trim() === scope.staffName,
       )
     );
   }
@@ -585,17 +588,20 @@ function makeSupportDb(state: {
               rows = rows.filter((item) => item.due_at !== null && item.due_at < dueCutoff);
             }
             if (sql.includes("sc.status != 'resolved' AND (")) {
-              const pattern = String(bound.find((item) => typeof item === 'string' && item.startsWith('%')) ?? '');
-              const staffName = pattern.replaceAll('%', '');
+              const counts = new Map<string, number>();
+              for (const item of bound) {
+                if (typeof item === 'string') counts.set(item, (counts.get(item) ?? 0) + 1);
+              }
+              const staffName = [...counts].find(([, count]) => count >= 2)?.[0] ?? '';
               rows = rows.filter(
                 (item) =>
                   item.status !== 'resolved' &&
-                  ((item.escalation_assignee ?? '').includes(staffName) ||
+                  ((item.escalation_assignee ?? '').trim() === staffName ||
                     escalations.some(
                       (escalation) =>
                         escalation.case_id === item.id &&
                         escalation.status !== 'closed' &&
-                        escalation.assignee.includes(staffName),
+                        escalation.assignee.trim() === staffName,
                     )),
               );
             }
@@ -623,10 +629,17 @@ function makeSupportDb(state: {
             let rows = escalations.filter((item) => item.line_account_id === lineAccountId);
             if (sql.includes('se.assignee LIKE ?')) {
               const patterns = bound
-                .filter((item, index) => index > 0 && typeof item === 'string' && item.startsWith('%') && item.endsWith('%'))
-                .map((item) => String(item).replaceAll('%', ''));
+                .filter((item): item is string => typeof item === 'string' && item.startsWith('%') && item.endsWith('%'))
+                .map((item) => item.replaceAll('%', ''));
               for (const assigneeName of patterns) {
                 rows = rows.filter((item) => item.assignee.includes(assigneeName));
+              }
+            }
+            if (sql.includes('se.assignee = ?')) {
+              const knownAssignees = new Set(escalations.map((item) => item.assignee));
+              const assignmentNames = bound.filter((item): item is string => typeof item === 'string' && knownAssignees.has(item));
+              for (const assigneeName of assignmentNames) {
+                rows = rows.filter((item) => item.assignee === assigneeName);
               }
             }
             return { results: rows.map((item) => findEscalation(item.id)!) } as { results: T[] };
@@ -766,6 +779,30 @@ function makeSupportDb(state: {
               created_at: createdAt,
               updated_at: updatedAt,
             });
+          } else if (sql.startsWith('UPDATE support_escalations') && sql.includes("SET status = 'closed'") && sql.includes('WHERE case_id = ?')) {
+            const caseId = bound.at(-2) as string;
+            const lineAccountId = bound.at(-1) as string;
+            const updatedBy = bound[0] as string;
+            const updatedAt = bound[1] as string;
+            for (const escalation of escalations) {
+              if (escalation.case_id !== caseId || escalation.line_account_id !== lineAccountId || escalation.status === 'closed') continue;
+              escalation.status = 'closed';
+              escalation.updated_by = updatedBy;
+              escalation.updated_at = updatedAt;
+            }
+          } else if (sql.startsWith('UPDATE support_cases') && sql.includes('SET status = CASE')) {
+            const caseId = bound.at(-2) as string;
+            const lineAccountId = bound.at(-1) as string;
+            const row = cases.find((item) => item.id === caseId && item.line_account_id === lineAccountId);
+            if (row) {
+              const caseEscalations = escalations.filter((item) => item.case_id === caseId);
+              if (caseEscalations.some((item) => item.status === 'needs_info')) row.status = 'waiting_primary';
+              else if (caseEscalations.some((item) => ['pending', 'transferred', 'expert_check'].includes(item.status))) row.status = 'waiting_secondary';
+              else if (caseEscalations.some((item) => item.status === 'answered')) row.status = 'secondary_answered';
+              else row.status = bound[0] as string;
+              row.updated_by = bound[1] as string;
+              row.updated_at = bound[2] as string;
+            }
           } else if (sql.includes("SET status = 'waiting_secondary'")) {
             const caseId = bound.at(-2) as string;
             const lineAccountId = bound.at(-1) as string;
@@ -1455,6 +1492,31 @@ describe('support CRM routes', () => {
     expect(state.cases[0].reopened_at).toEqual(expect.any(String));
   });
 
+  test('resolving a case closes every unfinished escalation in the same operation', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-resolve', status: 'in_progress' })],
+      escalations: [
+        baseEscalation({ id: 'esc-pending', case_id: 'case-resolve', status: 'pending' }),
+        baseEscalation({ id: 'esc-answered', case_id: 'case-resolve', status: 'answered' }),
+        baseEscalation({ id: 'esc-closed', case_id: 'case-resolve', status: 'closed' }),
+      ],
+    });
+
+    const res = await setupApp(db).request('/api/support/cases/case-resolve', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'resolved',
+        resolutionNote: '顧客への回答と確認が完了しました',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.cases[0].status).toBe('resolved');
+    expect(state.escalations.map((item) => item.status)).toEqual(['closed', 'closed', 'closed']);
+  });
+
   test('does not refresh reopened_at when saving an already reopened case', async () => {
     const { db, state } = makeSupportDb({
       cases: [
@@ -1642,6 +1704,31 @@ describe('support CRM routes', () => {
       event_type: 'escalation_updated',
       actor_name: '田島',
     });
+  });
+
+  test('answering one escalation keeps the case waiting while another escalation is pending', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-multiple', primary_assignee: '田島', status: 'waiting_secondary' })],
+      escalations: [
+        baseEscalation({ id: 'esc-answer', case_id: 'case-multiple', assignee: 'Admin Smoke' }),
+        baseEscalation({ id: 'esc-pending', case_id: 'case-multiple', assignee: 'Admin Smoke' }),
+      ],
+    });
+
+    const res = await setupApp(db).request('/api/support/escalations/esc-answer', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'answered',
+        answer: '1件目は確認できました',
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.escalations[0].status).toBe('answered');
+    expect(state.escalations[1].status).toBe('pending');
+    expect(state.cases[0].status).toBe('waiting_secondary');
   });
 
   test('case detail includes internal chat messages', async () => {
@@ -1916,7 +2003,7 @@ describe('support CRM routes', () => {
     expect(body.success).toBe(true);
     expect(body.data.map((item) => item.id)).toEqual(['case-mine']);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
-    expect(listCall?.binds).toContain('%田島%');
+    expect(listCall?.binds).toContain('田島');
   });
 
   test('admin can filter secondary cases to their own assignments', async () => {
@@ -1936,7 +2023,7 @@ describe('support CRM routes', () => {
     expect(body.data.map((item) => item.id)).toEqual(['case-admin']);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_cases sc'));
     expect(listCall?.sql).toContain("sc.status != 'resolved' AND (");
-    expect(listCall?.binds).toContain('%田島%');
+    expect(listCall?.binds).toContain('田島');
   });
 
   test('admin can filter escalation requests to their own assignments', async () => {
@@ -1959,8 +2046,8 @@ describe('support CRM routes', () => {
     expect(body.success).toBe(true);
     expect(body.data.map((item) => item.id)).toEqual(['esc-admin']);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_escalations se'));
-    expect(listCall?.sql).toContain("se.assignee LIKE ? ESCAPE '\\'");
-    expect(listCall?.binds).toContain('%田島%');
+    expect(listCall?.sql).toContain('se.assignee = ?');
+    expect(listCall?.binds).toContain('田島');
   });
 
   test('staff can filter escalation requests by another assignee', async () => {
@@ -2036,7 +2123,7 @@ describe('support CRM routes', () => {
     expect(listBody.success).toBe(true);
     expect(listBody.data.map((item) => ({ id: item.id, assignee: item.assignee }))).toEqual([{ id: 'esc-mine', assignee: '田島' }]);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_escalations se'));
-    expect(listCall?.binds).toContain('%田島%');
+    expect(listCall?.binds).toContain('田島');
 
     const ownUpdate = await app.request('/api/support/escalations/esc-mine', {
       method: 'PATCH',
@@ -2389,6 +2476,7 @@ describe('support CRM routes', () => {
       cases: [
         baseCase({ id: 'case-created', title: '自分が作成', created_by: 'staff-1', primary_assignee: null }),
         baseCase({ id: 'case-primary', title: '一次担当', created_by: 'owner-1', primary_assignee: '田島' }),
+        baseCase({ id: 'case-similar-name', title: '似た名前の担当', created_by: 'owner-1', primary_assignee: '田島 太郎' }),
         baseCase({ id: 'case-other', title: '範囲外', created_by: 'owner-1', primary_assignee: '松山' }),
       ],
     });
@@ -2405,7 +2493,7 @@ describe('support CRM routes', () => {
     const ownerRes = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
       .request('/api/support/cases?lineAccountId=acc-1');
     const ownerBody = (await ownerRes.json()) as { data: Array<{ id: string }> };
-    expect(ownerBody.data.map((item) => item.id)).toEqual(['case-created', 'case-primary', 'case-other']);
+    expect(ownerBody.data.map((item) => item.id)).toEqual(['case-created', 'case-primary', 'case-similar-name', 'case-other']);
   });
 
   test('allows staff to search manuals but blocks manual mutation', async () => {

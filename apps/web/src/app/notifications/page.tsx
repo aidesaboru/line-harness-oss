@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
@@ -56,7 +56,9 @@ function caseHref(item: SupportCase): string {
 function isMentionForMe(item: InternalChatFeedItem, staffName: string): boolean {
   const name = staffName.trim()
   if (!name) return false
-  return item.mentions.includes(name) || item.body.includes(`@${name}`)
+  if (item.mentions.includes(name)) return true
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`@${escaped}(?=$|[\\s、。，.!！?？])`, 'u').test(item.body)
 }
 
 function compact(text: string | null | undefined, fallback: string): string {
@@ -74,39 +76,51 @@ export default function NotificationsPage() {
   const [staffName, setStaffName] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const requestIdRef = useRef(0)
 
   const accountName = selectedAccount?.displayName || selectedAccount?.name || '選択中アカウント'
 
   const load = useCallback(async () => {
     if (!selectedAccountId) return
+    const requestId = ++requestIdRef.current
     setLoading(true)
     setError('')
+    setSummary(null)
+    setNotifications([])
+    setFeedItems([])
+    setSecondaryAnsweredCases([])
+    setUrgentCases([])
+    setStaffName('')
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-    try {
-      const [meRes, summaryRes, recentRes, feedRes, secondaryRes, unresolvedRes] = await Promise.all([
-        api.staff.me(),
-        api.support.summary({ accountId: selectedAccountId }),
-        api.appNotifications.recent({ after: since, accountId: selectedAccountId }),
-        api.appNotifications.internalChatFeed({ accountId: selectedAccountId, limit: 80 }),
-        api.support.cases.list({ accountId: selectedAccountId, queue: 'secondary_answered', limit: 20 }),
-        api.support.cases.list({ accountId: selectedAccountId, queue: 'unresolved', limit: 50 }),
-      ])
-      if (meRes.success) setStaffName(meRes.data.name || '')
-      if (summaryRes.success) setSummary(summaryRes.data)
-      if (recentRes.success) setNotifications(recentRes.data.items)
-      if (feedRes.success) setFeedItems(feedRes.data.items)
-      if (secondaryRes.success) setSecondaryAnsweredCases(secondaryRes.data)
-      if (unresolvedRes.success) {
-        setUrgentCases(unresolvedRes.data.filter((item) => item.priority === 'urgent').slice(0, 10))
-      }
-      if (!summaryRes.success || !feedRes.success) {
-        setError('一部の通知情報を取得できませんでした。時間を置いて更新してください。')
-      }
-    } catch {
-      setError('通知情報の取得に失敗しました。')
-    } finally {
-      setLoading(false)
-    }
+    const results = await Promise.allSettled([
+      api.staff.me(),
+      api.support.summary({ accountId: selectedAccountId }),
+      api.appNotifications.recent({ after: since, accountId: selectedAccountId }),
+      api.appNotifications.internalChatFeed({ accountId: selectedAccountId, limit: 80 }),
+      api.support.cases.list({ accountId: selectedAccountId, queue: 'secondary_answered', limit: 20 }),
+      api.support.cases.list({ accountId: selectedAccountId, queue: 'unresolved', limit: 100 }),
+    ] as const)
+    if (requestId !== requestIdRef.current) return
+
+    let failures = 0
+    const [meResult, summaryResult, recentResult, feedResult, secondaryResult, unresolvedResult] = results
+    if (meResult.status === 'fulfilled' && meResult.value.success) setStaffName(meResult.value.data.name || '')
+    else failures += 1
+    if (summaryResult.status === 'fulfilled' && summaryResult.value.success) setSummary(summaryResult.value.data)
+    else failures += 1
+    if (recentResult.status === 'fulfilled' && recentResult.value.success) setNotifications(recentResult.value.data.items)
+    else failures += 1
+    if (feedResult.status === 'fulfilled' && feedResult.value.success) setFeedItems(feedResult.value.data.items)
+    else failures += 1
+    if (secondaryResult.status === 'fulfilled' && secondaryResult.value.success) setSecondaryAnsweredCases(secondaryResult.value.data)
+    else failures += 1
+    if (unresolvedResult.status === 'fulfilled' && unresolvedResult.value.success) {
+      setUrgentCases(unresolvedResult.value.data.filter((item) => item.priority === 'urgent').slice(0, 10))
+    } else failures += 1
+
+    if (failures === results.length) setError('通知情報の取得に失敗しました。時間を置いて更新してください。')
+    else if (failures > 0) setError('一部の通知情報を取得できませんでした。取得できた情報を表示しています。')
+    setLoading(false)
   }, [selectedAccountId])
 
   useEffect(() => {

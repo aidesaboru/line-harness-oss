@@ -6,6 +6,15 @@ import {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
 
+const HUMAN_REPLY_SOURCES = [
+  'manual',
+  'scheduled_manual',
+  'line_official',
+] as const;
+const HUMAN_REPLY_SOURCES_SQL = HUMAN_REPLY_SOURCES
+  .map((source) => `'${source}'`)
+  .join(', ');
+
 function normalizePositiveInteger(value: number | undefined, fallback: number, max = Number.POSITIVE_INFINITY): number {
   if (!Number.isInteger(value) || value === undefined || value < 1) return fallback;
   return Math.min(value, max);
@@ -87,14 +96,14 @@ function consumeAutoReplyEvidence(
 }
 
 // 候補 friend のメタデータ + 集約タイムスタンプ。
-// プレビュー/タイプは別クエリで last_manual 以降の incoming 群から JS で決める
+// プレビュー/タイプは別クエリで最後の人間返信以降の incoming 群から JS で決める
 // (auto_reply マッチを除いた「最新の非マッチ incoming」が triage 対象)。
 const CANDIDATES_BASE_SQL = `
   WITH agg AS (
     SELECT
       friend_id,
       MAX(CASE WHEN direction='incoming' AND (source IS NULL OR source != 'postback') THEN created_at END) AS last_incoming,
-      MAX(CASE WHEN direction='outgoing' AND source='manual' THEN created_at END) AS last_manual,
+      MAX(CASE WHEN direction='outgoing' AND source IN (${HUMAN_REPLY_SOURCES_SQL}) THEN created_at END) AS last_manual,
       MAX(CASE WHEN direction='outgoing' AND source IN
           ('auto_reply','automation','automation_backfill','scenario','broadcast')
         THEN created_at END) AS last_machine
@@ -123,18 +132,38 @@ const CANDIDATES_BASE_SQL = `
     AND (agg.last_manual IS NULL OR agg.last_manual < agg.last_incoming)
 `;
 
-function buildCandidatesQuery(staff?: SupportAccessStaff): { sql: string; binds: unknown[] } {
+function buildCandidatesQuery(
+  staff?: SupportAccessStaff,
+  friendIds?: string[],
+): { sql: string; binds: unknown[] } {
   const visibility = staff
     ? supportFriendVisibilitySql(staff, 'f.id')
     : { sql: '', binds: [] };
   const supportScope = visibility.sql ? `\n    AND ${visibility.sql}` : '';
+  const friendScope = friendIds?.length
+    ? `\n    AND f.id IN (${friendIds.map(() => '?').join(', ')})`
+    : '';
   return {
-    sql: `${CANDIDATES_BASE_SQL}${supportScope}\n  ORDER BY agg.last_incoming ASC`,
-    binds: visibility.binds,
+    sql: `${CANDIDATES_BASE_SQL}${supportScope}${friendScope}\n  ORDER BY agg.last_incoming ASC`,
+    binds: [...visibility.binds, ...(friendIds ?? [])],
   };
 }
 
-// 候補 friend の "last_manual 以降の全 incoming" (postback 除く)。
+function scopedMessageQuery(sql: string, friendIds?: string[]): { sql: string; binds: unknown[] } {
+  if (!friendIds?.length) return { sql, binds: [] };
+  const scope = `\n    AND ml.friend_id IN (${friendIds.map(() => '?').join(', ')})`;
+  return {
+    sql: sql.replace('\n  ORDER BY ml.friend_id', `${scope}\n  ORDER BY ml.friend_id`),
+    binds: friendIds,
+  };
+}
+
+function prepareQuery(db: D1Database, query: { sql: string; binds: unknown[] }): D1PreparedStatement {
+  const statement = db.prepare(query.sql);
+  return query.binds.length > 0 ? statement.bind(...query.binds) : statement;
+}
+
+// 候補 friend の「最後の人間返信以降の全 incoming」(postback 除く)。
 // 当初は friend_id IN (?, ...) で candidate scope する設計だったが、
 // D1 の prepared statement bind 変数上限 (100) を IN×2 で越えて 500 が出た
 // (本番事故 2026-05-08)。代わりに last_manual を全 friend で集約する CTE に
@@ -144,7 +173,7 @@ const RECENT_INCOMINGS_SQL = `
   WITH last_manual AS (
     SELECT friend_id, MAX(created_at) AS lm
     FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
+    WHERE direction='outgoing' AND source IN (${HUMAN_REPLY_SOURCES_SQL})
     GROUP BY friend_id
   )
   SELECT ml.friend_id, ml.message_type, ml.content, ml.created_at
@@ -156,7 +185,7 @@ const RECENT_INCOMINGS_SQL = `
   ORDER BY ml.friend_id, ml.created_at DESC
 `;
 
-// 候補 friend の "last_manual 以降の auto_reply outgoing (reply 限定)"。
+// 候補 friend の「最後の人間返信以降の auto_reply outgoing (reply 限定)」。
 // delivery_type='reply' で絞ることで、forms.ts などが同じ source='auto_reply' で
 // 記録する form-confirmation / webhook-failure push を証拠から除外する。
 // 同じく bind 変数ゼロ。JS 側で friend_id ごとに group する。
@@ -164,7 +193,7 @@ const RECENT_AUTO_REPLY_OUTGOINGS_SQL = `
   WITH last_manual AS (
     SELECT friend_id, MAX(created_at) AS lm
     FROM messages_log
-    WHERE direction='outgoing' AND source='manual'
+    WHERE direction='outgoing' AND source IN (${HUMAN_REPLY_SOURCES_SQL})
     GROUP BY friend_id
   )
   SELECT ml.friend_id, ml.created_at
@@ -213,6 +242,11 @@ export interface UnansweredInboxOptions {
   staff?: SupportAccessStaff;
 }
 
+export interface ChatReplyRequirement {
+  needsReply: boolean;
+  lastUnansweredIncomingAt: string | null;
+}
+
 interface RawCandidateRow {
   friend_id: string;
   display_name: string | null;
@@ -255,8 +289,9 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
 /**
  * Single source of truth.
  *
- * 1. CANDIDATES_SQL で「last_incoming > last_manual」の friend を取る。
- * 2. 候補 friend に scope して "last_manual 以降の incoming" と "auto_reply outgoing" を取る。
+ * 1. CANDIDATES_SQL で「last_incoming > 最後の人間返信」の friend を取る。
+ * 2. 候補 friend に scope して「最後の人間返信以降の incoming」と
+ *    「auto_reply outgoing」を取る。
  * 3. silent ルール一覧を取る (応答ありルールは outgoing 証拠で判定するので不要)。
  * 4. JS で各 incoming を判定: 応答あり証拠 OR silent ルール match で「マッチ済」、
  *    マッチしない最新の incoming を preview として採用。全部マッチした thread のみ除外。
@@ -264,11 +299,10 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
 async function getAllUnansweredRows(
   db: D1Database,
   staff?: SupportAccessStaff,
+  friendIds?: string[],
 ): Promise<UnansweredRow[]> {
-  const candidatesQuery = buildCandidatesQuery(staff);
-  const candidatesStmt = candidatesQuery.binds.length > 0
-    ? db.prepare(candidatesQuery.sql).bind(...candidatesQuery.binds)
-    : db.prepare(candidatesQuery.sql);
+  const candidatesQuery = buildCandidatesQuery(staff, friendIds);
+  const candidatesStmt = prepareQuery(db, candidatesQuery);
   const candidatesResult = await candidatesStmt.all<RawCandidateRow>();
   const candidates = candidatesResult.results ?? [];
   if (candidates.length === 0) return [];
@@ -276,9 +310,11 @@ async function getAllUnansweredRows(
   // 候補 friend のみを残すための Set。後段の JS group で他の friend は無視する。
   const candidateIds = new Set(candidates.map((c) => c.friend_id));
 
+  const recentIncomingsQuery = scopedMessageQuery(RECENT_INCOMINGS_SQL, friendIds);
+  const recentAutoRepliesQuery = scopedMessageQuery(RECENT_AUTO_REPLY_OUTGOINGS_SQL, friendIds);
   const [incomingsResult, autoReplyOutgoingsResult, activeRulesResult] = await Promise.all([
-    db.prepare(RECENT_INCOMINGS_SQL).all<RawIncomingRow>(),
-    db.prepare(RECENT_AUTO_REPLY_OUTGOINGS_SQL).all<{ friend_id: string; created_at: string }>(),
+    prepareQuery(db, recentIncomingsQuery).all<RawIncomingRow>(),
+    prepareQuery(db, recentAutoRepliesQuery).all<{ friend_id: string; created_at: string }>(),
     db.prepare(ACTIVE_AUTO_REPLIES_SQL).all<ActiveRuleRow>(),
   ]);
 
@@ -370,6 +406,38 @@ export async function getUnansweredFriendIds(
 ): Promise<Set<string>> {
   const rows = await getAllUnansweredRows(db, staff);
   return new Set(rows.map((r) => r.friendId));
+}
+
+/**
+ * チャット一覧向けに、指定された friend ごとの返信要否を返す。
+ * 判定と未回答受信時刻は未対応受信箱と同じ source of truth から派生する。
+ */
+export async function getChatReplyRequirements(
+  db: D1Database,
+  friendIds: Iterable<string>,
+  staff?: SupportAccessStaff,
+): Promise<Map<string, ChatReplyRequirement>> {
+  const uniqueFriendIds = [...new Set(friendIds)];
+  if (uniqueFriendIds.length === 0) return new Map();
+
+  const scopedFriendIds = uniqueFriendIds.length <= 80 ? uniqueFriendIds : undefined;
+  const unansweredRows = await getAllUnansweredRows(db, staff, scopedFriendIds);
+  const unansweredByFriendId = new Map(
+    unansweredRows.map((row) => [row.friendId, row.lastIncomingAt]),
+  );
+
+  return new Map(
+    uniqueFriendIds.map((friendId) => {
+      const lastUnansweredIncomingAt = unansweredByFriendId.get(friendId) ?? null;
+      return [
+        friendId,
+        {
+          needsReply: lastUnansweredIncomingAt !== null,
+          lastUnansweredIncomingAt,
+        },
+      ];
+    }),
+  );
 }
 
 export async function countUnanswered(

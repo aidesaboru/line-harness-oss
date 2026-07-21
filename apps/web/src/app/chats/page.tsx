@@ -6,6 +6,8 @@ import { parseStickerMessageContent, stickerFallback } from '@line-crm/shared'
 import { ApiRequestError, api, buildApiUrl, fetchApi, type ChatActiveSupportCase, type ChatInternalMessage, type ChatMessageCursor, type ChatTypingParticipant, type ScheduledChatMessage } from '@/lib/api'
 import { messageTypePreview } from '@/lib/message-type-label'
 import { isStaleChat } from '@/lib/chat-staleness'
+import { createLatestRequestGate, shouldResetForAccountChange } from '@/lib/latest-request'
+import { chatSendFingerprint, createSendAttemptRegistry } from '@/lib/send-attempt'
 import {
   buildSupportChatRecoveryNotice,
   buildSupportChatSendCasePayload,
@@ -35,6 +37,8 @@ interface Chat {
   lastMessageContent: string | null
   lastMessageDirection: 'incoming' | 'outgoing' | null
   lastMessageType: string | null
+  needsReply: boolean
+  lastUnansweredAt: string | null
   createdAt: string
   updatedAt: string
   activeSupportCase?: ChatActiveSupportCase | null
@@ -226,6 +230,10 @@ function getTime(iso: string | null): number {
   return Number.isNaN(t) ? 0 : t
 }
 
+function getUnansweredTime(chat: Pick<Chat, 'lastUnansweredAt' | 'lastMessageAt'>): number {
+  return getTime(chat.lastUnansweredAt ?? chat.lastMessageAt)
+}
+
 function chatMessagePreview(chat: Pick<Chat, 'lastMessageContent' | 'lastMessageType'>): string {
   const previewRaw = chat.lastMessageContent ?? ''
   if (chat.lastMessageType === 'image') return '画像'
@@ -241,7 +249,7 @@ function chatMessagePreview(chat: Pick<Chat, 'lastMessageContent' | 'lastMessage
 function chatWorkReason(chat: Chat): { label: string; className: string } {
   if (isStaleChat(chat)) {
     return {
-      label: `24h超過 ${formatElapsed(chat.lastMessageAt)}`,
+      label: `24h超過 ${formatElapsed(chat.lastUnansweredAt ?? chat.lastMessageAt)}`,
       className: 'border-orange-200 bg-orange-50 text-orange-700',
     }
   }
@@ -344,6 +352,8 @@ function buildEmptyChatDetailFromFriend(friend: {
     lastMessageContent: null,
     lastMessageDirection: null,
     lastMessageType: null,
+    needsReply: false,
+    lastUnansweredAt: null,
     createdAt: friend.createdAt ?? now,
     updatedAt: friend.updatedAt ?? now,
     messages: [],
@@ -1224,6 +1234,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
   const [sendError, setSendError] = useState('')
   const isComposingRef = useRef(false)
   const sendLockRef = useRef(false)
+  const sendAttemptRegistryRef = useRef(createSendAttemptRegistry())
 
   useEffect(() => {
     const loadMessages = async () => {
@@ -1253,22 +1264,30 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
     setSending(true)
     setSendError('')
     try {
-      const res = await fetchApi<{ success: boolean; data?: { messageId: string }; error?: string }>(`/api/friends/${friendId}/messages`, {
-        method: 'POST',
-        body: JSON.stringify({ content, messageType: 'text' }),
+      const fingerprint = chatSendFingerprint({
+        chatId: friendId,
+        messageType: 'text',
+        content,
       })
+      const res = await api.chats.send(
+        friendId,
+        { content, messageType: 'text' },
+        sendAttemptRegistryRef.current.keyFor(fingerprint),
+      )
       if (!res.success) {
         setSendError(chatFailureMessage('direct-send'))
         return
       }
+      sendAttemptRegistryRef.current.complete(fingerprint)
       setMessages((prev) => [...prev, {
-        id: res.data?.messageId ?? crypto.randomUUID(),
+        id: res.data.messageId,
         direction: 'outgoing',
         messageType: 'text',
         content,
         createdAt: new Date().toISOString(),
       }])
       setMessage('')
+      onSent()
     } catch (err) {
       setSendError(chatActionFailureMessage(err, chatFailureMessage('direct-send')))
     } finally {
@@ -1391,7 +1410,7 @@ function DirectMessagePanel({ friendId, friend, onBack, onSent }: {
 }
 
 export default function ChatsPage() {
-  const { selectedAccountId } = useAccount()
+  const { selectedAccountId, loading: accountLoading } = useAccount()
   const [chats, setChats] = useState<Chat[]>([])
   const [allFriends, setAllFriends] = useState<FriendItem[]>([])
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null)
@@ -1447,6 +1466,7 @@ export default function ChatsPage() {
   const [markingAsRead, setMarkingAsRead] = useState(false)
   const [reflectingDeletedMessageId, setReflectingDeletedMessageId] = useState<string | null>(null)
   const sendLockRef = useRef(false)
+  const sendAttemptRegistryRef = useRef(createSendAttemptRegistry())
   const [savingInternalChat, setSavingInternalChat] = useState(false)
   const [staffOptions, setStaffOptions] = useState<string[]>([])
   const [internalChatOpen, setInternalChatOpen] = useState(false)
@@ -1458,6 +1478,18 @@ export default function ChatsPage() {
   const typingStopTimeoutRef = useRef<number | null>(null)
   const lastTypingSentAtRef = useRef(0)
   const activeTypingChatIdRef = useRef<string | null>(null)
+  const chatListRequestGateRef = useRef(createLatestRequestGate())
+  const chatDetailRequestGateRef = useRef(createLatestRequestGate())
+  const friendListRequestGateRef = useRef(createLatestRequestGate())
+  const accountWorkspaceVersionRef = useRef(0)
+  const currentAccountIdRef = useRef<string | null>(selectedAccountId)
+  const currentChatIdRef = useRef<string | null>(selectedChatId)
+  const accountScopeRef = useRef({
+    hasRestoredInitialAccount: false,
+    accountId: null as string | null,
+  })
+  currentAccountIdRef.current = selectedAccountId
+  currentChatIdRef.current = selectedChatId
 
   useEffect(() => {
     try { localStorage.setItem('chat.sortMode', sortMode) } catch { /* ignore */ }
@@ -1542,7 +1574,63 @@ export default function ChatsPage() {
     }
   }, [selectedChatId, stopTypingStatus])
 
+  const resetAccountWorkspace = useCallback(() => {
+    accountWorkspaceVersionRef.current += 1
+    chatListRequestGateRef.current.invalidate()
+    chatDetailRequestGateRef.current.invalidate()
+    friendListRequestGateRef.current.invalidate()
+    sendAttemptRegistryRef.current.clear()
+    stopTypingStatus()
+    setChats([])
+    setAllFriends([])
+    setSelectedChatId(null)
+    setSelectedFriendId(null)
+    setChatDetail(null)
+    setMessageContent('')
+    setScheduleOpen(false)
+    setScheduledAt('')
+    setQuoteTarget(null)
+    setSupportDraftContext(null)
+    setSupportRecoveryNotice(null)
+    setPendingImage(null)
+    setUploadingImage(false)
+    setImageUploadError('')
+    setMediaPreview(null)
+    setInternalChatOpen(false)
+    setDetailLoading(false)
+    setLoadingOlderMessages(false)
+    setError('')
+    preserveScrollOnNextMessagesChangeRef.current = false
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }, [stopTypingStatus])
+
+  useEffect(() => {
+    if (accountLoading) return
+
+    const scope = accountScopeRef.current
+    if (!scope.hasRestoredInitialAccount) {
+      if (!selectedAccountId) return
+      scope.hasRestoredInitialAccount = true
+      scope.accountId = selectedAccountId
+      return
+    }
+
+    if (!shouldResetForAccountChange(true, scope.accountId, selectedAccountId)) return
+    scope.accountId = selectedAccountId
+    resetAccountWorkspace()
+  }, [accountLoading, resetAccountWorkspace, selectedAccountId])
+
   const loadChats = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (accountLoading || !selectedAccountId) {
+      if (!options.silent && !accountLoading) setLoading(false)
+      return
+    }
+    const requestAccountId = selectedAccountId
+    const requestId = chatListRequestGateRef.current.start()
+    const isCurrentRequest = () => (
+      chatListRequestGateRef.current.isLatest(requestId)
+      && currentAccountIdRef.current === requestAccountId
+    )
     if (!options.silent) {
       setLoading(true)
       setError('')
@@ -1550,32 +1638,40 @@ export default function ChatsPage() {
     try {
       const params: { status?: string; accountId?: string; unansweredOnly?: boolean; search?: string } = {}
       if (statusFilter !== 'all' && !unansweredOnly) params.status = statusFilter
-      if (selectedAccountId) params.accountId = selectedAccountId
+      params.accountId = requestAccountId
       if (unansweredOnly) params.unansweredOnly = true
       if (debouncedSearchTerm) params.search = debouncedSearchTerm
       const chatRes = await api.chats.list(params)
+      if (!isCurrentRequest()) return
       if (chatRes.success) {
         setChats(chatRes.data as unknown as Chat[])
       } else {
         if (!options.silent) setError(chatFailureMessage('list'))
       }
     } catch {
-      if (!options.silent) setError(chatFailureMessage('list'))
+      if (isCurrentRequest() && !options.silent) setError(chatFailureMessage('list'))
     } finally {
-      if (!options.silent) setLoading(false)
+      if (isCurrentRequest() && !options.silent) setLoading(false)
     }
-  }, [statusFilter, selectedAccountId, unansweredOnly, debouncedSearchTerm])
+  }, [accountLoading, statusFilter, selectedAccountId, unansweredOnly, debouncedSearchTerm])
 
   // Friends list (for the "new direct message" modal) — loaded lazily in the background
   // Previously fetched 800 friends in parallel with chats, which blocked the initial render.
   const loadAllFriends = useCallback(async () => {
+    if (accountLoading || !selectedAccountId) return
+    const requestAccountId = selectedAccountId
+    const requestId = friendListRequestGateRef.current.start()
+    const isCurrentRequest = () => (
+      friendListRequestGateRef.current.isLatest(requestId)
+      && currentAccountIdRef.current === requestAccountId
+    )
     try {
-      const friendRes = await api.friends.list({ accountId: selectedAccountId || undefined, limit: '800' })
-      if (friendRes.success) {
+      const friendRes = await api.friends.list({ accountId: requestAccountId, limit: '800' })
+      if (isCurrentRequest() && friendRes.success) {
         setAllFriends((friendRes.data as unknown as { items: FriendItem[] }).items)
       }
     } catch { /* silent */ }
-  }, [selectedAccountId])
+  }, [accountLoading, selectedAccountId])
 
   useEffect(() => { void loadAllFriends() }, [loadAllFriends])
 
@@ -1598,13 +1694,24 @@ export default function ChatsPage() {
   useEffect(() => { unansweredOnlyRef.current = unansweredOnly }, [unansweredOnly])
 
   const loadChatDetail = useCallback(async (chatId: string, options: { silent?: boolean } = {}) => {
+    if (accountLoading || !selectedAccountId) {
+      if (!options.silent && !accountLoading) setDetailLoading(false)
+      return
+    }
+    const requestAccountId = selectedAccountId
+    const requestId = chatDetailRequestGateRef.current.start()
+    const isCurrentRequest = () => (
+      chatDetailRequestGateRef.current.isLatest(requestId)
+      && currentAccountIdRef.current === requestAccountId
+      && currentChatIdRef.current === chatId
+    )
     if (!options.silent) setDetailLoading(true)
     setLoadingOlderMessages(false)
     if (!options.silent) setError('')
     const loadFriendFallback = async (): Promise<boolean> => {
       try {
         const friendRes = await api.friends.get(chatId)
-        if (!friendRes.success || !friendRes.data) return false
+        if (!isCurrentRequest() || !friendRes.success || !friendRes.data) return false
         setChatDetail(buildEmptyChatDetailFromFriend(friendRes.data))
         return true
       } catch {
@@ -1613,19 +1720,23 @@ export default function ChatsPage() {
     }
     try {
       const res = await api.chats.get(chatId)
+      if (!isCurrentRequest()) return
       if (res.success) {
         setChatDetail(res.data as unknown as ChatDetail)
       } else {
         if (await loadFriendFallback()) return
+        if (!isCurrentRequest()) return
         if (!options.silent) setError(chatFailureMessage('detail'))
       }
     } catch (err) {
+      if (!isCurrentRequest()) return
       if (apiErrorStatus(err) === 404 && await loadFriendFallback()) return
+      if (!isCurrentRequest()) return
       if (!options.silent) setError(chatFailureMessage('detail'))
     } finally {
-      if (!options.silent) setDetailLoading(false)
+      if (isCurrentRequest() && !options.silent) setDetailLoading(false)
     }
-  }, [])
+  }, [accountLoading, selectedAccountId])
 
   const handleFriendUpdated = useCallback((friend: { id: string; displayName: string | null; pictureUrl: string | null }) => {
     const nextName = friend.displayName || '名前なし'
@@ -1705,7 +1816,10 @@ export default function ChatsPage() {
     const params = new URLSearchParams(window.location.search)
     const friendId = params.get('friend')
     const supportCaseId = params.get('supportCase')
-    if (friendId) setSelectedChatId(friendId)
+    if (friendId) {
+      chatDetailRequestGateRef.current.invalidate()
+      setSelectedChatId(friendId)
+    }
     if (!friendId || !supportCaseId) return
     let context: SupportChatDraftContext | null = null
     try {
@@ -1722,12 +1836,12 @@ export default function ChatsPage() {
   }, [])
 
   useEffect(() => {
-    if (selectedChatId) {
+    if (selectedAccountId && selectedChatId) {
       loadChatDetail(selectedChatId)
     } else {
       setChatDetail(null)
     }
-  }, [selectedChatId, loadChatDetail])
+  }, [selectedAccountId, selectedChatId, loadChatDetail])
 
   const refreshVisibleChats = useCallback(() => {
     if (!selectedAccountId || document.hidden || sending || markingAsRead) return
@@ -1785,6 +1899,8 @@ export default function ChatsPage() {
         lastMessageContent: chatDetail.lastMessageContent ?? lastMsg?.content ?? null,
         lastMessageDirection: chatDetail.lastMessageDirection ?? lastMsg?.direction ?? null,
         lastMessageType: chatDetail.lastMessageType ?? lastMsg?.messageType ?? null,
+        needsReply: chatDetail.needsReply,
+        lastUnansweredAt: chatDetail.lastUnansweredAt,
         activeSupportCase: chatDetail.activeSupportCase ?? null,
         createdAt: chatDetail.createdAt,
         updatedAt: chatDetail.updatedAt,
@@ -1835,7 +1951,24 @@ export default function ChatsPage() {
   }, [messageContent])
 
   const handleSelectChat = (chatId: string) => {
+    chatDetailRequestGateRef.current.invalidate()
+    setChatDetail(null)
     setSelectedChatId(chatId)
+    setMessageContent('')
+    setScheduleOpen(false)
+    setScheduledAt('')
+    setQuoteTarget(null)
+    setSupportDraftContext(null)
+    setSupportRecoveryNotice(null)
+    setPendingImage(null)
+    setImageUploadError('')
+    setInternalChatOpen(false)
+  }
+
+  const handleClearChatSelection = () => {
+    chatDetailRequestGateRef.current.invalidate()
+    setSelectedChatId(null)
+    setChatDetail(null)
     setMessageContent('')
     setScheduleOpen(false)
     setScheduledAt('')
@@ -1884,9 +2017,12 @@ export default function ChatsPage() {
       setImageUploadError(`PDFは${PDF_UPLOAD_MAX_LABEL}以下にしてください。`)
       return
     }
+    const workspaceVersion = accountWorkspaceVersionRef.current
+    const isCurrentWorkspace = () => accountWorkspaceVersionRef.current === workspaceVersion
     setUploadingImage(true)
     try {
       const res = isPdf ? await api.uploads.file(file) : await api.uploads.image(file)
+      if (!isCurrentWorkspace()) return
       if (!res.success) {
         setImageUploadError('ファイルのアップロードに失敗しました。')
         return
@@ -1907,9 +2043,9 @@ export default function ChatsPage() {
         })
       }
     } catch (err) {
-      setImageUploadError(fileUploadErrorMessage(err))
+      if (isCurrentWorkspace()) setImageUploadError(fileUploadErrorMessage(err))
     } finally {
-      setUploadingImage(false)
+      if (isCurrentWorkspace()) setUploadingImage(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
   }, [])
@@ -1933,6 +2069,8 @@ export default function ChatsPage() {
       hasLineImage: pendingImage?.mode === 'line-image',
       hasText: Boolean(textContent),
     })
+    const workspaceVersion = accountWorkspaceVersionRef.current
+    const isCurrentWorkspace = () => accountWorkspaceVersionRef.current === workspaceVersion
     sendLockRef.current = true
     setSending(true)
     let sendFailureFallback = chatFailureMessage('text-send')
@@ -1946,147 +2084,174 @@ export default function ChatsPage() {
           originalContentUrl: pendingImage.originalContentUrl,
           previewImageUrl: pendingImage.previewImageUrl,
         })
+        const imageFingerprint = chatSendFingerprint({
+          chatId: sendingChatId,
+          messageType: 'image',
+          content: imgPayload,
+          supportCaseId: attachSupportToImage ? supportContext?.caseId : undefined,
+        })
         const imageResult = await api.chats.send(sendingChatId, {
           messageType: 'image',
           content: imgPayload,
           markAsRead: true,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
-        })
+        }, sendAttemptRegistryRef.current.keyFor(imageFingerprint))
         if (!imageResult.success) {
-          setError(chatFailureMessage('image-send'))
+          if (isCurrentWorkspace()) setError(chatFailureMessage('image-send'))
           return
         }
-        if (attachSupportToImage) {
-          const recoveryNotice = buildSupportChatRecoveryNotice(imageResult.data.supportCase, supportContext)
-          if (recoveryNotice) {
-            setSupportRecoveryNotice(recoveryNotice)
-            setError('')
+        sendAttemptRegistryRef.current.complete(imageFingerprint)
+        if (isCurrentWorkspace()) {
+          if (attachSupportToImage) {
+            const recoveryNotice = buildSupportChatRecoveryNotice(imageResult.data.supportCase, supportContext)
+            if (recoveryNotice) {
+              setSupportRecoveryNotice(recoveryNotice)
+              setError('')
+            }
+            setSupportDraftContext(null)
           }
-          setSupportDraftContext(null)
-        }
-        const markAsReadNotice = markAsReadFailureMessage(imageResult.data.markAsRead)
-        if (markAsReadNotice) setError(markAsReadNotice)
-        setPendingImage(null)
-        // Optimistic update for image
-        setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
-          ...prev,
-          lastMessageAt: now,
-          status: 'in_progress',
-          messages: [
-            ...(prev.messages ?? []),
-            {
-              id: imageResult.data.messageId,
-              direction: 'outgoing',
-              messageType: 'image',
-              content: imgPayload,
-              sentByStaffId: imageResult.data.sentByStaffId ?? null,
-              sentByStaffName: imageResult.data.sentByStaffName ?? null,
-              createdAt: now,
-            },
-          ],
-        } : prev)
-        setChats((prev) => {
-          const exists = prev.some((c) => c.id === sendingChatId)
-          if (!exists) return prev
-          const currentFilter = statusFilterRef.current
-          const currentUnansweredOnly = unansweredOnlyRef.current
-          const updated = prev.map((c) => c.id === sendingChatId ? {
-            ...c,
+          const markAsReadNotice = markAsReadFailureMessage(imageResult.data.markAsRead)
+          if (markAsReadNotice) setError(markAsReadNotice)
+          setPendingImage(null)
+          // Optimistic update for image
+          setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
+            ...prev,
             lastMessageAt: now,
-            status: 'in_progress' as const,
-            lastMessageContent: '[画像]',
-            lastMessageDirection: 'outgoing' as const,
-            lastMessageType: 'image' as const,
-          } : c)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
-          if (currentUnansweredOnly) {
-            // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
-            filtered = filtered.filter((c) => c.id !== sendingChatId)
-          }
-          return [...filtered].sort((a, b) => {
-            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-            return bt - at
+            status: 'in_progress',
+            needsReply: false,
+            lastUnansweredAt: null,
+            messages: [
+              ...(prev.messages ?? []),
+              {
+                id: imageResult.data.messageId,
+                direction: 'outgoing',
+                messageType: 'image',
+                content: imgPayload,
+                sentByStaffId: imageResult.data.sentByStaffId ?? null,
+                sentByStaffName: imageResult.data.sentByStaffName ?? null,
+                createdAt: now,
+              },
+            ],
+          } : prev)
+          setChats((prev) => {
+            const exists = prev.some((c) => c.id === sendingChatId)
+            if (!exists) return prev
+            const currentFilter = statusFilterRef.current
+            const currentUnansweredOnly = unansweredOnlyRef.current
+            const updated = prev.map((c) => c.id === sendingChatId ? {
+              ...c,
+              lastMessageAt: now,
+              status: 'in_progress' as const,
+              lastMessageContent: '[画像]',
+              lastMessageDirection: 'outgoing' as const,
+              lastMessageType: 'image' as const,
+              needsReply: false,
+              lastUnansweredAt: null,
+            } : c)
+            let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
+            if (currentUnansweredOnly) {
+              // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
+              filtered = filtered.filter((c) => c.id !== sendingChatId)
+            }
+            return [...filtered].sort((a, b) => {
+              const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+              const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+              return bt - at
+            })
           })
-        })
+        }
       }
       // --- Text send path (runs independently — both paths execute when both image and text are present) ---
       if (textContent) {
         sendFailureFallback = chatFailureMessage('text-send')
         const content = textContent
+        const textFingerprint = chatSendFingerprint({
+          chatId: sendingChatId,
+          messageType: 'text',
+          content,
+          supportCaseId: attachSupportToText ? supportContext?.caseId : undefined,
+          quoteMessageId: sendingQuoteTarget?.id,
+        })
         const sendResult = await api.chats.send(sendingChatId, {
           content,
           markAsRead: true,
           quoteMessageId: sendingQuoteTarget?.id ?? undefined,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
-        })
+        }, sendAttemptRegistryRef.current.keyFor(textFingerprint))
         if (!sendResult.success) {
-          setError(chatFailureMessage('text-send'))
+          if (isCurrentWorkspace()) setError(chatFailureMessage('text-send'))
           return
         }
-        const recoveryNotice = buildSupportChatRecoveryNotice(sendResult.data.supportCase, supportContext)
-        if (recoveryNotice) {
-          setSupportRecoveryNotice(recoveryNotice)
-          setError('')
-        }
-        const markAsReadNotice = markAsReadFailureMessage(sendResult.data.markAsRead)
-        if (markAsReadNotice) setError(markAsReadNotice)
-        setMessageContent('')
-        setQuoteTarget(null)
-        if (pdfAttachment) setPendingImage(null)
-        if (supportContext) setSupportDraftContext(null)
-        // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
-        // Only mutate chatDetail if it still corresponds to the chat we just sent to
-        setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
-          ...prev,
-          lastMessageAt: now,
-          status: 'in_progress',
-          messages: [
-            ...(prev.messages ?? []),
-            {
-              id: sendResult.data.messageId,
-              direction: 'outgoing',
-              messageType: 'text',
-              content,
-              quotedMessageId: sendResult.data.quotedMessageId ?? sendingQuoteTarget?.id ?? null,
-              sentByStaffId: sendResult.data.sentByStaffId ?? null,
-              sentByStaffName: sendResult.data.sentByStaffName ?? null,
-              createdAt: now,
-            },
-          ],
-        } : prev)
-        setChats((prev) => {
-          // Skip reconciliation if the list no longer contains this chat (e.g. tab changed mid-send)
-          const exists = prev.some((c) => c.id === sendingChatId)
-          if (!exists) return prev
-          const currentFilter = statusFilterRef.current
-          const currentUnansweredOnly = unansweredOnlyRef.current
-          const updated = prev.map((c) => c.id === sendingChatId ? {
-            ...c,
-            lastMessageAt: now,
-            status: 'in_progress' as const,
-            // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
-            // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
-            // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
-            lastMessageContent: content,
-            lastMessageDirection: 'outgoing' as const,
-            lastMessageType: 'text' as const,
-          } : c)
-          // Drop rows that no longer match the current tab (e.g. replying from 未読 moves chat to in_progress)
-          let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
-          if (currentUnansweredOnly) {
-            // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
-            filtered = filtered.filter((c) => c.id !== sendingChatId)
+        sendAttemptRegistryRef.current.complete(textFingerprint)
+        if (isCurrentWorkspace()) {
+          const recoveryNotice = buildSupportChatRecoveryNotice(sendResult.data.supportCase, supportContext)
+          if (recoveryNotice) {
+            setSupportRecoveryNotice(recoveryNotice)
+            setError('')
           }
-          return [...filtered].sort((a, b) => {
-            const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
-            const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
-            return bt - at
+          const markAsReadNotice = markAsReadFailureMessage(sendResult.data.markAsRead)
+          if (markAsReadNotice) setError(markAsReadNotice)
+          setMessageContent('')
+          setQuoteTarget(null)
+          if (pdfAttachment) setPendingImage(null)
+          if (supportContext) setSupportDraftContext(null)
+          // Optimistic update: append message locally instead of refetching (prevents scroll jump / full reload feel)
+          // Only mutate chatDetail if it still corresponds to the chat we just sent to
+          setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
+            ...prev,
+            lastMessageAt: now,
+            status: 'in_progress',
+            needsReply: false,
+            lastUnansweredAt: null,
+            messages: [
+              ...(prev.messages ?? []),
+              {
+                id: sendResult.data.messageId,
+                direction: 'outgoing',
+                messageType: 'text',
+                content,
+                quotedMessageId: sendResult.data.quotedMessageId ?? sendingQuoteTarget?.id ?? null,
+                sentByStaffId: sendResult.data.sentByStaffId ?? null,
+                sentByStaffName: sendResult.data.sentByStaffName ?? null,
+                createdAt: now,
+              },
+            ],
+          } : prev)
+          setChats((prev) => {
+            // Skip reconciliation if the list no longer contains this chat (e.g. tab changed mid-send)
+            const exists = prev.some((c) => c.id === sendingChatId)
+            if (!exists) return prev
+            const currentFilter = statusFilterRef.current
+            const currentUnansweredOnly = unansweredOnlyRef.current
+            const updated = prev.map((c) => c.id === sendingChatId ? {
+              ...c,
+              lastMessageAt: now,
+              status: 'in_progress' as const,
+              // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
+              // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
+              // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
+              lastMessageContent: content,
+              lastMessageDirection: 'outgoing' as const,
+              lastMessageType: 'text' as const,
+              needsReply: false,
+              lastUnansweredAt: null,
+            } : c)
+            // Drop rows that no longer match the current tab (e.g. replying from 未読 moves chat to in_progress)
+            let filtered = currentFilter === 'all' ? updated : updated.filter((c) => c.status === currentFilter)
+            if (currentUnansweredOnly) {
+              // 未対応モードでは、自分が返信したばかりの chat はもう未対応ではないのでリストから除外
+              filtered = filtered.filter((c) => c.id !== sendingChatId)
+            }
+            return [...filtered].sort((a, b) => {
+              const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
+              const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
+              return bt - at
+            })
           })
-        })
+        }
       }
     } catch (err) {
-      setError(chatActionFailureMessage(err, sendFailureFallback))
+      if (isCurrentWorkspace()) setError(chatActionFailureMessage(err, sendFailureFallback))
     } finally {
       stopTypingStatus(sendingChatId)
       setSending(false)
@@ -2124,6 +2289,8 @@ export default function ChatsPage() {
     if (textContent) messages.push({ messageType: 'text', content: textContent })
     if (messages.length === 0) return
 
+    const workspaceVersion = accountWorkspaceVersionRef.current
+    const isCurrentWorkspace = () => accountWorkspaceVersionRef.current === workspaceVersion
     setScheduling(true)
     setError('')
     try {
@@ -2135,6 +2302,7 @@ export default function ChatsPage() {
           lineAccountId: supportDraftContext.lineAccountId,
         } : {}),
       })
+      if (!isCurrentWorkspace()) return
       if (!result.success) {
         setError('予約送信を登録できませんでした。もう一度お試しください。')
         return
@@ -2157,7 +2325,9 @@ export default function ChatsPage() {
       setScheduledAt('')
       stopTypingStatus(targetChatId)
     } catch (err) {
-      setError(chatActionFailureMessage(err, '予約送信を登録できませんでした。もう一度お試しください。'))
+      if (isCurrentWorkspace()) {
+        setError(chatActionFailureMessage(err, '予約送信を登録できませんでした。もう一度お試しください。'))
+      }
     } finally {
       setScheduling(false)
     }
@@ -2233,16 +2403,12 @@ export default function ChatsPage() {
       } : prev)
       setChats((prev) => {
         const currentFilter = statusFilterRef.current
-        const currentUnansweredOnly = unansweredOnlyRef.current
         const updated = prev.map((chat) => chat.id === targetChatId ? {
           ...chat,
           status: (result.data.status ?? 'in_progress') as Chat['status'],
           updatedAt: result.data.updatedAt,
         } : chat)
         let filtered = currentFilter === 'all' ? updated : updated.filter((chat) => chat.status === currentFilter)
-        if (currentUnansweredOnly) {
-          filtered = filtered.filter((chat) => chat.id !== targetChatId)
-        }
         return [...filtered].sort((a, b) => {
           const at = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0
           const bt = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0
@@ -2392,7 +2558,7 @@ export default function ChatsPage() {
         const aStale = isStaleChat(a) ? 1 : 0
         const bStale = isStaleChat(b) ? 1 : 0
         if (aStale !== bStale) return bStale - aStale
-        return aStale && bStale ? at - bt : bt - at
+        return aStale && bStale ? getUnansweredTime(a) - getUnansweredTime(b) : bt - at
       }
       if (sortMode === 'unanswered') {
         const rank = (chat: Chat) => {
@@ -2419,7 +2585,7 @@ export default function ChatsPage() {
   const oldestStaleChat = useMemo(() => (
     chats
       .filter(isStaleChat)
-      .sort((a, b) => getTime(a.lastMessageAt) - getTime(b.lastMessageAt))[0] ?? null
+      .sort((a, b) => getUnansweredTime(a) - getUnansweredTime(b))[0] ?? null
   ), [chats])
   const firstUnreadChat = useMemo(() => (
     chats
@@ -2435,7 +2601,7 @@ export default function ChatsPage() {
         const ar = chatWorkRank(a)
         const br = chatWorkRank(b)
         if (ar !== br) return ar - br
-        if (isStaleChat(a) && isStaleChat(b)) return getTime(a.lastMessageAt) - getTime(b.lastMessageAt)
+        if (isStaleChat(a) && isStaleChat(b)) return getUnansweredTime(a) - getUnansweredTime(b)
         return getTime(b.lastMessageAt) - getTime(a.lastMessageAt)
       })[0] ?? null
   ), [chats])
@@ -2448,7 +2614,7 @@ export default function ChatsPage() {
         const ar = chatWorkRank(a)
         const br = chatWorkRank(b)
         if (ar !== br) return ar - br
-        if (isStaleChat(a) && isStaleChat(b)) return getTime(a.lastMessageAt) - getTime(b.lastMessageAt)
+        if (isStaleChat(a) && isStaleChat(b)) return getUnansweredTime(a) - getUnansweredTime(b)
         return getTime(b.lastMessageAt) - getTime(a.lastMessageAt)
       })
       .slice(0, 5)
@@ -2649,7 +2815,7 @@ export default function ChatsPage() {
                           {stale && (
                             <div className="mt-1 inline-flex items-center gap-1 rounded-full border border-orange-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-orange-700">
                               <FlameIcon className="h-3 w-3" />
-                              24h超過 {formatElapsed(chat.lastMessageAt)}
+                              24h超過 {formatElapsed(chat.lastUnansweredAt ?? chat.lastMessageAt)}
                             </div>
                           )}
                           {supportBadge && (
@@ -2724,7 +2890,7 @@ export default function ChatsPage() {
                 <div className="flex min-w-0 flex-col gap-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <button
-                    onClick={() => setSelectedChatId(null)}
+                    onClick={handleClearChatSelection}
                     className="lg:hidden flex-shrink-0 p-1 -ml-1 text-gray-500 hover:text-gray-700"
                     aria-label="戻る"
                   >
@@ -2747,7 +2913,7 @@ export default function ChatsPage() {
                     {isStaleChat(chatDetail) && (
                       <span className="ml-1 mt-1 inline-flex items-center gap-1 rounded-md bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">
                         <FlameIcon className="h-3 w-3" />
-                        24h超過 {formatElapsed(chatDetail.lastMessageAt)}
+                        24h超過 {formatElapsed(chatDetail.lastUnansweredAt ?? chatDetail.lastMessageAt)}
                       </span>
                     )}
                     {selectedSupportBadge && chatDetail.activeSupportCase && (
@@ -2797,7 +2963,7 @@ export default function ChatsPage() {
                         if (idx < 0) return
                         const next = visibleChats[(idx + 1) % visibleChats.length]
                         if (next && next.id !== selectedChatId) {
-                          setSelectedChatId(next.id)
+                          handleSelectChat(next.id)
                         }
                       }}
                       className="min-h-9 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"

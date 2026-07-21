@@ -134,7 +134,7 @@ describe('account settings test recipients support visibility', () => {
     const settingCall = db.calls.find((call) => call.sql.includes('FROM account_settings'));
     expect(settingCall?.binds).toEqual(['acc-1']);
     const friendCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
-    expect(friendCall?.binds).toEqual(['friend-visible', 'staff-1', '%Tajima%', '%Tajima%', '%Tajima%']);
+    expect(friendCall?.binds).toEqual(['friend-visible', 'staff-1', 'Tajima', 'Tajima', 'Tajima']);
   });
 
   test('owner keeps the global test recipient scope', async () => {

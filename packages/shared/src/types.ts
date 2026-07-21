@@ -723,6 +723,10 @@ export interface Chat {
   status: "unread" | "in_progress" | "resolved" | "long_term";
   notes: string | null;
   lastMessageAt: string | null;
+  /** Whether a customer message still needs a human reply. */
+  needsReply?: boolean;
+  /** Timestamp of the latest customer message that still needs a human reply. */
+  lastUnansweredAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

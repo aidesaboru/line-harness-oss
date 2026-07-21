@@ -330,7 +330,7 @@ function makeChatDb(state: {
         async run() {
           calls.push({ method: 'run', sql, binds: bound });
           let changes = 1;
-          if (sql.includes('INSERT INTO messages_log')) {
+          if (/INSERT(?: OR IGNORE)? INTO messages_log/.test(sql)) {
             const [id, friendId] = bound as string[];
             const isExternalOutgoing = sql.includes("'line_official'");
             const hasLineMessageId = sql.includes('line_message_id');
@@ -384,7 +384,7 @@ function makeChatDb(state: {
             } else {
               changes = 0;
             }
-          } else if (sql.includes('INSERT INTO support_case_events')) {
+          } else if (/INSERT(?: OR IGNORE)? INTO support_case_events/.test(sql)) {
             const [id, caseId, eventType, actorId, actorName, body, metadata, createdAt] = bound as string[];
             supportEvents.push({
               id,
@@ -567,6 +567,8 @@ describe('chat support visibility', () => {
     expect(body.data.map((item) => item.id)).toEqual(['friend-visible', 'friend-hidden']);
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
     expect(listCall?.sql).not.toContain('support_cases sc_friend_scope');
+    expect(listCall?.sql).toContain("sc.status != 'resolved'");
+    expect(listCall?.sql).not.toContain("sc.status != 'resolved' AND (sc.status IN");
   });
 
   test('chat list searches by customer name and latest message', async () => {
@@ -670,7 +672,10 @@ describe('chat support visibility', () => {
     expect(secondBody.data.hasMoreMessages).toBe(false);
     expect(secondBody.data.nextMessagesBefore).toBeNull();
 
-    const messageCalls = calls.filter((call) => call.method === 'all' && call.sql.includes('FROM messages_log'));
+    const messageCalls = calls.filter((call) => (
+      call.method === 'all'
+      && call.sql.includes('SELECT id, friend_id, direction, message_type, content')
+    ));
     expect(messageCalls[0].binds).toEqual(['friend-visible', 3]);
     expect(messageCalls[1].binds).toEqual([
       'friend-visible',
@@ -1379,6 +1384,86 @@ describe('chat support visibility', () => {
       isLongTerm: false,
       lastMessageAt: '2026-06-12T10:00:00.000',
     });
+  });
+
+  test('manual send forwards a stable idempotency key to LINE and uses it for the local message id', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+    const key = '11111111-1111-4111-8111-111111111111';
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ content: '重複なく送信します。' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith(
+      'U-visible',
+      '重複なく送信します。',
+      undefined,
+      key,
+    );
+    expect(state.messages.at(-1)?.id).toBe(key);
+  });
+
+  test('manual send reconciles local state when LINE reports an accepted retry key', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+    dbMocks.getChatById.mockResolvedValue({
+      id: 'chat-visible',
+      friend_id: 'friend-visible',
+      operator_id: null,
+      status: 'in_progress',
+      notes: null,
+      last_message_at: '2026-06-12T10:00:00.000',
+      created_at: '2026-06-12T09:00:00.000',
+      updated_at: '2026-06-12T10:00:00.000',
+    });
+    dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
+      friends.find((friend) => friend.id === id) ?? null,
+    );
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    dbMocks.updateChat.mockResolvedValue(undefined);
+    lineSdkMocks.pushTextMessage.mockRejectedValueOnce(new Error('LINE API error: 409 Conflict'));
+    const key = '22222222-2222-4222-8222-222222222222';
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+      body: JSON.stringify({ content: '送信済みを復元します。' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(state.messages.at(-1)).toMatchObject({ id: key, content: '送信済みを復元します。' });
+    expect(dbMocks.updateChat).toHaveBeenCalled();
+  });
+
+  test('manual send rejects malformed idempotency keys before LINE delivery', async () => {
+    const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+
+    const res = await setupApp(db, 'owner').request('/api/chats/friend-visible/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'not-a-uuid' },
+      body: JSON.stringify({ content: '送信しません。' }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(state.messages).toHaveLength(0);
   });
 
   test('support reply keeps the case link when the URL fallback omits lineAccountId', async () => {

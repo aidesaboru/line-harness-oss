@@ -236,8 +236,9 @@ export class LineClient {
     to: string,
     altText: string,
     contents: FlexContainer,
+    retryKey?: string,
   ): Promise<unknown> {
-    return this.pushMessage(to, [{ type: 'flex', altText, contents }]);
+    return this.pushMessage(to, [{ type: 'flex', altText, contents }], retryKey);
   }
 
   async pushImageMessage(

@@ -24,10 +24,31 @@ function isBenignSqliteError(error) {
 }
 
 function splitSqlStatements(sql) {
-  return sql
-    .split(/;\s*(?:\r?\n|$)/)
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+  const statements = [];
+  let buffer = [];
+  let inTrigger = false;
+
+  for (const line of sql.split(/\r?\n/)) {
+    buffer.push(line);
+    const bufferedSql = buffer.join("\n");
+    if (!inTrigger && /\bCREATE\s+TRIGGER\b/i.test(bufferedSql)) {
+      inTrigger = true;
+    }
+
+    const statementEnded = inTrigger
+      ? /^\s*END;\s*(?:--.*)?$/i.test(line)
+      : /;\s*(?:--.*)?$/.test(line);
+    if (!statementEnded) continue;
+
+    const statement = bufferedSql.trim();
+    if (statement) statements.push(statement);
+    buffer = [];
+    inTrigger = false;
+  }
+
+  const remainder = buffer.join("\n").trim();
+  if (remainder) statements.push(remainder);
+  return statements;
 }
 
 function applyMigrationFile(db, fileName) {

@@ -140,10 +140,10 @@ wrangler d1 execute line-crm --file=packages/db/schema.sql
 
 ### ボトルネック対策
 
-1. **messages_log の肥大化**: 古いログの定期削除
-   ```sql
-   DELETE FROM messages_log WHERE created_at < date('now', '-90 days')
-   ```
+1. **messages_log の肥大化**: メッセージ履歴は削除しない
+   - 容量対策が必要な場合は R2 などの長期保管先へ複製する
+   - 件数とチェックサムを照合し 復元手順を確認してから参照先の分離を検討する
+   - 顧客対応履歴を D1 から直接削除する運用は禁止する
 
 2. **friend_scores の肥大化**: 古いスコア履歴の削除
    ```sql

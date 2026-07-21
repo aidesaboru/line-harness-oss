@@ -57,10 +57,11 @@ describe('support CRM seed fixture helpers', () => {
 
     expect(sql).toContain("acc-''1");
     expect(sql).toContain("O''Hara");
-    expect(sql).toContain('INSERT OR REPLACE INTO staff_members');
-    expect(sql).toContain('INSERT OR REPLACE INTO friends');
-    expect(sql).toContain('INSERT OR REPLACE INTO messages_log');
-    expect(sql).toContain('INSERT OR REPLACE INTO support_cases');
+    expect(sql).toContain('INSERT INTO staff_members');
+    expect(sql).toContain('INSERT INTO friends');
+    expect(sql).toContain('INSERT OR IGNORE INTO messages_log');
+    expect(sql).toContain('INSERT INTO support_cases');
+    expect(sql).toContain('ON CONFLICT(id) DO UPDATE SET');
     expect(sql).toContain('pf-visible-open-case');
     expect(sql).toContain('pf-visible-resolved-case');
     expect(sql).toContain('pf-forbidden-case');
@@ -99,29 +100,25 @@ describe('support CRM seed fixture helpers', () => {
     expect(output).toContain('export SUPPORT_CRM_REQUIRE_FULL_COVERAGE=1');
   });
 
-  it('builds cleanup SQL for synthetic fixtures and leaked old-preflight rows', () => {
+  it('retires synthetic fixtures without deleting historical rows', () => {
     const sql = buildCleanupFixtureSql({
       lineAccountId: "acc-'1",
       prefix: 'pf',
     });
 
     expect(sql).toContain("acc-''1");
-    expect(sql).toContain('DELETE FROM support_case_events');
-    expect(sql).toContain('DELETE FROM support_cases');
-    expect(sql).toContain('DELETE FROM messages_log');
-    expect(sql).toContain('DELETE FROM chats');
-    expect(sql).toContain('DELETE FROM friends');
-    expect(sql).toContain('DELETE FROM staff_members');
-    expect(sql).toContain('DELETE FROM line_accounts');
+    expect(sql).toContain('UPDATE support_cases');
+    expect(sql).toContain("SET status = 'resolved'");
+    expect(sql).toContain('UPDATE chats');
+    expect(sql).toContain('UPDATE friends');
+    expect(sql).toContain('UPDATE staff_members');
+    expect(sql).toContain('UPDATE line_accounts');
     expect(sql).toContain('preflight case creation guard');
-    expect(sql).toContain('support_crm_preflight_fixture');
-    expect(sql.indexOf('DELETE FROM chats')).toBeLessThan(sql.indexOf('DELETE FROM friends'));
-    expect(sql.indexOf('DELETE FROM staff_members')).toBeLessThan(sql.indexOf('DELETE FROM line_accounts'));
-    expect(sql).not.toMatch(/\bDROP\b/i);
+    expect(sql).not.toMatch(/\bDELETE\b|\bDROP\b/i);
   });
 
   it('prints cleanup confirmation without exposing API keys', () => {
-    expect(formatCleanupReport({ prefix: 'pf' })).toBe('Support CRM strict Preflight fixtures cleaned for prefix pf.\n');
+    expect(formatCleanupReport({ prefix: 'pf' })).toBe('Support CRM strict Preflight fixtures retired without deleting history for prefix pf.\n');
   });
 
   it('builds read-only cleanup verification SQL including leaked chat rows', () => {
@@ -133,14 +130,11 @@ describe('support CRM seed fixture helpers', () => {
     expect(sql).toContain("acc-''1");
     expect(sql).toContain('SELECT');
     expect(sql).toContain('line_accounts');
-    expect(sql).toContain('support_case_events');
     expect(sql).toContain('support_cases');
-    expect(sql).toContain('messages_log');
     expect(sql).toContain('friends');
     expect(sql).toContain('staff_members');
     expect(sql).toContain('chats');
     expect(sql).toContain('preflight case creation guard');
-    expect(sql).toContain('support_crm_preflight_fixture');
     expect(sql).toContain('pf-visible-friend');
     expect(sql).not.toContain('UNION ALL');
     expect(sql).not.toMatch(/\bDELETE\b|\bDROP\b/i);
@@ -170,9 +164,7 @@ describe('support CRM seed fixture helpers', () => {
         results: [
           {
             line_accounts: 0,
-            support_case_events: 0,
             support_cases: '0',
-            messages_log: 0,
             friends: 0,
             staff_members: 0,
             chats: 1,
@@ -183,9 +175,7 @@ describe('support CRM seed fixture helpers', () => {
 
     expect(rows).toEqual([
       { table_name: 'line_accounts', residual_count: 0 },
-      { table_name: 'support_case_events', residual_count: 0 },
       { table_name: 'support_cases', residual_count: 0 },
-      { table_name: 'messages_log', residual_count: 0 },
       { table_name: 'friends', residual_count: 0 },
       { table_name: 'staff_members', residual_count: 0 },
       { table_name: 'chats', residual_count: 1 },
@@ -197,10 +187,10 @@ describe('support CRM seed fixture helpers', () => {
     expect(formatCleanupVerificationReport({ prefix: 'pf' }, [
       { table_name: 'staff_members', residual_count: 0 },
       { table_name: 'chats', residual_count: 0 },
-    ])).toContain('All checked fixture row counts are 0.');
+    ])).toContain('All checked active fixture row counts are 0.');
 
     expect(formatCleanupVerificationReport({ prefix: 'pf' }, [
       { table_name: 'staff_members', residual_count: 1 },
-    ])).toContain('Residual fixture rows remain.');
+    ])).toContain('Active fixture rows remain.');
   });
 });

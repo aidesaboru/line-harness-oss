@@ -37,9 +37,7 @@ export type CleanupVerificationRow = {
 
 const CLEANUP_VERIFICATION_TABLES = [
   'line_accounts',
-  'support_case_events',
   'support_cases',
-  'messages_log',
   'friends',
   'staff_members',
   'chats',
@@ -123,24 +121,35 @@ VALUES
     : '';
 
   return `${lineAccountSql}
-INSERT OR REPLACE INTO staff_members
+INSERT INTO staff_members
   (id, name, email, role, api_key, is_active, created_at, updated_at)
 VALUES
-  (${sqlString(ids.staffId)}, ${sqlString(config.staffName)}, NULL, 'staff', ${sqlString(config.staffApiKey)}, 1, ${now}, ${now});
+  (${sqlString(ids.staffId)}, ${sqlString(config.staffName)}, NULL, 'staff', ${sqlString(config.staffApiKey)}, 1, ${now}, ${now})
+ON CONFLICT(id) DO UPDATE SET
+  name = excluded.name,
+  role = excluded.role,
+  api_key = excluded.api_key,
+  is_active = 1,
+  updated_at = excluded.updated_at;
 
-INSERT OR REPLACE INTO friends
+INSERT INTO friends
   (id, line_user_id, display_name, picture_url, status_message, is_following, line_account_id, created_at, updated_at)
 VALUES
   (${sqlString(ids.visibleFriendId)}, ${sqlString(`${config.prefix}-visible-user`)}, 'Preflight Visible Friend', NULL, NULL, 1, ${sqlString(config.lineAccountId)}, ${now}, ${now}),
-  (${sqlString(ids.forbiddenFriendId)}, ${sqlString(`${config.prefix}-forbidden-user`)}, 'Preflight Forbidden Friend', NULL, NULL, 1, ${sqlString(config.lineAccountId)}, ${now}, ${now});
+  (${sqlString(ids.forbiddenFriendId)}, ${sqlString(`${config.prefix}-forbidden-user`)}, 'Preflight Forbidden Friend', NULL, NULL, 1, ${sqlString(config.lineAccountId)}, ${now}, ${now})
+ON CONFLICT(id) DO UPDATE SET
+  display_name = excluded.display_name,
+  is_following = 1,
+  line_account_id = excluded.line_account_id,
+  updated_at = excluded.updated_at;
 
-INSERT OR REPLACE INTO messages_log
+INSERT OR IGNORE INTO messages_log
   (id, friend_id, direction, message_type, content, source, line_account_id, created_at)
 VALUES
   (${sqlString(`${config.prefix}-visible-message`)}, ${sqlString(ids.visibleFriendId)}, 'incoming', 'text', 'preflight visible fixture message', 'support_crm_preflight_fixture', ${sqlString(config.lineAccountId)}, ${now}),
   (${sqlString(`${config.prefix}-forbidden-message`)}, ${sqlString(ids.forbiddenFriendId)}, 'incoming', 'text', 'preflight forbidden fixture message', 'support_crm_preflight_fixture', ${sqlString(config.lineAccountId)}, ${now});
 
-INSERT OR REPLACE INTO support_cases
+INSERT INTO support_cases
   (
     id, line_account_id, friend_id, title, category, priority, status,
     primary_assignee, escalation_assignee, escalation_level, due_at,
@@ -168,9 +177,28 @@ VALUES
     'Other Assignee', NULL, 'L1', NULL,
     'Synthetic hidden fixture for strict Support CRM Preflight.', '', '', '',
     '[]', 'env-owner', 'env-owner', NULL, ${now}, ${now}
-  );
+  )
+ON CONFLICT(id) DO UPDATE SET
+  line_account_id = excluded.line_account_id,
+  friend_id = excluded.friend_id,
+  title = excluded.title,
+  category = excluded.category,
+  priority = excluded.priority,
+  status = excluded.status,
+  primary_assignee = excluded.primary_assignee,
+  escalation_assignee = excluded.escalation_assignee,
+  escalation_level = excluded.escalation_level,
+  due_at = excluded.due_at,
+  customer_summary = excluded.customer_summary,
+  internal_note = excluded.internal_note,
+  customer_reply_draft = excluded.customer_reply_draft,
+  resolution_note = excluded.resolution_note,
+  manual_ids = excluded.manual_ids,
+  updated_by = excluded.updated_by,
+  closed_at = excluded.closed_at,
+  updated_at = excluded.updated_at;
 
-INSERT OR REPLACE INTO support_case_events
+INSERT OR IGNORE INTO support_case_events
   (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
 VALUES
   (${sqlString(`${config.prefix}-visible-open-event`)}, ${sqlString(ids.visibleOpenCaseId)}, 'fixture_seeded', ${sqlString(ids.staffId)}, ${sqlString(config.staffName)}, 'Strict Preflight fixture seeded.', '{}', ${now}),
@@ -182,41 +210,39 @@ VALUES
 export function buildCleanupFixtureSql(config: Pick<SupportCrmSeedConfig, 'lineAccountId' | 'prefix'>): string {
   const ids = fixtureIds(config.prefix);
   const prefixLike = `${config.prefix}-%`;
+  const now = "strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')";
   return `
-DELETE FROM support_case_events
-WHERE id LIKE ${sqlString(prefixLike)}
-   OR case_id LIKE ${sqlString(prefixLike)}
-   OR case_id IN (
-     SELECT id
-     FROM support_cases
-     WHERE line_account_id = ${sqlString(config.lineAccountId)}
-       AND title = 'preflight case creation guard'
-   );
-
-DELETE FROM support_cases
+UPDATE support_cases
+SET status = 'resolved',
+    closed_at = COALESCE(closed_at, ${now}),
+    updated_at = ${now}
 WHERE id LIKE ${sqlString(prefixLike)}
    OR (
      line_account_id = ${sqlString(config.lineAccountId)}
      AND title = 'preflight case creation guard'
    );
 
-DELETE FROM messages_log
-WHERE id LIKE ${sqlString(prefixLike)}
-   OR source = 'support_crm_preflight_fixture';
-
-DELETE FROM chats
+UPDATE chats
+SET status = 'resolved',
+    updated_at = ${now}
 WHERE friend_id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
    OR friend_id LIKE ${sqlString(prefixLike)}
    OR id LIKE ${sqlString(prefixLike)};
 
-DELETE FROM friends
+UPDATE friends
+SET is_following = 0,
+    updated_at = ${now}
 WHERE id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
    OR id LIKE ${sqlString(prefixLike)};
 
-DELETE FROM staff_members
+UPDATE staff_members
+SET is_active = 0,
+    updated_at = ${now}
 WHERE id = ${sqlString(ids.staffId)};
 
-DELETE FROM line_accounts
+UPDATE line_accounts
+SET is_active = 0,
+    updated_at = ${now}
 WHERE id = ${sqlString(config.lineAccountId)}
   AND channel_id = ${sqlString(`${config.prefix}-channel`)}
   AND name = 'Support CRM Preflight Fixture';
@@ -234,51 +260,44 @@ SELECT
     WHERE id = ${sqlString(config.lineAccountId)}
       AND channel_id = ${sqlString(`${config.prefix}-channel`)}
       AND name = 'Support CRM Preflight Fixture'
+      AND is_active = 1
   ) AS line_accounts,
   (
     SELECT COUNT(*)
-    FROM support_case_events
-    WHERE id LIKE ${sqlString(prefixLike)}
-       OR case_id LIKE ${sqlString(prefixLike)}
-       OR case_id IN (
-         SELECT id
-         FROM support_cases
-         WHERE line_account_id = ${sqlString(config.lineAccountId)}
-           AND title = 'preflight case creation guard'
-       )
-  ) AS support_case_events,
-  (
-    SELECT COUNT(*)
     FROM support_cases
-    WHERE id LIKE ${sqlString(prefixLike)}
-       OR (
-         line_account_id = ${sqlString(config.lineAccountId)}
-         AND title = 'preflight case creation guard'
-       )
+    WHERE (
+      id LIKE ${sqlString(prefixLike)}
+      OR (
+        line_account_id = ${sqlString(config.lineAccountId)}
+        AND title = 'preflight case creation guard'
+      )
+    )
+      AND status <> 'resolved'
   ) AS support_cases,
   (
     SELECT COUNT(*)
-    FROM messages_log
-    WHERE id LIKE ${sqlString(prefixLike)}
-       OR source = 'support_crm_preflight_fixture'
-  ) AS messages_log,
-  (
-    SELECT COUNT(*)
     FROM friends
-    WHERE id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
-       OR id LIKE ${sqlString(prefixLike)}
+    WHERE (
+      id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
+      OR id LIKE ${sqlString(prefixLike)}
+    )
+      AND is_following = 1
   ) AS friends,
   (
     SELECT COUNT(*)
     FROM staff_members
     WHERE id = ${sqlString(ids.staffId)}
+      AND is_active = 1
   ) AS staff_members,
   (
     SELECT COUNT(*)
     FROM chats
-    WHERE friend_id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
-       OR friend_id LIKE ${sqlString(prefixLike)}
-       OR id LIKE ${sqlString(prefixLike)}
+    WHERE (
+      friend_id IN (${sqlString(ids.visibleFriendId)}, ${sqlString(ids.forbiddenFriendId)})
+      OR friend_id LIKE ${sqlString(prefixLike)}
+      OR id LIKE ${sqlString(prefixLike)}
+    )
+      AND status <> 'resolved'
   ) AS chats;
 `.trim();
 }
@@ -307,7 +326,7 @@ export function formatSeedReport(config: Pick<SupportCrmSeedConfig, 'lineAccount
 }
 
 export function formatCleanupReport(config: Pick<SupportCrmSeedConfig, 'prefix'>): string {
-  return `Support CRM strict Preflight fixtures cleaned for prefix ${config.prefix}.\n`;
+  return `Support CRM strict Preflight fixtures retired without deleting history for prefix ${config.prefix}.\n`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -391,8 +410,8 @@ export function formatCleanupVerificationReport(config: Pick<SupportCrmSeedConfi
 
   lines.push('');
   lines.push(hasCleanupResidualRows(rows)
-    ? 'Residual fixture rows remain. Run cleanup again or inspect D1 before production cutover.'
-    : 'All checked fixture row counts are 0.');
+    ? 'Active fixture rows remain. Run cleanup again or inspect D1 before production cutover.'
+    : 'All checked active fixture row counts are 0. Historical messages and events are preserved.');
   return `${lines.join('\n')}\n`;
 }
 

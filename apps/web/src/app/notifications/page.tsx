@@ -53,7 +53,8 @@ function caseHref(item: SupportCase): string {
   return `/support?case=${encodeURIComponent(item.id)}`
 }
 
-function isMentionForMe(item: InternalChatFeedItem, staffName: string): boolean {
+function isMentionForMe(item: InternalChatFeedItem, staffId: string, staffName: string): boolean {
+  if (staffId && item.mentionStaffIds.includes(staffId)) return true
   const name = staffName.trim()
   if (!name) return false
   if (item.mentions.includes(name)) return true
@@ -70,9 +71,11 @@ export default function NotificationsPage() {
   const { selectedAccountId, selectedAccount } = useAccount()
   const [summary, setSummary] = useState<SupportSummary | null>(null)
   const [notifications, setNotifications] = useState<AppNotificationItem[]>([])
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0)
   const [feedItems, setFeedItems] = useState<InternalChatFeedItem[]>([])
   const [secondaryAnsweredCases, setSecondaryAnsweredCases] = useState<SupportCase[]>([])
   const [urgentCases, setUrgentCases] = useState<SupportCase[]>([])
+  const [staffId, setStaffId] = useState('')
   const [staffName, setStaffName] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -87,15 +90,16 @@ export default function NotificationsPage() {
     setError('')
     setSummary(null)
     setNotifications([])
+    setNotificationUnreadCount(0)
     setFeedItems([])
     setSecondaryAnsweredCases([])
     setUrgentCases([])
+    setStaffId('')
     setStaffName('')
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
     const results = await Promise.allSettled([
       api.staff.me(),
       api.support.summary({ accountId: selectedAccountId }),
-      api.appNotifications.recent({ after: since, accountId: selectedAccountId }),
+      api.appNotifications.inbox({ accountId: selectedAccountId, limit: 100 }),
       api.appNotifications.internalChatFeed({ accountId: selectedAccountId, limit: 80 }),
       api.support.cases.list({ accountId: selectedAccountId, queue: 'secondary_answered', limit: 20 }),
       api.support.cases.list({ accountId: selectedAccountId, queue: 'unresolved', limit: 100 }),
@@ -104,12 +108,16 @@ export default function NotificationsPage() {
 
     let failures = 0
     const [meResult, summaryResult, recentResult, feedResult, secondaryResult, unresolvedResult] = results
-    if (meResult.status === 'fulfilled' && meResult.value.success) setStaffName(meResult.value.data.name || '')
-    else failures += 1
+    if (meResult.status === 'fulfilled' && meResult.value.success) {
+      setStaffId(meResult.value.data.id || '')
+      setStaffName(meResult.value.data.name || '')
+    } else failures += 1
     if (summaryResult.status === 'fulfilled' && summaryResult.value.success) setSummary(summaryResult.value.data)
     else failures += 1
-    if (recentResult.status === 'fulfilled' && recentResult.value.success) setNotifications(recentResult.value.data.items)
-    else failures += 1
+    if (recentResult.status === 'fulfilled' && recentResult.value.success) {
+      setNotifications(recentResult.value.data.items)
+      setNotificationUnreadCount(recentResult.value.data.unreadCount)
+    } else failures += 1
     if (feedResult.status === 'fulfilled' && feedResult.value.success) setFeedItems(feedResult.value.data.items)
     else failures += 1
     if (secondaryResult.status === 'fulfilled' && secondaryResult.value.success) setSecondaryAnsweredCases(secondaryResult.value.data)
@@ -128,16 +136,49 @@ export default function NotificationsPage() {
   }, [load])
 
   const myMentions = useMemo(
-    () => feedItems.filter((item) => isMentionForMe(item, staffName)).slice(0, 10),
-    [feedItems, staffName],
+    () => feedItems.filter((item) => isMentionForMe(item, staffId, staffName)).slice(0, 10),
+    [feedItems, staffId, staffName],
   )
 
   const cards = [
     { label: '二次回答済み', value: summary?.totals.secondaryAnswered ?? 0, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
     { label: '大至急', value: summary?.totals.urgent ?? 0, tone: 'text-red-700 bg-red-50 border-red-200' },
     { label: '自分宛メンション', value: myMentions.length, tone: 'text-sky-700 bg-sky-50 border-sky-200' },
-    { label: '24時間以内の通知', value: notifications.length, tone: 'text-slate-700 bg-slate-50 border-slate-200' },
+    { label: '未読通知', value: notificationUnreadCount, tone: 'text-slate-700 bg-slate-50 border-slate-200' },
   ]
+
+  const markNotificationRead = async (id: string) => {
+    if (!selectedAccountId) return
+    try {
+      const res = await api.appNotifications.markInboxRead({ accountId: selectedAccountId, id })
+      if (!res.success) return
+      setNotifications((current) => current.map((item) => (
+        item.id === id ? { ...item, readAt: item.readAt ?? res.data.readAt } : item
+      )))
+      setNotificationUnreadCount((current) => Math.max(0, current - 1))
+    } catch {
+      setError('通知の既読更新に失敗しました。')
+    }
+  }
+
+  const markAllNotificationsRead = async () => {
+    if (!selectedAccountId || notificationUnreadCount === 0) return
+    try {
+      const res = await api.appNotifications.markInboxRead({ accountId: selectedAccountId, all: true })
+      if (!res.success) {
+        setError('通知の既読更新に失敗しました。')
+        return
+      }
+      setNotifications((current) => current.map((item) => ({
+        ...item,
+        readAt: item.readAt ?? res.data.readAt,
+      })))
+      setNotificationUnreadCount(0)
+      setError('')
+    } catch {
+      setError('通知の既読更新に失敗しました。')
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -218,26 +259,51 @@ export default function NotificationsPage() {
           </section>
 
           <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-4 py-3">
-              <h2 className="text-sm font-semibold text-slate-900">最近の通知</h2>
-              <p className="mt-0.5 text-xs text-slate-500">直近24時間の通知です。</p>
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">通知受信箱</h2>
+                <p className="mt-0.5 text-xs text-slate-500">未確認の通知は24時間を過ぎても残ります。</p>
+              </div>
+              {notificationUnreadCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void markAllNotificationsRead()}
+                  className="shrink-0 rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  すべて既読
+                </button>
+              )}
             </div>
             <div className="divide-y divide-slate-100">
               {loading ? (
                 <div className="p-4 text-sm text-slate-500">読み込み中...</div>
               ) : notifications.length === 0 ? (
-                <div className="p-6 text-sm font-medium text-slate-500">最近の通知はありません</div>
-              ) : notifications.slice().reverse().map((item) => (
-                <Link key={item.id} href={item.href} className="block px-4 py-3 hover:bg-slate-50">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${notificationTone(item.kind)}`}>
-                      {notificationKindLabel(item.kind)}
-                    </span>
-                    <span className="text-xs text-slate-400">{formatDateTime(item.createdAt)}</span>
-                  </div>
-                  <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
-                  <p className="mt-1 text-xs leading-5 text-slate-500">{item.body}</p>
-                </Link>
+                <div className="p-6 text-sm font-medium text-slate-500">通知はありません</div>
+              ) : notifications.map((item) => (
+                <div key={item.id} className={`flex items-start gap-2 ${item.readAt ? 'bg-white' : 'bg-sky-50/40'}`}>
+                  <Link href={item.href} className="min-w-0 flex-1 px-4 py-3 hover:bg-slate-50">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${notificationTone(item.kind)}`}>
+                        {notificationKindLabel(item.kind)}
+                      </span>
+                      {!item.readAt && (
+                        <span className="rounded-full bg-sky-600 px-2 py-0.5 text-[10px] font-semibold text-white">未読</span>
+                      )}
+                      <span className="text-xs text-slate-400">{formatDateTime(item.createdAt)}</span>
+                    </div>
+                    <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">{item.body}</p>
+                  </Link>
+                  {!item.readAt && (
+                    <button
+                      type="button"
+                      onClick={() => void markNotificationRead(item.id)}
+                      className="mr-3 mt-3 shrink-0 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      既読
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
           </section>

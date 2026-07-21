@@ -80,6 +80,24 @@ CREATE TABLE affiliates (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE app_notification_inbox (
+  id                TEXT PRIMARY KEY,
+  notification_key  TEXT NOT NULL,
+  recipient_staff_id TEXT NOT NULL,
+  line_account_id   TEXT,
+  kind              TEXT NOT NULL,
+  title             TEXT NOT NULL,
+  body              TEXT NOT NULL,
+  href              TEXT NOT NULL,
+  source_created_at TEXT NOT NULL,
+  read_at           TEXT,
+  snoozed_until     TEXT,
+  dismissed_at      TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(recipient_staff_id, notification_key)
+);
+
 CREATE TABLE auto_replies (
   id               TEXT PRIMARY KEY,
   keyword          TEXT NOT NULL,
@@ -476,6 +494,36 @@ CREATE TABLE incoming_webhooks (
   is_active   INTEGER NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE internal_conversation_reads (
+  conversation_id TEXT NOT NULL REFERENCES internal_conversations(id),
+  staff_id         TEXT NOT NULL,
+  last_read_at     TEXT NOT NULL,
+  updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY(conversation_id, staff_id)
+);
+
+CREATE TABLE internal_conversations (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT,
+  kind            TEXT NOT NULL CHECK (kind IN ('support', 'chat', 'channel', 'dm', 'group_dm', 'announcement')),
+  source_id       TEXT,
+  title           TEXT,
+  created_by      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  archived_at     TEXT,
+  UNIQUE(kind, source_id)
+);
+
+CREATE TABLE internal_message_mentions (
+  source_type         TEXT NOT NULL CHECK (source_type IN ('support', 'chat', 'channel')),
+  source_message_id   TEXT NOT NULL,
+  staff_id            TEXT NOT NULL,
+  staff_name_snapshot TEXT NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  PRIMARY KEY(source_type, source_message_id, staff_id)
 );
 
 CREATE TABLE line_accounts (
@@ -889,7 +937,7 @@ CREATE TABLE support_escalations (
   updated_by          TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, reopened_from_id TEXT REFERENCES support_escalations(id));
 
 CREATE TABLE support_internal_messages (
   id               TEXT PRIMARY KEY,
@@ -1055,6 +1103,12 @@ CREATE INDEX idx_ad_conversion_logs_status ON ad_conversion_logs (status);
 
 CREATE INDEX idx_affiliate_clicks_affiliate ON affiliate_clicks (affiliate_id);
 
+CREATE INDEX idx_app_notification_inbox_account
+  ON app_notification_inbox(recipient_staff_id, line_account_id, source_created_at DESC);
+
+CREATE INDEX idx_app_notification_inbox_recipient
+  ON app_notification_inbox(recipient_staff_id, dismissed_at, source_created_at DESC);
+
 CREATE INDEX idx_auto_replies_template_id ON auto_replies(template_id);
 
 CREATE INDEX idx_automation_logs_automation ON automation_logs (automation_id);
@@ -1162,6 +1216,18 @@ CREATE INDEX idx_health_logs_account ON account_health_logs (line_account_id);
 
 CREATE INDEX idx_idempotency_expires ON booking_idempotency_keys (expires_at);
 
+CREATE INDEX idx_internal_conversation_reads_staff
+  ON internal_conversation_reads(staff_id, updated_at DESC);
+
+CREATE INDEX idx_internal_conversations_account_updated
+  ON internal_conversations(line_account_id, updated_at DESC);
+
+CREATE INDEX idx_internal_conversations_kind_source
+  ON internal_conversations(kind, source_id);
+
+CREATE INDEX idx_internal_message_mentions_staff
+  ON internal_message_mentions(staff_id, created_at DESC);
+
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
 
@@ -1258,6 +1324,10 @@ CREATE INDEX idx_support_escalations_assignee
 CREATE INDEX idx_support_escalations_case
   ON support_escalations(case_id, created_at);
 
+CREATE UNIQUE INDEX idx_support_escalations_reopened_from
+  ON support_escalations(reopened_from_id)
+  WHERE reopened_from_id IS NOT NULL;
+
 CREATE INDEX idx_support_internal_messages_account
   ON support_internal_messages(line_account_id, created_at);
 
@@ -1294,3 +1364,94 @@ CREATE INDEX idx_web_push_deliveries_subscription
 
 CREATE INDEX idx_web_push_subscriptions_staff
   ON web_push_subscriptions(staff_id, is_active, last_seen_at);
+
+CREATE TRIGGER protect_chat_internal_messages_delete
+BEFORE DELETE ON chat_internal_messages
+BEGIN
+  SELECT RAISE(ABORT, 'chat_internal_messages history is protected');
+END;
+
+CREATE TRIGGER protect_friends_delete
+BEFORE DELETE ON friends
+BEGIN
+  SELECT RAISE(ABORT, 'friends history is protected');
+END;
+
+CREATE TRIGGER protect_messages_log_delete
+BEFORE DELETE ON messages_log
+BEGIN
+  SELECT RAISE(ABORT, 'messages_log history is protected');
+END;
+
+CREATE TRIGGER protect_support_case_events_delete
+BEFORE DELETE ON support_case_events
+BEGIN
+  SELECT RAISE(ABORT, 'support_case_events history is protected');
+END;
+
+CREATE TRIGGER protect_support_cases_delete
+BEFORE DELETE ON support_cases
+BEGIN
+  SELECT RAISE(ABORT, 'support_cases history is protected');
+END;
+
+CREATE TRIGGER protect_support_escalations_delete
+BEFORE DELETE ON support_escalations
+BEGIN
+  SELECT RAISE(ABORT, 'support_escalations history is protected');
+END;
+
+CREATE TRIGGER protect_support_internal_messages_delete
+BEFORE DELETE ON support_internal_messages
+BEGIN
+  SELECT RAISE(ABORT, 'support_internal_messages history is protected');
+END;
+
+CREATE TRIGGER protect_terminal_support_escalations_update
+BEFORE UPDATE ON support_escalations
+WHEN OLD.status IN ('answered', 'closed')
+BEGIN
+  SELECT RAISE(ABORT, 'completed support escalation is immutable');
+END;
+
+CREATE TRIGGER trg_chat_internal_messages_conversation_insert
+AFTER INSERT ON chat_internal_messages
+BEGIN
+  INSERT INTO internal_conversations (
+    id, line_account_id, kind, source_id, title, created_by, created_at, updated_at
+  )
+  VALUES (
+    'chat:' || NEW.friend_id,
+    COALESCE(NEW.line_account_id, (SELECT line_account_id FROM friends WHERE id = NEW.friend_id)),
+    'chat',
+    NEW.friend_id,
+    (SELECT display_name FROM friends WHERE id = NEW.friend_id),
+    NEW.created_by,
+    NEW.created_at,
+    NEW.created_at
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    title = COALESCE(excluded.title, internal_conversations.title),
+    updated_at = excluded.updated_at;
+END;
+
+CREATE TRIGGER trg_support_internal_messages_conversation_insert
+AFTER INSERT ON support_internal_messages
+BEGIN
+  INSERT INTO internal_conversations (
+    id, line_account_id, kind, source_id, title, created_by, created_at, updated_at
+  )
+  VALUES (
+    'support:' || NEW.case_id,
+    NEW.line_account_id,
+    'support',
+    NEW.case_id,
+    (SELECT title FROM support_cases WHERE id = NEW.case_id),
+    NEW.created_by,
+    NEW.created_at,
+    NEW.created_at
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    title = COALESCE(excluded.title, internal_conversations.title),
+    updated_at = excluded.updated_at;
+END;

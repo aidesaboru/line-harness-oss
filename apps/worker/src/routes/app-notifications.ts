@@ -14,13 +14,16 @@ import {
   type WebPushSubscriptionRecord,
 } from '../services/web-push.js';
 import { summarizeInternalReactions } from '../services/internal-message-reactions.js';
+import { mentionStaffIdsForMessages } from '../services/internal-message-mentions.js';
 
 const appNotifications = new Hono<Env>();
 
 const NOTIFICATION_LIMIT = 12;
-const INTERNAL_CHAT_FEED_DEFAULT_LIMIT = 80;
-const INTERNAL_CHAT_FEED_MAX_LIMIT = 120;
+const INTERNAL_CHAT_FEED_DEFAULT_LIMIT = 50;
+const INTERNAL_CHAT_FEED_MAX_LIMIT = 100;
 const CURSOR_MAX_LENGTH = 64;
+const INTERNAL_CHAT_CURSOR_MAX_LENGTH = 512;
+const INTERNAL_CHAT_SEARCH_MAX_LENGTH = 256;
 const ACCOUNT_ID_MAX_LENGTH = 128;
 const WEB_PUSH_ENDPOINT_MAX_LENGTH = 2048;
 const WEB_PUSH_KEY_MAX_LENGTH = 256;
@@ -42,6 +45,18 @@ type AppNotificationItem = {
   body: string;
   href: string;
   createdAt: string;
+};
+
+type AppNotificationInboxRow = {
+  id: string;
+  notification_key: string;
+  kind: AppNotificationKind;
+  title: string;
+  body: string;
+  href: string;
+  source_created_at: string;
+  read_at: string | null;
+  snoozed_until: string | null;
 };
 
 type ValueResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -92,6 +107,7 @@ type SupportInternalChatFeedRow = {
   mentions: string;
   reactions?: string | null;
   created_by_name: string | null;
+  created_by: string | null;
   created_at: string;
 };
 
@@ -105,7 +121,18 @@ type ChatInternalChatFeedRow = {
   mentions: string;
   reactions?: string | null;
   created_by_name: string | null;
+  created_by: string | null;
   created_at: string;
+};
+
+type InternalConversationReadRow = {
+  conversation_id: string;
+  last_read_at: string;
+};
+
+type InternalChatCursor = {
+  createdAt: string;
+  id: string;
 };
 
 type UrgentCaseRow = {
@@ -191,6 +218,62 @@ function compact(text: string | null | undefined, fallback: string): string {
   return value ? value.slice(0, 120) : fallback;
 }
 
+function notificationInboxId(staffId: string, notificationKey: string): string {
+  return `${staffId}:${notificationKey}`;
+}
+
+async function persistNotificationInbox(
+  db: D1Database,
+  staff: SupportAccessStaff,
+  lineAccountId: string | undefined,
+  items: AppNotificationItem[],
+): Promise<void> {
+  if (items.length === 0) return;
+  const now = jstNow();
+  await db.batch(items.map((item) => (
+    db.prepare(
+      `INSERT INTO app_notification_inbox (
+         id, notification_key, recipient_staff_id, line_account_id,
+         kind, title, body, href, source_created_at, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(recipient_staff_id, notification_key) DO UPDATE SET
+         line_account_id = COALESCE(excluded.line_account_id, app_notification_inbox.line_account_id),
+         kind = excluded.kind,
+         title = excluded.title,
+         body = excluded.body,
+         href = excluded.href,
+         source_created_at = excluded.source_created_at,
+         updated_at = excluded.updated_at`,
+    ).bind(
+      notificationInboxId(staff.id, item.id),
+      item.id,
+      staff.id,
+      lineAccountId ?? null,
+      item.kind,
+      item.title,
+      item.body,
+      item.href,
+      item.createdAt,
+      now,
+      now,
+    )
+  )));
+}
+
+function serializeNotificationInboxRow(row: AppNotificationInboxRow) {
+  return {
+    id: row.id,
+    notificationKey: row.notification_key,
+    kind: row.kind,
+    title: row.title,
+    body: row.body,
+    href: row.href,
+    createdAt: row.source_created_at,
+    readAt: row.read_at,
+    snoozedUntil: row.snoozed_until,
+  };
+}
+
 function parseLimit(raw: unknown): ValueResult<number> {
   if (raw === undefined || raw === null || raw === '') {
     return { ok: true, value: INTERNAL_CHAT_FEED_DEFAULT_LIMIT };
@@ -202,6 +285,69 @@ function parseLimit(raw: unknown): ValueResult<number> {
     ok: true,
     value: Math.max(1, Math.min(INTERNAL_CHAT_FEED_MAX_LIMIT, Math.floor(value))),
   };
+}
+
+function parseInternalChatCursor(raw: unknown): ValueResult<InternalChatCursor | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'before must be a string' };
+  const value = raw.trim();
+  const separator = value.lastIndexOf('|');
+  if (
+    !value
+    || value.length > INTERNAL_CHAT_CURSOR_MAX_LENGTH
+    || separator <= 0
+    || separator === value.length - 1
+  ) {
+    return { ok: false, error: 'before is invalid' };
+  }
+  const createdAt = value.slice(0, separator);
+  const id = value.slice(separator + 1);
+  if (!createdAt.includes('T') || !id.includes(':')) {
+    return { ok: false, error: 'before is invalid' };
+  }
+  return { ok: true, value: { createdAt, id } };
+}
+
+function parseInternalChatSearch(raw: unknown): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: 'q must be a string' };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: undefined };
+  if (value.length > INTERNAL_CHAT_SEARCH_MAX_LENGTH) {
+    return { ok: false, error: 'q is too long' };
+  }
+  return { ok: true, value };
+}
+
+function internalConversationId(source: 'support' | 'chat', sourceId: string): string {
+  return `${source}:${sourceId}`;
+}
+
+function internalChatCursorValue(item: { createdAt: string; id: string }): string {
+  return `${item.createdAt}|${item.id}`;
+}
+
+async function loadInternalConversationReads(
+  db: D1Database,
+  staffId: string,
+  lineAccountId?: string,
+): Promise<Map<string, string>> {
+  const conditions = ['icr.staff_id = ?'];
+  const binds: unknown[] = [staffId];
+  if (lineAccountId) {
+    conditions.push('ic.line_account_id = ?');
+    binds.push(lineAccountId);
+  }
+  const rows = await db
+    .prepare(
+      `SELECT icr.conversation_id, icr.last_read_at
+       FROM internal_conversation_reads icr
+       INNER JOIN internal_conversations ic ON ic.id = icr.conversation_id
+       WHERE ${conditions.join(' AND ')}`,
+    )
+    .bind(...binds)
+    .all<InternalConversationReadRow>();
+  return new Map(rows.results.map((row) => [row.conversation_id, row.last_read_at]));
 }
 
 function parseStoredMentions(raw: string | null | undefined): string[] {
@@ -468,13 +614,34 @@ async function fetchSupportMentions(
   lineAccountId?: string,
 ): Promise<AppNotificationItem[]> {
   const mentionPattern = mentionLikePattern(staff);
-  if (!mentionPattern) return [];
   const conditions = [
     'sim.created_at > ?',
-    `sim.mentions LIKE ? ESCAPE '\\'`,
     '(sim.created_by IS NULL OR sim.created_by != ?)',
   ];
-  const binds: unknown[] = [after, mentionPattern, staff.id];
+  const binds: unknown[] = [after, staff.id];
+  if (mentionPattern) {
+    conditions.push(
+      `(EXISTS (
+        SELECT 1
+        FROM internal_message_mentions imm
+        WHERE imm.source_type = 'support'
+          AND imm.source_message_id = sim.id
+          AND imm.staff_id = ?
+      ) OR sim.mentions LIKE ? ESCAPE '\\')`,
+    );
+    binds.push(staff.id, mentionPattern);
+  } else {
+    conditions.push(
+      `EXISTS (
+        SELECT 1
+        FROM internal_message_mentions imm
+        WHERE imm.source_type = 'support'
+          AND imm.source_message_id = sim.id
+          AND imm.staff_id = ?
+      )`,
+    );
+    binds.push(staff.id);
+  }
   if (lineAccountId) {
     conditions.push('sim.line_account_id = ?');
     binds.push(lineAccountId);
@@ -514,13 +681,34 @@ async function fetchChatMentions(
   lineAccountId?: string,
 ): Promise<AppNotificationItem[]> {
   const mentionPattern = mentionLikePattern(staff);
-  if (!mentionPattern) return [];
   const conditions = [
     'cim.created_at > ?',
-    `cim.mentions LIKE ? ESCAPE '\\'`,
     '(cim.created_by IS NULL OR cim.created_by != ?)',
   ];
-  const binds: unknown[] = [after, mentionPattern, staff.id];
+  const binds: unknown[] = [after, staff.id];
+  if (mentionPattern) {
+    conditions.push(
+      `(EXISTS (
+        SELECT 1
+        FROM internal_message_mentions imm
+        WHERE imm.source_type = 'chat'
+          AND imm.source_message_id = cim.id
+          AND imm.staff_id = ?
+      ) OR cim.mentions LIKE ? ESCAPE '\\')`,
+    );
+    binds.push(staff.id, mentionPattern);
+  } else {
+    conditions.push(
+      `EXISTS (
+        SELECT 1
+        FROM internal_message_mentions imm
+        WHERE imm.source_type = 'chat'
+          AND imm.source_message_id = cim.id
+          AND imm.staff_id = ?
+      )`,
+    );
+    binds.push(staff.id);
+  }
   if (lineAccountId) {
     conditions.push('COALESCE(cim.line_account_id, f.line_account_id) = ?');
     binds.push(lineAccountId);
@@ -592,10 +780,124 @@ appNotifications.get('/api/app-notifications/recent', async (c) => {
 
     const staff = currentStaff(c);
     const items = await collectAppNotifications(c.env.DB, staff, after.value, lineAccountId.value);
+    await persistNotificationInbox(c.env.DB, staff, lineAccountId.value, items);
 
     return c.json({ success: true, data: { cursor, items } });
   } catch (err) {
     console.error(`GET /api/app-notifications/recent error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+appNotifications.get('/api/app-notifications/inbox', async (c) => {
+  try {
+    const params = new URL(c.req.url).searchParams;
+    const lineAccountId = parseAccountId(params.get('lineAccountId'));
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const limit = parseLimit(params.get('limit'));
+    if (!limit.ok) return c.json({ success: false, error: limit.error }, 400);
+    const staff = currentStaff(c);
+    const backfillAfter = toJstString(new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000));
+    const collected = await collectAppNotifications(
+      c.env.DB,
+      staff,
+      backfillAfter,
+      lineAccountId.value,
+    );
+    await persistNotificationInbox(c.env.DB, staff, lineAccountId.value, collected);
+
+    const conditions = [
+      'recipient_staff_id = ?',
+      'dismissed_at IS NULL',
+      '(snoozed_until IS NULL OR snoozed_until <= ?)',
+    ];
+    const now = jstNow();
+    const binds: unknown[] = [staff.id, now];
+    if (lineAccountId.value) {
+      conditions.push('line_account_id = ?');
+      binds.push(lineAccountId.value);
+    }
+    const where = conditions.join(' AND ');
+    const [rows, unread] = await Promise.all([
+      c.env.DB
+        .prepare(
+          `SELECT id, notification_key, kind, title, body, href,
+                  source_created_at, read_at, snoozed_until
+           FROM app_notification_inbox
+           WHERE ${where}
+           ORDER BY CASE WHEN read_at IS NULL THEN 0 ELSE 1 END,
+                    source_created_at DESC
+           LIMIT ?`,
+        )
+        .bind(...binds, limit.value)
+        .all<AppNotificationInboxRow>(),
+      c.env.DB
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM app_notification_inbox
+           WHERE ${where} AND read_at IS NULL`,
+        )
+        .bind(...binds)
+        .first<{ count: number }>(),
+    ]);
+    return c.json({
+      success: true,
+      data: {
+        items: rows.results.map(serializeNotificationInboxRow),
+        unreadCount: Number(unread?.count ?? 0),
+      },
+    });
+  } catch (err) {
+    console.error(`GET /api/app-notifications/inbox error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+appNotifications.post('/api/app-notifications/inbox/read', async (c) => {
+  try {
+    const body = await c.req.json<{
+      lineAccountId?: unknown;
+      id?: unknown;
+      all?: unknown;
+    }>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const lineAccountId = parseAccountId(body.lineAccountId);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    if (!lineAccountId.value) {
+      return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    }
+    const markAll = body.all === true;
+    const id = markAll ? { ok: true as const, value: undefined } : parseVisibleText(body.id, 'id', 512);
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const staff = currentStaff(c);
+    const now = jstNow();
+    if (markAll) {
+      await c.env.DB
+        .prepare(
+          `UPDATE app_notification_inbox
+           SET read_at = COALESCE(read_at, ?), updated_at = ?
+           WHERE recipient_staff_id = ?
+             AND line_account_id = ?
+             AND dismissed_at IS NULL`,
+        )
+        .bind(now, now, staff.id, lineAccountId.value)
+        .run();
+    } else {
+      await c.env.DB
+        .prepare(
+          `UPDATE app_notification_inbox
+           SET read_at = COALESCE(read_at, ?), updated_at = ?
+           WHERE id = ?
+             AND recipient_staff_id = ?
+             AND line_account_id = ?
+             AND dismissed_at IS NULL`,
+        )
+        .bind(now, now, id.value, staff.id, lineAccountId.value)
+        .run();
+    }
+    return c.json({ success: true, data: { readAt: now } });
+  } catch (err) {
+    console.error(`POST /api/app-notifications/inbox/read error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -607,6 +909,10 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const limit = parseLimit(params.get('limit'));
     if (!limit.ok) return c.json({ success: false, error: limit.error }, 400);
+    const before = parseInternalChatCursor(params.get('before'));
+    if (!before.ok) return c.json({ success: false, error: before.error }, 400);
+    const search = parseInternalChatSearch(params.get('q'));
+    if (!search.ok) return c.json({ success: false, error: search.error }, 400);
 
     const staff = currentStaff(c);
     const supportConditions: string[] = [];
@@ -620,6 +926,21 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
       supportConditions.push(supportVisibility.sql);
       supportBinds.push(...supportVisibility.binds);
     }
+    if (before.value) {
+      supportConditions.push(
+        `(sim.created_at < ? OR (sim.created_at = ? AND ('support:' || sim.id) < ?))`,
+      );
+      supportBinds.push(before.value.createdAt, before.value.createdAt, before.value.id);
+    }
+    if (search.value) {
+      const pattern = `%${escapeLike(search.value)}%`;
+      supportConditions.push(
+        `(sim.body LIKE ? ESCAPE '\\'
+          OR sc.title LIKE ? ESCAPE '\\'
+          OR f.display_name LIKE ? ESCAPE '\\')`,
+      );
+      supportBinds.push(pattern, pattern, pattern);
+    }
 
     const chatConditions: string[] = [];
     const chatBinds: unknown[] = [];
@@ -632,6 +953,28 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
       chatConditions.push(chatVisibility.sql);
       chatBinds.push(...chatVisibility.binds);
     }
+    if (before.value) {
+      chatConditions.push(
+        `(cim.created_at < ? OR (cim.created_at = ? AND ('chat:' || cim.id) < ?))`,
+      );
+      chatBinds.push(before.value.createdAt, before.value.createdAt, before.value.id);
+    }
+    if (search.value) {
+      const pattern = `%${escapeLike(search.value)}%`;
+      chatConditions.push(
+        `(cim.body LIKE ? ESCAPE '\\'
+          OR f.display_name LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1
+            FROM support_cases sc_search
+            WHERE sc_search.friend_id = cim.friend_id
+              AND sc_search.title LIKE ? ESCAPE '\\'
+          ))`,
+      );
+      chatBinds.push(pattern, pattern, pattern);
+    }
+
+    const queryLimit = limit.value + 1;
 
     const [supportRows, chatRows] = await Promise.all([
       c.env.DB
@@ -645,6 +988,7 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
              sim.body,
              sim.mentions,
              sim.reactions,
+             sim.created_by,
              sim.created_by_name,
              sim.created_at
            FROM support_internal_messages sim
@@ -654,7 +998,7 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
            ORDER BY sim.created_at DESC
            LIMIT ?`,
         )
-        .bind(...supportBinds, limit.value)
+        .bind(...supportBinds, queryLimit)
         .all<SupportInternalChatFeedRow>(),
       c.env.DB
         .prepare(
@@ -674,6 +1018,7 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
              cim.body,
              cim.mentions,
              cim.reactions,
+             cim.created_by,
              cim.created_by_name,
              cim.created_at
            FROM chat_internal_messages cim
@@ -682,11 +1027,17 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
            ORDER BY cim.created_at DESC
            LIMIT ?`,
         )
-        .bind(...chatBinds, limit.value)
+        .bind(...chatBinds, queryLimit)
         .all<ChatInternalChatFeedRow>(),
     ]);
 
-    const items = [
+    const [supportMentionIds, chatMentionIds, readCursors] = await Promise.all([
+      mentionStaffIdsForMessages(c.env.DB, 'support', supportRows.results.map((row) => row.id)),
+      mentionStaffIdsForMessages(c.env.DB, 'chat', chatRows.results.map((row) => row.id)),
+      loadInternalConversationReads(c.env.DB, staff.id, lineAccountId.value),
+    ]);
+
+    const allItems = [
       ...supportRows.results.map((row) => ({
         id: `support:${row.id}`,
         source: 'support' as const,
@@ -697,10 +1048,13 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         parentId: row.parent_id,
         body: row.body,
         mentions: parseStoredMentions(row.mentions),
+        mentionStaffIds: supportMentionIds.get(row.id) ?? [],
         reactions: summarizeInternalReactions(row.reactions, staff),
         createdByName: row.created_by_name,
         createdAt: row.created_at,
         href: `/support?case=${encodeURIComponent(row.case_id)}`,
+        isUnread: row.created_by !== staff.id
+          && row.created_at > (readCursors.get(internalConversationId('support', row.case_id)) ?? ''),
       })),
       ...chatRows.results.map((row) => ({
         id: `chat:${row.id}`,
@@ -712,18 +1066,99 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         parentId: row.parent_id,
         body: row.body,
         mentions: parseStoredMentions(row.mentions),
+        mentionStaffIds: chatMentionIds.get(row.id) ?? [],
         reactions: summarizeInternalReactions(row.reactions, staff),
         createdByName: row.created_by_name,
         createdAt: row.created_at,
         href: `/chats?friend=${encodeURIComponent(row.friend_id)}`,
+        isUnread: row.created_by !== staff.id
+          && row.created_at > (readCursors.get(internalConversationId('chat', row.friend_id)) ?? ''),
       })),
     ]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit.value);
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+    const hasMore = allItems.length > limit.value;
+    const items = allItems.slice(0, limit.value);
+    const lastItem = items.at(-1);
 
-    return c.json({ success: true, data: { items } });
+    return c.json({
+      success: true,
+      data: {
+        items,
+        hasMore,
+        nextCursor: hasMore && lastItem ? internalChatCursorValue(lastItem) : null,
+      },
+    });
   } catch (err) {
     console.error(`GET /api/app-notifications/internal-chat-feed error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+appNotifications.post('/api/app-notifications/internal-chat-read', async (c) => {
+  try {
+    const body = await c.req.json<{
+      lineAccountId?: unknown;
+      source?: unknown;
+      sourceId?: unknown;
+    }>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const lineAccountId = parseAccountId(body.lineAccountId);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    if (!lineAccountId.value) {
+      return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    }
+    const source = body.source === undefined ? 'all' : body.source;
+    if (source !== 'all' && source !== 'support' && source !== 'chat') {
+      return c.json({ success: false, error: 'source is invalid' }, 400);
+    }
+
+    const staff = currentStaff(c);
+    const now = jstNow();
+    if (source === 'all') {
+      await c.env.DB
+        .prepare(
+          `INSERT INTO internal_conversation_reads (
+             conversation_id, staff_id, last_read_at, updated_at
+           )
+           SELECT id, ?, ?, ?
+           FROM internal_conversations
+           WHERE line_account_id = ? AND archived_at IS NULL
+           ON CONFLICT(conversation_id, staff_id) DO UPDATE SET
+             last_read_at = excluded.last_read_at,
+             updated_at = excluded.updated_at`,
+        )
+        .bind(staff.id, now, now, lineAccountId.value)
+        .run();
+      return c.json({ success: true, data: { readAt: now, conversationId: null } });
+    }
+
+    const sourceId = parseVisibleText(body.sourceId, 'sourceId', ACCOUNT_ID_MAX_LENGTH);
+    if (!sourceId.ok) return c.json({ success: false, error: sourceId.error }, 400);
+    const conversationId = internalConversationId(source, sourceId.value);
+    const conversation = await c.env.DB
+      .prepare(
+        `SELECT id
+         FROM internal_conversations
+         WHERE id = ? AND line_account_id = ? AND archived_at IS NULL`,
+      )
+      .bind(conversationId, lineAccountId.value)
+      .first<{ id: string }>();
+    if (!conversation) return c.json({ success: false, error: 'conversation not found' }, 404);
+
+    await c.env.DB
+      .prepare(
+        `INSERT INTO internal_conversation_reads (
+           conversation_id, staff_id, last_read_at, updated_at
+         ) VALUES (?, ?, ?, ?)
+         ON CONFLICT(conversation_id, staff_id) DO UPDATE SET
+           last_read_at = excluded.last_read_at,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(conversationId, staff.id, now, now)
+      .run();
+    return c.json({ success: true, data: { readAt: now, conversationId } });
+  } catch (err) {
+    console.error(`POST /api/app-notifications/internal-chat-read error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -989,8 +1424,9 @@ export async function processWebPushNotifications(
       name: subscription.staff_name,
       role: subscription.staff_role,
     };
-    const items = (await collectAppNotifications(db, staff, after, options.lineAccountId))
-      .filter((item) => notificationMatchesSubscription(item, subscription));
+    const collected = await collectAppNotifications(db, staff, after, options.lineAccountId);
+    await persistNotificationInbox(db, staff, options.lineAccountId, collected);
+    const items = collected.filter((item) => notificationMatchesSubscription(item, subscription));
     for (const item of items) {
       const existing = await db
         .prepare(

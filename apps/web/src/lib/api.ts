@@ -88,6 +88,7 @@ export type ChatInternalMessage = {
   parentId: string | null
   body: string
   mentions: string[]
+  mentionStaffIds: string[]
   reactions: InternalMessageReaction[]
   createdBy: string | null
   createdByName: string | null
@@ -200,11 +201,19 @@ export type AppNotificationKind =
 
 export type AppNotificationItem = {
   id: string
+  notificationKey?: string
   kind: AppNotificationKind
   title: string
   body: string
   href: string
   createdAt: string
+  readAt?: string | null
+  snoozedUntil?: string | null
+}
+
+export type AppNotificationInboxResponse = {
+  items: AppNotificationItem[]
+  unreadCount: number
 }
 
 export type InternalChatFeedItem = {
@@ -217,10 +226,18 @@ export type InternalChatFeedItem = {
   parentId: string | null
   body: string
   mentions: string[]
+  mentionStaffIds: string[]
   reactions: InternalMessageReaction[]
   createdByName: string | null
   createdAt: string
   href: string
+  isUnread: boolean
+}
+
+export type InternalChatFeedResponse = {
+  items: InternalChatFeedItem[]
+  hasMore: boolean
+  nextCursor: string | null
 }
 
 export type StaffPresenceItem = {
@@ -359,6 +376,7 @@ export type SupportEscalation = {
   answer: string
   dueAt: string | null
   answeredAt: string | null
+  reopenedFromId: string | null
   createdBy: string | null
   updatedBy: string | null
   createdAt: string
@@ -401,6 +419,7 @@ export type SupportInternalMessage = {
   parentId: string | null
   body: string
   mentions: string[]
+  mentionStaffIds: string[]
   reactions: InternalMessageReaction[]
   createdBy: string | null
   createdByName: string | null
@@ -1218,7 +1237,7 @@ export const api = {
           method: 'POST',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
         }),
-      addInternalMessage: (id: string, accountId: string, data: { body: string; parentId?: string | null; mentions?: string[] }) =>
+      addInternalMessage: (id: string, accountId: string, data: { body: string; parentId?: string | null; mentions?: string[]; mentionStaffIds?: string[] }) =>
         fetchApi<ApiResponse<SupportInternalMessage>>(`/api/support/cases/${id}/internal-messages`, {
           method: 'POST',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
@@ -1255,6 +1274,11 @@ export const api = {
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/escalations/${id}`, {
           method: 'PATCH',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      reopen: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<SupportEscalation>>(`/api/support/escalations/${id}/reopen`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId }),
         }),
     },
     manuals: {
@@ -1380,7 +1404,7 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    addInternalMessage: (id: string, data: { body: string; parentId?: string | null; mentions?: string[] }) =>
+    addInternalMessage: (id: string, data: { body: string; parentId?: string | null; mentions?: string[]; mentionStaffIds?: string[] }) =>
       fetchApi<ApiResponse<ChatInternalMessage>>(`/api/chats/${id}/internal-messages`, {
         method: 'POST',
         body: JSON.stringify(data),
@@ -1401,15 +1425,47 @@ export const api = {
         `/api/app-notifications/recent${qs ? `?${qs}` : ''}`,
       )
     },
-    internalChatFeed: (params?: { accountId?: string; limit?: number }) => {
+    inbox: (params?: { accountId?: string; limit?: number }) => {
       const query: Record<string, string> = {}
       if (params?.accountId) query.lineAccountId = params.accountId
       if (params?.limit) query.limit = String(params.limit)
       const qs = new URLSearchParams(query).toString()
-      return fetchApi<ApiResponse<{ items: InternalChatFeedItem[] }>>(
+      return fetchApi<ApiResponse<AppNotificationInboxResponse>>(
+        `/api/app-notifications/inbox${qs ? `?${qs}` : ''}`,
+      )
+    },
+    markInboxRead: (data: { accountId: string; id?: string; all?: boolean }) =>
+      fetchApi<ApiResponse<{ readAt: string }>>('/api/app-notifications/inbox/read', {
+        method: 'POST',
+        body: JSON.stringify({
+          lineAccountId: data.accountId,
+          id: data.id,
+          all: data.all ?? false,
+        }),
+      }),
+    internalChatFeed: (params?: { accountId?: string; limit?: number; before?: string; search?: string }) => {
+      const query: Record<string, string> = {}
+      if (params?.accountId) query.lineAccountId = params.accountId
+      if (params?.limit) query.limit = String(params.limit)
+      if (params?.before) query.before = params.before
+      if (params?.search?.trim()) query.q = params.search.trim()
+      const qs = new URLSearchParams(query).toString()
+      return fetchApi<ApiResponse<InternalChatFeedResponse>>(
         `/api/app-notifications/internal-chat-feed${qs ? `?${qs}` : ''}`,
       )
     },
+    markInternalChatRead: (data: { accountId: string; source?: 'all' | 'support' | 'chat'; sourceId?: string }) =>
+      fetchApi<ApiResponse<{ readAt: string; conversationId: string | null }>>(
+        '/api/app-notifications/internal-chat-read',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            lineAccountId: data.accountId,
+            source: data.source ?? 'all',
+            sourceId: data.sourceId,
+          }),
+        },
+      ),
     webPushConfig: () =>
       fetchApi<ApiResponse<WebPushConfigResponse>>('/api/app-notifications/web-push/config'),
     subscribeWebPush: (subscription: PushSubscriptionJSON & { userAgent?: string }) =>

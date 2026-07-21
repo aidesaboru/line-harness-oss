@@ -61,6 +61,7 @@ type SupportEscalationRow = {
   answer: string;
   due_at: string | null;
   answered_at: string | null;
+  reopened_from_id: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;
@@ -259,6 +260,7 @@ function baseEscalation(overrides: Partial<SupportEscalationRow> = {}): SupportE
     answer: '',
     due_at: '2026-06-13T18:00',
     answered_at: null,
+    reopened_from_id: null,
     created_by: 'staff-1',
     updated_by: 'staff-1',
     created_at: '2026-06-12T09:00:00.000',
@@ -513,6 +515,13 @@ function makeSupportDb(state: {
             const [id] = bound as [string];
             return findEscalation(id) as T | null;
           }
+          if (sql.startsWith('SELECT id FROM support_escalations WHERE reopened_from_id = ?')) {
+            const [reopenedFromId, lineAccountId] = bound as [string, string];
+            const row = escalations.find(
+              (item) => item.reopened_from_id === reopenedFromId && item.line_account_id === lineAccountId,
+            );
+            return (row ? { id: row.id } : null) as T | null;
+          }
           if (sql.startsWith('SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?')) {
             const [id, lineAccountId] = bound as [string, string];
             return findManual(id, lineAccountId) as T | null;
@@ -762,7 +771,7 @@ function makeSupportDb(state: {
               created_at: String(createdAt),
             });
           } else if (sql.includes('INSERT INTO support_escalations')) {
-            const [id, caseId, lineAccountId, assignee, level, question, dueAt, createdBy, updatedBy, createdAt, updatedAt] = bound as string[];
+            const [id, caseId, lineAccountId, assignee, level, question, dueAt, createdBy, updatedBy, createdAt, updatedAt, reopenedFromId] = bound as string[];
             escalations.push({
               id,
               case_id: caseId,
@@ -774,6 +783,7 @@ function makeSupportDb(state: {
               answer: '',
               due_at: dueAt,
               answered_at: null,
+              reopened_from_id: reopenedFromId ?? null,
               created_by: createdBy,
               updated_by: updatedBy,
               created_at: createdAt,
@@ -785,7 +795,11 @@ function makeSupportDb(state: {
             const updatedBy = bound[0] as string;
             const updatedAt = bound[1] as string;
             for (const escalation of escalations) {
-              if (escalation.case_id !== caseId || escalation.line_account_id !== lineAccountId || escalation.status === 'closed') continue;
+              if (
+                escalation.case_id !== caseId ||
+                escalation.line_account_id !== lineAccountId ||
+                !['pending', 'needs_info', 'transferred', 'expert_check'].includes(escalation.status)
+              ) continue;
               escalation.status = 'closed';
               escalation.updated_by = updatedBy;
               escalation.updated_at = updatedAt;
@@ -1514,7 +1528,7 @@ describe('support CRM routes', () => {
 
     expect(res.status).toBe(200);
     expect(state.cases[0].status).toBe('resolved');
-    expect(state.escalations.map((item) => item.status)).toEqual(['closed', 'closed', 'closed']);
+    expect(state.escalations.map((item) => item.status)).toEqual(['closed', 'answered', 'closed']);
   });
 
   test('does not refresh reopened_at when saving an already reopened case', async () => {
@@ -1869,7 +1883,7 @@ describe('support CRM routes', () => {
     expect(state.internalMessages).toHaveLength(0);
   });
 
-  test('updating an escalation answer without a status change does not move the case status', async () => {
+  test('rejects normal edits to answered escalations without changing stored data', async () => {
     const { db, calls, state } = makeSupportDb({
       cases: [baseCase({ id: 'case-esc', primary_assignee: '田島', status: 'resolved' })],
       escalations: [
@@ -1893,13 +1907,215 @@ describe('support CRM routes', () => {
       }),
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { success: boolean; error: string };
+    expect(body.success).toBe(false);
+    expect(body.error).toContain('再開');
     expect(state.escalations[0]).toMatchObject({
       status: 'answered',
-      answer: '回答文だけを補足しました',
+      answer: '旧回答',
+      answered_at: '2026-06-12T10:00:00.000',
     });
     expect(state.cases[0]).toMatchObject({ status: 'resolved' });
+    expect(state.events).toHaveLength(0);
+    expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_escalations'))).toBe(false);
     expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_cases'))).toBe(false);
+  });
+
+  test('rejects normal edits to closed escalations without changing stored data', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-esc', status: 'resolved' })],
+      escalations: [baseEscalation({
+        id: 'esc-closed',
+        case_id: 'case-esc',
+        status: 'closed',
+        answer: '完了時点の回答',
+        answered_at: '2026-06-12T10:00:00.000',
+      })],
+    });
+
+    const res = await setupApp(db).request('/api/support/escalations/esc-closed', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        status: 'needs_info',
+        answer: '差し戻しへ変更',
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(state.escalations[0]).toMatchObject({
+      status: 'closed',
+      answer: '完了時点の回答',
+      answered_at: '2026-06-12T10:00:00.000',
+    });
+    expect(state.events).toHaveLength(0);
+    expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_escalations'))).toBe(false);
+    expect(calls.some((call) => call.method === 'run' && call.sql.startsWith('UPDATE support_cases'))).toBe(false);
+  });
+
+  test('reopens a completed escalation by creating a new pending row and preserving all history', async () => {
+    const originalInternalMessage = baseInternalMessage({
+      id: 'internal-history',
+      case_id: 'case-esc',
+      body: '過去の社内確認ログ',
+    });
+    const originalEscalation = baseEscalation({
+      id: 'esc-answered',
+      case_id: 'case-esc',
+      status: 'answered',
+      answer: '初回の回答内容',
+      answered_at: '2026-06-12T10:00:00.000',
+    });
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({
+        id: 'case-esc',
+        status: 'resolved',
+        internal_note: '既存の案件メモ',
+        closed_at: '2026-06-12T11:00:00.000',
+      })],
+      escalations: [originalEscalation],
+      internalMessages: [originalInternalMessage],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' })
+      .request('/api/support/escalations/esc-answered/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { success: boolean; data: { id: string; status: string; answer: string } };
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({ status: 'pending', answer: '' });
+    expect(body.data.id).not.toBe('esc-answered');
+
+    expect(state.escalations).toHaveLength(2);
+    expect(state.escalations[0]).toEqual(originalEscalation);
+    expect(state.escalations[1]).toMatchObject({
+      id: body.data.id,
+      case_id: 'case-esc',
+      assignee: originalEscalation.assignee,
+      level: originalEscalation.level,
+      status: 'pending',
+      question: originalEscalation.question,
+      answer: '',
+      answered_at: null,
+      reopened_from_id: 'esc-answered',
+      created_by: 'staff-1',
+    });
+    expect(state.cases[0]).toMatchObject({
+      status: 'waiting_secondary',
+      internal_note: '既存の案件メモ',
+      closed_at: null,
+      updated_by: 'staff-1',
+    });
+    expect(state.cases[0].reopened_at).not.toBeNull();
+    expect(state.internalMessages).toEqual([originalInternalMessage]);
+    expect(state.events).toHaveLength(1);
+    expect(state.events[0]).toMatchObject({
+      case_id: 'case-esc',
+      event_type: 'escalation_reopened',
+      actor_id: 'staff-1',
+    });
+    expect(JSON.parse(state.events[0].metadata)).toMatchObject({
+      previousEscalationId: 'esc-answered',
+      previousStatus: 'answered',
+      reopenedEscalationId: body.data.id,
+      previousCaseStatus: 'resolved',
+      nextCaseStatus: 'waiting_secondary',
+    });
+
+    const duplicate = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' })
+      .request('/api/support/escalations/esc-answered/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      });
+    expect(duplicate.status).toBe(409);
+    expect(state.escalations).toHaveLength(2);
+  });
+
+  test('rejects reopening an active escalation without writing a duplicate', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-esc', status: 'waiting_secondary' })],
+      escalations: [baseEscalation({ id: 'esc-pending', case_id: 'case-esc', status: 'pending' })],
+    });
+
+    const res = await setupApp(db).request('/api/support/escalations/esc-pending/reopen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(state.escalations).toHaveLength(1);
+    expect(state.events).toHaveLength(0);
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO support_escalations'))).toBe(false);
+  });
+
+  test('reopens a closed escalation for its assigned secondary staff', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-closed', status: 'resolved', closed_at: '2026-06-12T11:00:00.000' })],
+      escalations: [baseEscalation({
+        id: 'esc-closed',
+        case_id: 'case-closed',
+        assignee: '田島',
+        status: 'closed',
+        answer: 'クローズ前の回答',
+      })],
+    });
+
+    const res = await setupApp(db, { id: 'secondary-1', name: '田島', role: 'secondary' })
+      .request('/api/support/escalations/esc-closed/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      });
+
+    expect(res.status).toBe(201);
+    expect(state.escalations).toHaveLength(2);
+    expect(state.escalations[0]).toMatchObject({
+      id: 'esc-closed',
+      status: 'closed',
+      answer: 'クローズ前の回答',
+    });
+    expect(state.escalations[1]).toMatchObject({
+      status: 'pending',
+      answer: '',
+      assignee: '田島',
+      reopened_from_id: 'esc-closed',
+      created_by: 'secondary-1',
+    });
+    expect(state.cases[0]).toMatchObject({ status: 'waiting_secondary', closed_at: null });
+  });
+
+  test('secondary-only staff cannot reopen another assignee escalation', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-other', status: 'secondary_answered' })],
+      escalations: [baseEscalation({
+        id: 'esc-other',
+        case_id: 'case-other',
+        assignee: '松山',
+        status: 'answered',
+        answer: '確認済み',
+      })],
+    });
+
+    const res = await setupApp(db, { id: 'secondary-1', name: '田島', role: 'secondary' })
+      .request('/api/support/escalations/esc-other/reopen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      });
+
+    expect(res.status).toBe(404);
+    expect(state.escalations).toHaveLength(1);
+    expect(state.cases[0].status).toBe('secondary_answered');
+    expect(state.events).toHaveLength(0);
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO support_escalations'))).toBe(false);
   });
 
   test('rejects escalation status updates on resolved cases until the case is reopened', async () => {
@@ -2319,6 +2535,10 @@ describe('support CRM routes', () => {
       ['PATCH', '/api/support/escalations/bad%20escalation', {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lineAccountId: 'acc-1', status: 'answered', answer: '確認済み' }),
+      }],
+      ['POST', '/api/support/escalations/bad%20escalation/reopen', {
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
       }],
       ['GET', '/api/support/manuals?lineAccountId=bad%20account'],
       ['GET', '/api/support/manuals?active=maybe'],

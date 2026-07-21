@@ -67,7 +67,12 @@
     "059_support_knowledge_imports.sql",
     "060_messages_webhook_event_id.sql",
     "061_line_webhook_inbox.sql",
-    "062_chat_scheduling_and_long_term.sql"
+    "062_chat_scheduling_and_long_term.sql",
+    "063_support_workflow_consistency.sql",
+    "064_internal_communication_foundation.sql",
+    "065_protect_operational_history.sql",
+    "066_protect_terminal_support_escalations.sql",
+    "067_link_reopened_support_escalations.sql"
   ],
-  "migrationCount": 68
+  "migrationCount": 73
 }

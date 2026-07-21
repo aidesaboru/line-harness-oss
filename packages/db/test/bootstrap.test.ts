@@ -14,10 +14,29 @@ const MIGRATIONS_DIR = join(PKG_ROOT, 'migrations');
 const BENIGN_SQLITE_ERROR = /duplicate column name|already exists/i;
 
 function splitSqlStatements(sql: string): string[] {
-  return sql
-    .split(/;\s*(?:\r?\n|$)/)
-    .map((statement) => statement.trim())
-    .filter(Boolean);
+  const statements: string[] = [];
+  let buffer: string[] = [];
+  let inTrigger = false;
+
+  for (const line of sql.split(/\r?\n/)) {
+    buffer.push(line);
+    const bufferedSql = buffer.join('\n');
+    if (!inTrigger && /\bCREATE\s+TRIGGER\b/i.test(bufferedSql)) inTrigger = true;
+
+    const statementEnded = inTrigger
+      ? /^\s*END;\s*(?:--.*)?$/i.test(line)
+      : /;\s*(?:--.*)?$/.test(line);
+    if (!statementEnded) continue;
+
+    const statement = bufferedSql.trim();
+    if (statement) statements.push(statement);
+    buffer = [];
+    inTrigger = false;
+  }
+
+  const remainder = buffer.join('\n').trim();
+  if (remainder) statements.push(remainder);
+  return statements;
 }
 
 function applyMigrationReplay(db: Database.Database): void {

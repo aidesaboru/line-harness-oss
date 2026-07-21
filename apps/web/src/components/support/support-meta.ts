@@ -320,6 +320,7 @@ export const eventTypeLabel: Record<string, string> = {
   updated: 'チケット更新',
   escalated: 'エスカレ作成',
   escalation_updated: 'エスカレ更新',
+  escalation_reopened: 'エスカレ再開',
   internal_chat: '社内チャット',
   internal_thread_reply: '社内スレッド返信',
   customer_reply_sent: '顧客返信送信',

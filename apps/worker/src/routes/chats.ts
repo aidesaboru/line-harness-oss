@@ -33,6 +33,13 @@ import {
   summarizeInternalReactions,
   toggleInternalReaction,
 } from '../services/internal-message-reactions.js';
+import {
+  mentionTargetsMatchBody,
+  mentionStaffIdsForMessages,
+  parseMentionStaffIds,
+  recordInternalMessageMentions,
+  resolveMentionStaffTargets,
+} from '../services/internal-message-mentions.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 import {
   getActiveScheduledChatMessages,
@@ -174,6 +181,7 @@ type ChatInternalMessageBody = {
   body: string;
   parentId?: string;
   mentions: string[];
+  mentionStaffIds: string[];
 };
 type ChatTypingStatusBody = { active: boolean };
 type ChatDeletedMessageResponse = { messageId: string; deletedAt: string };
@@ -752,7 +760,17 @@ function parseChatInternalMessageBody(raw: unknown): ValueResult<ChatInternalMes
   if (!parentId.ok) return parentId;
   const mentions = parseMentionNames(raw.mentions, body.value);
   if (!mentions.ok) return mentions;
-  return { ok: true, value: { body: body.value, parentId: parentId.value, mentions: mentions.value } };
+  const mentionStaffIds = parseMentionStaffIds(raw.mentionStaffIds, CHAT_INTERNAL_MENTION_MAX);
+  if (!mentionStaffIds.ok) return mentionStaffIds;
+  return {
+    ok: true,
+    value: {
+      body: body.value,
+      parentId: parentId.value,
+      mentions: mentions.value,
+      mentionStaffIds: mentionStaffIds.value,
+    },
+  };
 }
 
 function parseStoredMentions(raw: string): string[] {
@@ -766,7 +784,11 @@ function parseStoredMentions(raw: string): string[] {
   }
 }
 
-function serializeChatInternalMessage(row: ChatInternalMessageRow, staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' }) {
+function serializeChatInternalMessage(
+  row: ChatInternalMessageRow,
+  staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' },
+  mentionStaffIds: string[] = [],
+) {
   return {
     id: row.id,
     friendId: row.friend_id,
@@ -774,6 +796,7 @@ function serializeChatInternalMessage(row: ChatInternalMessageRow, staff: Suppor
     parentId: row.parent_id,
     body: row.body,
     mentions: parseStoredMentions(row.mentions),
+    mentionStaffIds,
     reactions: summarizeInternalReactions(row.reactions, staff),
     createdBy: row.created_by,
     createdByName: row.created_by_name,
@@ -1727,6 +1750,11 @@ chats.get('/api/chats/:id', async (c) => {
       )
       .bind(resolvedFriendId)
       .all<ChatInternalMessageRow>();
+    const internalMessageMentionIds = await mentionStaffIdsForMessages(
+      c.env.DB,
+      'chat',
+      internalMessages.results.map((message) => message.id),
+    );
     const activeSupportCase = await getActiveSupportCaseForFriend(
       c.env.DB,
       resolvedFriendId,
@@ -1769,7 +1797,11 @@ chats.get('/api/chats/:id', async (c) => {
         nextMessagesBefore: hasMoreMessages && oldestMessage
           ? { createdAt: oldestMessage.created_at, id: oldestMessage.id }
           : null,
-        internalMessages: internalMessages.results.map((message) => serializeChatInternalMessage(message, staff)),
+        internalMessages: internalMessages.results.map((message) => serializeChatInternalMessage(
+          message,
+          staff,
+          internalMessageMentionIds.get(message.id) ?? [],
+        )),
         activeSupportCase: serializeActiveSupportCaseForChat(activeSupportCase),
         typingParticipants,
         scheduledMessages: scheduledMessages.map(serializeScheduledChatMessage),
@@ -1958,6 +1990,17 @@ chats.post('/api/chats/:id/internal-messages', async (c) => {
     const messageId = crypto.randomUUID();
     const now = jstNow();
     const staff = currentStaff(c);
+    const resolvedMentions = await resolveMentionStaffTargets(c.env.DB, parsed.value.mentionStaffIds);
+    if (resolvedMentions.missingIds.length > 0) {
+      return c.json({ success: false, error: 'mention target not found' }, 400);
+    }
+    if (!mentionTargetsMatchBody(parsed.value.body, resolvedMentions.targets)) {
+      return c.json({ success: false, error: 'mention target must appear in body' }, 400);
+    }
+    const mentionNames = Array.from(new Set([
+      ...parsed.value.mentions,
+      ...resolvedMentions.targets.map((target) => target.name),
+    ]));
     await c.env.DB
       .prepare(
         `INSERT INTO chat_internal_messages (
@@ -1971,12 +2014,20 @@ chats.post('/api/chats/:id/internal-messages', async (c) => {
         friend.line_account_id ?? null,
         parsed.value.parentId ?? null,
         parsed.value.body,
-        JSON.stringify(parsed.value.mentions),
+        JSON.stringify(mentionNames),
         staff.id,
         staff.name,
         now,
       )
       .run();
+
+    await recordInternalMessageMentions(
+      c.env.DB,
+      'chat',
+      messageId,
+      resolvedMentions.targets,
+      now,
+    );
 
     const row = await c.env.DB
       .prepare(
@@ -1988,7 +2039,10 @@ chats.post('/api/chats/:id/internal-messages', async (c) => {
       .first<ChatInternalMessageRow>();
 
     kickWebPushNotifications(c);
-    return c.json({ success: true, data: row ? serializeChatInternalMessage(row, staff) : null }, 201);
+    return c.json({
+      success: true,
+      data: row ? serializeChatInternalMessage(row, staff, parsed.value.mentionStaffIds) : null,
+    }, 201);
   } catch (err) {
     console.error(`POST /api/chats/:id/internal-messages error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -2038,8 +2092,14 @@ chats.post('/api/chats/:id/internal-messages/:messageId/reactions', async (c) =>
       )
       .bind(messageId.value, chat.friend_id)
       .first<ChatInternalMessageRow>();
+    const mentionIds = await mentionStaffIdsForMessages(c.env.DB, 'chat', [messageId.value]);
 
-    return c.json({ success: true, data: updated ? serializeChatInternalMessage(updated, staff) : null });
+    return c.json({
+      success: true,
+      data: updated
+        ? serializeChatInternalMessage(updated, staff, mentionIds.get(messageId.value) ?? [])
+        : null,
+    });
   } catch (err) {
     console.error(`POST /api/chats/:id/internal-messages/:messageId/reactions error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);

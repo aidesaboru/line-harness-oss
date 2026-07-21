@@ -15,6 +15,13 @@ import {
   summarizeInternalReactions,
   toggleInternalReaction,
 } from '../services/internal-message-reactions.js';
+import {
+  mentionTargetsMatchBody,
+  mentionStaffIdsForMessages,
+  parseMentionStaffIds,
+  recordInternalMessageMentions,
+  resolveMentionStaffTargets,
+} from '../services/internal-message-mentions.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 
 const support = new Hono<Env>();
@@ -34,6 +41,7 @@ const CASE_STATUSES = new Set([
 
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 const ESCALATION_STATUSES = new Set(['pending', 'answered', 'needs_info', 'transferred', 'expert_check', 'closed']);
+const TERMINAL_ESCALATION_STATUSES = new Set(['answered', 'closed']);
 const ESCALATION_LEVELS = new Set(['L2', 'L3']);
 const SUPPORT_KNOWLEDGE_IMPORT_STATUSES = new Set(['draft', 'published', 'dismissed']);
 const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
@@ -129,6 +137,7 @@ type SupportEscalationRow = {
   answer: string;
   due_at: string | null;
   answered_at: string | null;
+  reopened_from_id?: string | null;
   created_by: string | null;
   updated_by: string | null;
   created_at: string;
@@ -855,6 +864,7 @@ function serializeEscalation(row: SupportEscalationRow) {
     answer: row.answer,
     dueAt: row.due_at,
     answeredAt: row.answered_at,
+    reopenedFromId: row.reopened_from_id ?? null,
     createdBy: row.created_by,
     updatedBy: row.updated_by,
     createdAt: row.created_at,
@@ -943,7 +953,11 @@ function parseStoredMentions(raw: string | null | undefined): string[] {
   }
 }
 
-function serializeInternalMessage(row: SupportInternalMessageRow, staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' }) {
+function serializeInternalMessage(
+  row: SupportInternalMessageRow,
+  staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' },
+  mentionStaffIds: string[] = [],
+) {
   return {
     id: row.id,
     caseId: row.case_id,
@@ -951,6 +965,7 @@ function serializeInternalMessage(row: SupportInternalMessageRow, staff: Support
     parentId: row.parent_id,
     body: row.body,
     mentions: parseStoredMentions(row.mentions),
+    mentionStaffIds,
     reactions: summarizeInternalReactions(row.reactions, staff),
     createdBy: row.created_by,
     createdByName: row.created_by_name,
@@ -1736,6 +1751,11 @@ support.get('/api/support/cases/:id', async (c) => {
     ]);
 
     const canViewLineConversation = !isSecondaryOnlySupportStaff(staff);
+    const internalMessageMentionIds = await mentionStaffIdsForMessages(
+      c.env.DB,
+      'support',
+      internalMessages.results.map((message) => message.id),
+    );
     const messages = row.friend_id && canViewLineConversation
       ? await c.env.DB.prepare(
         `SELECT id, direction, message_type, content, source, created_at
@@ -1767,7 +1787,11 @@ support.get('/api/support/cases/:id', async (c) => {
         ...serializeCase(row),
         events: events.results.map(serializeEvent),
         escalations: escalations.results.map(serializeEscalation),
-        internalMessages: internalMessages.results.map((message) => serializeInternalMessage(message, staff)),
+        internalMessages: internalMessages.results.map((message) => serializeInternalMessage(
+          message,
+          staff,
+          internalMessageMentionIds.get(message.id) ?? [],
+        )),
         manuals: manuals.map(serializeManual),
         canViewLineConversation,
         recentMessages: [...messages.results].reverse().map((m) => ({
@@ -1907,7 +1931,8 @@ support.patch('/api/support/cases/:id', async (c) => {
           .prepare(
             `UPDATE support_escalations
              SET status = 'closed', updated_by = ?, updated_at = ?
-             WHERE case_id = ? AND line_account_id = ? AND status != 'closed'`,
+             WHERE case_id = ? AND line_account_id = ?
+               AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')`,
           )
           .bind(staff.id, now, id.value, lineAccountId.value),
       );
@@ -2008,6 +2033,19 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
     }
     const mentions = parseMentionNames(body.mentions, parsedMessage.value);
     if (!mentions.ok) return c.json({ success: false, error: mentions.error }, 400);
+    const mentionStaffIds = parseMentionStaffIds(body.mentionStaffIds, SUPPORT_INTERNAL_MENTION_MAX);
+    if (!mentionStaffIds.ok) return c.json({ success: false, error: mentionStaffIds.error }, 400);
+    const resolvedMentions = await resolveMentionStaffTargets(c.env.DB, mentionStaffIds.value);
+    if (resolvedMentions.missingIds.length > 0) {
+      return c.json({ success: false, error: 'mention target not found' }, 400);
+    }
+    if (!mentionTargetsMatchBody(parsedMessage.value, resolvedMentions.targets)) {
+      return c.json({ success: false, error: 'mention target must appear in body' }, 400);
+    }
+    const mentionNames = Array.from(new Set([
+      ...mentions.value,
+      ...resolvedMentions.targets.map((target) => target.name),
+    ]));
 
     const now = jstNow();
     const messageId = crypto.randomUUID();
@@ -2024,12 +2062,20 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
         lineAccountId.value,
         parsedParentId.value ?? null,
         parsedMessage.value,
-        JSON.stringify(mentions.value),
+        JSON.stringify(mentionNames),
         staff.id,
         staff.name,
         now,
       )
       .run();
+
+    await recordInternalMessageMentions(
+      c.env.DB,
+      'support',
+      messageId,
+      resolvedMentions.targets,
+      now,
+    );
 
     await addCaseEvent(
       c.env.DB,
@@ -2038,7 +2084,12 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
       staff.id,
       staff.name,
       parsedParentId.value ? '社内スレッドに返信しました' : '社内チャットに投稿しました',
-      { messageId, parentId: parsedParentId.value ?? null, mentions: mentions.value },
+      {
+        messageId,
+        parentId: parsedParentId.value ?? null,
+        mentions: mentionNames,
+        mentionStaffIds: mentionStaffIds.value,
+      },
     );
 
     const created = await c.env.DB
@@ -2047,7 +2098,10 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
       .first<SupportInternalMessageRow>();
 
     kickWebPushNotifications(c);
-    return c.json({ success: true, data: serializeInternalMessage(created!, staff) }, 201);
+    return c.json({
+      success: true,
+      data: serializeInternalMessage(created!, staff, mentionStaffIds.value),
+    }, 201);
   } catch (err) {
     console.error(`POST /api/support/cases/:id/internal-messages error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -2092,8 +2146,12 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', as
       .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND line_account_id = ?`)
       .bind(messageId.value, lineAccountId.value)
       .first<SupportInternalMessageRow>();
+    const mentionIds = await mentionStaffIdsForMessages(c.env.DB, 'support', [messageId.value]);
 
-    return c.json({ success: true, data: serializeInternalMessage(updated!, staff) });
+    return c.json({
+      success: true,
+      data: serializeInternalMessage(updated!, staff, mentionIds.get(messageId.value) ?? []),
+    });
   } catch (err) {
     console.error(`POST /api/support/cases/:id/internal-messages/:messageId/reactions error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -2301,6 +2359,12 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (isSecondaryOnlySupportStaff(staffForScope) && !supportStaffMatchesText(staffForScope, existing.assignee)) {
       return c.json({ success: false, error: 'escalation not found' }, 404);
     }
+    if (TERMINAL_ESCALATION_STATUSES.has(existing.status)) {
+      return c.json({
+        success: false,
+        error: '回答済み・クローズ済みの二次対応は編集できません。変更が必要な場合は再開してください',
+      }, 409);
+    }
 
     const fields: Array<[string, unknown]> = [];
     const statusRequested = 'status' in body;
@@ -2436,6 +2500,125 @@ support.patch('/api/support/escalations/:id', async (c) => {
     return c.json({ success: true, data: serializeEscalation(updated!) });
   } catch (err) {
     console.error(`PATCH /api/support/escalations/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/escalations/:id/reopen', async (c) => {
+  try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'escalationId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const unexpectedKeys = Object.keys(body).filter((key) => key !== 'lineAccountId');
+    if (unexpectedKeys.length > 0) {
+      return c.json({ success: false, error: `再開時には変更できない項目です: ${unexpectedKeys.join(', ')}` }, 400);
+    }
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+
+    const existing = await c.env.DB
+      .prepare(`SELECT se.* FROM support_escalations se WHERE se.id = ? AND se.line_account_id = ?`)
+      .bind(id.value, lineAccountId.value)
+      .first<SupportEscalationRow>();
+    if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
+
+    const staff = currentStaff(c);
+    if (isSecondaryOnlySupportStaff(staff) && !supportStaffMatchesText(staff, existing.assignee)) {
+      return c.json({ success: false, error: 'escalation not found' }, 404);
+    }
+    if (!TERMINAL_ESCALATION_STATUSES.has(existing.status)) {
+      return c.json({ success: false, error: '未回答の二次対応は再開できません' }, 409);
+    }
+    const existingReopen = await c.env.DB
+      .prepare(`SELECT id FROM support_escalations WHERE reopened_from_id = ? AND line_account_id = ? LIMIT 1`)
+      .bind(existing.id, lineAccountId.value)
+      .first<{ id: string }>();
+    if (existingReopen) {
+      return c.json({ success: false, error: 'この二次対応はすでに再開されています' }, 409);
+    }
+
+    const linkedCase = await c.env.DB
+      .prepare(`SELECT status FROM support_cases WHERE id = ? AND line_account_id = ?`)
+      .bind(existing.case_id, lineAccountId.value)
+      .first<{ status: string }>();
+    if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
+
+    const now = jstNow();
+    const reopenedId = crypto.randomUUID();
+    const reopenedInsert = c.env.DB
+      .prepare(
+        `INSERT INTO support_escalations (
+          id, case_id, line_account_id, assignee, level, status, question, answer,
+          due_at, answered_at, created_by, updated_by, created_at, updated_at, reopened_from_id
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        reopenedId,
+        existing.case_id,
+        existing.line_account_id,
+        existing.assignee,
+        existing.level,
+        existing.question,
+        existing.due_at,
+        staff.id,
+        staff.id,
+        now,
+        now,
+        existing.id,
+      );
+
+    const caseFields: Array<[string, unknown]> = [
+      ['status', 'waiting_secondary'],
+      ['updated_by', staff.id],
+      ['updated_at', now],
+    ];
+    if (linkedCase.status === 'resolved') {
+      caseFields.splice(1, 0, ['reopened_at', now], ['closed_at', null]);
+    }
+    const caseUpdate = c.env.DB
+      .prepare(
+        `UPDATE support_cases SET ${caseFields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`,
+      )
+      .bind(...caseFields.map(([, value]) => value), existing.case_id, lineAccountId.value);
+
+    await c.env.DB.batch([
+      reopenedInsert,
+      caseUpdate,
+      prepareCaseEvent(
+        c.env.DB,
+        existing.case_id,
+        'escalation_reopened',
+        staff.id,
+        staff.name,
+        '完了済みの二次対応を未回答として再開しました',
+        {
+          previousEscalationId: existing.id,
+          previousStatus: existing.status,
+          reopenedEscalationId: reopenedId,
+          previousCaseStatus: linkedCase.status,
+          nextCaseStatus: 'waiting_secondary',
+        },
+        crypto.randomUUID(),
+        now,
+      ),
+    ]);
+
+    const reopened = await c.env.DB
+      .prepare(
+        `SELECT se.*, sc.title AS case_title, f.display_name AS friend_name
+         FROM support_escalations se
+         LEFT JOIN support_cases sc ON sc.id = se.case_id
+         LEFT JOIN friends f ON f.id = sc.friend_id
+         WHERE se.id = ? AND se.line_account_id = ?`,
+      )
+      .bind(reopenedId, lineAccountId.value)
+      .first<SupportEscalationRow>();
+    kickWebPushNotifications(c);
+    return c.json({ success: true, data: serializeEscalation(reopened!) }, 201);
+  } catch (err) {
+    console.error(`POST /api/support/escalations/:id/reopen error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

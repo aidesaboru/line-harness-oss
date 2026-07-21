@@ -12,7 +12,7 @@ type AttentionFilter = 'all' | 'unread' | 'mentions'
 
 const REFRESH_MS = 10_000
 const PRESENCE_REFRESH_MS = 15_000
-const LAST_SEEN_KEY_PREFIX = 'llink.internalChat.lastSeenAt.'
+const INTERNAL_CHAT_PAGE_SIZE = 50
 const reactionEmojis = ['👍', '🙏', '✅', '👀', '❤️']
 
 function formatDateTime(value: string): string {
@@ -48,15 +48,12 @@ function contextKey(item: Pick<InternalChatFeedItem, 'source' | 'sourceId'>): st
   return `${item.source}:${item.sourceId}`
 }
 
-function newestCreatedAt(items: InternalChatFeedItem[]): string {
-  return items.reduce((latest, item) => item.createdAt > latest ? item.createdAt : latest, new Date().toISOString())
+function isUnreadInternalItem(item: InternalChatFeedItem): boolean {
+  return item.isUnread
 }
 
-function isUnreadInternalItem(item: InternalChatFeedItem, lastSeenAt: string): boolean {
-  return Boolean(lastSeenAt) && item.createdAt > lastSeenAt
-}
-
-function isMentionedInternalItem(item: InternalChatFeedItem, staffName: string): boolean {
+function isMentionedInternalItem(item: InternalChatFeedItem, staffId: string, staffName: string): boolean {
+  if (staffId && item.mentionStaffIds.includes(staffId)) return true
   const name = staffName.trim()
   if (!name) return false
   return item.mentions.includes(name) || item.body.includes(`@${name}`)
@@ -97,17 +94,37 @@ function contextSubtitle(item: ContextItem): string {
   return '個別チャット相談'
 }
 
-function mentionNamesFromBody(body: string, candidates: string[]): string[] {
+type MentionCandidate = {
+  id: string
+  name: string
+}
+
+function mentionsFromBody(body: string, candidates: MentionCandidate[]): {
+  names: string[]
+  staffIds: string[]
+} {
   const names = new Set<string>()
-  candidates.forEach((name) => {
-    const trimmed = name.trim()
-    if (trimmed && body.includes(`@${trimmed}`)) names.add(trimmed)
+  const staffIds = new Set<string>()
+  candidates.forEach((candidate) => {
+    const trimmed = candidate.name.trim()
+    if (trimmed && body.includes(`@${trimmed}`)) {
+      names.add(trimmed)
+      staffIds.add(candidate.id)
+    }
   })
   for (const match of body.matchAll(/@([^@\s　,、]+)/g)) {
     const value = match[1]?.trim()
     if (value) names.add(value)
   }
-  return Array.from(names)
+  return { names: Array.from(names), staffIds: Array.from(staffIds) }
+}
+
+function mergeFeedItems(current: InternalChatFeedItem[], incoming: InternalChatFeedItem[]): InternalChatFeedItem[] {
+  const byId = new Map(current.map((item) => [item.id, item]))
+  incoming.forEach((item) => byId.set(item.id, item))
+  return Array.from(byId.values()).sort(
+    (a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id),
+  )
 }
 
 function insertEmoji(text: string, emoji: string): string {
@@ -236,7 +253,7 @@ function PresencePanel({
   onlineCount: number
 }) {
   return (
-    <aside className="flex min-h-0 flex-col border-t border-slate-200 bg-white xl:border-l xl:border-t-0">
+    <aside className="hidden min-h-0 min-w-0 flex-col border-l border-slate-200 bg-white 2xl:flex">
       <div className="border-b border-slate-200 px-4 py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -319,32 +336,60 @@ export default function InternalChatPage() {
   const [draft, setDraft] = useState('')
   const [presenceItems, setPresenceItems] = useState<StaffPresenceItem[]>([])
   const [presenceLoading, setPresenceLoading] = useState(true)
+  const [staffId, setStaffId] = useState('')
   const [staffName, setStaffName] = useState('')
-  const [lastSeenAt, setLastSeenAt] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
 
-  const loadFeed = useCallback(async (silent = false) => {
+  const loadFeed = useCallback(async (options: {
+    silent?: boolean
+    append?: boolean
+    preserveExisting?: boolean
+    before?: string
+  } = {}) => {
     if (!selectedAccountId) return
+    const silent = options.silent ?? false
+    const append = options.append ?? false
+    const preserveExisting = options.preserveExisting ?? false
+    if (append && !options.before) return
     if (!silent) {
-      setLoading(true)
+      if (append) setLoadingMore(true)
+      else setLoading(true)
       setError('')
     }
     try {
       const res = await api.appNotifications.internalChatFeed({
         accountId: selectedAccountId,
-        limit: 120,
+        limit: INTERNAL_CHAT_PAGE_SIZE,
+        before: append ? options.before : undefined,
+        search,
       })
       if (!res.success) {
         if (!silent) setError(res.error || '社内チャットの取得に失敗しました')
         return
       }
-      setItems(res.data.items)
+      if (append || preserveExisting) {
+        setItems((current) => mergeFeedItems(current, res.data.items))
+      } else {
+        setItems(res.data.items)
+      }
+      if (!preserveExisting) {
+        setNextCursor(res.data.nextCursor)
+        setHasMore(res.data.hasMore)
+      }
       setError('')
     } catch {
       if (!silent) setError('社内チャットの取得に失敗しました')
     } finally {
-      if (!silent) setLoading(false)
+      if (!silent) {
+        if (append) setLoadingMore(false)
+        else setLoading(false)
+      }
     }
-  }, [selectedAccountId])
+  }, [search, selectedAccountId])
 
   const loadPresence = useCallback(async (silent = false) => {
     if (!silent) setPresenceLoading(true)
@@ -361,8 +406,13 @@ export default function InternalChatPage() {
   }, [])
 
   useEffect(() => {
-    void loadFeed(false)
+    void loadFeed()
   }, [loadFeed])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearch(searchInput.trim()), 250)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
 
   useEffect(() => {
     void loadPresence(false)
@@ -373,34 +423,25 @@ export default function InternalChatPage() {
     api.staff.me()
       .then((res) => {
         if (!active) return
+        setStaffId(res.success ? (res.data.id || '') : '')
         setStaffName(res.success ? (res.data.name || '') : '')
       })
       .catch(() => {
-        if (active) setStaffName('')
+        if (active) {
+          setStaffId('')
+          setStaffName('')
+        }
       })
     return () => { active = false }
   }, [])
 
   useEffect(() => {
-    if (!selectedAccountId || typeof window === 'undefined') return
-    const key = `${LAST_SEEN_KEY_PREFIX}${selectedAccountId}`
-    const saved = window.localStorage.getItem(key)
-    if (saved) {
-      setLastSeenAt(saved)
-      return
-    }
-    const baseline = new Date().toISOString()
-    window.localStorage.setItem(key, baseline)
-    setLastSeenAt(baseline)
-  }, [selectedAccountId])
-
-  useEffect(() => {
     if (!selectedAccountId) return
     const timer = window.setInterval(() => {
-      if (!document.hidden) void loadFeed(true)
+      if (!document.hidden) void loadFeed({ silent: true, preserveExisting: true })
     }, REFRESH_MS)
     const onVisible = () => {
-      if (!document.hidden) void loadFeed(true)
+      if (!document.hidden) void loadFeed({ silent: true, preserveExisting: true })
     }
     window.addEventListener('focus', onVisible)
     window.addEventListener('online', onVisible)
@@ -437,22 +478,22 @@ export default function InternalChatPage() {
   }, [filter, items])
 
   const unreadCount = useMemo(
-    () => sourceVisibleItems.filter((item) => isUnreadInternalItem(item, lastSeenAt)).length,
-    [lastSeenAt, sourceVisibleItems],
+    () => sourceVisibleItems.filter(isUnreadInternalItem).length,
+    [sourceVisibleItems],
   )
   const mentionCount = useMemo(
-    () => sourceVisibleItems.filter((item) => isMentionedInternalItem(item, staffName)).length,
-    [sourceVisibleItems, staffName],
+    () => sourceVisibleItems.filter((item) => isMentionedInternalItem(item, staffId, staffName)).length,
+    [sourceVisibleItems, staffId, staffName],
   )
   const visibleItems = useMemo(() => {
     if (attentionFilter === 'unread') {
-      return sourceVisibleItems.filter((item) => isUnreadInternalItem(item, lastSeenAt))
+      return sourceVisibleItems.filter(isUnreadInternalItem)
     }
     if (attentionFilter === 'mentions') {
-      return sourceVisibleItems.filter((item) => isMentionedInternalItem(item, staffName))
+      return sourceVisibleItems.filter((item) => isMentionedInternalItem(item, staffId, staffName))
     }
     return sourceVisibleItems
-  }, [attentionFilter, lastSeenAt, sourceVisibleItems, staffName])
+  }, [attentionFilter, sourceVisibleItems, staffId, staffName])
   const contexts = useMemo(() => buildContexts(visibleItems), [visibleItems])
 
   useEffect(() => {
@@ -474,25 +515,53 @@ export default function InternalChatPage() {
   }, [activeContext, visibleItems])
 
   const mentionCandidates = useMemo(() => {
-    const names = new Set<string>()
-    presenceItems.forEach((member) => names.add(member.name))
-    for (const item of items) {
-      if (item.createdByName) names.add(item.createdByName)
-      item.mentions.forEach((name) => names.add(name))
-    }
-    return Array.from(names).slice(0, 20)
-  }, [items, presenceItems])
+    const byId = new Map<string, MentionCandidate>()
+    presenceItems.forEach((member) => {
+      if (member.isActive) byId.set(member.id, { id: member.id, name: member.name })
+    })
+    return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name, 'ja')).slice(0, 20)
+  }, [presenceItems])
 
   const supportCount = items.filter((item) => item.source === 'support').length
   const chatCount = items.filter((item) => item.source === 'chat').length
   const onlineCount = presenceItems.filter((item) => item.isOnline).length
 
-  const markAllRead = () => {
-    if (!selectedAccountId || typeof window === 'undefined') return
-    const next = newestCreatedAt(items)
-    window.localStorage.setItem(`${LAST_SEEN_KEY_PREFIX}${selectedAccountId}`, next)
-    setLastSeenAt(next)
-    if (attentionFilter === 'unread') setAttentionFilter('all')
+  const markContextRead = useCallback(async (context: ContextItem): Promise<void> => {
+    if (!selectedAccountId) return
+    const hasUnread = items.some((item) => contextKey(item) === context.key && item.isUnread)
+    if (!hasUnread) return
+    try {
+      const res = await api.appNotifications.markInternalChatRead({
+        accountId: selectedAccountId,
+        source: context.source,
+        sourceId: context.sourceId,
+      })
+      if (!res.success) return
+      setItems((current) => current.map((item) => (
+        contextKey(item) === context.key ? { ...item, isUnread: false } : item
+      )))
+    } catch {
+      // A read receipt failure must not block access to the conversation.
+    }
+  }, [items, selectedAccountId])
+
+  const markAllRead = async () => {
+    if (!selectedAccountId) return
+    try {
+      const res = await api.appNotifications.markInternalChatRead({
+        accountId: selectedAccountId,
+        source: 'all',
+      })
+      if (!res.success) {
+        setError('既読状態の更新に失敗しました')
+        return
+      }
+      setItems((current) => current.map((item) => ({ ...item, isUnread: false })))
+      if (attentionFilter === 'unread') setAttentionFilter('all')
+      setError('')
+    } catch {
+      setError('既読状態の更新に失敗しました')
+    }
   }
 
   const handleReaction = async (item: InternalChatFeedItem, emoji: string): Promise<void> => {
@@ -525,16 +594,24 @@ export default function InternalChatPage() {
     if (!body) return
     setPosting(true)
     try {
-      const mentions = mentionNamesFromBody(body, mentionCandidates)
+      const mentions = mentionsFromBody(body, mentionCandidates)
       const res = activeContext.source === 'support'
-        ? await api.support.cases.addInternalMessage(activeContext.sourceId, selectedAccountId, { body, mentions })
-        : await api.chats.addInternalMessage(activeContext.sourceId, { body, mentions })
+        ? await api.support.cases.addInternalMessage(activeContext.sourceId, selectedAccountId, {
+          body,
+          mentions: mentions.names,
+          mentionStaffIds: mentions.staffIds,
+        })
+        : await api.chats.addInternalMessage(activeContext.sourceId, {
+          body,
+          mentions: mentions.names,
+          mentionStaffIds: mentions.staffIds,
+        })
       if (!res.success) {
         setError('社内チャットの投稿に失敗しました')
         return
       }
       setDraft('')
-      await loadFeed(true)
+      await loadFeed({ silent: true, preserveExisting: true })
       setSelectedContextKey(activeContext.key)
       setError('')
     } catch {
@@ -552,7 +629,7 @@ export default function InternalChatPage() {
         action={
           <button
             type="button"
-            onClick={() => void loadFeed(false)}
+            onClick={() => void loadFeed()}
             className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
           >
             更新
@@ -560,16 +637,27 @@ export default function InternalChatPage() {
         }
       />
 
-      <section className="grid min-h-[calc(100vh-220px)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm xl:grid-cols-[320px_minmax(0,1fr)_300px]">
-        <aside className="flex min-h-0 flex-col border-b border-slate-200 bg-white xl:border-b-0 xl:border-r">
+      <section className="grid min-h-[calc(100vh-220px)] min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm min-[900px]:grid-cols-[280px_minmax(0,1fr)] 2xl:grid-cols-[320px_minmax(0,1fr)_300px]">
+        <aside className="flex max-h-[520px] min-h-0 min-w-0 flex-col border-b border-slate-200 bg-white min-[900px]:max-h-none min-[900px]:border-b-0 min-[900px]:border-r">
           <div className="border-b border-slate-200 px-4 py-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-lg font-semibold text-slate-900">社内相談</p>
                 <p className="mt-1 text-xs font-medium text-slate-500">相談先を選んで会話を確認</p>
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">{items.length}</span>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
+                {items.length}{hasMore ? '+' : ''}
+              </span>
             </div>
+            <label className="sr-only" htmlFor="internal-chat-search">社内チャットを検索</label>
+            <input
+              id="internal-chat-search"
+              type="search"
+              value={searchInput}
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="本文・顧客・チケットを検索"
+              className="mt-4 min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 outline-none placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            />
             <div className="mt-4 grid grid-cols-3 gap-2">
               {[
                 { value: 'all' as const, label: 'すべて', count: items.length },
@@ -620,7 +708,7 @@ export default function InternalChatPage() {
                 {unreadCount > 0 && (
                   <button
                     type="button"
-                    onClick={markAllRead}
+                    onClick={() => void markAllRead()}
                     className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50"
                   >
                     すべて既読
@@ -642,13 +730,16 @@ export default function InternalChatPage() {
             ) : (
               <div className="space-y-2.5">
                 {contexts.map((item) => {
-                  const contextUnread = sourceVisibleItems.filter((feed) => contextKey(feed) === item.key && isUnreadInternalItem(feed, lastSeenAt)).length
-                  const contextMention = sourceVisibleItems.filter((feed) => contextKey(feed) === item.key && isMentionedInternalItem(feed, staffName)).length
+                  const contextUnread = sourceVisibleItems.filter((feed) => contextKey(feed) === item.key && isUnreadInternalItem(feed)).length
+                  const contextMention = sourceVisibleItems.filter((feed) => contextKey(feed) === item.key && isMentionedInternalItem(feed, staffId, staffName)).length
                   return (
                     <button
                       key={item.key}
                       type="button"
-                      onClick={() => setSelectedContextKey(item.key)}
+                      onClick={() => {
+                        setSelectedContextKey(item.key)
+                        void markContextRead(item)
+                      }}
                       className={`w-full rounded-lg border border-l-4 px-3 py-3 text-left shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all ${
                         selectedContextKey === item.key
                           ? `${sourceAccent(item.source)} border-slate-200 bg-white ring-1 ring-slate-200`
@@ -687,10 +778,20 @@ export default function InternalChatPage() {
                 })}
               </div>
             )}
+            {hasMore && (
+              <button
+                type="button"
+                onClick={() => void loadFeed({ append: true, before: nextCursor ?? undefined })}
+                disabled={loadingMore || !nextCursor}
+                className="mt-3 min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {loadingMore ? '読み込み中...' : 'さらに読み込む'}
+              </button>
+            )}
           </div>
         </aside>
 
-        <main className="flex min-h-0 flex-col bg-white">
+        <main className="flex min-h-[640px] min-w-0 flex-col bg-white min-[900px]:min-h-0">
           <div className="border-b border-slate-200 bg-white px-5 py-4">
             {activeContext ? (
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -781,15 +882,15 @@ export default function InternalChatPage() {
           <div className="border-t border-slate-200 bg-white px-5 py-4">
             {mentionCandidates.length > 0 && (
               <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1">
-                {mentionCandidates.slice(0, 10).map((name) => (
+                {mentionCandidates.slice(0, 10).map((candidate) => (
                   <button
-                    key={name}
+                    key={candidate.id}
                     type="button"
-                    onClick={() => setDraft((prev) => insertEmoji(prev, `@${name}`))}
+                    onClick={() => setDraft((prev) => insertEmoji(prev, `@${candidate.name}`))}
                     disabled={posting || !activeContext}
                     className="shrink-0 rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    @{name}
+                    @{candidate.name}
                   </button>
                 ))}
               </div>

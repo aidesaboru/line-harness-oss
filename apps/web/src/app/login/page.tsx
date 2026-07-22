@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { cacheStaffSession, clearAuthSessionCache } from '@/lib/auth-session'
+import { buildApiRequestUrl } from '@/lib/api-origin'
 import BrandMark, { BrandWordmark } from '@/components/brand-mark'
 
 export default function LoginPage() {
@@ -17,15 +18,9 @@ export default function LoginPage() {
     clearAuthSessionCache()
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL
-      if (!apiUrl) {
-        setError('ログイン画面の接続設定が未完了です。管理者に確認してください。')
-        setLoading(false)
-        return
-      }
       // Exchange the API key for an HttpOnly session cookie. The key is never
       // stored in localStorage (removes the XSS-exposed credential).
-      const res = await fetch(`${apiUrl}/api/auth/login`, {
+      const res = await fetch(buildApiRequestUrl('/api/auth/login'), {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },

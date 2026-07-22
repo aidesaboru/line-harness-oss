@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation'
 import { useAccount } from '@/contexts/account-context'
 import type { AccountWithStats } from '@/contexts/account-context'
 import { clearAuthSessionCache, readStaffIdentityCache } from '@/lib/auth-session'
+import { buildApiRequestUrl } from '@/lib/api-origin'
 import { countryFlag } from '@/lib/country-flag'
 import BrandMark, { BrandWordmark } from '@/components/brand-mark'
 import { canShowSidebarItem } from './sidebar-access'
@@ -282,13 +283,10 @@ export default function Sidebar() {
         <button
           onClick={async () => {
             try {
-              const apiUrl = process.env.NEXT_PUBLIC_API_URL
-              if (apiUrl) {
-                await fetch(`${apiUrl}/api/auth/logout`, {
-                  method: 'POST',
-                  credentials: 'include',
-                })
-              }
+              await fetch(buildApiRequestUrl('/api/auth/logout'), {
+                method: 'POST',
+                credentials: 'include',
+              })
             } catch {
               // Local cleanup still logs the browser out if the network call fails.
             }

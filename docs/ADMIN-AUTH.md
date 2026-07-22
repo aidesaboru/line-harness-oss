@@ -52,7 +52,14 @@ three environment variables (see
 
 ### Two supported deployments
 
-**(a) Cross-site Pages ↔ Workers (default).** Set
+**L-Link Pages deployment (recommended for the bundled admin).** The web build
+generates `out/_worker.js`, which proxies `/api/*` from the Pages origin to
+`NEXT_PUBLIC_API_URL`. Browser requests and the resulting session cookies stay
+first-party to the admin origin, including on Safari and installed PWAs. Public
+LINE routes such as `/r/*`, `/pool/*`, and `/auth/line` continue to use the
+Worker URL directly.
+
+**(a) Direct cross-site Pages ↔ Workers (legacy deployments).** Set
 `ADMIN_ORIGIN=https://<admin>.pages.dev` and `ADMIN_ALLOW_CROSS_SITE=true`.
 `create-line-harness` does this automatically after deploying the admin.
 Cookies are `SameSite=None; Secure`; CSRF protects mutations; CORS is locked to

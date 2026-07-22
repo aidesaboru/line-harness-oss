@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { cacheStaffSession, clearAuthSessionCache } from '@/lib/auth-session'
+import { buildApiRequestUrl } from '@/lib/api-origin'
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -20,8 +21,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     // staff identity and refreshes the CSRF token if it was lost (e.g. reload).
     const checkSession = async () => {
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL
-        const res = await fetch(`${apiUrl}/api/auth/session`, { credentials: 'include' })
+        const res = await fetch(buildApiRequestUrl('/api/auth/session'), { credentials: 'include' })
         if (!res.ok) throw new Error('unauthenticated')
         const data = await res.json()
         if (!data?.success || !data?.data) throw new Error('unauthenticated')

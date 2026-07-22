@@ -37,6 +37,7 @@ import {
   getCsrfToken as readCsrfToken,
   setCsrfToken as writeCsrfToken,
 } from './auth-session'
+import { buildApiRequestUrl } from './api-origin'
 export { CSRF_STORAGE_KEY } from './auth-session'
 
 /** Broadcast type from API (now camelCase after worker serialization) */
@@ -471,14 +472,6 @@ export type StaffAssigneeOption = {
   isActive: boolean
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL
-if (!API_URL) {
-  throw new Error(
-    'NEXT_PUBLIC_API_URL is not set. Build cannot proceed without a valid API URL. ' +
-    'Set it in .env.production (local) or GitHub Secrets (CI).'
-  )
-}
-
 /**
  * Read the CSRF token issued at login. The session credential itself lives in
  * an HttpOnly cookie (never exposed to JS); only the CSRF token is held
@@ -496,14 +489,7 @@ export function setCsrfToken(token: string | undefined | null): void {
 }
 
 export function buildApiUrl(pathOrUrl: string): string {
-  try {
-    const url = new URL(pathOrUrl)
-    if (url.protocol === 'http:' || url.protocol === 'https:') return url.toString()
-  } catch {
-    // Relative API paths are handled below.
-  }
-  const path = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`
-  return `${API_URL}${path}`
+  return buildApiRequestUrl(pathOrUrl)
 }
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
@@ -1899,7 +1885,7 @@ export const api = {
     // クッキーや Authorization が必要 — 代わりに admin が cache-busting できる
     // タイムスタンプを付けるパターンで利用)。
     externalImageUrl: (richMenuId: string, accountId: string) =>
-      `${API_URL}/api/rich-menu-groups/external/${richMenuId}/image?accountId=${encodeURIComponent(accountId)}`,
+      buildApiUrl(`/api/rich-menu-groups/external/${richMenuId}/image?accountId=${encodeURIComponent(accountId)}`),
 
     applyToTag: (
       groupId: string,
@@ -1918,7 +1904,7 @@ export const api = {
     uploadImage: async (groupId: string, pageId: string, file: File) => {
       const csrf = getCsrfToken();
       const res = await fetch(
-        `${API_URL}/api/rich-menu-groups/${groupId}/pages/${pageId}/image`,
+        buildApiUrl(`/api/rich-menu-groups/${groupId}/pages/${pageId}/image`),
         {
           method: 'POST',
           credentials: 'include',
@@ -1946,7 +1932,7 @@ export const api = {
     //   v1 ではドラフト編集中のプレビュー用 = 認証バイパスでも実害は低いので、
     //   後続 PR で worker 側を whitelist 化する想定。
     imageUrl: (key: string) =>
-      `${API_URL}/api/rich-menu-images/${encodeURIComponent(key)}`,
+      buildApiUrl(`/api/rich-menu-images/${encodeURIComponent(key)}`),
   },
   messageTemplates: {
     list: () =>

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(SCRIPT_DIR, "..");
 const SCHEMA_PATH = join(PKG_ROOT, "schema.sql");
+const BOOTSTRAP_SEED_PATH = join(PKG_ROOT, "bootstrap-seed.sql");
 const MIGRATIONS_DIR = join(PKG_ROOT, "migrations");
 const BOOTSTRAP_PATH = join(PKG_ROOT, "bootstrap.sql");
 const BOOTSTRAP_META_PATH = join(PKG_ROOT, "bootstrap-meta.json");
@@ -105,15 +106,18 @@ function buildBootstrapSql() {
       "",
     ].join("\n");
 
-    const body = rows
+    const schemaBody = rows
       .map((row) => `${String(row.sql).trim()};`)
       .join("\n\n");
+    const seedBody = readFileSync(BOOTSTRAP_SEED_PATH, "utf8").trim();
+    const body = `${schemaBody}\n\n${seedBody}`;
 
     return {
       sql: `${header}${body}\n`,
       meta: {
         includedMigrations: migrationFiles,
         migrationCount: migrationFiles.length,
+        bootstrapSeed: "bootstrap-seed.sql",
       },
     };
   } finally {

@@ -59,6 +59,58 @@ beforeEach(() => {
 });
 
 describe('staff routes', () => {
+  test('hides the reference-only environment owner from staff lists', async () => {
+    dbMocks.getStaffMembers.mockResolvedValue([
+      staffRow,
+      {
+        ...staffRow,
+        id: 'env-owner',
+        name: '環境オーナー（参照専用）',
+        role: 'owner',
+        api_key: 'disabled_env_owner_test',
+        is_active: 0,
+      },
+    ]);
+
+    const listRes = await setupApp().request('/api/staff');
+    expect(listRes.status).toBe(200);
+    expect(await listRes.json()).toMatchObject({
+      success: true,
+      data: [{ id: 'staff-new' }],
+    });
+
+    const optionsRes = await setupApp().request('/api/staff/assignee-options');
+    expect(optionsRes.status).toBe(200);
+    expect(await optionsRes.json()).toEqual({
+      success: true,
+      data: [{ id: 'staff-new', name: '田島', role: 'staff', isActive: true }],
+    });
+  });
+
+  test('prevents management operations on the reference-only environment owner', async () => {
+    const requests: Array<[string, string, string | undefined]> = [
+      ['GET', '/api/staff/env-owner', undefined],
+      ['PATCH', '/api/staff/env-owner', JSON.stringify({ isActive: true })],
+      ['DELETE', '/api/staff/env-owner', undefined],
+      ['POST', '/api/staff/env-owner/regenerate-key', undefined],
+    ];
+
+    for (const [method, path, body] of requests) {
+      const res = await setupApp().request(path, {
+        method,
+        headers: body ? { 'Content-Type': 'application/json' } : undefined,
+        body,
+      });
+
+      expect(res.status, `${method} ${path}`).toBe(404);
+    }
+
+    expect(dbMocks.getStaffById).not.toHaveBeenCalled();
+    expect(dbMocks.updateStaffMember).not.toHaveBeenCalled();
+    expect(dbMocks.deleteStaffMember).not.toHaveBeenCalled();
+    expect(dbMocks.regenerateStaffApiKey).not.toHaveBeenCalled();
+  });
+
   test('list failure logs only the error kind', async () => {
     dbMocks.getStaffMembers.mockRejectedValueOnce(
       new Error('staff list secret staff-new tajima@example.com lh_testapikey raw-body'),

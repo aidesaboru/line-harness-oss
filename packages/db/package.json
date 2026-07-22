@@ -8,6 +8,7 @@
   "files": [
     "src",
     "bootstrap-meta.json",
+    "bootstrap-seed.sql",
     "bootstrap.sql",
     "schema.sql",
     "migrations"

@@ -76,7 +76,9 @@
     "068_collaboration_workflow.sql",
     "069_support_case_followup_reminders.sql",
     "070_line_group_conversations.sql",
-    "071_protect_accounts_and_chats.sql"
+    "071_protect_accounts_and_chats.sql",
+    "072_register_environment_owner_reference.sql"
   ],
-  "migrationCount": 77
+  "migrationCount": 78,
+  "bootstrapSeed": "bootstrap-seed.sql"
 }

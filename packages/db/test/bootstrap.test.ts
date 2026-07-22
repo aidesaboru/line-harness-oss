@@ -151,6 +151,46 @@ describe('bootstrap.sql', () => {
       .toEqual({ count: 1 });
   });
 
+  it('registers the environment owner for append-only audit history', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+
+    expect(
+      db.prepare(
+        `SELECT id, role, is_active
+         FROM staff_members
+         WHERE id = 'env-owner'`,
+      ).get(),
+    ).toEqual({ id: 'env-owner', role: 'owner', is_active: 0 });
+
+    db.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name)
+       VALUES (?, ?, ?)`,
+    ).run('friend-env-owner', 'Uenv-owner', '確認テスト');
+    db.prepare(
+      `INSERT INTO chat_confirmation_events (
+        id, friend_id, staff_id, staff_name,
+        confirmed_message_id, confirmed_message_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'confirmation-env-owner',
+      'friend-env-owner',
+      'env-owner',
+      '環境オーナー',
+      'message-env-owner',
+      '2026-07-22T17:58:00.000+09:00',
+    );
+
+    expect(
+      db.prepare(
+        `SELECT staff_id, staff_name
+         FROM chat_confirmation_events
+         WHERE id = 'confirmation-env-owner'`,
+      ).get(),
+    ).toEqual({ staff_id: 'env-owner', staff_name: '環境オーナー' });
+  });
+
   it('retains LINE group conversations and message history', () => {
     const db = new Database(':memory:');
     db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));

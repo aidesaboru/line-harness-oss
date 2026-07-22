@@ -21,6 +21,7 @@ const STAFF_NAME_MAX_LENGTH = 128;
 const STAFF_EMAIL_MAX_LENGTH = 254;
 const STAFF_USER_AGENT_MAX_LENGTH = 512;
 const STAFF_ONLINE_WINDOW_MS = 5 * 60_000;
+const ENV_OWNER_ID = 'env-owner';
 const STAFF_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const STAFF_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const VALID_STAFF_ROLES = ['owner', 'admin', 'staff', 'secondary'] as const;
@@ -64,6 +65,10 @@ function serializeStaff(row: StaffMember, masked = true) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function isEnvironmentOwnerId(id: string): boolean {
+  return id === ENV_OWNER_ID;
 }
 
 function parsePresenceSessionStarted(body: Record<string, unknown> | null): boolean {
@@ -207,11 +212,11 @@ staff.get('/api/staff/me', async (c) => {
     const currentStaff = c.get('staff');
 
     // env-owner: return minimal info
-    if (currentStaff.id === 'env-owner') {
+    if (isEnvironmentOwnerId(currentStaff.id)) {
       return c.json({
         success: true,
         data: {
-          id: 'env-owner',
+          id: ENV_OWNER_ID,
           name: ENV_OWNER_DISPLAY_NAME,
           role: 'owner',
           email: null,
@@ -242,7 +247,8 @@ staff.get('/api/staff/me', async (c) => {
 // GET /api/staff — owner only. List all staff with masked API keys.
 staff.get('/api/staff', requireRole('owner'), async (c) => {
   try {
-    const members = await getStaffMembers(c.env.DB);
+    const members = (await getStaffMembers(c.env.DB))
+      .filter((member) => !isEnvironmentOwnerId(member.id));
     return c.json({ success: true, data: members.map((m) => serializeStaff(m, true)) });
   } catch (err) {
     console.error(`GET /api/staff error: ${staffRouteErrorKind(err)}`);
@@ -254,7 +260,8 @@ staff.get('/api/staff', requireRole('owner'), async (c) => {
 // for assignment selectors, without exposing API keys or emails.
 staff.get('/api/staff/assignee-options', async (c) => {
   try {
-    const members = await getStaffMembers(c.env.DB);
+    const members = (await getStaffMembers(c.env.DB))
+      .filter((member) => !isEnvironmentOwnerId(member.id));
     return c.json({
       success: true,
       data: members
@@ -281,9 +288,9 @@ staff.get('/api/staff/presence', async (c) => {
            SELECT id, name, role, is_active, created_at
            FROM staff_members
            WHERE is_active = 1
+             AND id != 'env-owner'
            UNION ALL
            SELECT 'env-owner' AS id, ? AS name, 'owner' AS role, 1 AS is_active, '9999-12-31T23:59:59+09:00' AS created_at
-           WHERE NOT EXISTS (SELECT 1 FROM staff_members WHERE id = 'env-owner')
          )
          SELECT
            vs.id,
@@ -387,7 +394,9 @@ staff.post('/api/staff/presence/heartbeat', async (c) => {
            sp.user_agent,
            sp.updated_at
          FROM (
-           SELECT id, name, role, is_active FROM staff_members WHERE id = ?
+           SELECT id, name, role, is_active
+           FROM staff_members
+           WHERE id = ? AND id != 'env-owner'
            UNION ALL
            SELECT 'env-owner' AS id, ? AS name, 'owner' AS role, 1 AS is_active
            WHERE ? = 'env-owner'
@@ -410,6 +419,9 @@ staff.get('/api/staff/:id', requireRole('owner'), async (c) => {
   try {
     const id = parseStaffId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    if (isEnvironmentOwnerId(id.value)) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
     const member = await getStaffById(c.env.DB, id.value);
     if (!member) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
@@ -448,6 +460,9 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
   try {
     const id = parseStaffId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    if (isEnvironmentOwnerId(id.value)) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
     const rawBody = await readJsonObject(c);
     if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
     const body = parseStaffUpdateInput(rawBody.value);
@@ -493,6 +508,9 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
   try {
     const id = parseStaffId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    if (isEnvironmentOwnerId(id.value)) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
     const currentStaff = c.get('staff');
 
     if (id.value === currentStaff.id) {
@@ -524,6 +542,9 @@ staff.post('/api/staff/:id/regenerate-key', requireRole('owner'), async (c) => {
   try {
     const id = parseStaffId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    if (isEnvironmentOwnerId(id.value)) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
     const exists = await getStaffById(c.env.DB, id.value);
     if (!exists) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);

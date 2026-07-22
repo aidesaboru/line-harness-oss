@@ -31,10 +31,14 @@ type TestEnv = {
   Variables: { staff: { id: string; name: string; role: StaffRole } };
 };
 
-function setupApp(role: StaffRole = 'staff', db: D1Database = {} as D1Database) {
+function setupApp(
+  role: StaffRole = 'staff',
+  db: D1Database = {} as D1Database,
+  staffName = 'Tajima',
+) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
-    c.set('staff', { id: 'staff-1', name: 'Tajima', role });
+    c.set('staff', { id: 'staff-1', name: staffName, role });
     c.env = { DB: db };
     await next();
   });
@@ -166,6 +170,26 @@ describe('content management role guards', () => {
     expect(dbMocks.updateMessageTemplate).not.toHaveBeenCalled();
     expect(dbMocks.deleteMessageTemplate).not.toHaveBeenCalled();
   });
+
+  test.each(['林 静香', '小野里 歩乃佳'])(
+    '%s can list and create reusable templates',
+    async (staffName) => {
+      dbMocks.getTemplatesWithUsageCount.mockResolvedValue([]);
+      const app = setupApp('staff', {} as D1Database, staffName);
+
+      const list = await app.request('/api/templates');
+      const create = await app.request('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Greeting', messageType: 'text', messageContent: 'hello' }),
+      });
+
+      expect(list.status).toBe(200);
+      expect(create.status).toBe(201);
+      expect(dbMocks.getTemplatesWithUsageCount).toHaveBeenCalled();
+      expect(dbMocks.createTemplate).toHaveBeenCalled();
+    },
+  );
 });
 
 describe('content management payload validation', () => {

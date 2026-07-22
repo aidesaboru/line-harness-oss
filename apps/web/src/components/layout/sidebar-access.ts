@@ -3,6 +3,11 @@ export type SidebarVisibilityContext = {
   staffName?: string | null
 }
 
+const TEMPLATE_ENABLED_STAFF_NAMES = new Set([
+  '林 静香',
+  '小野里 歩乃佳',
+])
+
 const SUPPORT_WORK_HREFS = new Set([
   '/chats',
   '/internal-chat',
@@ -50,6 +55,14 @@ function matchesPath(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`)
 }
 
+function normalizeStaffName(name: string | null | undefined): string {
+  return typeof name === 'string' ? name.trim().replace(/\s+/gu, ' ') : ''
+}
+
+function canStaffUseTemplates(context: SidebarVisibilityContext): boolean {
+  return TEMPLATE_ENABLED_STAFF_NAMES.has(normalizeStaffName(context.staffName))
+}
+
 export function canShowSidebarItem(href: string, role: SidebarRole, context: SidebarVisibilityContext = {}): boolean {
   const normalizedRole = normalizeRole(role)
 
@@ -71,13 +84,18 @@ export function canShowSidebarItem(href: string, role: SidebarRole, context: Sid
   }
 
   if (normalizedRole === 'staff') {
+    if (href === '/templates' && canStaffUseTemplates(context)) return true
     return STAFF_VISIBLE_HREFS.has(href)
   }
 
   return true
 }
 
-export function canAccessSidebarRoute(pathname: string, role: SidebarRole): boolean {
+export function canAccessSidebarRoute(
+  pathname: string,
+  role: SidebarRole,
+  context: SidebarVisibilityContext = {},
+): boolean {
   const normalizedRole = normalizeRole(role)
 
   if (Array.from(OPERATION_DISABLED_HREFS).some((href) => matchesPath(pathname, href))) {
@@ -93,6 +111,8 @@ export function canAccessSidebarRoute(pathname: string, role: SidebarRole): bool
   }
 
   if (!isStaffRole(normalizedRole)) return true
+
+  if (matchesPath(pathname, '/templates') && canStaffUseTemplates(context)) return true
 
   return Array.from(STAFF_VISIBLE_HREFS).some((href) => matchesPath(pathname, href))
 }

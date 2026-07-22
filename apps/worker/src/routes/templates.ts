@@ -8,7 +8,7 @@ import {
   deleteTemplate,
 } from '@line-crm/db';
 import type { Env } from '../index.js';
-import { requireRole } from '../middleware/role-guard.js';
+import { requireTemplateAccess } from '../middleware/template-access.js';
 
 const templates = new Hono<Env>();
 
@@ -167,7 +167,7 @@ function templateRouteErrorKind(err: unknown): string {
   return typeof err;
 }
 
-templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
+templates.get('/api/templates', requireTemplateAccess, async (c) => {
   try {
     const category = parseOptionalQueryString(c.req.query('category'), 'category', TEMPLATE_CATEGORY_MAX_LENGTH);
     if (!category.ok) return c.json({ success: false, error: category.error }, 400);
@@ -191,7 +191,7 @@ templates.get('/api/templates', requireRole('owner', 'admin'), async (c) => {
   }
 });
 
-templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
+templates.get('/api/templates/:id', requireTemplateAccess, async (c) => {
   try {
     const id = parseTemplatePathId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
@@ -218,7 +218,7 @@ templates.get('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
 });
 
 // GET /api/templates/:id/usages — auto_replies + scenario_steps での使用箇所
-templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async (c) => {
+templates.get('/api/templates/:id/usages', requireTemplateAccess, async (c) => {
   try {
     const templateId = parseTemplatePathId(c.req.param('id'));
     if (!templateId.ok) return c.json({ success: false, error: templateId.error }, 400);
@@ -277,7 +277,7 @@ templates.get('/api/templates/:id/usages', requireRole('owner', 'admin'), async 
   }
 });
 
-templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
+templates.post('/api/templates', requireTemplateAccess, async (c) => {
   try {
     const rawBody = await readJsonBody(c);
     const parsed = parseTemplateCreateBody(rawBody);
@@ -291,7 +291,7 @@ templates.post('/api/templates', requireRole('owner', 'admin'), async (c) => {
   }
 });
 
-templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
+templates.put('/api/templates/:id', requireTemplateAccess, async (c) => {
   try {
     const id = parseTemplatePathId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
@@ -318,7 +318,7 @@ templates.put('/api/templates/:id', requireRole('owner', 'admin'), async (c) => 
   }
 });
 
-templates.delete('/api/templates/:id', requireRole('owner', 'admin'), async (c) => {
+templates.delete('/api/templates/:id', requireTemplateAccess, async (c) => {
   try {
     const id = parseTemplatePathId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);

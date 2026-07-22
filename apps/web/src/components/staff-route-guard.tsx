@@ -8,18 +8,20 @@ import { canAccessSidebarRoute, defaultSidebarHrefForRole } from './layout/sideb
 export default function StaffRouteGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
+  const [staffName, setStaffName] = useState<string | null>(null)
   const [role, setRole] = useState<string | null>(null)
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
+    setStaffName(cached.name || null)
     setRole(cached.role || null)
     setReady(true)
   }, [pathname])
 
   const allowed = useMemo(
-    () => ready && canAccessSidebarRoute(pathname, role),
-    [pathname, ready, role],
+    () => ready && canAccessSidebarRoute(pathname, role, { staffName }),
+    [pathname, ready, role, staffName],
   )
 
   useEffect(() => {

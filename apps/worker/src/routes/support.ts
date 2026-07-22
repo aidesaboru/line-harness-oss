@@ -720,7 +720,7 @@ async function sha256Hex(value: string): Promise<string> {
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function recordKnowledgeSourceSnapshot(
+async function prepareKnowledgeSourceSnapshot(
   db: D1Database,
   input: {
     knowledgeImportId: string;
@@ -733,7 +733,7 @@ async function recordKnowledgeSourceSnapshot(
   },
 ) {
   const contentHash = await sha256Hex(input.rawPayload);
-  await db.prepare(
+  return db.prepare(
     `INSERT OR IGNORE INTO support_knowledge_source_snapshots (
       id, knowledge_import_id, line_account_id, source_channel_id, source_thread_ts,
       raw_payload, content_hash, is_reconstructed, captured_at
@@ -748,7 +748,14 @@ async function recordKnowledgeSourceSnapshot(
     contentHash,
     input.reconstructed ? 1 : 0,
     input.capturedAt,
-  ).run();
+  );
+}
+
+async function recordKnowledgeSourceSnapshot(
+  db: D1Database,
+  input: Parameters<typeof prepareKnowledgeSourceSnapshot>[1],
+) {
+  await (await prepareKnowledgeSourceSnapshot(db, input)).run();
 }
 
 function manualRevisionSnapshot(row: SupportManualRow): string {
@@ -774,14 +781,14 @@ function manualRevisionSnapshot(row: SupportManualRow): string {
   });
 }
 
-async function recordManualRevision(
+function prepareManualRevision(
   db: D1Database,
   row: SupportManualRow,
   changeType: string,
   staff: SupportAccessStaff,
   now: string,
 ) {
-  await db.prepare(
+  return db.prepare(
     `INSERT INTO support_manual_revisions (
       id, manual_id, line_account_id, change_type, snapshot, actor_id, actor_name, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -794,7 +801,17 @@ async function recordManualRevision(
     staff.id,
     staff.name,
     now,
-  ).run();
+  );
+}
+
+async function recordManualRevision(
+  db: D1Database,
+  row: SupportManualRow,
+  changeType: string,
+  staff: SupportAccessStaff,
+  now: string,
+) {
+  await prepareManualRevision(db, row, changeType, staff, now).run();
 }
 
 function clampSlackImportLimit(raw: unknown): number {
@@ -4276,9 +4293,20 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       needs_review: 0,
       unresolved: 0,
     };
+    const manualIds = Array.from(new Set(rows.map((row) => row.manual_id).filter((id): id is string => Boolean(id))));
+    const manualMap = new Map<string, SupportManualRow>();
+    if (manualIds.length > 0) {
+      const placeholders = manualIds.map(() => '?').join(',');
+      const manualsResult = await c.env.DB
+        .prepare(`SELECT * FROM support_manuals WHERE line_account_id = ? AND id IN (${placeholders})`)
+        .bind(lineAccountId.value, ...manualIds)
+        .all<SupportManualRow>();
+      for (const manual of manualsResult.results) manualMap.set(manual.id, manual);
+    }
+    const writes: D1PreparedStatement[] = [];
 
     for (const row of rows) {
-      await recordKnowledgeSourceSnapshot(c.env.DB, {
+      writes.push(await prepareKnowledgeSourceSnapshot(c.env.DB, {
         knowledgeImportId: row.id,
         lineAccountId: lineAccountId.value,
         channelId: row.source_channel_id,
@@ -4293,7 +4321,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         }),
         reconstructed: true,
         capturedAt: now,
-      });
+      }));
       const customerInfo = replaceSlackMentionIds(
         extractKnowledgeBodySection(row.body, ['顧客・案件情報', '顧客情報', '案件情報']),
         replacementNames,
@@ -4311,10 +4339,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       );
 
       if (!row.manual_id) continue;
-      const manual = await c.env.DB
-        .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
-        .bind(row.manual_id, lineAccountId.value)
-        .first<SupportManualRow>();
+      const manual = manualMap.get(row.manual_id);
       if (!manual) continue;
       const currentStatus = (manual.knowledge_status ?? 'needs_review') as KnowledgeStatus;
       if (currentStatus === 'verified') {
@@ -4338,8 +4363,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       ) {
         continue;
       }
-      await recordManualRevision(c.env.DB, manual, 'auto_structured', staff, now);
-      await c.env.DB
+      writes.push(prepareManualRevision(c.env.DB, manual, 'auto_structured', staff, now));
+      writes.push(c.env.DB
         .prepare(
           `UPDATE support_manuals
            SET title = ?,
@@ -4373,10 +4398,11 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
           now,
           manual.id,
           lineAccountId.value,
-        )
-        .run();
+        ));
       updatedManuals += 1;
     }
+
+    if (writes.length > 0) await c.env.DB.batch(writes);
 
     return c.json({
       success: true,

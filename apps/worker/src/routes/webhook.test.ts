@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 
 const lineClientMethods = vi.hoisted(() => ({
   getProfile: vi.fn(),
+  getGroupSummary: vi.fn(),
+  getGroupMemberProfile: vi.fn(),
+  getRoomMemberProfile: vi.fn(),
   pushMessage: vi.fn(),
   replyMessage: vi.fn(),
 }));
@@ -34,6 +37,10 @@ vi.mock('@line-crm/db', () => ({
   addTagToFriend: vi.fn(),
   getEntryRouteByRefCode: vi.fn(),
   getMessageTemplateById: vi.fn(),
+  getLineConversationBySource: vi.fn(),
+  insertLineConversationMessage: vi.fn(),
+  markLineConversationMessageUnsent: vi.fn(),
+  upsertLineConversation: vi.fn(),
 }));
 
 vi.mock('@line-crm/line-sdk', async () => {
@@ -63,6 +70,9 @@ import {
   jstNow,
   upsertChatOnMessage,
   upsertFriend,
+  getLineConversationBySource,
+  insertLineConversationMessage,
+  upsertLineConversation,
 } from '@line-crm/db';
 import { verifySignature } from '@line-crm/line-sdk';
 import { fireEvent } from '../services/event-bus.js';
@@ -93,6 +103,21 @@ beforeEach(() => {
     pictureUrl: 'https://example.com/profile.png',
     statusMessage: 'hello',
   });
+  lineClientMethods.getGroupSummary.mockResolvedValue({
+    groupId: 'Cgroup1',
+    groupName: 'ECオーナー連絡グループ',
+    pictureUrl: 'https://example.com/group.png',
+  });
+  lineClientMethods.getGroupMemberProfile.mockResolvedValue({
+    userId: 'Ugroupmember',
+    displayName: '中田 匠',
+    pictureUrl: 'https://example.com/member.png',
+  });
+  lineClientMethods.getRoomMemberProfile.mockResolvedValue({
+    userId: 'Ugroupmember',
+    displayName: '中田 匠',
+    pictureUrl: 'https://example.com/member.png',
+  });
   lineClientMethods.pushMessage.mockResolvedValue(undefined);
   lineClientMethods.replyMessage.mockResolvedValue(undefined);
   supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage.mockResolvedValue({
@@ -100,6 +125,19 @@ beforeEach(() => {
     caseIds: [],
   });
   vi.mocked(getLineAccounts).mockResolvedValue([]);
+  vi.mocked(getLineConversationBySource).mockResolvedValue(null);
+  vi.mocked(insertLineConversationMessage).mockResolvedValue(true);
+  vi.mocked(upsertLineConversation).mockResolvedValue({
+    id: 'conversation-1',
+    line_account_id: 'acc-1',
+    source_type: 'group',
+    source_id: 'Cgroup1',
+    display_name: 'ECオーナー連絡グループ',
+    picture_url: 'https://example.com/group.png',
+    last_message_at: null,
+    created_at: '2026-06-11T17:45:17.000+09:00',
+    updated_at: '2026-06-11T17:45:17.000+09:00',
+  });
   vi.mocked(jstNow).mockReturnValue('2026-06-11T17:45:17.000+09:00');
 });
 
@@ -784,6 +822,87 @@ describe('POST /webhook — message intake', () => {
         }),
       ]),
     );
+  });
+
+  test('capture-only mode stores group messages with the conversation and sender profiles', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    const event = {
+      type: 'message',
+      mode: 'active',
+      timestamp: 1781160317000,
+      source: { type: 'group', groupId: 'Cgroup1', userId: 'Ugroupmember' },
+      webhookEventId: '01JXGROUPMESSAGE',
+      deliveryContext: { isRedelivery: false },
+      replyToken: 'reply-token',
+      message: { id: 'group-msg-1', type: 'text', text: '銀行名はりそな銀行です' },
+    };
+    const { db } = createDbMock([
+      {
+        webhook_event_id: '01JXGROUPMESSAGE',
+        line_account_id: 'acc-1',
+        event_payload: JSON.stringify(event),
+        attempts: 0,
+      },
+    ]);
+    const waitUntil = vi.fn();
+    const res = await setupApp().request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({ destination: 'Ubot', events: [event] }),
+      },
+      { ...baseEnv, DB: db, LINE_CAPTURE_ONLY: '1' },
+      { ...baseExecutionCtx, waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await waitUntil.mock.calls[0]?.[0];
+    expect(lineClientMethods.getGroupSummary).toHaveBeenCalledWith('Cgroup1');
+    expect(lineClientMethods.getGroupMemberProfile).toHaveBeenCalledWith('Cgroup1', 'Ugroupmember');
+    expect(upsertLineConversation).toHaveBeenCalledWith(db, {
+      lineAccountId: 'acc-1',
+      sourceType: 'group',
+      sourceId: 'Cgroup1',
+      displayName: 'ECオーナー連絡グループ',
+      pictureUrl: 'https://example.com/group.png',
+    });
+    expect(insertLineConversationMessage).toHaveBeenCalledWith(db, expect.objectContaining({
+      conversationId: 'conversation-1',
+      messageType: 'text',
+      content: '銀行名はりそな銀行です',
+      source: 'group',
+      lineMessageId: 'group-msg-1',
+      webhookEventId: '01JXGROUPMESSAGE',
+      senderUserId: 'Ugroupmember',
+      senderName: '中田 匠',
+      senderPictureUrl: 'https://example.com/member.png',
+    }));
+    expect(upsertFriend).not.toHaveBeenCalled();
+    expect(upsertChatOnMessage).not.toHaveBeenCalled();
+    expect(fireEvent).not.toHaveBeenCalled();
   });
 
   test('returns 503 when capture-only persistence still fails after a retry', async () => {

@@ -30,6 +30,7 @@ interface Chat {
   friendId: string
   friendName: string
   friendPictureUrl: string | null
+  conversationType?: 'user' | 'group' | 'room'
   operatorId: string | null
   status: 'unread' | 'in_progress' | 'resolved' | 'long_term'
   notes: string | null
@@ -63,6 +64,9 @@ interface ChatMessage {
   deletedReason?: string | null
   sentByStaffId?: string | null
   sentByStaffName?: string | null
+  incomingSenderUserId?: string | null
+  incomingSenderName?: string | null
+  incomingSenderPictureUrl?: string | null
   createdAt: string
 }
 
@@ -2698,6 +2702,11 @@ export default function ChatsPage() {
       .slice(0, 5)
   ), [chats])
   const selectedSupportBadge = activeSupportCaseBadge(chatDetail?.activeSupportCase)
+  const selectedListChat = selectedChatId ? chats.find((chat) => chat.id === selectedChatId) : null
+  const selectedConversationType = chatDetail?.id === selectedChatId
+    ? chatDetail.conversationType
+    : selectedListChat?.conversationType
+  const selectedIsMultiPersonConversation = selectedConversationType === 'group' || selectedConversationType === 'room'
   const chatMessagesById = useMemo(
     () => new Map((chatDetail?.messages ?? []).map((message) => [message.id, message] as const)),
     [chatDetail?.messages],
@@ -2891,6 +2900,11 @@ export default function ChatsPage() {
                                 <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未読" />
                               )}
                               <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
+                              {(chat.conversationType === 'group' || chat.conversationType === 'room') && (
+                                <span className="shrink-0 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                                  グループ
+                                </span>
+                              )}
                               {chat.isConfirmed && (
                                 <span
                                   className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
@@ -2931,9 +2945,11 @@ export default function ChatsPage() {
                             )}
                             {preview || <span className="font-medium text-emerald-600">メッセージを開始</span>}
                           </p>
-                          <p className="mt-1 text-[10px] font-medium text-slate-400">
-                            {formatLastHumanReply(chat.lastHumanReplyAt)}
-                          </p>
+                          {chat.conversationType !== 'group' && chat.conversationType !== 'room' && (
+                            <p className="mt-1 text-[10px] font-medium text-slate-400">
+                              {formatLastHumanReply(chat.lastHumanReplyAt)}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </button>
@@ -3003,12 +3019,18 @@ export default function ChatsPage() {
                     <p className="truncate text-base font-semibold text-gray-900">
                       {chatDetail.friendName}
                     </p>
-                    <span
-                      className={`mt-1 inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
-                    >
-                      {statusConfig[chatDetail.status].label}
-                    </span>
-                    {isStaleChat(chatDetail) && (
+                    {selectedIsMultiPersonConversation ? (
+                      <span className="mt-1 inline-flex items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                        LINEグループ
+                      </span>
+                    ) : (
+                      <span
+                        className={`mt-1 inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
+                      >
+                        {statusConfig[chatDetail.status].label}
+                      </span>
+                    )}
+                    {!selectedIsMultiPersonConversation && isStaleChat(chatDetail) && (
                       <span className="ml-1 mt-1 inline-flex items-center gap-1 rounded-md bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">
                         <FlameIcon className="h-3 w-3" />
                         24h超過 {formatElapsed(chatDetail.lastUnansweredAt ?? chatDetail.lastMessageAt)}
@@ -3030,7 +3052,7 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
-                <div className="-mx-4 flex w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0">
+                <div className={`-mx-4 w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0 ${selectedIsMultiPersonConversation ? 'hidden' : 'flex'}`}>
                   <button
                     type="button"
                     onClick={() => setCustomerInfoOpen(true)}
@@ -3161,6 +3183,9 @@ export default function ChatsPage() {
                     const senderLabel = isOutgoing
                       ? (msg.sentByStaffName?.trim() || (msg.source === 'line_official' ? 'LINE公式' : '送信者不明'))
                       : ''
+                    const incomingSenderName = !isOutgoing
+                      ? (msg.incomingSenderName?.trim() || (selectedIsMultiPersonConversation ? '参加メンバー' : ''))
+                      : ''
                     const quotedMessage = msg.quotedMessageId ? chatMessagesById.get(msg.quotedMessageId) : null
 
                     if (msg.deletedAt) {
@@ -3265,14 +3290,19 @@ export default function ChatsPage() {
                         >
                           {/* 相手のアイコン（incoming のみ） */}
                           {!isOutgoing && (
-                            chatDetail.friendPictureUrl ? (
-                              <img src={chatDetail.friendPictureUrl} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1" />
+                            (msg.incomingSenderPictureUrl || chatDetail.friendPictureUrl) ? (
+                              <img src={msg.incomingSenderPictureUrl || chatDetail.friendPictureUrl || ''} alt="" className="w-8 h-8 rounded-full flex-shrink-0 mb-1 object-cover" />
                             ) : (
                               <div className="w-8 h-8 rounded-full bg-gray-300 flex-shrink-0 mb-1" />
                             )
                           )}
 
                           <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                            {selectedIsMultiPersonConversation && incomingSenderName && (
+                              <span className="mb-1 px-1 text-[11px] font-semibold text-white/90">
+                                {incomingSenderName}
+                              </span>
+                            )}
                             {/* メッセージバブル */}
                             <div
                               className={`max-w-[calc(100vw-96px)] break-words whitespace-pre-wrap px-3 py-2 text-sm sm:max-w-[320px] ${
@@ -3291,7 +3321,9 @@ export default function ChatsPage() {
                                   }`}
                                 >
                                   <div className={`font-bold ${isOutgoing ? 'text-white' : 'text-green-700'}`}>
-                                    {quotedMessage.direction === 'incoming' ? chatDetail.friendName : '担当者'}への返信
+                                    {quotedMessage.direction === 'incoming'
+                                      ? (quotedMessage.incomingSenderName || chatDetail.friendName)
+                                      : '担当者'}への返信
                                   </div>
                                   <div className="mt-0.5 line-clamp-2 opacity-90">
                                     {chatMessageQuotePreview(quotedMessage)}
@@ -3356,8 +3388,13 @@ export default function ChatsPage() {
               </div>
 
               {/* Send Message Form */}
+              {selectedIsMultiPersonConversation && (
+                <div className="border-t border-blue-100 bg-blue-50 px-4 py-3 text-center text-xs font-semibold text-blue-800">
+                  グループトークは現在閲覧のみ対応しています
+                </div>
+              )}
               <div
-                className="border-t border-gray-200 px-4 py-2"
+                className={`border-t border-gray-200 px-4 py-2 ${selectedIsMultiPersonConversation ? 'hidden' : ''}`}
                 onDragOver={(e) => {
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'copy'
@@ -3639,7 +3676,7 @@ export default function ChatsPage() {
                   </div>
                 </div>
               </div>
-              {internalChatOpen && (
+              {!selectedIsMultiPersonConversation && internalChatOpen && (
                 <div className="absolute inset-0 z-20 flex justify-end bg-slate-900/20">
                   <button
                     type="button"
@@ -3659,7 +3696,7 @@ export default function ChatsPage() {
                   </div>
                 </div>
               )}
-              {customerInfoOpen && (
+              {!selectedIsMultiPersonConversation && customerInfoOpen && (
                 <div className="absolute inset-0 z-30 flex justify-end bg-slate-900/25 xl:hidden">
                   <button
                     type="button"
@@ -3695,7 +3732,7 @@ export default function ChatsPage() {
           表示し続けて pane 間の不整合になる。selection ID 自体が friend_id なので
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
-        {(selectedChatId || selectedFriendId) && (
+        {(selectedFriendId || (selectedChatId && !selectedIsMultiPersonConversation)) && (
           <div className="hidden w-80 min-w-0 shrink-0 xl:flex">
             <FriendInfoSidebar
               friendId={selectedFriendId || selectedChatId}

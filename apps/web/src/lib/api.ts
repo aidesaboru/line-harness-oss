@@ -74,6 +74,9 @@ export type ChatMessage = {
   deletedReason?: string | null
   sentByStaffId?: string | null
   sentByStaffName?: string | null
+  incomingSenderUserId?: string | null
+  incomingSenderName?: string | null
+  incomingSenderPictureUrl?: string | null
   createdAt: string
 }
 
@@ -120,6 +123,7 @@ export type ChatActiveSupportCase = {
 }
 
 export type ChatDetailResponse = Chat & {
+  conversationType?: 'user' | 'group' | 'room'
   messages?: ChatMessage[]
   hasMoreMessages?: boolean
   nextMessagesBefore?: ChatMessageCursor | null

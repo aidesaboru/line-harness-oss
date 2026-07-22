@@ -12,6 +12,7 @@ import {
   createChat,
   getFriendById,
   getLineAccountById,
+  getLineConversationById,
   updateChat,
   jstNow,
 } from '@line-crm/db';
@@ -197,6 +198,11 @@ type ChatDeletedMessageResponse = { messageId: string; deletedAt: string };
 type OperatorCreateBody = { name: string; email: string; role?: string };
 type OperatorUpdateBody = Partial<{ name: string; email: string; role: string; isActive: boolean }>;
 type ChatStatus = 'unread' | 'in_progress' | 'resolved' | 'long_term';
+type SerializedChatListRow = Record<string, unknown> & {
+  needsReply: boolean;
+  lastMessageAt: unknown;
+  createdAt: unknown;
+};
 type ChatListQuery = {
   status?: ChatStatus;
   operatorId?: string;
@@ -295,7 +301,8 @@ function lineSafetyBlockedResponse(c: Context<Env>, block: LineSendSafetyBlock):
 
 type ChatMediaMessageRow = {
   id: string;
-  friend_id: string;
+  friend_id: string | null;
+  conversation_id?: string | null;
   message_type: string;
   content: string;
   line_account_id: string | null;
@@ -1694,11 +1701,12 @@ chats.get('/api/chats', async (c) => {
       staff,
     );
 
-    let data = result.results.map((ch: Record<string, unknown>) => {
+    let data: SerializedChatListRow[] = result.results.map((ch: Record<string, unknown>) => {
       const replyRequirement = replyRequirements.get(String(ch.friend_id));
       return {
       id: ch.id as string,
       friendId: ch.friend_id,
+      conversationType: 'user',
       friendName: ch.display_name || '名前なし',
       friendPictureUrl: ch.picture_url || null,
       operatorId: ch.operator_id,
@@ -1729,6 +1737,86 @@ chats.get('/api/chats', async (c) => {
       };
     });
 
+    if (!status && !operatorId && !unansweredOnly) {
+      const conversationConditions = lineAccountId ? ['lc.line_account_id = ?'] : [];
+      const conversationBindings: unknown[] = lineAccountId ? [lineAccountId] : [];
+      if (search) {
+        const pattern = `%${escapeLikePattern(search)}%`;
+        conversationConditions.push(`(
+          lc.display_name LIKE ? ESCAPE '\\'
+          OR lc.source_id LIKE ? ESCAPE '\\'
+          OR EXISTS (
+            SELECT 1 FROM line_conversation_messages search_message
+            WHERE search_message.conversation_id = lc.id
+              AND search_message.deleted_at IS NULL
+              AND search_message.content LIKE ? ESCAPE '\\'
+          )
+        )`);
+        conversationBindings.push(pattern, pattern, pattern);
+      }
+      const conversationWhere = conversationConditions.length > 0
+        ? `WHERE ${conversationConditions.join(' AND ')}`
+        : '';
+      const conversationStatement = c.env.DB.prepare(
+        `SELECT
+           lc.id,
+           lc.source_type,
+           lc.display_name,
+           lc.picture_url,
+           lc.last_message_at,
+           lc.created_at,
+           lc.updated_at,
+           latest.content AS last_message_content,
+           latest.direction AS last_message_direction,
+           latest.message_type AS last_message_type
+         FROM line_conversations lc
+         LEFT JOIN line_conversation_messages latest ON latest.id = (
+           SELECT message.id
+           FROM line_conversation_messages message
+           WHERE message.conversation_id = lc.id
+             AND message.deleted_at IS NULL
+           ORDER BY message.created_at DESC, message.id DESC
+           LIMIT 1
+         )
+         ${conversationWhere}
+         ORDER BY lc.last_message_at DESC`,
+      );
+      const conversationResult = conversationBindings.length > 0
+        ? await conversationStatement.bind(...conversationBindings).all<Record<string, unknown>>()
+        : await conversationStatement.all<Record<string, unknown>>();
+      const conversationRows = conversationResult.results.map((row) => ({
+        id: String(row.id),
+        friendId: String(row.id),
+        conversationType: row.source_type === 'room' ? 'room' as const : 'group' as const,
+        friendName: String(row.display_name || 'グループトーク'),
+        friendPictureUrl: row.picture_url || null,
+        operatorId: null,
+        status: 'resolved' as const,
+        notes: null,
+        lastMessageAt: row.last_message_at || null,
+        lastMessageContent: row.last_message_content || null,
+        lastMessageDirection: row.last_message_direction || null,
+        lastMessageType: row.last_message_type || null,
+        lastHumanReplyAt: null,
+        latestCustomerMessageId: null,
+        latestCustomerMessageAt: null,
+        isConfirmed: false,
+        confirmedMessageAt: null,
+        needsReply: false,
+        lastUnansweredAt: null,
+        activeSupportCase: null,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      }));
+      if (conversationRows.length > 0) {
+        data = [...data, ...conversationRows].sort((a, b) =>
+          String(b.lastMessageAt ?? b.createdAt ?? '').localeCompare(
+            String(a.lastMessageAt ?? a.createdAt ?? ''),
+          ),
+        );
+      }
+    }
+
     if (unansweredOnly) {
       data = data.filter((row) => row.needsReply);
     }
@@ -1745,11 +1833,12 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
     const messageId = parseChatPathId(c.req.param('messageId'));
     if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
 
-    const row = await c.env.DB
+    let row = await c.env.DB
       .prepare(
         `SELECT
            ml.id,
            ml.friend_id,
+           NULL AS conversation_id,
            ml.message_type,
            ml.content,
            ml.line_account_id,
@@ -1761,10 +1850,33 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
       )
       .bind(messageId.value)
       .first<ChatMediaMessageRow>();
+    if (!row) {
+      row = await c.env.DB
+        .prepare(
+          `SELECT
+             message.id,
+             NULL AS friend_id,
+             message.conversation_id,
+             message.message_type,
+             message.content,
+             message.line_account_id,
+             conversation.line_account_id AS friend_line_account_id
+           FROM line_conversation_messages message
+           INNER JOIN line_conversations conversation ON conversation.id = message.conversation_id
+           WHERE message.id = ?
+           LIMIT 1`,
+        )
+        .bind(messageId.value)
+        .first<ChatMediaMessageRow>();
+    }
     if (!row) return c.json({ success: false, error: 'Media not found' }, 404);
 
-    const denied = await ensureChatFriendAccess(c, row.friend_id);
-    if (denied) return denied;
+    if (row.friend_id) {
+      const denied = await ensureChatFriendAccess(c, row.friend_id);
+      if (denied) return denied;
+    } else if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+      return c.json({ success: false, error: 'Media not found' }, 404);
+    }
 
     const payload = parseStoredLineMediaPayload(row);
     if (!payload) {
@@ -1808,6 +1920,92 @@ chats.get('/api/chats/:id', async (c) => {
     const query = parseChatDetailQuery(new URL(c.req.url).searchParams);
     if (!query.ok) return c.json({ success: false, error: query.error }, 400);
     const rawId = id.value;
+
+    const lineConversation = await getLineConversationById(c.env.DB, rawId);
+    if (lineConversation) {
+      if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+        return c.json({ success: false, error: 'Chat not found' }, 404);
+      }
+      const { messageLimit, beforeCreatedAt, beforeId } = query.value;
+      const messageConditions = ['conversation_id = ?'];
+      const messageBindings: unknown[] = [lineConversation.id];
+      if (beforeCreatedAt && beforeId) {
+        messageConditions.push('(created_at < ? OR (created_at = ? AND id < ?))');
+        messageBindings.push(beforeCreatedAt, beforeCreatedAt, beforeId);
+      } else if (beforeCreatedAt) {
+        messageConditions.push('created_at < ?');
+        messageBindings.push(beforeCreatedAt);
+      }
+      const result = await c.env.DB
+        .prepare(
+          `SELECT id, direction, message_type, content, source, quote_token,
+                  sender_user_id, sender_name, sender_picture_url,
+                  deleted_at, deleted_reason, created_at
+           FROM line_conversation_messages
+           WHERE ${messageConditions.join(' AND ')}
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?`,
+        )
+        .bind(...messageBindings, messageLimit + 1)
+        .all<Record<string, unknown>>();
+      const hasMoreMessages = result.results.length > messageLimit;
+      const pageMessages = result.results.slice(0, messageLimit).reverse();
+      const oldestMessage = pageMessages[0];
+      const latestMessage = pageMessages.at(-1);
+
+      return c.json({
+        success: true,
+        data: {
+          id: lineConversation.id,
+          friendId: lineConversation.id,
+          conversationType: lineConversation.source_type,
+          friendName: lineConversation.display_name,
+          friendPictureUrl: lineConversation.picture_url,
+          operatorId: null,
+          status: 'resolved',
+          notes: null,
+          lastMessageAt: latestMessage?.created_at ?? lineConversation.last_message_at,
+          lastMessageContent: latestMessage?.content ?? null,
+          lastMessageDirection: latestMessage?.direction ?? null,
+          lastMessageType: latestMessage?.message_type ?? null,
+          needsReply: false,
+          lastUnansweredAt: null,
+          lastHumanReplyAt: null,
+          latestCustomerMessageId: null,
+          latestCustomerMessageAt: null,
+          isConfirmed: false,
+          confirmedMessageAt: null,
+          createdAt: lineConversation.created_at,
+          hasMoreMessages,
+          nextMessagesBefore: hasMoreMessages && oldestMessage
+            ? { createdAt: oldestMessage.created_at, id: oldestMessage.id }
+            : null,
+          internalMessages: [],
+          activeSupportCase: null,
+          typingParticipants: [],
+          scheduledMessages: [],
+          messages: pageMessages.map((message) => ({
+            id: message.id,
+            direction: message.direction,
+            messageType: message.message_type,
+            content: message.content,
+            source: message.source,
+            canQuote: false,
+            quotedMessageId: null,
+            markedAsReadAt: null,
+            markedAsReadBy: null,
+            deletedAt: message.deleted_at,
+            deletedReason: message.deleted_reason,
+            sentByStaffId: null,
+            sentByStaffName: null,
+            incomingSenderUserId: message.sender_user_id,
+            incomingSenderName: message.sender_name,
+            incomingSenderPictureUrl: message.sender_picture_url,
+            createdAt: message.created_at,
+          })),
+        },
+      });
+    }
 
     // id は chats.id または friend.id のどちらでもOK。
     // 優先順: chats.id 一致 → friend.id のとき chats.friend_id 最新行 → 何も無ければ friend のみで synthetic
@@ -1960,6 +2158,7 @@ chats.get('/api/chats/:id', async (c) => {
       data: {
         id: responseId,
         friendId: resolvedFriendId,
+        conversationType: 'user',
         friendName: friend?.display_name || '名前なし',
         friendPictureUrl: friend?.picture_url || null,
         operatorId,

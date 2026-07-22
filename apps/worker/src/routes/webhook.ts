@@ -1,6 +1,13 @@
 import { Hono } from 'hono';
 import { verifySignature, LineClient } from '@line-crm/line-sdk';
-import type { WebhookRequestBody, WebhookEvent, TextEventMessage } from '@line-crm/line-sdk';
+import type {
+  GroupSource,
+  MessageEvent,
+  RoomSource,
+  TextEventMessage,
+  WebhookEvent,
+  WebhookRequestBody,
+} from '@line-crm/line-sdk';
 import { createStickerMessageContent } from '@line-crm/shared';
 import {
   upsertFriend,
@@ -20,6 +27,10 @@ import {
   addTagToFriend,
   getEntryRouteByRefCode,
   getMessageTemplateById,
+  getLineConversationBySource,
+  insertLineConversationMessage,
+  markLineConversationMessageUnsent,
+  upsertLineConversation,
 } from '@line-crm/db';
 import type { EntryRoute, Friend } from '@line-crm/db';
 import { fireEvent } from '../services/event-bus.js';
@@ -72,6 +83,8 @@ type IncomingNonTextMessage = {
     previewImageUrl?: string;
   };
 };
+
+type MultiPersonSource = GroupSource | RoomSource;
 
 function webhookLineErrorStatus(err: unknown): number | null {
   if (!(err instanceof Error)) return null;
@@ -196,7 +209,13 @@ async function markLineMessageUnsent(
     )
     .bind(jstNow(), lineAccountId, lineAccountId, lineMessageId, lineMessageId, lineMessageId)
     .run();
-  return Number((result as { meta?: { changes?: unknown } }).meta?.changes ?? 0);
+  const personalChanges = Number((result as { meta?: { changes?: unknown } }).meta?.changes ?? 0);
+  const conversationChanges = await markLineConversationMessageUnsent(
+    db,
+    lineMessageId,
+    lineAccountId,
+  );
+  return personalChanges + conversationChanges;
 }
 
 function workerMediaUrl(workerUrl: string | undefined, logId: string): string | null {
@@ -305,6 +324,123 @@ async function buildIncomingNonTextContent(params: {
     fileName: msg.fileName ?? (msg.type === 'image' ? 'LINE画像' : undefined),
     fileSize: msg.fileSize ?? null,
     contentUrl,
+  });
+}
+
+function multiPersonSourceId(source: MultiPersonSource): string {
+  return source.type === 'group' ? source.groupId : source.roomId;
+}
+
+function fallbackConversationName(source: MultiPersonSource): string {
+  const suffix = multiPersonSourceId(source).slice(-6);
+  return source.type === 'group'
+    ? `LINEグループ ${suffix}`
+    : `複数人トーク ${suffix}`;
+}
+
+async function resolveConversationSender(
+  db: D1Database,
+  lineClient: LineClient,
+  source: MultiPersonSource,
+): Promise<{ userId: string | null; name: string | null; pictureUrl: string | null }> {
+  const userId = source.userId?.trim() || null;
+  if (!userId) return { userId: null, name: null, pictureUrl: null };
+
+  try {
+    const profile = source.type === 'group'
+      ? await lineClient.getGroupMemberProfile(source.groupId, userId)
+      : await lineClient.getRoomMemberProfile(source.roomId, userId);
+    return {
+      userId,
+      name: profile.displayName || null,
+      pictureUrl: profile.pictureUrl ?? null,
+    };
+  } catch (err) {
+    console.error(`Failed to get LINE conversation member profile: ${webhookErrorKind(err)}`);
+  }
+
+  const existingFriend = await getFriendByLineUserId(db, userId);
+  return {
+    userId,
+    name: existingFriend?.display_name ?? null,
+    pictureUrl: existingFriend?.picture_url ?? null,
+  };
+}
+
+async function handleMultiPersonMessage(params: {
+  db: D1Database;
+  lineClient: LineClient;
+  event: MessageEvent;
+  source: MultiPersonSource;
+  lineAccessToken: string;
+  lineAccountId: string | null;
+  workerUrl?: string;
+  r2?: R2Bucket;
+  durableEventId?: string;
+}): Promise<void> {
+  const {
+    db,
+    lineClient,
+    event,
+    source,
+    lineAccessToken,
+    lineAccountId,
+    workerUrl,
+    r2,
+    durableEventId,
+  } = params;
+  const sourceId = multiPersonSourceId(source);
+  const existing = await getLineConversationBySource(db, lineAccountId, source.type, sourceId);
+  let displayName = existing?.display_name ?? fallbackConversationName(source);
+  let pictureUrl = existing?.picture_url ?? null;
+
+  if (!existing && source.type === 'group') {
+    try {
+      const summary = await lineClient.getGroupSummary(source.groupId);
+      displayName = summary.groupName?.trim() || displayName;
+      pictureUrl = summary.pictureUrl ?? null;
+    } catch (err) {
+      console.error(`Failed to get LINE group summary: ${webhookErrorKind(err)}`);
+    }
+  }
+
+  const conversation = await upsertLineConversation(db, {
+    lineAccountId,
+    sourceType: source.type,
+    sourceId,
+    displayName,
+    pictureUrl,
+  });
+  const sender = await resolveConversationSender(db, lineClient, source);
+  const logId = crypto.randomUUID();
+  const message = event.message;
+  const receivedAt = jstNow();
+  const content = message.type === 'text'
+    ? (message as TextEventMessage).text
+    : await buildIncomingNonTextContent({
+        msg: message as IncomingNonTextMessage,
+        logId,
+        lineAccessToken,
+        lineAccountId,
+        workerUrl,
+        r2,
+      });
+
+  await insertLineConversationMessage(db, {
+    id: logId,
+    conversationId: conversation.id,
+    direction: 'incoming',
+    messageType: message.type,
+    content,
+    source: source.type,
+    lineAccountId,
+    lineMessageId: eventLineMessageId(event),
+    webhookEventId: durableEventId ?? eventWebhookEventId(event),
+    quoteToken: eventQuoteToken(event),
+    senderUserId: sender.userId,
+    senderName: sender.name,
+    senderPictureUrl: sender.pictureUrl,
+    createdAt: eventOccurredAt(event, receivedAt),
   });
 }
 
@@ -500,6 +636,21 @@ async function handleCaptureOnlyEvent(
     return;
   }
 
+  if (event.type === 'message' && event.source.type !== 'user') {
+    await handleMultiPersonMessage({
+      db,
+      lineClient,
+      event,
+      source: event.source,
+      lineAccessToken,
+      lineAccountId,
+      workerUrl,
+      r2,
+      durableEventId,
+    });
+    return;
+  }
+
   if (event.type === 'follow') {
     const userId = event.source.type === 'user' ? event.source.userId : undefined;
     if (!userId) return;
@@ -665,6 +816,20 @@ async function handleEvent(
   if (isUnsendWebhookEvent(event)) {
     const lineMessageId = eventUnsendMessageId(event);
     if (lineMessageId) await markLineMessageUnsent(db, lineMessageId, lineAccountId);
+    return;
+  }
+
+  if (event.type === 'message' && event.source.type !== 'user') {
+    await handleMultiPersonMessage({
+      db,
+      lineClient,
+      event,
+      source: event.source,
+      lineAccessToken,
+      lineAccountId,
+      workerUrl,
+      r2,
+    });
     return;
   }
 

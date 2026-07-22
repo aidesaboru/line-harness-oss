@@ -34,6 +34,7 @@ const dbMocks = {
   createChat: vi.fn(),
   getFriendById: vi.fn(),
   getLineAccountById: vi.fn(),
+  getLineConversationById: vi.fn(),
   updateChat: vi.fn(),
   jstNow: vi.fn(() => '2026-06-12T10:00:00.000'),
 };
@@ -100,6 +101,21 @@ type MessageRow = {
   sent_by_staff_name?: string | null;
 };
 
+type LineConversationMessageRow = {
+  id: string;
+  conversation_id: string;
+  direction: 'incoming' | 'outgoing';
+  message_type: string;
+  content: string;
+  source: 'group' | 'room';
+  sender_user_id: string | null;
+  sender_name: string | null;
+  sender_picture_url: string | null;
+  deleted_at: string | null;
+  deleted_reason: string | null;
+  created_at: string;
+};
+
 type SupportCaseRow = {
   id: string;
   line_account_id: string;
@@ -143,6 +159,8 @@ function makeChatDb(state: {
   supportEvents?: SupportEventRow[];
   chatInternalMessages?: ChatInternalMessageRow[];
   scheduledMessages?: ScheduledChatMessageRow[];
+  lineConversations?: Array<Record<string, unknown>>;
+  lineConversationMessages?: LineConversationMessageRow[];
 }) {
   const calls: Array<{ method: 'first' | 'all' | 'run'; sql: string; binds: unknown[] }> = [];
   const visible = new Set(state.visibleFriendIds);
@@ -151,6 +169,8 @@ function makeChatDb(state: {
   const supportEvents = state.supportEvents ?? [];
   const chatInternalMessages = state.chatInternalMessages ?? [];
   const scheduledMessages = state.scheduledMessages ?? [];
+  const lineConversations = state.lineConversations ?? [];
+  const lineConversationMessages = state.lineConversationMessages ?? [];
 
   const db = {
     prepare(sql: string) {
@@ -274,6 +294,17 @@ function makeChatDb(state: {
         },
         async all<T>() {
           calls.push({ method: 'all', sql, binds: bound });
+          if (sql.includes('FROM line_conversations lc')) {
+            return { results: lineConversations } as { results: T[] };
+          }
+          if (sql.includes('FROM line_conversation_messages') && sql.includes('sender_user_id')) {
+            const conversationId = bound[0] as string;
+            const limit = Number(bound.at(-1) ?? 1000);
+            const rows = lineConversationMessages
+              .filter((message) => message.conversation_id === conversationId)
+              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+            return { results: rows.slice(0, limit) } as { results: T[] };
+          }
           if (sql.includes('FROM deduped d')) {
             let rows = sql.includes('support_cases sc_friend_scope')
               ? state.rows.filter((row) => visible.has(row.friend_id))
@@ -556,6 +587,7 @@ beforeEach(() => {
   lineSdkMocks.pushImageMessage.mockReset().mockResolvedValue(undefined);
   lineSdkMocks.markMessagesAsRead.mockReset().mockResolvedValue(undefined);
   followerSyncMocks.syncFollowerPage.mockReset();
+  dbMocks.getLineConversationById.mockResolvedValue(null);
   dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
     friends.find((friend) => friend.id === id) ?? null,
   );
@@ -579,6 +611,39 @@ describe('chat support visibility', () => {
     expect(listCall?.sql).toContain('WHERE is_following = 1');
     expect(listCall?.sql).toContain('SELECT friend_id, MAX(created_at) AS last_message_at');
     expect(listCall?.sql).toContain('ORDER BY d.last_message_at DESC');
+  });
+
+  test('chat list includes LINE group conversations without treating them as customers', async () => {
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+      lineConversations: [{
+        id: 'conversation-group-1',
+        source_type: 'group',
+        display_name: 'ECオーナー連絡グループ',
+        picture_url: 'https://example.com/group.png',
+        last_message_at: '2026-06-12T12:00:00.000',
+        last_message_content: '銀行名はりそな銀行です',
+        last_message_direction: 'incoming',
+        last_message_type: 'text',
+        created_at: '2026-06-12T08:00:00.000',
+        updated_at: '2026-06-12T12:00:00.000',
+      }],
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats?lineAccountId=account-1');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'conversation-group-1',
+        conversationType: 'group',
+        friendName: 'ECオーナー連絡グループ',
+        needsReply: false,
+        activeSupportCase: null,
+      }),
+    ]));
   });
 
   test('syncs a page of current LINE followers without removing existing history', async () => {
@@ -742,6 +807,62 @@ describe('chat support visibility', () => {
       'msg-3',
       3,
     ]);
+  });
+
+  test('group chat detail returns sender names without customer-only data', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: 'https://example.com/group.png',
+      last_message_at: '2026-06-12T12:00:00.000',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+      lineConversationMessages: [{
+        id: 'group-message-1',
+        conversation_id: 'conversation-group-1',
+        direction: 'incoming',
+        message_type: 'text',
+        content: '銀行名はりそな銀行です',
+        source: 'group',
+        sender_user_id: 'Ugroupmember',
+        sender_name: '中田 匠',
+        sender_picture_url: 'https://example.com/member.png',
+        deleted_at: null,
+        deleted_reason: null,
+        created_at: '2026-06-12T12:00:00.000',
+      }],
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1');
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      data: {
+        conversationType: string;
+        activeSupportCase: unknown;
+        internalMessages: unknown[];
+        messages: Array<Record<string, unknown>>;
+      };
+    };
+    expect(body.data).toMatchObject({
+      conversationType: 'group',
+      activeSupportCase: null,
+      internalMessages: [],
+    });
+    expect(body.data.messages[0]).toMatchObject({
+      content: '銀行名はりそな銀行です',
+      incomingSenderUserId: 'Ugroupmember',
+      incomingSenderName: '中田 匠',
+      incomingSenderPictureUrl: 'https://example.com/member.png',
+      canQuote: false,
+    });
   });
 
   test('chat detail includes internal staff chat messages', async () => {

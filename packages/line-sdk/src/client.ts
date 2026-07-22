@@ -1,6 +1,8 @@
 import type {
   BroadcastRequest,
+  ChatMemberProfile,
   FlexContainer,
+  GroupSummary,
   Message,
   MulticastRequest,
   PushMessageRequest,
@@ -98,6 +100,30 @@ export class LineClient {
       `/v2/bot/profile/${encodeURIComponent(userId)}`,
     );
     return data as UserProfile;
+  }
+
+  async getGroupSummary(groupId: string): Promise<GroupSummary> {
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/group/${encodeURIComponent(groupId)}/summary`,
+    );
+    return data as GroupSummary;
+  }
+
+  async getGroupMemberProfile(groupId: string, userId: string): Promise<ChatMemberProfile> {
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/group/${encodeURIComponent(groupId)}/member/${encodeURIComponent(userId)}`,
+    );
+    return data as ChatMemberProfile;
+  }
+
+  async getRoomMemberProfile(roomId: string, userId: string): Promise<ChatMemberProfile> {
+    const { data } = await this.request(
+      'GET',
+      `/v2/bot/room/${encodeURIComponent(roomId)}/member/${encodeURIComponent(userId)}`,
+    );
+    return data as ChatMemberProfile;
   }
 
   async getFollowers(options: { limit?: number; start?: string } = {}): Promise<FollowersPage> {

@@ -74,7 +74,8 @@
     "066_protect_terminal_support_escalations.sql",
     "067_link_reopened_support_escalations.sql",
     "068_collaboration_workflow.sql",
-    "069_support_case_followup_reminders.sql"
+    "069_support_case_followup_reminders.sql",
+    "070_line_group_conversations.sql"
   ],
-  "migrationCount": 75
+  "migrationCount": 76
 }

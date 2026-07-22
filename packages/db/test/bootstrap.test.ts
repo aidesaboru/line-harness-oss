@@ -150,4 +150,41 @@ describe('bootstrap.sql', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM support_case_followup_reminder_events').get())
       .toEqual({ count: 1 });
   });
+
+  it('retains LINE group conversations and message history', () => {
+    const db = new Database(':memory:');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+    db.prepare(
+      `INSERT INTO line_conversations (
+        id, source_type, source_id, display_name, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'conversation-1',
+      'group',
+      'Cgroup1',
+      'ECオーナー連絡グループ',
+      '2026-07-22T12:00:00.000+09:00',
+      '2026-07-22T12:00:00.000+09:00',
+    );
+    db.prepare(
+      `INSERT INTO line_conversation_messages (
+        id, conversation_id, direction, message_type, content, source, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      'message-1',
+      'conversation-1',
+      'incoming',
+      'text',
+      '銀行名はりそな銀行です',
+      'group',
+      '2026-07-22T12:01:00.000+09:00',
+    );
+
+    expect(() => db.prepare('DELETE FROM line_conversation_messages WHERE id = ?').run('message-1'))
+      .toThrow(/history is protected/i);
+    expect(() => db.prepare('DELETE FROM line_conversations WHERE id = ?').run('conversation-1'))
+      .toThrow(/history is protected/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM line_conversation_messages').get())
+      .toEqual({ count: 1 });
+  });
 });

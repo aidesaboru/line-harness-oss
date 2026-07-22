@@ -615,6 +615,37 @@ CREATE TABLE line_accounts (
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , login_channel_id TEXT, login_channel_secret TEXT, liff_id TEXT, token_expires_at TEXT, og_site_name TEXT, og_default_image_url TEXT, og_default_description TEXT);
 
+CREATE TABLE line_conversation_messages (
+  id                 TEXT PRIMARY KEY,
+  conversation_id    TEXT NOT NULL REFERENCES line_conversations (id) ON DELETE CASCADE,
+  direction          TEXT NOT NULL CHECK (direction IN ('incoming', 'outgoing')),
+  message_type       TEXT NOT NULL,
+  content            TEXT NOT NULL,
+  source             TEXT NOT NULL,
+  line_account_id    TEXT,
+  line_message_id    TEXT,
+  webhook_event_id   TEXT,
+  quote_token        TEXT,
+  sender_user_id     TEXT,
+  sender_name        TEXT,
+  sender_picture_url TEXT,
+  deleted_at         TEXT,
+  deleted_reason     TEXT,
+  created_at         TEXT NOT NULL
+);
+
+CREATE TABLE line_conversations (
+  id              TEXT PRIMARY KEY,
+  line_account_id TEXT,
+  source_type     TEXT NOT NULL CHECK (source_type IN ('group', 'room')),
+  source_id       TEXT NOT NULL,
+  display_name    TEXT NOT NULL,
+  picture_url     TEXT,
+  last_message_at TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE line_webhook_inbox (
   webhook_event_id TEXT PRIMARY KEY,
   line_account_id  TEXT,
@@ -1373,6 +1404,22 @@ CREATE INDEX idx_internal_tasks_source
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
 
+CREATE INDEX idx_line_conversation_messages_conversation_created
+ON line_conversation_messages (conversation_id, created_at, id);
+
+CREATE INDEX idx_line_conversation_messages_line_message
+ON line_conversation_messages (line_message_id);
+
+CREATE UNIQUE INDEX idx_line_conversation_messages_webhook_event
+ON line_conversation_messages (webhook_event_id)
+WHERE webhook_event_id IS NOT NULL;
+
+CREATE INDEX idx_line_conversations_account_last_message
+ON line_conversations (line_account_id, last_message_at);
+
+CREATE UNIQUE INDEX idx_line_conversations_source
+ON line_conversations (COALESCE(line_account_id, ''), source_type, source_id);
+
 CREATE INDEX idx_line_webhook_inbox_status_attempt
 ON line_webhook_inbox (status, next_attempt_at, updated_at);
 
@@ -1586,6 +1633,18 @@ CREATE TRIGGER protect_internal_tasks_delete
 BEFORE DELETE ON internal_tasks
 BEGIN
   SELECT RAISE(ABORT, 'internal tasks cannot be deleted');
+END;
+
+CREATE TRIGGER protect_line_conversation_messages_delete
+BEFORE DELETE ON line_conversation_messages
+BEGIN
+  SELECT RAISE(ABORT, 'line conversation messages history is protected');
+END;
+
+CREATE TRIGGER protect_line_conversations_delete
+BEFORE DELETE ON line_conversations
+BEGIN
+  SELECT RAISE(ABORT, 'line conversations history is protected');
 END;
 
 CREATE TRIGGER protect_messages_log_delete

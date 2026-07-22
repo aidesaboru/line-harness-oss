@@ -160,6 +160,18 @@ export interface UserProfile {
   statusMessage?: string;
 }
 
+export interface GroupSummary {
+  groupId: string;
+  groupName: string;
+  pictureUrl?: string;
+}
+
+export interface ChatMemberProfile {
+  displayName: string;
+  userId: string;
+  pictureUrl?: string;
+}
+
 // ─── Send message types ───────────────────────────────────────────────────────
 
 export type FlexContainer = object;

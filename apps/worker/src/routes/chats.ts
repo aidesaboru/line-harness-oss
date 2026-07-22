@@ -1964,6 +1964,7 @@ chats.post('/api/chats/:id/typing', async (c) => {
     const now = jstNow();
     await cleanupExpiredChatTyping(c.env.DB, now);
 
+    // Typing is presence only. Workflow state changes require an explicit action.
     if (parsed.value.active) {
       const expiresAt = jstTimestampAfterMs(15_000);
       await c.env.DB
@@ -1989,10 +1990,6 @@ chats.post('/api/chats/:id/typing', async (c) => {
           now,
         )
         .run();
-
-      if (chat.status === 'unread' || chat.is_long_term === 1) {
-        await updateChat(c.env.DB, chat.id, { status: 'in_progress', isLongTerm: false });
-      }
     } else {
       await c.env.DB
         .prepare(`DELETE FROM chat_typing_status WHERE chat_id = ? AND staff_id = ?`)
@@ -2004,9 +2001,7 @@ chats.post('/api/chats/:id/typing', async (c) => {
       success: true,
       data: {
         active: parsed.value.active,
-        status: parsed.value.active && (chat.status === 'unread' || chat.is_long_term === 1)
-          ? 'in_progress'
-          : publicChatStatus(chat.status, chat.is_long_term),
+        status: publicChatStatus(chat.status, chat.is_long_term),
         typingParticipants: await getChatTypingParticipants(c.env.DB, chat.id, staff, jstNow()),
       },
     });

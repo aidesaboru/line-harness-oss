@@ -25,6 +25,10 @@ vi.mock('@line-crm/db', () => ({
   upsertChatOnMessage: vi.fn(),
   getLineAccounts: vi.fn().mockResolvedValue([]),
   jstNow: vi.fn(),
+  toJstString: vi.fn((date: Date) => {
+    const jst = new Date(date.getTime() + 9 * 60 * 60_000);
+    return jst.toISOString().slice(0, -1) + '+09:00';
+  }),
   computeNextDeliveryAt: vi.fn(),
   resolveStepContent: vi.fn(),
   addTagToFriend: vi.fn(),
@@ -221,7 +225,7 @@ describe('POST /webhook — DoS defenses (#104)', () => {
 });
 
 describe('POST /webhook — message intake', () => {
-  test('creates and logs a first text message from an unregistered friend', async () => {
+  test('creates and logs a first text message while ignoring a future event timestamp', async () => {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
       {
@@ -271,7 +275,7 @@ describe('POST /webhook — message intake', () => {
         {
           type: 'message',
           mode: 'active',
-          timestamp: 1781167517000,
+          timestamp: 1781171117000,
           source: { type: 'user', userId: 'Urealuser' },
           webhookEventId: '01JXHARNESSTEST',
           deliveryContext: { isRedelivery: false },
@@ -346,7 +350,7 @@ describe('POST /webhook — message intake', () => {
     );
   });
 
-  test('fills missing line account id for an existing friend when a message arrives', async () => {
+  test('fills a missing line account id and preserves the LINE event time', async () => {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
       {
@@ -395,7 +399,7 @@ describe('POST /webhook — message intake', () => {
         {
           type: 'message',
           mode: 'active',
-          timestamp: 1781167517000,
+          timestamp: 1781160317000,
           source: { type: 'user', userId: 'Urealuser' },
           webhookEventId: '01JXEXISTING',
           deliveryContext: { isRedelivery: false },
@@ -449,7 +453,7 @@ describe('POST /webhook — message intake', () => {
             'msg-existing',
             'quote-token',
             null,
-            '2026-06-11T17:45:17.000+09:00',
+            '2026-06-11T15:45:17.000+09:00',
           ],
         }),
       ]),
@@ -492,7 +496,7 @@ describe('POST /webhook — message intake', () => {
       updated_at: '2026-06-10T17:45:17.000+09:00',
     });
 
-    const { db } = createDbMock();
+    const { db, statements } = createDbMock();
     const app = setupApp();
     const ctx = {
       ...baseExecutionCtx,
@@ -504,7 +508,7 @@ describe('POST /webhook — message intake', () => {
         {
           type: 'message',
           mode: 'active',
-          timestamp: 1781167517000,
+          timestamp: 1781160317000,
           source: { type: 'user', userId: 'Urealuser' },
           webhookEventId: '01JXIMAGETEST',
           deliveryContext: { isRedelivery: false },
@@ -546,6 +550,15 @@ describe('POST /webhook — message intake', () => {
       webhookEventId: '01JXIMAGETEST',
       receivedAt: '2026-06-11T17:45:17.000+09:00',
     });
+    expect(statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sql: expect.stringContaining('INSERT INTO messages_log'),
+        binds: expect.arrayContaining([
+          'msg-image',
+          '2026-06-11T15:45:17.000+09:00',
+        ]),
+      }),
+    ]));
   });
 
   test('does not restore support cases for postback events', async () => {
@@ -584,7 +597,7 @@ describe('POST /webhook — message intake', () => {
       updated_at: '2026-06-10T17:45:17.000+09:00',
     });
 
-    const { db } = createDbMock();
+    const { db, statements } = createDbMock();
     const app = setupApp();
     const ctx = {
       ...baseExecutionCtx,
@@ -596,7 +609,7 @@ describe('POST /webhook — message intake', () => {
         {
           type: 'postback',
           mode: 'active',
-          timestamp: 1781167517000,
+          timestamp: 1781160317000,
           source: { type: 'user', userId: 'Urealuser' },
           webhookEventId: '01JXPOSTBACKTEST',
           deliveryContext: { isRedelivery: false },
@@ -623,9 +636,18 @@ describe('POST /webhook — message intake', () => {
     expect(res.status).toBe(200);
     await (vi.mocked(ctx.waitUntil).mock.calls[0]?.[0] as Promise<void>);
     expect(supportCaseReplyMethods.restoreSupportCasesFromCustomerMessage).not.toHaveBeenCalled();
+    expect(statements).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sql: expect.stringContaining("'postback'"),
+        binds: expect.arrayContaining([
+          'action=confirm',
+          '2026-06-11T15:45:17.000+09:00',
+        ]),
+      }),
+    ]));
   });
 
-  test('capture-only mode durably queues text messages before deferred projection', async () => {
+  test('capture-only mode durably queues text messages and preserves the LINE event time', async () => {
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
       {
@@ -666,7 +688,7 @@ describe('POST /webhook — message intake', () => {
     const event = {
       type: 'message',
       mode: 'active',
-      timestamp: 1781167517000,
+      timestamp: 1781160317000,
       source: { type: 'user', userId: 'Urealuser' },
       webhookEventId: '01JXCAPTUREONLY',
       deliveryContext: { isRedelivery: false },
@@ -757,7 +779,7 @@ describe('POST /webhook — message intake', () => {
             '01JXCAPTUREONLY',
             'quote-token',
             'read-token-1',
-            '2026-06-11T17:45:17.000+09:00',
+            '2026-06-11T15:45:17.000+09:00',
           ],
         }),
       ]),

@@ -577,6 +577,8 @@ describe('chat support visibility', () => {
     expect(listCall?.sql).not.toContain("sc.status != 'resolved' AND (sc.status IN");
     expect(listCall?.sql).toContain('FROM friends');
     expect(listCall?.sql).toContain('WHERE is_following = 1');
+    expect(listCall?.sql).toContain('SELECT friend_id, MAX(created_at) AS last_message_at');
+    expect(listCall?.sql).toContain('ORDER BY d.last_message_at DESC');
   });
 
   test('syncs a page of current LINE followers without removing existing history', async () => {
@@ -1283,6 +1285,44 @@ describe('chat support visibility', () => {
     });
     expect(body.data.status).toBe('long_term');
   });
+
+  test.each([
+    { active: true, status: 'unread', isLongTerm: 0, expectedStatus: 'unread', expectedSql: 'INSERT INTO chat_typing_status' },
+    { active: true, status: 'in_progress', isLongTerm: 1, expectedStatus: 'long_term', expectedSql: 'INSERT INTO chat_typing_status' },
+    { active: false, status: 'unread', isLongTerm: 0, expectedStatus: 'unread', expectedSql: 'DELETE FROM chat_typing_status' },
+  ])(
+    'typing active=$active does not change the $expectedStatus workflow state',
+    async ({ active, status, isLongTerm, expectedStatus, expectedSql }) => {
+      const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
+      dbMocks.getChatById.mockResolvedValue({
+        id: 'chat-friend-visible',
+        friend_id: 'friend-visible',
+        operator_id: null,
+        status,
+        is_long_term: isLongTerm,
+        notes: null,
+        last_message_at: '2026-06-12T10:00:00.000',
+        created_at: '2026-06-12T09:00:00.000',
+        updated_at: '2026-06-12T10:00:00.000',
+      });
+
+      const res = await setupApp(db, 'staff').request('/api/chats/friend-visible/typing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active }),
+      });
+      const body = await res.json() as {
+        data: { active: boolean; status: string; typingParticipants: unknown[] };
+      };
+
+      expect(res.status).toBe(200);
+      expect(body.data).toMatchObject({ active, status: expectedStatus });
+      expect(dbMocks.updateChat).not.toHaveBeenCalled();
+      expect(calls.some((call) => (
+        call.method === 'run' && call.sql.includes(expectedSql)
+      ))).toBe(true);
+    },
+  );
 
   test('creates a scheduled message for an accessible chat', async () => {
     const { db, state } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });

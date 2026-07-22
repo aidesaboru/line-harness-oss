@@ -1,12 +1,13 @@
 import type { Context, MiddlewareHandler } from 'hono';
 
 const CREDENTIAL_ALLOW_METHODS = 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS';
-const DEFAULT_ALLOW_HEADERS = 'Content-Type, Authorization, X-CSRF-Token, X-File-Name';
+const DEFAULT_ALLOW_HEADERS = 'Content-Type, Authorization, X-CSRF-Token, X-File-Name, Idempotency-Key';
 const ALLOWED_REQUEST_HEADERS = new Map([
   ['content-type', 'Content-Type'],
   ['authorization', 'Authorization'],
   ['x-csrf-token', 'X-CSRF-Token'],
   ['x-file-name', 'X-File-Name'],
+  ['idempotency-key', 'Idempotency-Key'],
 ]);
 
 function allowedPreflightHeaders(requested: string | undefined): string {

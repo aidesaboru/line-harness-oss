@@ -313,7 +313,7 @@ describe('CORS allowed / blocked origins', () => {
       headers: {
         Origin: PAGES,
         'Access-Control-Request-Method': 'POST',
-        'Access-Control-Request-Headers': 'content-type, x-file-name, x-not-allowed',
+        'Access-Control-Request-Headers': 'content-type, x-file-name, idempotency-key, x-not-allowed',
       },
     }, crossSiteEnv());
 
@@ -323,6 +323,7 @@ describe('CORS allowed / blocked origins', () => {
     const allowHeaders = res.headers.get('Access-Control-Allow-Headers')?.toLowerCase() ?? '';
     expect(allowHeaders).toContain('content-type');
     expect(allowHeaders).toContain('x-file-name');
+    expect(allowHeaders).toContain('idempotency-key');
     expect(allowHeaders).not.toContain('x-not-allowed');
     expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
   });

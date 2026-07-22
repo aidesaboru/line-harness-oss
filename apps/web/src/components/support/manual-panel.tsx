@@ -3,7 +3,19 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SupportManual } from '@/lib/api'
 import { categoryLabel, categoryOptions, getManualEditorValidationIssues } from './support-meta'
-import { CheckIcon, Field, Pill, PlusIcon, SearchIcon, XIcon, btnSecondaryCls, inputCls, selectCls, textareaCls } from './support-ui'
+import {
+  CheckIcon,
+  CopyIcon,
+  Field,
+  Pill,
+  PlusIcon,
+  SearchIcon,
+  XIcon,
+  btnSecondaryCls,
+  inputCls,
+  selectCls,
+  textareaCls,
+} from './support-ui'
 
 export type ManualEditorInput = {
   title: string
@@ -14,25 +26,29 @@ export type ManualEditorInput = {
   owner: string
   approvedBy: string
   revisedAt: string
+  question: string
+  resolution: string
+  procedure: string
+  applicability: string
+  cautions: string
+  knowledgeStatus: SupportManual['knowledgeStatus']
+  reviewNote: string
 }
 
 interface ManualPanelProps {
   manuals: SupportManual[]
-  linkedManuals: SupportManual[]
-  linkedIds: string[]
-  canLink: boolean
   canManage: boolean
   saving: boolean
   search: string
   category: string
   onSearchChange: (value: string) => void
   onCategoryChange: (value: string) => void
-  onLink: (manual: SupportManual) => void
-  onUnlink: (manual: SupportManual) => void
   onCreateManual: (input: ManualEditorInput) => Promise<boolean>
   onUpdateManual: (manual: SupportManual, input: ManualEditorInput) => Promise<boolean>
   onArchiveManual: (manual: SupportManual) => Promise<boolean>
-  showLinkActions?: boolean
+  onCopy: (manual: SupportManual) => Promise<void>
+  onFeedback: (manual: SupportManual, action: 'helpful' | 'needs_improvement') => Promise<void>
+  onVerify: (manual: SupportManual) => Promise<void>
 }
 
 const emptyManualInput: ManualEditorInput = {
@@ -44,7 +60,23 @@ const emptyManualInput: ManualEditorInput = {
   owner: '',
   approvedBy: '',
   revisedAt: '',
+  question: '',
+  resolution: '',
+  procedure: '',
+  applicability: '',
+  cautions: '',
+  knowledgeStatus: 'needs_review',
+  reviewNote: '',
 }
+
+const statusMeta: Record<SupportManual['knowledgeStatus'], { label: string; badge: string }> = {
+  verified: { label: '確認済み', badge: 'border-green-200 bg-green-50 text-green-700' },
+  ready: { label: '利用候補', badge: 'border-blue-200 bg-blue-50 text-blue-700' },
+  needs_review: { label: '要整理', badge: 'border-amber-200 bg-amber-50 text-amber-800' },
+  unresolved: { label: '未解決', badge: 'border-red-200 bg-red-50 text-red-700' },
+}
+
+type StatusFilter = 'all' | SupportManual['knowledgeStatus']
 
 function manualInputFromManual(manual: SupportManual): ManualEditorInput {
   return {
@@ -56,175 +88,100 @@ function manualInputFromManual(manual: SupportManual): ManualEditorInput {
     owner: manual.owner ?? '',
     approvedBy: manual.approvedBy ?? '',
     revisedAt: manual.revisedAt ?? '',
+    question: manual.question,
+    resolution: manual.resolution,
+    procedure: manual.procedure,
+    applicability: manual.applicability,
+    cautions: manual.cautions,
+    knowledgeStatus: manual.knowledgeStatus,
+    reviewNote: manual.reviewNote,
   }
 }
 
-type ParsedManualBody = {
-  customerInfo: string
-  question: string
-  answer: string
-  rest: string
-  structured: boolean
+function sourceLabel(manual: SupportManual): string {
+  return manual.owner === 'Slack過去ログ' ? 'Slack過去ログ' : manual.owner || '手動作成'
 }
 
-const manualBodySectionMap: Record<string, keyof Omit<ParsedManualBody, 'structured'>> = {
-  '顧客・案件情報': 'customerInfo',
-  顧客情報: 'customerInfo',
-  案件情報: 'customerInfo',
-  問い合わせ内容: 'question',
-  一次対応の問い合わせ: 'question',
-  質問: 'question',
-  問い: 'question',
-  解決回答: 'answer',
-  対応ナレッジ: 'answer',
-  二次対応の回答: 'answer',
-  回答: 'answer',
-  本文: 'rest',
-}
-
-function cleanManualText(value: string): string {
-  return value
-    .replace(/\r\n/g, '\n')
-    .replace(/(^|\n)```/g, '$1')
-    .replace(/```\n?/g, '')
-    .replace(/^\s*!channel\s*$/gm, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-function appendSectionValue(current: string, next: string): string {
-  const cleaned = cleanManualText(next)
-  if (!cleaned) return current
-  return current ? `${current}\n\n${cleaned}` : cleaned
-}
-
-function parseManualBody(body: string): ParsedManualBody {
-  const result: ParsedManualBody = {
-    customerInfo: '',
-    question: '',
-    answer: '',
-    rest: '',
-    structured: false,
-  }
-  const matches = Array.from(body.matchAll(/【([^】]+)】/g))
-  if (matches.length === 0) {
-    result.rest = cleanManualText(body)
-    return result
-  }
-
-  matches.forEach((match, index) => {
-    const label = cleanManualText(match[1] ?? '')
-    const key = manualBodySectionMap[label] ?? 'rest'
-    const sectionStart = (match.index ?? 0) + match[0].length
-    const sectionEnd = matches[index + 1]?.index ?? body.length
-    const value = body.slice(sectionStart, sectionEnd)
-    result[key] = appendSectionValue(result[key], value)
-    if (key !== 'rest') result.structured = true
-  })
-  return result
-}
-
-function splitAnswerBlocks(answer: string): string[] {
-  const blocks = answer
-    .split(/\n\s*---\s*\n/g)
-    .map(cleanManualText)
-    .filter(Boolean)
-  return blocks.length > 0 ? blocks : (answer ? [answer] : [])
-}
-
-function buildManualPreview(manual: SupportManual): string {
-  const parsed = parseManualBody(manual.body)
-  const source = parsed.question || parsed.answer || parsed.rest || manual.body
-  return cleanManualText(source).slice(0, 180)
-}
-
-function ManualTextBlock({ children, tone = 'default' }: { children: string; tone?: 'default' | 'answer' }) {
-  const toneCls = tone === 'answer'
-    ? 'border-green-100 bg-green-50/60 text-gray-800'
-    : 'border-gray-100 bg-gray-50 text-gray-700'
+function KnowledgeSection({ title, children, emphasis = false }: { title: string; children: string; emphasis?: boolean }) {
+  if (!children.trim()) return null
   return (
-    <div className={`rounded-md border px-3 py-2 ${toneCls}`}>
-      <p className="whitespace-pre-wrap break-words text-sm leading-6">{children}</p>
-    </div>
+    <section className="border-b border-gray-100 py-4 last:border-b-0">
+      <h5 className="text-xs font-semibold text-gray-500">{title}</h5>
+      <p className={`mt-2 whitespace-pre-wrap break-words text-sm leading-6 ${emphasis ? 'font-medium text-gray-950' : 'text-gray-700'}`}>
+        {children}
+      </p>
+    </section>
   )
 }
 
-/**
- * 対応マニュアル欄。検索は入力で自動適用。
- * 選択中の案件に紐付け済みのマニュアルを上部に表示し、ワンクリックで解除できる。
- */
 export default function ManualPanel({
   manuals,
-  linkedManuals,
-  linkedIds,
-  canLink,
   canManage,
   saving,
   search,
   category,
   onSearchChange,
   onCategoryChange,
-  onLink,
-  onUnlink,
   onCreateManual,
   onUpdateManual,
   onArchiveManual,
-  showLinkActions = true,
+  onCopy,
+  onFeedback,
+  onVerify,
 }: ManualPanelProps) {
   const [editing, setEditing] = useState<SupportManual | null>(null)
+  const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<ManualEditorInput>(emptyManualInput)
   const [selectedManualId, setSelectedManualId] = useState<string | null>(null)
-  const formOpen = editing !== null || draft !== emptyManualInput
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
+
+  const visibleManuals = useMemo(
+    () => statusFilter === 'all' ? manuals : manuals.filter((manual) => manual.knowledgeStatus === statusFilter),
+    [manuals, statusFilter],
+  )
   const selectedManual = useMemo(
-    () => manuals.find((manual) => manual.id === selectedManualId) ?? manuals[0] ?? null,
-    [manuals, selectedManualId],
+    () => visibleManuals.find((manual) => manual.id === selectedManualId) ?? visibleManuals[0] ?? null,
+    [selectedManualId, visibleManuals],
   )
-  const selectedManualBody = useMemo(
-    () => selectedManual ? parseManualBody(selectedManual.body) : null,
-    [selectedManual],
-  )
-  const selectedAnswerBlocks = useMemo(
-    () => selectedManualBody ? splitAnswerBlocks(selectedManualBody.answer) : [],
-    [selectedManualBody],
-  )
+  const statusCounts = useMemo(() => ({
+    all: manuals.length,
+    verified: manuals.filter((manual) => manual.knowledgeStatus === 'verified').length,
+    ready: manuals.filter((manual) => manual.knowledgeStatus === 'ready').length,
+    needs_review: manuals.filter((manual) => manual.knowledgeStatus === 'needs_review').length,
+    unresolved: manuals.filter((manual) => manual.knowledgeStatus === 'unresolved').length,
+  }), [manuals])
   const validationIssues = getManualEditorValidationIssues(draft)
-  const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
-  const submitDisabled = saving || blockingValidationIssues.length > 0
-  const hasManualFilters = Boolean(search.trim()) || category !== 'all'
-  const manualEmptyTitle = hasManualFilters
-    ? '条件に合うマニュアルはありません'
-    : 'マニュアルはまだありません'
-  const manualEmptyDescription = hasManualFilters
-    ? '検索語やカテゴリを変えて探してください。'
-    : canManage
-      ? '右上の「新規」から、よく使う対応手順を追加できます。'
-      : 'owner/adminが作成したマニュアルがここに表示されます。必要な手順がなければ作成を依頼してください。'
+  const submitDisabled = saving || validationIssues.some((issue) => issue.blocking)
 
   useEffect(() => {
-    if (manuals.length === 0) {
+    if (visibleManuals.length === 0) {
       setSelectedManualId(null)
+      setMobileDetailOpen(false)
       return
     }
-    if (!selectedManualId || !manuals.some((manual) => manual.id === selectedManualId)) {
-      setSelectedManualId(manuals[0].id)
+    if (!selectedManualId || !visibleManuals.some((manual) => manual.id === selectedManualId)) {
+      setSelectedManualId(visibleManuals[0].id)
     }
-  }, [manuals, selectedManualId])
+  }, [selectedManualId, visibleManuals])
+
+  const closeForm = () => {
+    setEditing(null)
+    setCreating(false)
+    setDraft(emptyManualInput)
+  }
 
   const openCreateForm = () => {
     setEditing(null)
+    setCreating(true)
     setDraft({ ...emptyManualInput, category: category === 'all' ? 'other' : category })
   }
 
   const openEditForm = (manual: SupportManual) => {
     setSelectedManualId(manual.id)
+    setCreating(false)
     setEditing(manual)
     setDraft(manualInputFromManual(manual))
-  }
-
-  const closeForm = () => {
-    setEditing(null)
-    setDraft(emptyManualInput)
   }
 
   const handleSubmit = async () => {
@@ -235,400 +192,272 @@ export default function ManualPanel({
     if (ok) closeForm()
   }
 
+  const selectManual = (manual: SupportManual) => {
+    setSelectedManualId(manual.id)
+    setMobileDetailOpen(true)
+  }
+
+  const formOpen = creating || editing !== null
+  const hasFilters = Boolean(search.trim()) || category !== 'all' || statusFilter !== 'all'
+  const filterButtons: Array<{ value: StatusFilter; label: string }> = [
+    { value: 'all', label: 'すべて' },
+    { value: 'verified', label: '確認済み' },
+    { value: 'ready', label: '利用候補' },
+    { value: 'needs_review', label: '要整理' },
+    { value: 'unresolved', label: '未解決' },
+  ]
+
   return (
-    <section className="rounded-lg border border-gray-200 bg-white p-4" aria-label="対応マニュアル">
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-gray-900">マニュアル</h3>
-        {canManage && (
-          <button
-            type="button"
-            onClick={openCreateForm}
-            disabled={saving}
-            className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <PlusIcon className="h-3.5 w-3.5" />
-            新規
-          </button>
-        )}
+    <section className="overflow-hidden rounded-lg border border-gray-200 bg-white" aria-label="対応ナレッジ">
+      <div className="border-b border-gray-200 p-3 sm:p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-950">ナレッジ</h3>
+            <p className="mt-0.5 text-xs text-gray-500">{manuals.length}件</p>
+          </div>
+          {canManage && (
+            <button type="button" onClick={openCreateForm} disabled={saving} className={btnSecondaryCls}>
+              <PlusIcon className="h-4 w-4" />
+              新規
+            </button>
+          )}
+        </div>
+
+        <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="relative">
+            <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              className={`${inputCls} pl-9 ${search ? 'pr-9' : ''}`}
+              placeholder="質問・結論・キーワードで検索"
+              aria-label="ナレッジを検索"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => onSearchChange('')}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                aria-label="検索をクリア"
+              >
+                <XIcon className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+          <select value={category} onChange={(event) => onCategoryChange(event.target.value)} className={selectCls} aria-label="カテゴリ">
+            <option value="all">全カテゴリ</option>
+            {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </div>
+
+        <div className="mt-3 flex gap-1 overflow-x-auto pb-1" aria-label="品質状態">
+          {filterButtons.map((item) => {
+            const active = statusFilter === item.value
+            return (
+              <button
+                key={item.value}
+                type="button"
+                onClick={() => setStatusFilter(item.value)}
+                className={`shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                  active
+                    ? 'border-green-600 bg-green-600 text-white'
+                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {item.label} {statusCounts[item.value]}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {canManage && formOpen && (
-        <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <div className="border-b border-gray-200 bg-gray-50 p-3 sm:p-4">
           <div className="flex items-center justify-between gap-2">
-            <p className="text-xs font-semibold text-gray-700">{editing ? 'マニュアル編集' : 'マニュアル新規作成'}</p>
-            <button
-              type="button"
-              onClick={closeForm}
-              disabled={saving}
-              className="rounded p-1 text-gray-400 transition-colors hover:bg-white hover:text-gray-700 disabled:opacity-50"
-              aria-label="マニュアルフォームを閉じる"
-            >
+            <h4 className="text-sm font-semibold text-gray-900">{editing ? 'ナレッジを編集' : 'ナレッジを作成'}</h4>
+            <button type="button" onClick={closeForm} disabled={saving} className="rounded p-1 text-gray-400 hover:bg-white hover:text-gray-700" aria-label="編集を閉じる">
               <XIcon className="h-4 w-4" />
             </button>
           </div>
-          <div className="mt-3 space-y-3">
-            {validationIssues.length > 0 && (
-              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
-                <p className="font-semibold">保存前に必要な入力があります</p>
-                <ul className="mt-1 space-y-1">
-                  {validationIssues.map((issue) => (
-                    <li key={issue.key} className="flex items-start gap-2">
-                      <span className="mt-0.5 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
-                        必須
-                      </span>
-                      <span>
-                        <span className="font-medium">{issue.fieldLabel}: </span>
-                        {issue.message}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+
+          {validationIssues.length > 0 && (
+            <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">
+              {validationIssues.map((issue) => <p key={issue.key}>{issue.fieldLabel}: {issue.message}</p>)}
+            </div>
+          )}
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-2">
             <Field label="タイトル">
-              <input
-                value={draft.title}
-                onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))}
-                className={inputCls}
-              />
+              <input value={draft.title} onChange={(event) => setDraft((current) => ({ ...current, title: event.target.value }))} className={inputCls} />
             </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="カテゴリ">
-                <select
-                  value={draft.category}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, category: e.target.value }))}
-                  className={selectCls}
-                >
-                  {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </Field>
-              <Field label="改訂日">
-                <input
-                  type="date"
-                  value={draft.revisedAt}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, revisedAt: e.target.value }))}
-                  className={inputCls}
-                />
+            <Field label="カテゴリ">
+              <select value={draft.category} onChange={(event) => setDraft((current) => ({ ...current, category: event.target.value }))} className={selectCls}>
+                {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </Field>
+            <div className="lg:col-span-2">
+              <Field label="問い合わせ">
+                <textarea value={draft.question} onChange={(event) => setDraft((current) => ({ ...current, question: event.target.value }))} className={`${textareaCls} min-h-[96px]`} />
               </Field>
             </div>
-            <Field label="本文">
-              <textarea
-                value={draft.body}
-                onChange={(e) => setDraft((prev) => ({ ...prev, body: e.target.value }))}
-                className={`${textareaCls} min-h-[120px]`}
-              />
-            </Field>
-            <Field label="リンク">
-              <input
-                value={draft.url}
-                onChange={(e) => setDraft((prev) => ({ ...prev, url: e.target.value }))}
-                className={inputCls}
-                placeholder="https://..."
-              />
-            </Field>
-            <Field label="キーワード">
-              <input
-                value={draft.keywords}
-                onChange={(e) => setDraft((prev) => ({ ...prev, keywords: e.target.value }))}
-                className={inputCls}
-              />
-            </Field>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="管理担当">
-                <input
-                  value={draft.owner}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, owner: e.target.value }))}
-                  className={inputCls}
-                />
-              </Field>
-              <Field label="承認者">
-                <input
-                  value={draft.approvedBy}
-                  onChange={(e) => setDraft((prev) => ({ ...prev, approvedBy: e.target.value }))}
-                  className={inputCls}
-                />
+            <div className="lg:col-span-2">
+              <Field label="結論">
+                <textarea value={draft.resolution} onChange={(event) => setDraft((current) => ({ ...current, resolution: event.target.value }))} className={`${textareaCls} min-h-[96px]`} />
               </Field>
             </div>
-            <button
-              type="button"
-              onClick={() => void handleSubmit()}
-              disabled={submitDisabled}
-              title={blockingValidationIssues[0]?.message}
-              className={btnSecondaryCls}
-            >
-              <CheckIcon className="h-4 w-4" />
-              {editing ? '更新' : '作成'}
-            </button>
+            <Field label="対応手順">
+              <textarea value={draft.procedure} onChange={(event) => setDraft((current) => ({ ...current, procedure: event.target.value }))} className={`${textareaCls} min-h-[96px]`} />
+            </Field>
+            <Field label="適用条件">
+              <textarea value={draft.applicability} onChange={(event) => setDraft((current) => ({ ...current, applicability: event.target.value }))} className={`${textareaCls} min-h-[96px]`} />
+            </Field>
+            <Field label="注意点">
+              <textarea value={draft.cautions} onChange={(event) => setDraft((current) => ({ ...current, cautions: event.target.value }))} className={`${textareaCls} min-h-[88px]`} />
+            </Field>
+            <Field label="品質状態">
+              <select value={draft.knowledgeStatus} onChange={(event) => setDraft((current) => ({ ...current, knowledgeStatus: event.target.value as SupportManual['knowledgeStatus'] }))} className={selectCls}>
+                {Object.entries(statusMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}
+              </select>
+            </Field>
+            <Field label="確認メモ">
+              <textarea value={draft.reviewNote} onChange={(event) => setDraft((current) => ({ ...current, reviewNote: event.target.value }))} className={`${textareaCls} min-h-[72px]`} />
+            </Field>
+            <Field label="検索キーワード">
+              <input value={draft.keywords} onChange={(event) => setDraft((current) => ({ ...current, keywords: event.target.value }))} className={inputCls} />
+            </Field>
+            <Field label="元スレッドURL">
+              <input value={draft.url} onChange={(event) => setDraft((current) => ({ ...current, url: event.target.value }))} className={inputCls} placeholder="https://..." />
+            </Field>
+            <Field label="改訂日">
+              <input type="date" value={draft.revisedAt} onChange={(event) => setDraft((current) => ({ ...current, revisedAt: event.target.value }))} className={inputCls} />
+            </Field>
           </div>
-        </div>
-      )}
-
-      {showLinkActions && canLink && linkedManuals.length > 0 && (
-        <div className="mt-3 rounded-lg border border-green-200 bg-green-50/50 p-2.5">
-          <p className="text-[11px] font-semibold text-green-800">この案件に紐付け済み</p>
-          <ul className="mt-1.5 space-y-1">
-            {linkedManuals.map((manual) => (
-              <li key={manual.id} className="flex items-center justify-between gap-2">
-                <span className="min-w-0 truncate text-xs font-medium text-gray-700">{manual.title}</span>
-                <button
-                  type="button"
-                  onClick={() => onUnlink(manual)}
-                  disabled={saving}
-                  className="inline-flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-medium text-gray-400 transition-colors hover:bg-white hover:text-red-600 disabled:opacity-50"
-                  aria-label={`${manual.title} の紐付けを解除`}
-                >
-                  <XIcon className="h-3 w-3" />
-                  解除
-                </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      <div className="relative mt-3">
-        <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
-        <input
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className={`${inputCls} pl-9 ${search ? 'pr-8' : ''}`}
-          placeholder="タイトル・本文・キーワードで検索"
-          aria-label="マニュアルを検索"
-        />
-        {search && (
-          <button
-            type="button"
-            onClick={() => onSearchChange('')}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600"
-            aria-label="検索をクリア"
-          >
-            <XIcon className="h-3.5 w-3.5" />
+          <button type="button" onClick={() => void handleSubmit()} disabled={submitDisabled} className={`mt-4 ${btnSecondaryCls}`}>
+            <CheckIcon className="h-4 w-4" />
+            {editing ? '更新' : '作成'}
           </button>
-        )}
-      </div>
-      <select
-        value={category}
-        onChange={(e) => onCategoryChange(e.target.value)}
-        className={`mt-2 ${selectCls}`}
-        aria-label="マニュアルのカテゴリ"
-      >
-        <option value="all">全カテゴリ</option>
-        {categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-      </select>
+        </div>
+      )}
 
-      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
-        <div className="max-h-[620px] space-y-2 overflow-y-auto overscroll-contain pr-1">
-          {manuals.length === 0 ? (
-            <div className="py-6 text-center">
-              <p className="text-sm font-medium text-gray-600">{manualEmptyTitle}</p>
-              <p className="mx-auto mt-1 max-w-xs text-xs leading-relaxed text-gray-400">{manualEmptyDescription}</p>
-              {hasManualFilters && (
+      <div className="grid min-h-[560px] lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+        <div className={`${mobileDetailOpen ? 'hidden lg:block' : 'block'} max-h-[720px] overflow-y-auto border-r-0 border-gray-200 lg:border-r`}>
+          {visibleManuals.length === 0 ? (
+            <div className="px-4 py-12 text-center">
+              <p className="text-sm font-medium text-gray-700">該当するナレッジはありません</p>
+              {hasFilters && (
                 <button
                   type="button"
                   onClick={() => {
                     onSearchChange('')
                     onCategoryChange('all')
+                    setStatusFilter('all')
                   }}
-                  disabled={saving}
-                  className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
                 >
-                  検索条件をリセット
+                  条件をリセット
                 </button>
               )}
             </div>
-          ) : manuals.map((manual) => {
-            const linked = linkedIds.includes(manual.id)
+          ) : visibleManuals.map((manual) => {
             const selected = selectedManual?.id === manual.id
-            const preview = buildManualPreview(manual)
+            const meta = statusMeta[manual.knowledgeStatus]
             return (
-              <article
+              <button
                 key={manual.id}
-                className={`rounded-lg border p-3 transition-colors ${
-                  selected
-                    ? 'border-green-300 bg-green-50/40'
-                    : 'border-gray-200 hover:border-gray-300'
-                }`}
+                type="button"
+                onClick={() => selectManual(manual)}
+                aria-pressed={selected}
+                className={`block w-full border-b border-gray-100 px-3 py-3 text-left transition-colors sm:px-4 ${selected ? 'bg-green-50' : 'hover:bg-gray-50'}`}
               >
-                <button
-                  type="button"
-                  onClick={() => setSelectedManualId(manual.id)}
-                  className="block w-full text-left"
-                  aria-pressed={selected}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="break-words text-sm font-semibold text-gray-900">{manual.title}</p>
-                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-                        <Pill className="border-gray-200 bg-white text-gray-600">
-                          {categoryLabel[manual.category] || manual.category}
-                        </Pill>
-                        {manual.owner === 'Slack過去ログ' && (
-                          <Pill className="border-green-200 bg-green-50 text-green-700">Slackナレッジ</Pill>
-                        )}
-                        <span>{manual.owner || '担当未設定'}</span>
-                      </p>
-                    </div>
-                    <span className="shrink-0 text-xs font-medium text-green-700">{selected ? '表示中' : '表示'}</span>
-                  </div>
-                  {preview && (
-                    <p className="mt-2 line-clamp-3 whitespace-pre-wrap break-words text-sm leading-6 text-gray-600">
-                      {preview}
-                    </p>
-                  )}
-                </button>
-                <div className="mt-3 flex flex-wrap gap-2 border-t border-gray-100 pt-2">
-                  {showLinkActions && (
-                    <button
-                      type="button"
-                      onClick={() => onLink(manual)}
-                      disabled={!canLink || saving || linked}
-                      title={!canLink ? 'チケットを選択すると紐付けできます' : undefined}
-                      className={`rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                        linked
-                          ? 'border border-green-200 bg-green-50 text-green-700'
-                          : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50'
-                      }`}
-                    >
-                      {linked ? '紐付済' : '紐付け'}
-                    </button>
-                  )}
-                  {manual.url && (
-                    <a
-                      href={manual.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="rounded-md border border-blue-100 bg-white px-2 py-1 text-xs font-medium text-blue-600 underline-offset-2 transition-colors hover:bg-blue-50 hover:underline"
-                    >
-                      元スレッド
-                    </a>
-                  )}
-                  {canManage && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => openEditForm(manual)}
-                        disabled={saving}
-                        className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        編集
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onArchiveManual(manual)}
-                        disabled={saving}
-                        className="rounded-md border border-red-200 bg-white px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        無効化
-                      </button>
-                    </>
-                  )}
+                <div className="flex items-start justify-between gap-2">
+                  <p className="min-w-0 break-words text-sm font-semibold leading-5 text-gray-900">{manual.title}</p>
+                  <Pill className={meta.badge}>{meta.label}</Pill>
                 </div>
-              </article>
+                <p className="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-gray-600">{manual.question || manual.body}</p>
+                {manual.resolution && (
+                  <p className="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-gray-500">結論: {manual.resolution}</p>
+                )}
+                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-400">
+                  <span>{categoryLabel[manual.category] || manual.category}</span>
+                  <span>{sourceLabel(manual)}</span>
+                  <span>品質 {manual.qualityScore}</span>
+                </div>
+              </button>
             )
           })}
         </div>
 
-        <div className="min-h-[420px] border-t border-gray-100 pt-4 xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0">
-          {selectedManual && selectedManualBody ? (
-            <article className="space-y-4">
-              <header className="space-y-2">
+        <div className={`${mobileDetailOpen ? 'block' : 'hidden lg:block'} min-w-0 p-3 sm:p-5`}>
+          {selectedManual ? (
+            <article>
+              <button type="button" onClick={() => setMobileDetailOpen(false)} className="mb-3 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 lg:hidden">
+                一覧へ戻る
+              </button>
+              <header className="border-b border-gray-200 pb-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Pill className="border-gray-200 bg-gray-50 text-gray-600">
-                    {categoryLabel[selectedManual.category] || selectedManual.category}
-                  </Pill>
-                  {selectedManual.owner === 'Slack過去ログ' && (
-                    <Pill className="border-green-200 bg-green-50 text-green-700">Slackナレッジ</Pill>
-                  )}
-                  {selectedManual.revisedAt && (
-                    <span className="text-xs text-gray-400">更新 {selectedManual.revisedAt}</span>
-                  )}
+                  <Pill className={statusMeta[selectedManual.knowledgeStatus].badge}>{statusMeta[selectedManual.knowledgeStatus].label}</Pill>
+                  <Pill className="border-gray-200 bg-gray-50 text-gray-600">{categoryLabel[selectedManual.category] || selectedManual.category}</Pill>
+                  <span className="text-xs text-gray-400">品質 {selectedManual.qualityScore}</span>
+                  {selectedManual.useCount > 0 && <span className="text-xs text-gray-400">利用 {selectedManual.useCount}回</span>}
                 </div>
-                <h4 className="break-words text-lg font-semibold leading-7 text-gray-950">{selectedManual.title}</h4>
-                <p className="text-xs text-gray-500">
-                  {selectedManualBody.structured
-                    ? '問い合わせ内容と解決回答を分けて確認できます。'
-                    : '本文をそのまま確認できます。'}
-                </p>
+                <h4 className="mt-2 break-words text-lg font-semibold leading-7 text-gray-950">{selectedManual.title}</h4>
+                {selectedManual.reviewNote && selectedManual.knowledgeStatus !== 'verified' && (
+                  <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">{selectedManual.reviewNote}</p>
+                )}
+                {selectedManual.needsImprovementCount > 0 && (
+                  <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
+                    改善報告 {selectedManual.needsImprovementCount}件
+                  </p>
+                )}
               </header>
 
-              {selectedManualBody.structured ? (
-                <div className="space-y-4">
-                  {selectedManualBody.customerInfo && (
-                    <section>
-                      <h5 className="text-xs font-semibold text-gray-500">顧客・案件情報</h5>
-                      <div className="mt-2 rounded-md border border-gray-100 bg-white px-3 py-2">
-                        <p className="whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">
-                          {selectedManualBody.customerInfo}
-                        </p>
-                      </div>
-                    </section>
-                  )}
-                  {selectedManualBody.question && (
-                    <section>
-                      <h5 className="text-sm font-semibold text-gray-900">問い合わせ内容</h5>
-                      <div className="mt-2">
-                        <ManualTextBlock>{selectedManualBody.question}</ManualTextBlock>
-                      </div>
-                    </section>
-                  )}
-                  {selectedAnswerBlocks.length > 0 && (
-                    <section>
-                      <h5 className="text-sm font-semibold text-gray-900">解決回答</h5>
-                      <div className="mt-2 space-y-2">
-                        {selectedAnswerBlocks.map((block, index) => (
-                          <div key={`${selectedManual.id}-answer-${index}`} className="space-y-1.5">
-                            {selectedAnswerBlocks.length > 1 && (
-                              <p className="text-xs font-semibold text-green-700">回答メモ {index + 1}</p>
-                            )}
-                            <ManualTextBlock tone="answer">{block}</ManualTextBlock>
-                          </div>
-                        ))}
-                      </div>
-                    </section>
-                  )}
-                  {selectedManualBody.rest && (
-                    <section>
-                      <h5 className="text-sm font-semibold text-gray-900">補足</h5>
-                      <div className="mt-2">
-                        <ManualTextBlock>{selectedManualBody.rest}</ManualTextBlock>
-                      </div>
-                    </section>
-                  )}
-                </div>
-              ) : (
-                <ManualTextBlock>{selectedManualBody.rest}</ManualTextBlock>
-              )}
+              <KnowledgeSection title="結論" emphasis>{selectedManual.resolution}</KnowledgeSection>
+              <KnowledgeSection title="問い合わせ">{selectedManual.question}</KnowledgeSection>
+              <KnowledgeSection title="対応手順">{selectedManual.procedure}</KnowledgeSection>
+              <KnowledgeSection title="適用条件">{selectedManual.applicability}</KnowledgeSection>
+              <KnowledgeSection title="注意点">{selectedManual.cautions}</KnowledgeSection>
 
-              <footer className="flex flex-wrap gap-2 border-t border-gray-100 pt-3">
+              <details className="border-b border-gray-100 py-4">
+                <summary className="cursor-pointer text-sm font-medium text-gray-700">原文・証跡</summary>
+                <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">{selectedManual.sourceBody || selectedManual.body}</p>
                 {selectedManual.url && (
-                  <a
-                    href={selectedManual.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="rounded-md border border-blue-100 bg-white px-3 py-1.5 text-sm font-medium text-blue-600 underline-offset-2 transition-colors hover:bg-blue-50 hover:underline"
-                  >
+                  <a href={selectedManual.url} target="_blank" rel="noopener noreferrer" className="mt-3 inline-block text-sm font-medium text-blue-600 hover:underline">
                     元スレッドを開く
                   </a>
                 )}
+              </details>
+
+              <footer className="flex flex-wrap gap-2 pt-4">
+                <button type="button" onClick={() => void onCopy(selectedManual)} disabled={!selectedManual.resolution || saving} className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50">
+                  <CopyIcon className="h-4 w-4" />
+                  回答をコピー
+                </button>
+                <button type="button" onClick={() => void onFeedback(selectedManual, 'helpful')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                  役に立った
+                </button>
+                <button type="button" onClick={() => void onFeedback(selectedManual, 'needs_improvement')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                  改善が必要
+                </button>
                 {canManage && (
-                  <button
-                    type="button"
-                    onClick={() => openEditForm(selectedManual)}
-                    disabled={saving}
-                    className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    編集
-                  </button>
+                  <>
+                    {selectedManual.knowledgeStatus !== 'verified' && (
+                      <button type="button" onClick={() => void onVerify(selectedManual)} disabled={saving} className="inline-flex items-center gap-1.5 rounded-md border border-green-300 px-3 py-2 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50">
+                        <CheckIcon className="h-4 w-4" />
+                        確認済みにする
+                      </button>
+                    )}
+                    <button type="button" onClick={() => openEditForm(selectedManual)} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                      編集
+                    </button>
+                    <button type="button" onClick={() => void onArchiveManual(selectedManual)} disabled={saving} className="rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50">
+                      無効化
+                    </button>
+                  </>
                 )}
               </footer>
             </article>
           ) : (
-            <div className="flex min-h-[320px] items-center justify-center text-center">
-              <div>
-                <p className="text-sm font-medium text-gray-600">ナレッジを選択してください</p>
-                <p className="mt-1 text-xs text-gray-400">左の一覧から内容を開けます。</p>
-              </div>
-            </div>
+            <div className="flex min-h-[400px] items-center justify-center text-sm text-gray-500">ナレッジを選択してください</div>
           )}
         </div>
       </div>

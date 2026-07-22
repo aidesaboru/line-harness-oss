@@ -77,8 +77,9 @@
     "069_support_case_followup_reminders.sql",
     "070_line_group_conversations.sql",
     "071_protect_accounts_and_chats.sql",
-    "072_register_environment_owner_reference.sql"
+    "072_register_environment_owner_reference.sql",
+    "073_support_knowledge_operations.sql"
   ],
-  "migrationCount": 78,
+  "migrationCount": 79,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

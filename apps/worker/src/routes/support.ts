@@ -34,6 +34,10 @@ import {
   serializeSupportCaseFollowUpReminder,
   type SupportCaseFollowUpReminderRow,
 } from '../services/support-case-reminders.js';
+import {
+  deriveOperationalKnowledge,
+  type KnowledgeStatus,
+} from '../services/support-knowledge.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 
 const support = new Hono<Env>();
@@ -56,6 +60,8 @@ const ESCALATION_STATUSES = new Set(['pending', 'answered', 'needs_info', 'trans
 const TERMINAL_ESCALATION_STATUSES = new Set(['answered', 'closed']);
 const ESCALATION_LEVELS = new Set(['L2', 'L3']);
 const SUPPORT_KNOWLEDGE_IMPORT_STATUSES = new Set(['draft', 'published', 'dismissed']);
+const SUPPORT_MANUAL_KNOWLEDGE_STATUSES = new Set<KnowledgeStatus>(['verified', 'ready', 'needs_review', 'unresolved']);
+const SUPPORT_MANUAL_USAGE_ACTIONS = new Set(['copied', 'helpful', 'needs_improvement']);
 const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
   'lineAccountId',
   'status',
@@ -192,6 +198,19 @@ type SupportManualRow = {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+  knowledge_question?: string | null;
+  knowledge_resolution?: string | null;
+  knowledge_procedure?: string | null;
+  knowledge_applicability?: string | null;
+  knowledge_cautions?: string | null;
+  knowledge_source_body?: string | null;
+  knowledge_status?: string | null;
+  knowledge_quality_score?: number | null;
+  knowledge_review_note?: string | null;
+  knowledge_use_count?: number | null;
+  knowledge_last_used_at?: string | null;
+  knowledge_helpful_count?: number | null;
+  knowledge_needs_improvement_count?: number | null;
 };
 
 type SupportKnowledgeImportRow = {
@@ -276,6 +295,7 @@ type KnowledgeCandidate = {
   answer: string;
   body: string;
   keywords: string;
+  sourceSnapshot: string;
 };
 
 type SupportEventRow = {
@@ -684,6 +704,99 @@ function parseKnowledgeImportStatus(raw: unknown): ValueResult<'draft' | 'publis
   return { ok: false, error: 'status is invalid' };
 }
 
+function parseManualKnowledgeStatus(raw: unknown): ValueResult<KnowledgeStatus | 'all'> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: 'all' };
+  if (typeof raw !== 'string') return { ok: false, error: 'knowledgeStatus must be a string' };
+  const value = raw.trim() as KnowledgeStatus | 'all';
+  if (value === 'all' || SUPPORT_MANUAL_KNOWLEDGE_STATUSES.has(value as KnowledgeStatus)) {
+    return { ok: true, value };
+  }
+  return { ok: false, error: 'knowledgeStatus is invalid' };
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function recordKnowledgeSourceSnapshot(
+  db: D1Database,
+  input: {
+    knowledgeImportId: string;
+    lineAccountId: string;
+    channelId: string;
+    threadTs: string;
+    rawPayload: string;
+    reconstructed: boolean;
+    capturedAt: string;
+  },
+) {
+  const contentHash = await sha256Hex(input.rawPayload);
+  await db.prepare(
+    `INSERT OR IGNORE INTO support_knowledge_source_snapshots (
+      id, knowledge_import_id, line_account_id, source_channel_id, source_thread_ts,
+      raw_payload, content_hash, is_reconstructed, captured_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    crypto.randomUUID(),
+    input.knowledgeImportId,
+    input.lineAccountId,
+    input.channelId,
+    input.threadTs,
+    input.rawPayload,
+    contentHash,
+    input.reconstructed ? 1 : 0,
+    input.capturedAt,
+  ).run();
+}
+
+function manualRevisionSnapshot(row: SupportManualRow): string {
+  return JSON.stringify({
+    title: row.title,
+    category: row.category,
+    body: row.body,
+    url: row.url,
+    keywords: row.keywords,
+    owner: row.owner,
+    approvedBy: row.approved_by,
+    revisedAt: row.revised_at,
+    isActive: Boolean(row.is_active),
+    question: row.knowledge_question ?? '',
+    resolution: row.knowledge_resolution ?? '',
+    procedure: row.knowledge_procedure ?? '',
+    applicability: row.knowledge_applicability ?? '',
+    cautions: row.knowledge_cautions ?? '',
+    sourceBody: row.knowledge_source_body ?? '',
+    knowledgeStatus: row.knowledge_status ?? 'needs_review',
+    qualityScore: row.knowledge_quality_score ?? 0,
+    reviewNote: row.knowledge_review_note ?? '',
+  });
+}
+
+async function recordManualRevision(
+  db: D1Database,
+  row: SupportManualRow,
+  changeType: string,
+  staff: SupportAccessStaff,
+  now: string,
+) {
+  await db.prepare(
+    `INSERT INTO support_manual_revisions (
+      id, manual_id, line_account_id, change_type, snapshot, actor_id, actor_name, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    crypto.randomUUID(),
+    row.id,
+    row.line_account_id,
+    changeType,
+    manualRevisionSnapshot(row),
+    staff.id,
+    staff.name,
+    now,
+  ).run();
+}
+
 function clampSlackImportLimit(raw: unknown): number {
   const n = Number(raw ?? SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT);
   if (!Number.isFinite(n)) return SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT;
@@ -691,9 +804,9 @@ function clampSlackImportLimit(raw: unknown): number {
 }
 
 function clampSlackNormalizeLimit(raw: unknown): number {
-  const n = Number(raw ?? 1000);
-  if (!Number.isFinite(n)) return 1000;
-  return Math.max(1, Math.min(1000, Math.floor(n)));
+  const n = Number(raw ?? 50);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(1, Math.min(100, Math.floor(n)));
 }
 
 function slackTsToJst(ts: string | undefined): string | null {
@@ -892,8 +1005,18 @@ function buildKnowledgeCandidate(
 ): KnowledgeCandidate | null {
   const parentTs = parent.ts;
   if (!parentTs) return null;
-  const threadMessages = [parent, ...replies.filter((message) => message.ts !== parentTs)]
+  const rawThreadMessages = [parent, ...replies.filter((message) => message.ts !== parentTs)]
     .filter(isSlackMessageUsable)
+    .map((message) => ({
+      type: message.type,
+      text: message.text ?? '',
+      user: message.user,
+      username: message.username,
+      bot_id: message.bot_id,
+      ts: message.ts,
+      thread_ts: message.thread_ts,
+    }));
+  const threadMessages = rawThreadMessages
     .map((message) => ({ message, text: cleanedSlackMessageText(message) }))
     .filter((item) => item.text);
   const questionMessage = findQuestionMessage(threadMessages);
@@ -931,6 +1054,7 @@ function buildKnowledgeCandidate(
     answer: truncateText(answer, SUPPORT_LONG_TEXT_MAX_LENGTH),
     body,
     keywords: truncateText(buildKnowledgeKeywords(combined), SUPPORT_LONG_TEXT_MAX_LENGTH),
+    sourceSnapshot: JSON.stringify(rawThreadMessages),
   };
 }
 
@@ -1122,6 +1246,21 @@ function serializeManual(row: SupportManualRow) {
     updatedBy: row.updated_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    question: row.knowledge_question ?? '',
+    resolution: row.knowledge_resolution ?? '',
+    procedure: row.knowledge_procedure ?? '',
+    applicability: row.knowledge_applicability ?? '',
+    cautions: row.knowledge_cautions ?? '',
+    sourceBody: row.knowledge_source_body || row.body,
+    knowledgeStatus: SUPPORT_MANUAL_KNOWLEDGE_STATUSES.has((row.knowledge_status ?? '') as KnowledgeStatus)
+      ? row.knowledge_status
+      : 'needs_review',
+    qualityScore: Math.max(0, Math.min(100, Number(row.knowledge_quality_score ?? 0))),
+    reviewNote: row.knowledge_review_note ?? '',
+    useCount: Math.max(0, Number(row.knowledge_use_count ?? 0)),
+    lastUsedAt: row.knowledge_last_used_at ?? null,
+    helpfulCount: Math.max(0, Number(row.knowledge_helpful_count ?? 0)),
+    needsImprovementCount: Math.max(0, Number(row.knowledge_needs_improvement_count ?? 0)),
   };
 }
 
@@ -1405,19 +1544,29 @@ async function publishKnowledgeImportRow(
   if (row.status === 'dismissed') return { outcome: 'skipped', manualId: null };
   if (row.status === 'published' && row.manual_id) return { outcome: 'already_published', manualId: row.manual_id };
   if (!row.title.trim() || !row.body.trim()) return { outcome: 'skipped', manualId: null };
+  const knowledge = deriveOperationalKnowledge({
+    title: row.title,
+    body: row.body,
+    question: row.question,
+    answer: row.answer,
+  });
+  if (knowledge.status === 'unresolved') return { outcome: 'skipped', manualId: null };
 
   const manualId = crypto.randomUUID();
   await db
     .prepare(
       `INSERT INTO support_manuals (
         id, line_account_id, title, category, body, url, keywords, owner, approved_by,
-        revised_at, is_active, created_by, updated_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+        revised_at, is_active, created_by, updated_by, created_at, updated_at,
+        knowledge_question, knowledge_resolution, knowledge_procedure,
+        knowledge_applicability, knowledge_cautions, knowledge_source_body,
+        knowledge_status, knowledge_quality_score, knowledge_review_note
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       manualId,
       lineAccountId,
-      row.title,
+      knowledge.title,
       row.category || 'other',
       row.body,
       row.source_permalink,
@@ -1429,6 +1578,15 @@ async function publishKnowledgeImportRow(
       staff.id,
       now,
       now,
+      knowledge.question,
+      knowledge.resolution,
+      knowledge.procedure,
+      knowledge.applicability,
+      knowledge.cautions,
+      knowledge.sourceBody,
+      knowledge.status,
+      knowledge.qualityScore,
+      knowledge.reviewNote,
     )
     .run();
   await db
@@ -1495,9 +1653,19 @@ async function upsertKnowledgeImport(
         lineAccountId,
       )
       .run();
+    await recordKnowledgeSourceSnapshot(db, {
+      knowledgeImportId: existing.id,
+      lineAccountId,
+      channelId: candidate.sourceChannelId,
+      threadTs: candidate.sourceThreadTs,
+      rawPayload: candidate.sourceSnapshot,
+      reconstructed: false,
+      capturedAt: now,
+    });
     return 'updated';
   }
 
+  const knowledgeImportId = crypto.randomUUID();
   await db
     .prepare(
       `INSERT INTO support_knowledge_imports (
@@ -1508,7 +1676,7 @@ async function upsertKnowledgeImport(
       ) VALUES (?, ?, 'slack', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, NULL, ?, NULL, NULL, ?, ?)`,
     )
     .bind(
-      crypto.randomUUID(),
+      knowledgeImportId,
       lineAccountId,
       candidate.sourceChannelId,
       candidate.sourceChannelName,
@@ -1529,6 +1697,15 @@ async function upsertKnowledgeImport(
       now,
     )
     .run();
+  await recordKnowledgeSourceSnapshot(db, {
+    knowledgeImportId,
+    lineAccountId,
+    channelId: candidate.sourceChannelId,
+    threadTs: candidate.sourceThreadTs,
+    rawPayload: candidate.sourceSnapshot,
+    reconstructed: false,
+    capturedAt: now,
+  });
   return 'created';
 }
 
@@ -3689,7 +3866,7 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
 
 support.get('/api/support/manuals', async (c) => {
   try {
-    const lineAccountId = parseOptionalVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
+    const lineAccountId = parseRequiredVisibleId(c.req.query('lineAccountId'), 'lineAccountId');
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const category = parseOptionalQueryText(c.req.query('category'), 'category');
     if (!category.ok) return c.json({ success: false, error: category.error }, 400);
@@ -3697,13 +3874,13 @@ support.get('/api/support/manuals', async (c) => {
     if (!q.ok) return c.json({ success: false, error: q.error }, 400);
     const active = parseActiveFilter(c.req.query('active'));
     if (!active.ok) return c.json({ success: false, error: active.error }, 400);
+    const knowledgeStatus = parseManualKnowledgeStatus(c.req.query('knowledgeStatus'));
+    if (!knowledgeStatus.ok) return c.json({ success: false, error: knowledgeStatus.error }, 400);
     const conditions: string[] = [];
     const binds: unknown[] = [];
 
-    if (lineAccountId.value) {
-      conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
-      binds.push(lineAccountId.value);
-    }
+    conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
+    binds.push(lineAccountId.value);
     if (category.value && category.value !== 'all') {
       conditions.push('category = ?');
       binds.push(category.value);
@@ -3712,10 +3889,18 @@ support.get('/api/support/manuals', async (c) => {
       conditions.push('is_active = ?');
       binds.push(active.value === '0' ? 0 : 1);
     }
+    if (knowledgeStatus.value !== 'all') {
+      conditions.push('knowledge_status = ?');
+      binds.push(knowledgeStatus.value);
+    }
     if (q.value) {
       const pattern = `%${q.value}%`;
-      conditions.push('(title LIKE ? OR body LIKE ? OR keywords LIKE ?)');
-      binds.push(pattern, pattern, pattern);
+      conditions.push(`(
+        title LIKE ? OR body LIKE ? OR keywords LIKE ? OR
+        knowledge_question LIKE ? OR knowledge_resolution LIKE ? OR
+        knowledge_procedure LIKE ? OR knowledge_applicability LIKE ? OR knowledge_cautions LIKE ?
+      )`);
+      binds.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -3723,8 +3908,17 @@ support.get('/api/support/manuals', async (c) => {
       .prepare(
         `SELECT * FROM support_manuals
          ${where}
-         ORDER BY is_active DESC, revised_at DESC, title ASC
-         LIMIT 100`,
+         ORDER BY is_active DESC,
+           CASE knowledge_status
+             WHEN 'verified' THEN 0
+             WHEN 'ready' THEN 1
+             WHEN 'needs_review' THEN 2
+             ELSE 3
+           END,
+           knowledge_quality_score DESC,
+           revised_at DESC,
+           title ASC
+         LIMIT 500`,
       )
       .bind(...binds)
       .all<SupportManualRow>();
@@ -3764,6 +3958,24 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     }
     const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const derivedKnowledge = deriveOperationalKnowledge({ title, body: manualBody });
+    const knowledgeTextInputs: Record<string, string> = {};
+    for (const key of ['question', 'resolution', 'procedure', 'applicability', 'cautions', 'reviewNote'] as const) {
+      const parsed = parseOptionalTextField(body[key], key, SUPPORT_LONG_TEXT_MAX_LENGTH);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      knowledgeTextInputs[key] = parsed.value ?? '';
+    }
+    const knowledgeStatus = parseManualKnowledgeStatus(body.knowledgeStatus);
+    if (!knowledgeStatus.ok) return c.json({ success: false, error: knowledgeStatus.error }, 400);
+    const requestedStatus = knowledgeStatus.value === 'all' ? derivedKnowledge.status : knowledgeStatus.value;
+    const knowledgeQuestion = knowledgeTextInputs.question || derivedKnowledge.question;
+    const knowledgeResolution = knowledgeTextInputs.resolution || derivedKnowledge.resolution;
+    const scoredKnowledge = deriveOperationalKnowledge({
+      title,
+      body: manualBody,
+      question: knowledgeQuestion,
+      answer: knowledgeResolution,
+    });
 
     const staff = currentStaff(c);
     const now = jstNow();
@@ -3771,8 +3983,11 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     await c.env.DB.prepare(
       `INSERT INTO support_manuals (
         id, line_account_id, title, category, body, url, keywords, owner, approved_by,
-        revised_at, is_active, created_by, updated_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        revised_at, is_active, created_by, updated_by, created_at, updated_at,
+        knowledge_question, knowledge_resolution, knowledge_procedure,
+        knowledge_applicability, knowledge_cautions, knowledge_source_body,
+        knowledge_status, knowledge_quality_score, knowledge_review_note
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).bind(
       id,
       lineAccountId.value,
@@ -3789,6 +4004,15 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
       staff.id,
       now,
       now,
+      knowledgeQuestion,
+      knowledgeResolution,
+      knowledgeTextInputs.procedure || derivedKnowledge.procedure,
+      knowledgeTextInputs.applicability || derivedKnowledge.applicability,
+      knowledgeTextInputs.cautions || derivedKnowledge.cautions,
+      manualBody,
+      requestedStatus,
+      requestedStatus === 'verified' ? 100 : scoredKnowledge.qualityScore,
+      knowledgeTextInputs.reviewNote || (requestedStatus === 'verified' ? '' : scoredKnowledge.reviewNote),
     ).run();
 
     const created = await c.env.DB.prepare(`SELECT * FROM support_manuals WHERE id = ?`).bind(id).first<SupportManualRow>();
@@ -3824,6 +4048,12 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       owner: SUPPORT_SHORT_TEXT_MAX_LENGTH,
       approvedBy: SUPPORT_SHORT_TEXT_MAX_LENGTH,
       revisedAt: SUPPORT_SHORT_TEXT_MAX_LENGTH,
+      question: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      resolution: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      procedure: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      applicability: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      cautions: SUPPORT_LONG_TEXT_MAX_LENGTH,
+      reviewNote: SUPPORT_LONG_TEXT_MAX_LENGTH,
     };
     for (const [key, maxLength] of Object.entries(manualFieldLimits)) {
       if (!(key in body)) continue;
@@ -3848,14 +4078,55 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       ['owner', 'owner'],
       ['approved_by', 'approvedBy'],
       ['revised_at', 'revisedAt'],
+      ['knowledge_question', 'question'],
+      ['knowledge_resolution', 'resolution'],
+      ['knowledge_procedure', 'procedure'],
+      ['knowledge_applicability', 'applicability'],
+      ['knowledge_cautions', 'cautions'],
+      ['knowledge_review_note', 'reviewNote'],
     ];
     for (const [column, key] of mapping) {
       if (key in body) fields.push([column, manualInputs[key] ?? null]);
     }
+    let requestedKnowledgeStatus: KnowledgeStatus | null = null;
+    if ('knowledgeStatus' in body) {
+      const parsedStatus = parseManualKnowledgeStatus(body.knowledgeStatus);
+      if (!parsedStatus.ok) return c.json({ success: false, error: parsedStatus.error }, 400);
+      if (parsedStatus.value === 'all') return c.json({ success: false, error: 'knowledgeStatus is required' }, 400);
+      requestedKnowledgeStatus = parsedStatus.value;
+      fields.push(['knowledge_status', requestedKnowledgeStatus]);
+    }
+    if ('body' in body && !(existing.knowledge_source_body ?? '').trim()) {
+      fields.push(['knowledge_source_body', existing.body]);
+    }
     if ('isActive' in body) fields.push(['is_active', body.isActive === false ? 0 : 1]);
     const staff = currentStaff(c);
-    fields.push(['updated_by', staff.id], ['updated_at', jstNow()]);
+    const now = jstNow();
+    const knowledgeChanged = ['title', 'body', 'question', 'resolution'].some((key) => key in body);
+    if (knowledgeChanged) {
+      const nextTitle = manualInputs.title ?? existing.title;
+      const nextBody = manualInputs.body ?? existing.body;
+      const nextQuestion = manualInputs.question ?? existing.knowledge_question ?? '';
+      const nextResolution = manualInputs.resolution ?? existing.knowledge_resolution ?? '';
+      const derived = deriveOperationalKnowledge({
+        title: nextTitle,
+        body: nextBody,
+        question: nextQuestion,
+        answer: nextResolution,
+      });
+      fields.push(['knowledge_quality_score', requestedKnowledgeStatus === 'verified' ? 100 : derived.qualityScore]);
+      if (!requestedKnowledgeStatus && (existing.knowledge_status ?? 'needs_review') !== 'verified') {
+        fields.push(['knowledge_status', derived.status]);
+      }
+      if (!('reviewNote' in body) && (requestedKnowledgeStatus ?? existing.knowledge_status) !== 'verified') {
+        fields.push(['knowledge_review_note', derived.reviewNote]);
+      }
+    } else if (requestedKnowledgeStatus === 'verified') {
+      fields.push(['knowledge_quality_score', 100], ['knowledge_review_note', '']);
+    }
+    fields.push(['updated_by', staff.id], ['updated_at', now]);
 
+    await recordManualRevision(c.env.DB, existing, 'edited', staff, now);
     await c.env.DB.prepare(`UPDATE support_manuals SET ${fields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`)
       .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value)
       .run();
@@ -3885,13 +4156,71 @@ support.delete('/api/support/manuals/:id', requireRole('owner', 'admin'), async 
       .first<SupportManualRow>();
     if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
 
+    const now = jstNow();
+    await recordManualRevision(c.env.DB, existing, 'archived', staff, now);
     await c.env.DB
       .prepare(`UPDATE support_manuals SET is_active = 0, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
-      .bind(staff.id, jstNow(), id.value, lineAccountId.value)
+      .bind(staff.id, now, id.value, lineAccountId.value)
       .run();
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/support/manuals/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/manuals/:id/usage', requireRole('owner', 'admin', 'staff', 'secondary'), async (c) => {
+  try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'manualId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = parseRequiredVisibleId(body.lineAccountId, 'lineAccountId');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const action = typeof body.action === 'string' ? body.action.trim() : '';
+    if (!SUPPORT_MANUAL_USAGE_ACTIONS.has(action)) {
+      return c.json({ success: false, error: 'action is invalid' }, 400);
+    }
+    const existing = await c.env.DB
+      .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ? AND is_active = 1`)
+      .bind(id.value, lineAccountId.value)
+      .first<SupportManualRow>();
+    if (!existing) return c.json({ success: false, error: 'manual not found' }, 404);
+    const staff = currentStaff(c);
+    const now = jstNow();
+    await c.env.DB.prepare(
+      `INSERT INTO support_manual_usage_events (
+        id, manual_id, line_account_id, action, actor_id, actor_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), existing.id, lineAccountId.value, action, staff.id, staff.name, now).run();
+    if (action === 'copied') {
+      await c.env.DB.prepare(
+        `UPDATE support_manuals
+         SET knowledge_use_count = knowledge_use_count + 1,
+             knowledge_last_used_at = ?
+         WHERE id = ? AND line_account_id = ?`,
+      ).bind(now, existing.id, lineAccountId.value).run();
+    } else if (action === 'helpful') {
+      await c.env.DB.prepare(
+        `UPDATE support_manuals
+         SET knowledge_helpful_count = knowledge_helpful_count + 1
+         WHERE id = ? AND line_account_id = ?`,
+      ).bind(existing.id, lineAccountId.value).run();
+    } else {
+      await c.env.DB.prepare(
+        `UPDATE support_manuals
+         SET knowledge_needs_improvement_count = knowledge_needs_improvement_count + 1
+         WHERE id = ? AND line_account_id = ?`,
+      ).bind(existing.id, lineAccountId.value).run();
+    }
+    const updated = await c.env.DB
+      .prepare(`SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?`)
+      .bind(existing.id, lineAccountId.value)
+      .first<SupportManualRow>();
+    return c.json({ success: true, data: serializeManual(updated ?? existing) });
+  } catch (err) {
+    console.error(`POST /api/support/manuals/:id/usage error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -3906,6 +4235,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
     const resolveProfiles = parseOptionalBooleanFlag(body.resolveProfiles, 'resolveProfiles');
     if (!resolveProfiles.ok) return c.json({ success: false, error: resolveProfiles.error }, 400);
     const limit = clampSlackNormalizeLimit(body.limit);
+    const offset = clampOffset(body.offset === undefined ? undefined : String(body.offset));
 
     const rowsResult = await c.env.DB
       .prepare(
@@ -3915,9 +4245,9 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
            AND source = 'slack'
            AND status = 'published'
          ORDER BY updated_at DESC
-         LIMIT ?`,
+         LIMIT ? OFFSET ?`,
       )
-      .bind(lineAccountId.value, limit)
+      .bind(lineAccountId.value, limit, offset)
       .all<SupportKnowledgeImportRow>();
     const rows = rowsResult.results;
     const mentionIds = Array.from(new Set(
@@ -3940,8 +4270,30 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
     const now = jstNow();
     let updatedImports = 0;
     let updatedManuals = 0;
+    const qualityCounts: Record<KnowledgeStatus, number> = {
+      verified: 0,
+      ready: 0,
+      needs_review: 0,
+      unresolved: 0,
+    };
 
     for (const row of rows) {
+      await recordKnowledgeSourceSnapshot(c.env.DB, {
+        knowledgeImportId: row.id,
+        lineAccountId: lineAccountId.value,
+        channelId: row.source_channel_id,
+        threadTs: row.source_thread_ts,
+        rawPayload: JSON.stringify({
+          title: row.title,
+          question: row.question,
+          answer: row.answer,
+          body: row.body,
+          author: row.source_author,
+          postedAt: row.source_posted_at,
+        }),
+        reconstructed: true,
+        capturedAt: now,
+      });
       const customerInfo = replaceSlackMentionIds(
         extractKnowledgeBodySection(row.body, ['顧客・案件情報', '顧客情報', '案件情報']),
         replacementNames,
@@ -3952,30 +4304,11 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       const question = truncateText(replaceSlackMentionIds(questionSource, replacementNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
       const answer = truncateText(replaceSlackMentionIds(answerSource, replacementNames), SUPPORT_LONG_TEXT_MAX_LENGTH);
       const knowledgeBody = buildKnowledgeBody({ customerInfo, question, answer });
-      const keywords = truncateText(buildKnowledgeKeywords(`${title}\n${question}\n${answer}`), SUPPORT_LONG_TEXT_MAX_LENGTH);
-
-      if (
-        title !== row.title ||
-        question !== row.question ||
-        answer !== row.answer ||
-        knowledgeBody !== row.body ||
-        keywords !== row.keywords
-      ) {
-        await c.env.DB
-          .prepare(
-            `UPDATE support_knowledge_imports
-             SET title = ?,
-                 question = ?,
-                 answer = ?,
-                 body = ?,
-                 keywords = ?,
-                 updated_at = ?
-             WHERE id = ? AND line_account_id = ?`,
-          )
-          .bind(title, question, answer, knowledgeBody, keywords, now, row.id, lineAccountId.value)
-          .run();
-        updatedImports += 1;
-      }
+      const derived = deriveOperationalKnowledge({ title, body: knowledgeBody, question, answer });
+      const keywords = truncateText(
+        buildKnowledgeKeywords(`${derived.title}\n${derived.question}\n${derived.resolution}\n${derived.procedure}`),
+        SUPPORT_LONG_TEXT_MAX_LENGTH,
+      );
 
       if (!row.manual_id) continue;
       const manual = await c.env.DB
@@ -3983,25 +4316,64 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         .bind(row.manual_id, lineAccountId.value)
         .first<SupportManualRow>();
       if (!manual) continue;
-      const manualTitle = title;
+      const currentStatus = (manual.knowledge_status ?? 'needs_review') as KnowledgeStatus;
+      if (currentStatus === 'verified') {
+        qualityCounts.verified += 1;
+        continue;
+      }
+      qualityCounts[derived.status] += 1;
+      const sourceBody = manual.knowledge_source_body || manual.body;
       if (
-        manualTitle === manual.title &&
-        knowledgeBody === manual.body &&
-        keywords === manual.keywords
+        derived.title === manual.title &&
+        keywords === manual.keywords &&
+        derived.question === (manual.knowledge_question ?? '') &&
+        derived.resolution === (manual.knowledge_resolution ?? '') &&
+        derived.procedure === (manual.knowledge_procedure ?? '') &&
+        derived.applicability === (manual.knowledge_applicability ?? '') &&
+        derived.cautions === (manual.knowledge_cautions ?? '') &&
+        sourceBody === (manual.knowledge_source_body ?? '') &&
+        derived.status === currentStatus &&
+        derived.qualityScore === (manual.knowledge_quality_score ?? 0) &&
+        derived.reviewNote === (manual.knowledge_review_note ?? '')
       ) {
         continue;
       }
+      await recordManualRevision(c.env.DB, manual, 'auto_structured', staff, now);
       await c.env.DB
         .prepare(
           `UPDATE support_manuals
            SET title = ?,
-               body = ?,
                keywords = ?,
+               knowledge_question = ?,
+               knowledge_resolution = ?,
+               knowledge_procedure = ?,
+               knowledge_applicability = ?,
+               knowledge_cautions = ?,
+               knowledge_source_body = ?,
+               knowledge_status = ?,
+               knowledge_quality_score = ?,
+               knowledge_review_note = ?,
                updated_by = ?,
                updated_at = ?
            WHERE id = ? AND line_account_id = ?`,
         )
-        .bind(manualTitle, knowledgeBody, keywords, staff.id, now, manual.id, lineAccountId.value)
+        .bind(
+          derived.title,
+          keywords,
+          derived.question,
+          derived.resolution,
+          derived.procedure,
+          derived.applicability,
+          derived.cautions,
+          sourceBody,
+          derived.status,
+          derived.qualityScore,
+          derived.reviewNote,
+          staff.id,
+          now,
+          manual.id,
+          lineAccountId.value,
+        )
         .run();
       updatedManuals += 1;
     }
@@ -4010,6 +4382,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       success: true,
       data: {
         checked: rows.length,
+        offset,
+        nextOffset: rows.length === limit ? offset + rows.length : null,
         slackMemberIds: mentionIds.length,
         profileLookupEnabled: resolveProfiles.value,
         resolvedMemberIds: displayNames.size,
@@ -4017,6 +4391,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         unresolvedMemberIds: 0,
         updatedImports,
         updatedManuals,
+        qualityCounts,
       },
     });
   } catch (err) {

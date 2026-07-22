@@ -1130,6 +1130,40 @@ CREATE TABLE support_knowledge_imports (
   UNIQUE(source_channel_id, source_thread_ts)
 );
 
+CREATE TABLE support_knowledge_source_snapshots (
+  id                  TEXT PRIMARY KEY,
+  knowledge_import_id TEXT NOT NULL REFERENCES support_knowledge_imports(id) ON DELETE RESTRICT,
+  line_account_id     TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE RESTRICT,
+  source_channel_id   TEXT NOT NULL,
+  source_thread_ts    TEXT NOT NULL,
+  raw_payload         TEXT NOT NULL,
+  content_hash        TEXT NOT NULL,
+  is_reconstructed    INTEGER NOT NULL DEFAULT 0,
+  captured_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(knowledge_import_id, content_hash)
+);
+
+CREATE TABLE support_manual_revisions (
+  id              TEXT PRIMARY KEY,
+  manual_id       TEXT NOT NULL REFERENCES support_manuals(id) ON DELETE RESTRICT,
+  line_account_id TEXT,
+  change_type     TEXT NOT NULL,
+  snapshot        TEXT NOT NULL,
+  actor_id        TEXT,
+  actor_name      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE support_manual_usage_events (
+  id              TEXT PRIMARY KEY,
+  manual_id       TEXT NOT NULL REFERENCES support_manuals(id) ON DELETE RESTRICT,
+  line_account_id TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE RESTRICT,
+  action          TEXT NOT NULL CHECK (action IN ('copied', 'helpful', 'needs_improvement')),
+  actor_id        TEXT,
+  actor_name      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE support_manuals (
   id              TEXT PRIMARY KEY,
   line_account_id TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
@@ -1146,7 +1180,7 @@ CREATE TABLE support_manuals (
   updated_by      TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, knowledge_question TEXT NOT NULL DEFAULT '', knowledge_resolution TEXT NOT NULL DEFAULT '', knowledge_procedure TEXT NOT NULL DEFAULT '', knowledge_applicability TEXT NOT NULL DEFAULT '', knowledge_cautions TEXT NOT NULL DEFAULT '', knowledge_source_body TEXT NOT NULL DEFAULT '', knowledge_status TEXT NOT NULL DEFAULT 'needs_review', knowledge_quality_score INTEGER NOT NULL DEFAULT 0, knowledge_review_note TEXT NOT NULL DEFAULT '', knowledge_use_count INTEGER NOT NULL DEFAULT 0, knowledge_last_used_at TEXT, knowledge_helpful_count INTEGER NOT NULL DEFAULT 0, knowledge_needs_improvement_count INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE tags (
   id         TEXT PRIMARY KEY,
@@ -1547,8 +1581,20 @@ CREATE INDEX idx_support_knowledge_imports_account_status
 CREATE INDEX idx_support_knowledge_imports_source
   ON support_knowledge_imports(source_channel_id, source_thread_ts);
 
+CREATE INDEX idx_support_knowledge_source_snapshots_import
+  ON support_knowledge_source_snapshots(knowledge_import_id, captured_at);
+
+CREATE INDEX idx_support_manual_revisions_manual_created
+  ON support_manual_revisions(manual_id, created_at);
+
+CREATE INDEX idx_support_manual_usage_events_manual_created
+  ON support_manual_usage_events(manual_id, created_at);
+
 CREATE INDEX idx_support_manuals_account_category
   ON support_manuals(line_account_id, category, is_active);
+
+CREATE INDEX idx_support_manuals_account_knowledge_status
+  ON support_manuals(line_account_id, knowledge_status, is_active, revised_at);
 
 CREATE INDEX idx_templates_category ON templates (category);
 
@@ -1568,6 +1614,54 @@ CREATE INDEX idx_web_push_deliveries_subscription
 
 CREATE INDEX idx_web_push_subscriptions_staff
   ON web_push_subscriptions(staff_id, is_active, last_seen_at);
+
+CREATE TRIGGER prevent_support_knowledge_imports_delete
+BEFORE DELETE ON support_knowledge_imports
+BEGIN
+  SELECT RAISE(ABORT, 'support_knowledge_imports cannot be deleted');
+END;
+
+CREATE TRIGGER prevent_support_knowledge_source_snapshots_delete
+BEFORE DELETE ON support_knowledge_source_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'support_knowledge_source_snapshots are append-only');
+END;
+
+CREATE TRIGGER prevent_support_knowledge_source_snapshots_update
+BEFORE UPDATE ON support_knowledge_source_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'support_knowledge_source_snapshots are append-only');
+END;
+
+CREATE TRIGGER prevent_support_manual_revisions_delete
+BEFORE DELETE ON support_manual_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'support_manual_revisions are append-only');
+END;
+
+CREATE TRIGGER prevent_support_manual_revisions_update
+BEFORE UPDATE ON support_manual_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'support_manual_revisions are append-only');
+END;
+
+CREATE TRIGGER prevent_support_manual_usage_events_delete
+BEFORE DELETE ON support_manual_usage_events
+BEGIN
+  SELECT RAISE(ABORT, 'support_manual_usage_events are append-only');
+END;
+
+CREATE TRIGGER prevent_support_manual_usage_events_update
+BEFORE UPDATE ON support_manual_usage_events
+BEGIN
+  SELECT RAISE(ABORT, 'support_manual_usage_events are append-only');
+END;
+
+CREATE TRIGGER prevent_support_manuals_delete
+BEFORE DELETE ON support_manuals
+BEGIN
+  SELECT RAISE(ABORT, 'support_manuals cannot be deleted; set is_active = 0 instead');
+END;
 
 CREATE TRIGGER protect_chat_confirmation_events_delete
 BEFORE DELETE ON chat_confirmation_events

@@ -16,6 +16,7 @@ import {
 } from '@/components/support/support-meta'
 import { useAccount } from '@/contexts/account-context'
 import { api, type SupportManual } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import {
   cacheStaffSession,
   clearStaffIdentityCache,
@@ -23,6 +24,18 @@ import {
 } from '@/lib/auth-session'
 
 const SEARCH_DEBOUNCE_MS = 350
+
+function buildKnowledgeBody(input: ManualEditorInput): string {
+  if (input.body.trim()) return input.body.trim()
+  const sections = [
+    `【問い合わせ内容】\n${input.question.trim()}`,
+    `【解決回答】\n${input.resolution.trim()}`,
+  ]
+  if (input.procedure.trim()) sections.push(`【対応手順】\n${input.procedure.trim()}`)
+  if (input.applicability.trim()) sections.push(`【適用条件】\n${input.applicability.trim()}`)
+  if (input.cautions.trim()) sections.push(`【注意点】\n${input.cautions.trim()}`)
+  return sections.join('\n\n')
+}
 
 export default function ManualsPage() {
   const { selectedAccountId, selectedAccount, loading: accountLoading } = useAccount()
@@ -89,12 +102,12 @@ export default function ManualsPage() {
         active: '1',
       })
       if (!res.success) {
-        setLoadError(supportApiErrorMessage(res, 'マニュアルの読み込みに失敗しました'))
+        setLoadError(supportApiErrorMessage(res, 'ナレッジの読み込みに失敗しました'))
         return
       }
       setManuals(res.data)
     } catch (err) {
-      setLoadError(formatSupportErrorMessage(err, 'マニュアルの読み込みに失敗しました'))
+      setLoadError(formatSupportErrorMessage(err, 'ナレッジの読み込みに失敗しました'))
     } finally {
       setLoading(false)
     }
@@ -117,22 +130,29 @@ export default function ManualsPage() {
         lineAccountId: selectedAccountId,
         title: input.title.trim(),
         category: input.category,
-        body: input.body.trim(),
+        body: buildKnowledgeBody(input),
         url: input.url.trim() || null,
         keywords: input.keywords.trim(),
         owner: input.owner.trim() || null,
         approvedBy: input.approvedBy.trim() || null,
         revisedAt: input.revisedAt || null,
+        question: input.question.trim(),
+        resolution: input.resolution.trim(),
+        procedure: input.procedure.trim(),
+        applicability: input.applicability.trim(),
+        cautions: input.cautions.trim(),
+        knowledgeStatus: input.knowledgeStatus,
+        reviewNote: input.reviewNote.trim(),
       })
       if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの作成に失敗しました'))
+        notify('error', supportApiErrorMessage(res, 'ナレッジの作成に失敗しました'))
         return false
       }
-      notify('success', 'マニュアルを作成しました')
+      notify('success', 'ナレッジを作成しました')
       await loadManuals()
       return true
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの作成に失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'ナレッジの作成に失敗しました'))
       return false
     } finally {
       setSaving(false)
@@ -158,16 +178,23 @@ export default function ManualsPage() {
         owner: input.owner.trim() || null,
         approvedBy: input.approvedBy.trim() || null,
         revisedAt: input.revisedAt || null,
+        question: input.question.trim(),
+        resolution: input.resolution.trim(),
+        procedure: input.procedure.trim(),
+        applicability: input.applicability.trim(),
+        cautions: input.cautions.trim(),
+        knowledgeStatus: input.knowledgeStatus,
+        reviewNote: input.reviewNote.trim(),
       })
       if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの更新に失敗しました'))
+        notify('error', supportApiErrorMessage(res, 'ナレッジの更新に失敗しました'))
         return false
       }
-      notify('success', 'マニュアルを更新しました')
+      notify('success', 'ナレッジを更新しました')
       await loadManuals()
       return true
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの更新に失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'ナレッジの更新に失敗しました'))
       return false
     } finally {
       setSaving(false)
@@ -177,7 +204,7 @@ export default function ManualsPage() {
   const handleArchiveManual = useCallback(async (manual: SupportManual): Promise<boolean> => {
     if (!selectedAccountId || saving || !canManage) return false
     const ok = await requestConfirm({
-      title: 'マニュアルを無効化します',
+      title: 'ナレッジを無効化します',
       message: `「${manual.title}」を一覧から外します。必要になった場合は管理者側で復旧できます。`,
       confirmLabel: '無効化する',
       cancelLabel: '戻る',
@@ -188,19 +215,73 @@ export default function ManualsPage() {
     try {
       const res = await api.support.manuals.archive(manual.id, selectedAccountId)
       if (!res.success) {
-        notify('error', supportApiErrorMessage(res, 'マニュアルの無効化に失敗しました'))
+        notify('error', supportApiErrorMessage(res, 'ナレッジの無効化に失敗しました'))
         return false
       }
-      notify('success', 'マニュアルを無効化しました')
+      notify('success', 'ナレッジを無効化しました')
       await loadManuals()
       return true
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'マニュアルの無効化に失敗しました'))
+      notify('error', formatSupportErrorMessage(err, 'ナレッジの無効化に失敗しました'))
       return false
     } finally {
       setSaving(false)
     }
   }, [canManage, loadManuals, notify, requestConfirm, saving, selectedAccountId])
+
+  const handleCopy = useCallback(async (manual: SupportManual) => {
+    if (!selectedAccountId) return
+    const copyValue = [manual.resolution, manual.procedure].filter(Boolean).join('\n\n')
+    const copied = await copyText(copyValue)
+    if (!copied.ok) {
+      notify('error', '回答をコピーできませんでした')
+      return
+    }
+    notify('success', '回答をコピーしました')
+    try {
+      await api.support.manuals.recordUsage(manual.id, selectedAccountId, 'copied')
+    } catch {
+      // Copying remains available even if usage recording is temporarily unavailable.
+    }
+  }, [notify, selectedAccountId])
+
+  const handleFeedback = useCallback(async (manual: SupportManual, action: 'helpful' | 'needs_improvement') => {
+    if (!selectedAccountId || saving) return
+    setSaving(true)
+    try {
+      const res = await api.support.manuals.recordUsage(manual.id, selectedAccountId, action)
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, '評価を保存できませんでした'))
+        return
+      }
+      notify('success', action === 'helpful' ? '評価を記録しました' : '改善対象として記録しました')
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, '評価を保存できませんでした'))
+    } finally {
+      setSaving(false)
+    }
+  }, [notify, saving, selectedAccountId])
+
+  const handleVerify = useCallback(async (manual: SupportManual) => {
+    if (!selectedAccountId || saving || !canManage) return
+    setSaving(true)
+    try {
+      const res = await api.support.manuals.update(manual.id, {
+        lineAccountId: selectedAccountId,
+        knowledgeStatus: 'verified',
+      })
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, '確認状態を更新できませんでした'))
+        return
+      }
+      notify('success', '確認済みにしました')
+      await loadManuals()
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, '確認状態を更新できませんでした'))
+    } finally {
+      setSaving(false)
+    }
+  }, [canManage, loadManuals, notify, saving, selectedAccountId])
 
   if (accountLoading) {
     return <div className="p-6 text-sm text-gray-500">読み込み中...</div>
@@ -209,8 +290,8 @@ export default function ManualsPage() {
   return (
     <div className="space-y-4">
       <Header
-        title="マニュアル"
-        description={`${accountName} の対応手順を検索・管理`}
+        title="ナレッジ"
+        description={`${accountName} の問い合わせ事例と解決方法`}
         action={
           <button type="button" onClick={() => void loadManuals()} disabled={controlsDisabled} className={btnSecondaryCls}>
             {loading ? '更新中...' : saving ? '保存中...' : '更新'}
@@ -226,27 +307,24 @@ export default function ManualsPage() {
 
       {!canManage && staffReady && (
         <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          staff権限では閲覧と検索のみできます。追加・編集・無効化はowner/adminに依頼してください。
+          閲覧と検索はできます。追加・編集・無効化はowner/adminに依頼してください。
         </div>
       )}
 
       <ManualPanel
         manuals={manuals}
-        linkedManuals={[]}
-        linkedIds={[]}
-        canLink={false}
         canManage={canManage}
         saving={saving || loading}
         search={search}
         category={category}
         onSearchChange={setSearch}
         onCategoryChange={setCategory}
-        onLink={() => {}}
-        onUnlink={() => {}}
         onCreateManual={handleCreateManual}
         onUpdateManual={handleUpdateManual}
         onArchiveManual={handleArchiveManual}
-        showLinkActions={false}
+        onCopy={handleCopy}
+        onFeedback={handleFeedback}
+        onVerify={handleVerify}
       />
 
       {confirmDialog}

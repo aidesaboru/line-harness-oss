@@ -118,6 +118,19 @@ type SupportManualRow = {
   updated_by: string | null;
   created_at: string;
   updated_at: string;
+  knowledge_question?: string | null;
+  knowledge_resolution?: string | null;
+  knowledge_procedure?: string | null;
+  knowledge_applicability?: string | null;
+  knowledge_cautions?: string | null;
+  knowledge_source_body?: string | null;
+  knowledge_status?: string | null;
+  knowledge_quality_score?: number | null;
+  knowledge_review_note?: string | null;
+  knowledge_use_count?: number | null;
+  knowledge_last_used_at?: string | null;
+  knowledge_helpful_count?: number | null;
+  knowledge_needs_improvement_count?: number | null;
 };
 
 type SupportKnowledgeImportRow = {
@@ -211,6 +224,19 @@ function baseCase(overrides: Partial<SupportCaseRow> = {}): SupportCaseRow {
     reopened_at: null,
     created_at: '2026-06-12T09:00:00.000',
     updated_at: '2026-06-12T09:00:00.000',
+    knowledge_question: '',
+    knowledge_resolution: '',
+    knowledge_procedure: '',
+    knowledge_applicability: '',
+    knowledge_cautions: '',
+    knowledge_source_body: '',
+    knowledge_status: 'needs_review',
+    knowledge_quality_score: 0,
+    knowledge_review_note: '',
+    knowledge_use_count: 0,
+    knowledge_last_used_at: null,
+    knowledge_helpful_count: 0,
+    knowledge_needs_improvement_count: 0,
     ...overrides,
   };
 }
@@ -392,6 +418,11 @@ function makeSupportDb(state: {
       const [rawColumn, rawValue] = part.trim().split('=');
       const column = rawColumn.trim();
       const valueToken = rawValue.trim();
+      if (/^knowledge_(?:use|helpful|needs_improvement)_count \+ 1$/.test(valueToken)) {
+        const current = Number((row as unknown as Record<string, unknown>)[column] ?? 0);
+        (row as unknown as Record<string, unknown>)[column] = current + 1;
+        return;
+      }
       const value = valueToken === '?' ? binds[bindIndex++] : Number(valueToken);
       (row as unknown as Record<string, unknown>)[column] = value;
     });
@@ -863,7 +894,7 @@ function makeSupportDb(state: {
           } else if (sql.startsWith('UPDATE support_escalations SET')) {
             applyEscalationUpdate(sql, bound);
           } else if (sql.includes('INSERT INTO support_manuals')) {
-            const hasBoundIsActive = bound.length === 15;
+            const hasBoundIsActive = bound.length === 24;
             const [
               id,
               lineAccountId,
@@ -881,6 +912,7 @@ function makeSupportDb(state: {
             const updatedBy = hasBoundIsActive ? bound[12] : bound[11];
             const createdAt = hasBoundIsActive ? bound[13] : bound[12];
             const updatedAt = hasBoundIsActive ? bound[14] : bound[13];
+            const knowledgeStart = hasBoundIsActive ? 15 : 14;
             manuals.push({
               id: String(id),
               line_account_id: lineAccountId === null ? null : String(lineAccountId),
@@ -897,6 +929,19 @@ function makeSupportDb(state: {
               updated_by: updatedBy === null ? null : String(updatedBy),
               created_at: String(createdAt),
               updated_at: String(updatedAt),
+              knowledge_question: String(bound[knowledgeStart] ?? ''),
+              knowledge_resolution: String(bound[knowledgeStart + 1] ?? ''),
+              knowledge_procedure: String(bound[knowledgeStart + 2] ?? ''),
+              knowledge_applicability: String(bound[knowledgeStart + 3] ?? ''),
+              knowledge_cautions: String(bound[knowledgeStart + 4] ?? ''),
+              knowledge_source_body: String(bound[knowledgeStart + 5] ?? body),
+              knowledge_status: String(bound[knowledgeStart + 6] ?? 'needs_review'),
+              knowledge_quality_score: Number(bound[knowledgeStart + 7] ?? 0),
+              knowledge_review_note: String(bound[knowledgeStart + 8] ?? ''),
+              knowledge_use_count: 0,
+              knowledge_last_used_at: null,
+              knowledge_helpful_count: 0,
+              knowledge_needs_improvement_count: 0,
             });
           } else if (sql.startsWith('UPDATE support_manuals')) {
             applyManualUpdate(sql, bound);
@@ -2769,6 +2814,26 @@ describe('support CRM routes', () => {
     expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_manuals'))).toBe(false);
   });
 
+  test('requires an account scope for knowledge and records copied answers append-only', async () => {
+    const { db, calls, state } = makeSupportDb({
+      manuals: [baseManual({ id: 'manual-copy', knowledge_resolution: '確認後に案内してください' })],
+    });
+    const app = setupApp(db, { id: 'staff-2', name: '一次担当', role: 'staff' });
+
+    const unscoped = await app.request('/api/support/manuals');
+    expect(unscoped.status).toBe(400);
+
+    const copied = await app.request('/api/support/manuals/manual-copy/usage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1', action: 'copied' }),
+    });
+    expect(copied.status).toBe(200);
+    expect(state.manuals[0].knowledge_use_count).toBe(1);
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('INSERT INTO support_manual_usage_events'))).toBe(true);
+    expect(calls.some((call) => call.method === 'run' && call.sql.includes('knowledge_use_count = knowledge_use_count + 1'))).toBe(true);
+  });
+
   test('owner manual creation requires a LINE account scope', async () => {
     const { db, state } = makeSupportDb({});
     const app = setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' });
@@ -3098,7 +3163,7 @@ describe('support CRM routes', () => {
     expect(state.manuals[0].body).toContain('【解決回答】');
   });
 
-  test('owner can normalize published Slack knowledge mentions into readable names', async () => {
+  test('owner structures published Slack knowledge without overwriting the imported source', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       const user = url.searchParams.get('user');
@@ -3153,15 +3218,14 @@ describe('support CRM routes', () => {
     };
     expect(body).toMatchObject({
       success: true,
-      data: { checked: 1, resolvedMemberIds: 2, updatedImports: 1, updatedManuals: 1 },
+      data: { checked: 1, resolvedMemberIds: 2, updatedImports: 0, updatedManuals: 1 },
     });
-    expect(state.knowledgeImports[0].question).toContain('@宮本 森一');
-    expect(state.knowledgeImports[0].answer).toContain('@山崎 太郎');
-    expect(state.knowledgeImports[0].body).toContain('【解決回答】');
-    expect(state.knowledgeImports[0].body).not.toContain('@U1111');
-    expect(state.manuals[0].body).toContain('@宮本 森一');
-    expect(state.manuals[0].body).toContain('@山崎 太郎');
-    expect(state.manuals[0].body).toContain('【解決回答】');
+    expect(state.knowledgeImports[0].question).toContain('@U1111');
+    expect(state.knowledgeImports[0].answer).toContain('@U2222');
+    expect(state.manuals[0].knowledge_source_body).toBe(importRow.body);
+    expect(state.manuals[0].knowledge_question).toContain('報酬開始時期');
+    expect(state.manuals[0].knowledge_resolution).toContain('引き継ぎ月');
+    expect(state.manuals[0].knowledge_status).toMatch(/ready|needs_review/);
   });
 
   test('owner can publish a draft knowledge candidate as a support manual', async () => {

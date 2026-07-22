@@ -479,6 +479,19 @@ export type SupportManual = {
   updatedBy: string | null
   createdAt: string
   updatedAt: string
+  question: string
+  resolution: string
+  procedure: string
+  applicability: string
+  cautions: string
+  sourceBody: string
+  knowledgeStatus: 'verified' | 'ready' | 'needs_review' | 'unresolved'
+  qualityScore: number
+  reviewNote: string
+  useCount: number
+  lastUsedAt: string | null
+  helpfulCount: number
+  needsImprovementCount: number
 }
 
 export type SupportCaseEvent = {
@@ -1407,12 +1420,19 @@ export const api = {
         }),
     },
     manuals: {
-      list: (params?: { accountId?: string; category?: string; q?: string; active?: '0' | '1' | 'all' }) => {
+      list: (params: {
+        accountId: string
+        category?: string
+        q?: string
+        active?: '0' | '1' | 'all'
+        knowledgeStatus?: SupportManual['knowledgeStatus'] | 'all'
+      }) => {
         const query: Record<string, string> = {}
-        if (params?.accountId) query.lineAccountId = params.accountId
-        if (params?.category) query.category = params.category
-        if (params?.q) query.q = params.q
-        if (params?.active) query.active = params.active
+        query.lineAccountId = params.accountId
+        if (params.category) query.category = params.category
+        if (params.q) query.q = params.q
+        if (params.active) query.active = params.active
+        if (params.knowledgeStatus && params.knowledgeStatus !== 'all') query.knowledgeStatus = params.knowledgeStatus
         return fetchApi<ApiResponse<SupportManual[]>>(
           '/api/support/manuals' + (Object.keys(query).length ? '?' + new URLSearchParams(query) : ''),
         )
@@ -1428,6 +1448,13 @@ export const api = {
         approvedBy?: string | null
         revisedAt?: string | null
         isActive?: boolean
+        question?: string
+        resolution?: string
+        procedure?: string
+        applicability?: string
+        cautions?: string
+        knowledgeStatus?: SupportManual['knowledgeStatus']
+        reviewNote?: string
       }) =>
         fetchApi<ApiResponse<SupportManual>>('/api/support/manuals', {
           method: 'POST',
@@ -1444,6 +1471,13 @@ export const api = {
         approvedBy: string | null
         revisedAt: string | null
         isActive: boolean
+        question: string
+        resolution: string
+        procedure: string
+        applicability: string
+        cautions: string
+        knowledgeStatus: SupportManual['knowledgeStatus']
+        reviewNote: string
       }>) =>
         fetchApi<ApiResponse<SupportManual>>(`/api/support/manuals/${id}`, {
           method: 'PATCH',
@@ -1451,6 +1485,11 @@ export const api = {
         }),
       archive: (id: string, accountId: string) =>
         fetchApi<ApiResponse<null>>(`/api/support/manuals/${id}?` + new URLSearchParams({ lineAccountId: accountId }), { method: 'DELETE' }),
+      recordUsage: (id: string, accountId: string, action: 'copied' | 'helpful' | 'needs_improvement') =>
+        fetchApi<ApiResponse<SupportManual>>(`/api/support/manuals/${id}/usage`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId, action }),
+        }),
     },
   },
   chats: {

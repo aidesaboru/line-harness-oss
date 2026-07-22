@@ -445,17 +445,19 @@ describe('support case creation validation', () => {
 })
 
 describe('support manual editor validation', () => {
-  it('blocks manuals without title and body', () => {
-    expect(getManualEditorValidationIssues({ title: ' ', body: '', url: '' }).map((issue) => issue.key)).toEqual([
+  it('blocks knowledge without title question and resolution', () => {
+    expect(getManualEditorValidationIssues({ title: ' ', question: '', resolution: '', url: '' }).map((issue) => issue.key)).toEqual([
       'manual_title',
-      'manual_body',
+      'manual_question',
+      'manual_resolution',
     ])
   })
 
   it('blocks non-http manual links', () => {
     expect(getManualEditorValidationIssues({
       title: '返品手順',
-      body: '返品依頼の確認手順',
+      question: '返品依頼を受けた場合',
+      resolution: '返品条件を確認して案内する',
       url: '/manuals/refund',
     }).map((issue) => issue.key)).toEqual(['manual_url'])
   })
@@ -463,7 +465,8 @@ describe('support manual editor validation', () => {
   it('accepts a complete manual draft', () => {
     expect(getManualEditorValidationIssues({
       title: '返品手順',
-      body: '返品依頼の確認手順',
+      question: '返品依頼を受けた場合',
+      resolution: '返品条件を確認して案内する',
       url: 'https://example.com/manuals/refund',
     })).toHaveLength(0)
   })

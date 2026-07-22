@@ -660,7 +660,8 @@ export function getCreateCaseValidationIssues(input: {
 
 export type ManualEditorValidationIssueKey =
   | 'manual_title'
-  | 'manual_body'
+  | 'manual_question'
+  | 'manual_resolution'
   | 'manual_url'
 
 export interface ManualEditorValidationIssue {
@@ -682,30 +683,42 @@ function isHttpUrl(value: string): boolean {
 
 export function getManualEditorValidationIssues(input: {
   title: string
-  body: string
+  question: string
+  resolution: string
   url: string
 }): ManualEditorValidationIssue[] {
   const issues: ManualEditorValidationIssue[] = []
   const title = input.title.trim()
-  const body = input.body.trim()
+  const question = input.question.trim()
+  const resolution = input.resolution.trim()
   const url = input.url.trim()
 
   if (!title) {
     issues.push({
       key: 'manual_title',
       severity: 'error',
-      message: 'マニュアル名として一覧に出すタイトルが必要です。',
+      message: 'ナレッジ名として一覧に出すタイトルが必要です。',
       fieldLabel: 'タイトル',
       blocking: true,
     })
   }
 
-  if (!body) {
+  if (!question) {
     issues.push({
-      key: 'manual_body',
+      key: 'manual_question',
       severity: 'error',
-      message: 'あとから担当者が判断できるように、本文に対応手順か判断基準を書いてください。',
-      fieldLabel: '本文',
+      message: 'どの問い合わせに使えるナレッジか分かる内容を入力してください。',
+      fieldLabel: '問い合わせ',
+      blocking: true,
+    })
+  }
+
+  if (!resolution) {
+    issues.push({
+      key: 'manual_resolution',
+      severity: 'error',
+      message: '担当者が最初に確認する結論を入力してください。',
+      fieldLabel: '結論',
       blocking: true,
     })
   }

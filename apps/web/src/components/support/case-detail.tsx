@@ -43,6 +43,7 @@ interface CaseDetailProps {
   caseForm: CaseFormState
   dirty: boolean
   saving: boolean
+  reminderSaving: boolean
   canEditRouting: boolean
   staffOptions: string[]
   staffName: string
@@ -52,12 +53,156 @@ interface CaseDetailProps {
   onQuickStatus: (status: SupportCaseStatus, eventBody: string) => Promise<boolean>
   onInternalMessageCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
   onInternalMessageReaction: (messageId: string, emoji: string) => Promise<void>
+  onFollowUpReminderConfigure: (intervalDays: number) => Promise<void>
+  onFollowUpReminderConfirm: () => Promise<void>
+  onFollowUpReminderDisable: () => Promise<void>
   onOpenChatWithDraft: () => void
   onCopyReplyDraft: () => void
   emptyState?: Pick<SupportEmptyState, 'title' | 'description'>
   outsideCurrentList?: boolean
   outsideCurrentListActionLabel?: string
   onResetFilters?: () => void
+}
+
+function FollowUpReminderPanel({
+  detail,
+  primaryAssignee,
+  staffName,
+  canEditRouting,
+  dirty,
+  saving,
+  onConfigure,
+  onConfirm,
+  onDisable,
+}: {
+  detail: SupportCaseDetail
+  primaryAssignee: string
+  staffName: string
+  canEditRouting: boolean
+  dirty: boolean
+  saving: boolean
+  onConfigure: (intervalDays: number) => Promise<void>
+  onConfirm: () => Promise<void>
+  onDisable: () => Promise<void>
+}) {
+  const reminder = detail.followUpReminder
+  const [intervalDays, setIntervalDays] = useState(reminder?.intervalDays ?? 7)
+
+  useEffect(() => {
+    setIntervalDays(reminder?.intervalDays ?? 7)
+  }, [detail.id, reminder?.intervalDays])
+
+  const canConfigure = canEditRouting || (Boolean(staffName) && staffName === primaryAssignee)
+  const canDisable = canConfigure || (Boolean(staffName) && reminder?.ownerName === staffName)
+  const validInterval = Number.isInteger(intervalDays) && intervalDays >= 1 && intervalDays <= 365
+  const controlsDisabled = saving || dirty
+  const statusTone = reminder?.requiresPrimaryConfirmation
+    ? 'border-amber-200 bg-amber-50 text-amber-900'
+    : reminder?.status === 'completed'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : reminder?.status === 'disabled'
+        ? 'border-slate-200 bg-slate-100 text-slate-600'
+        : 'border-blue-200 bg-blue-50 text-blue-800'
+  const statusText = !reminder
+    ? '未設定'
+    : reminder.status === 'completed'
+      ? '本人確認済み'
+      : reminder.status === 'disabled'
+        ? '停止中'
+        : reminder.requiresPrimaryConfirmation
+          ? detail.status === 'resolved'
+            ? '対応済み・一次対応者の確認待ち'
+            : '一次対応者の確認待ち'
+          : `次回 ${formatDateTime(reminder.nextDueAt)}`
+
+  return (
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="案件フォロー">
+      <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
+        <div>
+          <p className="text-sm font-semibold text-slate-900">案件フォロー</p>
+          <p className="mt-0.5 text-xs text-slate-500">一次対応者: {primaryAssignee || '未設定'}</p>
+        </div>
+        <span className={`rounded-md border px-2 py-1 text-xs font-semibold ${statusTone}`}>{statusText}</span>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        <div>
+          <label htmlFor={`follow-up-days-${detail.id}`} className="text-xs font-medium text-slate-600">通知間隔</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              id={`follow-up-days-${detail.id}`}
+              type="number"
+              min={1}
+              max={365}
+              step={1}
+              value={intervalDays}
+              onChange={(event) => setIntervalDays(Number(event.target.value))}
+              disabled={controlsDisabled || !canConfigure}
+              className="min-h-10 w-24 rounded-md border border-slate-300 px-3 text-sm font-semibold tabular-nums text-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
+            />
+            <span className="text-sm text-slate-600">日おき</span>
+          </div>
+          <div className="mt-2 flex gap-1.5 overflow-x-auto pb-1">
+            {[1, 3, 7, 14, 30].map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => setIntervalDays(days)}
+                disabled={controlsDisabled || !canConfigure}
+                className={`shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50 ${
+                  intervalDays === days
+                    ? 'border-blue-300 bg-blue-50 text-blue-800'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {days}日
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {dirty && (
+          <p className="text-xs font-medium text-amber-700">担当者の変更を保存してから設定してください</p>
+        )}
+        {reminder?.requiresPrimaryConfirmation && !reminder.canConfirm && (
+          <p className="text-xs font-medium leading-5 text-amber-800">
+            {reminder.ownerName}さん本人の確認を待っています
+          </p>
+        )}
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          {reminder?.status === 'active' && reminder.canConfirm && (
+            <button
+              type="button"
+              onClick={() => void onConfirm()}
+              disabled={controlsDisabled}
+              className="min-h-10 rounded-md bg-emerald-600 px-3 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {detail.status === 'resolved' ? '確認して終了' : '確認して次回へ'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void onConfigure(intervalDays)}
+            disabled={controlsDisabled || !canConfigure || !primaryAssignee || !validInterval}
+            className="min-h-10 rounded-md border border-blue-300 bg-white px-3 text-sm font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {reminder?.status === 'active' ? '間隔を更新' : 'リマインドを開始'}
+          </button>
+          {reminder?.status === 'active' && (
+            <button
+              type="button"
+              onClick={() => void onDisable()}
+              disabled={controlsDisabled || !canDisable}
+              className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 sm:col-span-2"
+            >
+              停止
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  )
 }
 
 function AttachmentPreview({ attachment }: { attachment: SupportCaseAttachment }) {
@@ -592,6 +737,7 @@ export default function CaseDetail({
   caseForm,
   dirty,
   saving,
+  reminderSaving,
   canEditRouting,
   staffOptions,
   staffName,
@@ -601,6 +747,9 @@ export default function CaseDetail({
   onQuickStatus,
   onInternalMessageCreate,
   onInternalMessageReaction,
+  onFollowUpReminderConfigure,
+  onFollowUpReminderConfirm,
+  onFollowUpReminderDisable,
   onOpenChatWithDraft,
   onCopyReplyDraft,
   emptyState,
@@ -836,6 +985,18 @@ export default function CaseDetail({
                 <DetailInfoRow label="最終更新" value={formatDateTime(detail.updatedAt)} />
               </dl>
             </section>
+
+            <FollowUpReminderPanel
+              detail={detail}
+              primaryAssignee={caseForm.primaryAssignee.trim()}
+              staffName={staffName}
+              canEditRouting={canEditRouting}
+              dirty={dirty}
+              saving={saving || reminderSaving}
+              onConfigure={onFollowUpReminderConfigure}
+              onConfirm={onFollowUpReminderConfirm}
+              onDisable={onFollowUpReminderDisable}
+            />
 
             <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 shadow-sm" aria-label="対応設定">
               <div className="mb-3 border-b border-slate-200 pb-3">

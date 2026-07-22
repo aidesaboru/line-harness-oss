@@ -92,6 +92,7 @@ export default function SupportPage() {
   const [staffNames, setStaffNames] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [reminderSaving, setReminderSaving] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [statusFilter, setStatusFilter] = useState('all')
@@ -168,7 +169,7 @@ export default function SupportPage() {
     staffIdentityReady,
     identityIssue,
   })
-  const controlsDisabled = !staffIdentityReady || identityUnavailable || saving || loading || detailLoading
+  const controlsDisabled = !staffIdentityReady || identityUnavailable || saving || reminderSaving || loading || detailLoading
   const busyMessage = (() => {
     if (!staffIdentityReady) return 'ログイン権限を確認中です。'
     if (saving) return '保存中です。完了までお待ちください。'
@@ -553,6 +554,68 @@ export default function SupportPage() {
   const handleDiscard = useCallback(() => {
     setCaseForm(savedForm)
   }, [savedForm])
+
+  const handleFollowUpReminderConfigure = useCallback(async (intervalDays: number) => {
+    if (!detail || !selectedAccountId || reminderSaving) return
+    setReminderSaving(true)
+    try {
+      const res = await api.support.cases.configureFollowUpReminder(detail.id, selectedAccountId, intervalDays)
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, 'リマインドの設定に失敗しました'))
+        return
+      }
+      notify('success', detail.followUpReminder?.status === 'active' ? 'リマインド間隔を更新しました' : 'リマインドを開始しました')
+      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, 'リマインドの設定に失敗しました'))
+    } finally {
+      setReminderSaving(false)
+    }
+  }, [detail, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
+
+  const handleFollowUpReminderConfirm = useCallback(async () => {
+    if (!detail || !selectedAccountId || reminderSaving) return
+    setReminderSaving(true)
+    try {
+      const res = await api.support.cases.confirmFollowUpReminder(detail.id, selectedAccountId)
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, '本人確認に失敗しました'))
+        return
+      }
+      notify('success', detail.status === 'resolved' ? '本人確認を完了しました' : `確認しました 次回は${res.data.intervalDays}日後です`)
+      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, '本人確認に失敗しました'))
+    } finally {
+      setReminderSaving(false)
+    }
+  }, [detail, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
+
+  const handleFollowUpReminderDisable = useCallback(async () => {
+    if (!detail || !selectedAccountId || reminderSaving) return
+    const ok = await requestConfirm({
+      title: '案件フォローを停止しますか？',
+      message: 'これまでの設定と確認履歴は残したまま 今後の通知を停止します',
+      confirmLabel: '停止する',
+      cancelLabel: '戻る',
+      tone: 'warning',
+    })
+    if (!ok) return
+    setReminderSaving(true)
+    try {
+      const res = await api.support.cases.disableFollowUpReminder(detail.id, selectedAccountId)
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, 'リマインドの停止に失敗しました'))
+        return
+      }
+      notify('success', 'リマインドを停止しました')
+      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, 'リマインドの停止に失敗しました'))
+    } finally {
+      setReminderSaving(false)
+    }
+  }, [detail, selectedAccountId, reminderSaving, requestConfirm, notify, loadCases, loadDetail])
 
   const clearCreateDeepLink = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -954,6 +1017,7 @@ export default function SupportPage() {
               caseForm={caseForm}
               dirty={dirty}
               saving={saving}
+              reminderSaving={reminderSaving}
               canEditRouting={canEditCaseRouting}
               staffOptions={assigneeSuggestions}
               staffName={verifiedStaffName}
@@ -963,6 +1027,9 @@ export default function SupportPage() {
               onQuickStatus={handleQuickStatus}
               onInternalMessageCreate={handleCreateInternalMessage}
               onInternalMessageReaction={handleInternalMessageReaction}
+              onFollowUpReminderConfigure={handleFollowUpReminderConfigure}
+              onFollowUpReminderConfirm={handleFollowUpReminderConfirm}
+              onFollowUpReminderDisable={handleFollowUpReminderDisable}
               onOpenChatWithDraft={() => void handleOpenChatWithDraft()}
               onCopyReplyDraft={() => void handleCopyReplyDraft()}
               emptyState={detailEmptyState}

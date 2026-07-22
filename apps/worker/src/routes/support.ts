@@ -28,6 +28,12 @@ import {
   projectInternalMessage,
   type InternalMessageEventRow,
 } from '../services/internal-message-events.js';
+import {
+  isFollowUpReminderDue,
+  nextFollowUpDueAt,
+  serializeSupportCaseFollowUpReminder,
+  type SupportCaseFollowUpReminderRow,
+} from '../services/support-case-reminders.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 
 const support = new Hono<Env>();
@@ -134,6 +140,20 @@ type SupportCaseRow = {
   reopened_at: string | null;
   created_at: string;
   updated_at: string;
+  followup_reminder_id?: string | null;
+  followup_owner_staff_id?: string | null;
+  followup_owner_name?: string | null;
+  followup_interval_days?: number | null;
+  followup_next_due_at?: string | null;
+  followup_status?: 'active' | 'completed' | 'disabled' | null;
+  followup_version?: number | null;
+  followup_last_confirmed_at?: string | null;
+  followup_last_confirmed_by?: string | null;
+  followup_last_confirmed_name?: string | null;
+  followup_created_by?: string | null;
+  followup_created_by_name?: string | null;
+  followup_created_at?: string | null;
+  followup_updated_at?: string | null;
 };
 
 type SupportEscalationRow = {
@@ -579,6 +599,22 @@ const SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT = `(
     AND ml_reply.deleted_at IS NULL
 ) AS last_human_reply_at`;
 
+const SUPPORT_CASE_FOLLOWUP_SELECT = `
+  scr_followup.id AS followup_reminder_id,
+  scr_followup.owner_staff_id AS followup_owner_staff_id,
+  scr_followup.owner_name AS followup_owner_name,
+  scr_followup.interval_days AS followup_interval_days,
+  scr_followup.next_due_at AS followup_next_due_at,
+  scr_followup.status AS followup_status,
+  scr_followup.version AS followup_version,
+  scr_followup.last_confirmed_at AS followup_last_confirmed_at,
+  scr_followup.last_confirmed_by AS followup_last_confirmed_by,
+  scr_followup.last_confirmed_name AS followup_last_confirmed_name,
+  scr_followup.created_by AS followup_created_by,
+  scr_followup.created_by_name AS followup_created_by_name,
+  scr_followup.created_at AS followup_created_at,
+  scr_followup.updated_at AS followup_updated_at`;
+
 function parseMentionNames(raw: unknown, body: string): ValueResult<string[]> {
   if (raw === undefined || raw === null) {
     const names = new Set<string>();
@@ -957,6 +993,13 @@ function supportStaffMatchesText(staff: SupportAccessStaff, text: string | null 
   return Boolean(name && (text ?? '').trim() === name);
 }
 
+function parseFollowUpIntervalDays(raw: unknown): ValueResult<number> {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > 365) {
+    return { ok: false, error: 'リマインド間隔は1日から365日の整数で指定してください' };
+  }
+  return { ok: true, value: raw };
+}
+
 function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): ValueResult<string> {
   const raw = body && Object.prototype.hasOwnProperty.call(body, 'lineAccountId')
     ? body.lineAccountId
@@ -964,7 +1007,39 @@ function lineAccountIdFrom(c: Context<Env>, body?: Record<string, unknown>): Val
   return parseRequiredVisibleId(raw, 'lineAccountId');
 }
 
-function serializeCase(row: SupportCaseRow) {
+function followUpReminderFromCaseRow(row: SupportCaseRow): SupportCaseFollowUpReminderRow | null {
+  if (
+    !row.followup_reminder_id
+    || !row.followup_owner_name
+    || !row.followup_interval_days
+    || !row.followup_next_due_at
+    || !row.followup_status
+    || !row.followup_created_at
+    || !row.followup_updated_at
+    || !row.line_account_id
+  ) return null;
+  return {
+    id: row.followup_reminder_id,
+    case_id: row.id,
+    line_account_id: row.line_account_id,
+    owner_staff_id: row.followup_owner_staff_id ?? null,
+    owner_name: row.followup_owner_name,
+    interval_days: row.followup_interval_days,
+    next_due_at: row.followup_next_due_at,
+    status: row.followup_status,
+    version: row.followup_version ?? 1,
+    last_confirmed_at: row.followup_last_confirmed_at ?? null,
+    last_confirmed_by: row.followup_last_confirmed_by ?? null,
+    last_confirmed_name: row.followup_last_confirmed_name ?? null,
+    created_by: row.followup_created_by ?? null,
+    created_by_name: row.followup_created_by_name ?? null,
+    created_at: row.followup_created_at,
+    updated_at: row.followup_updated_at,
+  };
+}
+
+function serializeCase(row: SupportCaseRow, currentStaffId?: string) {
+  const followUpReminder = followUpReminderFromCaseRow(row);
   return {
     id: row.id,
     lineAccountId: row.line_account_id,
@@ -999,6 +1074,12 @@ function serializeCase(row: SupportCaseRow) {
     reopenedAt: row.reopened_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    followUpReminder: followUpReminder
+      ? serializeSupportCaseFollowUpReminder(followUpReminder, {
+          caseStatus: row.status,
+          currentStaffId,
+        })
+      : null,
   };
 }
 
@@ -1172,13 +1253,94 @@ async function getCaseRow(
               f.picture_url AS friend_picture_url,
               f.line_user_id,
               ${SUPPORT_CASE_ASSIGNEES_SELECT},
-              ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT}
+              ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT},
+              ${SUPPORT_CASE_FOLLOWUP_SELECT}
        FROM support_cases sc
        LEFT JOIN friends f ON f.id = sc.friend_id
+       LEFT JOIN support_case_followup_reminders scr_followup ON scr_followup.case_id = sc.id
        WHERE ${conditions.join(' AND ')}`,
     )
     .bind(...binds)
     .first<SupportCaseRow>();
+}
+
+async function getCaseFollowUpReminder(
+  db: D1Database,
+  caseId: string,
+  lineAccountId: string,
+): Promise<SupportCaseFollowUpReminderRow | null> {
+  return db
+    .prepare(
+      `SELECT *
+       FROM support_case_followup_reminders
+       WHERE case_id = ? AND line_account_id = ?`,
+    )
+    .bind(caseId, lineAccountId)
+    .first<SupportCaseFollowUpReminderRow>();
+}
+
+function prepareFollowUpReminderEvent(
+  db: D1Database,
+  reminderId: string,
+  caseId: string,
+  action: 'configured' | 'reconfigured' | 'confirmed' | 'completed' | 'disabled',
+  staff: SupportAccessStaff,
+  metadata: Record<string, unknown>,
+  now: string,
+  eventId = crypto.randomUUID(),
+) {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO support_case_followup_reminder_events (
+        id, reminder_id, case_id, action, metadata, actor_id, actor_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .bind(
+      eventId,
+      reminderId,
+      caseId,
+      action,
+      JSON.stringify(metadata),
+      staff.id,
+      staff.name,
+      now,
+    );
+}
+
+function prepareFollowUpConfirmationEvent(
+  db: D1Database,
+  reminder: SupportCaseFollowUpReminderRow,
+  action: 'confirmed' | 'completed',
+  staff: SupportAccessStaff,
+  metadata: Record<string, unknown>,
+  now: string,
+) {
+  return db
+    .prepare(
+      `INSERT OR IGNORE INTO support_case_followup_reminder_events (
+        id, reminder_id, case_id, action, metadata, actor_id, actor_name, created_at
+      )
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE EXISTS (
+        SELECT 1
+        FROM support_case_followup_reminders
+        WHERE id = ? AND version = ? AND last_confirmed_at = ? AND last_confirmed_by = ?
+      )`,
+    )
+    .bind(
+      `followup-confirm:${reminder.id}:${reminder.version}`,
+      reminder.id,
+      reminder.case_id,
+      action,
+      JSON.stringify(metadata),
+      staff.id,
+      staff.name,
+      now,
+      reminder.id,
+      reminder.version + 1,
+      now,
+      staff.id,
+    );
 }
 
 async function validateManualIds(
@@ -1653,9 +1815,11 @@ support.get('/api/support/cases', async (c) => {
              f.picture_url AS friend_picture_url,
              f.line_user_id,
              ${SUPPORT_CASE_ASSIGNEES_SELECT},
-             ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT}
+             ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT},
+             ${SUPPORT_CASE_FOLLOWUP_SELECT}
       FROM support_cases sc
       LEFT JOIN friends f ON f.id = sc.friend_id
+      LEFT JOIN support_case_followup_reminders scr_followup ON scr_followup.case_id = sc.id
       WHERE ${conditions.join(' AND ')}
       ORDER BY
         CASE sc.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
@@ -1664,7 +1828,7 @@ support.get('/api/support/cases', async (c) => {
         sc.updated_at DESC
       LIMIT ? OFFSET ?`;
     const result = await c.env.DB.prepare(sql).bind(...binds, limit, offset).all<SupportCaseRow>();
-    return c.json({ success: true, data: result.results.map(serializeCase) });
+    return c.json({ success: true, data: result.results.map((row) => serializeCase(row, staff.id)) });
   } catch (err) {
     console.error(`GET /api/support/cases error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
@@ -2001,7 +2165,7 @@ support.get('/api/support/cases/:id', async (c) => {
     return c.json({
       success: true,
       data: {
-        ...serializeCase(row),
+        ...serializeCase(row, staff.id),
         events: events.results.map(serializeEvent),
         escalations: escalations.results.map(serializeEscalation),
         internalMessages: internalMessages.results.map((message) => serializeInternalMessage(
@@ -2142,6 +2306,268 @@ support.get('/api/support/cases/:id/attachments/:attachmentId/file', async (c) =
   }
 });
 
+support.put('/api/support/cases/:id/follow-up-reminder', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const intervalDays = parseFollowUpIntervalDays(body.intervalDays);
+    if (!intervalDays.ok) return c.json({ success: false, error: intervalDays.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (!canManageSupportCaseRouting(staff) && !supportStaffMatchesText(staff, supportCase.primary_assignee)) {
+      return c.json({ success: false, error: 'リマインドを設定できるのは一次対応者または管理者です' }, 403);
+    }
+    const primaryAssignee = supportCase.primary_assignee?.trim() ?? '';
+    if (!primaryAssignee) {
+      return c.json({ success: false, error: '先に一次対応者を設定してください' }, 400);
+    }
+    const staffIds = await activeStaffIdsByName(c.env.DB, [primaryAssignee]);
+    const ownerStaffId = staffIds.get(primaryAssignee);
+    if (!ownerStaffId) {
+      return c.json({ success: false, error: '一次対応者を在籍中のスタッフから選択してください' }, 400);
+    }
+
+    const existing = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    const reminderId = existing?.id ?? crypto.randomUUID();
+    const now = jstNow();
+    const preservePendingConfirmation = existing
+      ? isFollowUpReminderDue(existing, supportCase.status, new Date(now))
+      : false;
+    const nextDueAt = preservePendingConfirmation
+      ? existing!.next_due_at
+      : nextFollowUpDueAt(intervalDays.value, new Date(now));
+    const statements: D1PreparedStatement[] = [];
+    if (existing) {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE support_case_followup_reminders
+             SET owner_staff_id = ?, owner_name = ?, interval_days = ?, next_due_at = ?,
+                 status = 'active', version = version + 1, updated_at = ?
+             WHERE id = ? AND case_id = ? AND line_account_id = ?`,
+          )
+          .bind(
+            ownerStaffId,
+            primaryAssignee,
+            intervalDays.value,
+            nextDueAt,
+            now,
+            reminderId,
+            caseId.value,
+            lineAccountId.value,
+          ),
+      );
+    } else {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `INSERT INTO support_case_followup_reminders (
+              id, case_id, line_account_id, owner_staff_id, owner_name, interval_days,
+              next_due_at, status, created_by, created_by_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+          )
+          .bind(
+            reminderId,
+            caseId.value,
+            lineAccountId.value,
+            ownerStaffId,
+            primaryAssignee,
+            intervalDays.value,
+            nextDueAt,
+            staff.id,
+            staff.name,
+            now,
+            now,
+          ),
+      );
+    }
+    statements.push(
+      prepareFollowUpReminderEvent(
+        c.env.DB,
+        reminderId,
+        caseId.value,
+        existing ? 'reconfigured' : 'configured',
+        staff,
+        {
+          intervalDays: intervalDays.value,
+          nextDueAt,
+          ownerStaffId,
+          ownerName: primaryAssignee,
+          previousIntervalDays: existing?.interval_days ?? null,
+          previousOwnerStaffId: existing?.owner_staff_id ?? null,
+          preservedPendingConfirmation: preservePendingConfirmation,
+        },
+        now,
+      ),
+    );
+    await c.env.DB.batch(statements);
+    const updated = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    return c.json({
+      success: true,
+      data: serializeSupportCaseFollowUpReminder(updated!, {
+        caseStatus: supportCase.status,
+        currentStaffId: staff.id,
+      }),
+    });
+  } catch (err) {
+    console.error(`PUT /api/support/cases/:id/follow-up-reminder error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'リマインドの設定に失敗しました' }, 500);
+  }
+});
+
+support.post('/api/support/cases/:id/follow-up-reminder/confirm', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c, parsedBody.value);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    const reminder = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    if (!reminder) return c.json({ success: false, error: 'リマインドが設定されていません' }, 404);
+    if (reminder.owner_staff_id !== staff.id) {
+      return c.json({ success: false, error: '確認できるのは一次対応者本人だけです' }, 403);
+    }
+    if (reminder.status !== 'active') {
+      return c.json({ success: false, error: 'このリマインドは終了しています' }, 400);
+    }
+
+    const now = jstNow();
+    if (!isFollowUpReminderDue(reminder, supportCase.status, new Date(now))) {
+      return c.json({ success: false, error: 'まだ確認予定日になっていません' }, 400);
+    }
+    const completed = supportCase.status === 'resolved';
+    const nextDueAt = completed
+      ? reminder.next_due_at
+      : nextFollowUpDueAt(reminder.interval_days, new Date(now));
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          `UPDATE support_case_followup_reminders
+           SET status = ?, next_due_at = ?, last_confirmed_at = ?, last_confirmed_by = ?,
+               last_confirmed_name = ?, version = version + 1, updated_at = ?
+           WHERE id = ? AND owner_staff_id = ? AND status = 'active' AND version = ?`,
+        )
+        .bind(
+          completed ? 'completed' : 'active',
+          nextDueAt,
+          now,
+          staff.id,
+          staff.name,
+          now,
+          reminder.id,
+          staff.id,
+          reminder.version,
+        ),
+      prepareFollowUpConfirmationEvent(
+        c.env.DB,
+        reminder,
+        completed ? 'completed' : 'confirmed',
+        staff,
+        { caseStatus: supportCase.status, nextDueAt, intervalDays: reminder.interval_days },
+        now,
+      ),
+      c.env.DB
+        .prepare(
+          `UPDATE app_notification_inbox
+           SET dismissed_at = ?, updated_at = ?
+           WHERE recipient_staff_id = ? AND line_account_id = ?
+             AND notification_key LIKE ?`,
+        )
+        .bind(now, now, staff.id, lineAccountId.value, `case_followup:${reminder.id}:%`),
+    ]);
+    const updated = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    if (!updated || updated.last_confirmed_at !== now || updated.last_confirmed_by !== staff.id) {
+      return c.json({ success: false, error: '他の操作が先に反映されました 最新状態を確認してください' }, 409);
+    }
+    return c.json({
+      success: true,
+      data: serializeSupportCaseFollowUpReminder(updated!, {
+        caseStatus: supportCase.status,
+        currentStaffId: staff.id,
+      }),
+    });
+  } catch (err) {
+    console.error(`POST /api/support/cases/:id/follow-up-reminder/confirm error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'リマインドの確認に失敗しました' }, 500);
+  }
+});
+
+support.post('/api/support/cases/:id/follow-up-reminder/disable', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c, parsedBody.value);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    const reminder = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    if (!reminder) return c.json({ success: false, error: 'リマインドが設定されていません' }, 404);
+    if (!canManageSupportCaseRouting(staff) && reminder.owner_staff_id !== staff.id) {
+      return c.json({ success: false, error: 'リマインドを停止できるのは一次対応者または管理者です' }, 403);
+    }
+    if (reminder.status === 'disabled') {
+      return c.json({
+        success: true,
+        data: serializeSupportCaseFollowUpReminder(reminder, {
+          caseStatus: supportCase.status,
+          currentStaffId: staff.id,
+        }),
+      });
+    }
+    const now = jstNow();
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          `UPDATE support_case_followup_reminders
+           SET status = 'disabled', version = version + 1, updated_at = ?
+           WHERE id = ? AND case_id = ? AND line_account_id = ?`,
+        )
+        .bind(now, reminder.id, caseId.value, lineAccountId.value),
+      prepareFollowUpReminderEvent(
+        c.env.DB,
+        reminder.id,
+        caseId.value,
+        'disabled',
+        staff,
+        { intervalDays: reminder.interval_days, nextDueAt: reminder.next_due_at },
+        now,
+      ),
+      c.env.DB
+        .prepare(
+          `UPDATE app_notification_inbox
+           SET dismissed_at = ?, updated_at = ?
+           WHERE recipient_staff_id = ? AND line_account_id = ?
+             AND notification_key LIKE ?`,
+        )
+        .bind(now, now, reminder.owner_staff_id, lineAccountId.value, `case_followup:${reminder.id}:%`),
+    ]);
+    const updated = await getCaseFollowUpReminder(c.env.DB, caseId.value, lineAccountId.value);
+    return c.json({
+      success: true,
+      data: serializeSupportCaseFollowUpReminder(updated!, {
+        caseStatus: supportCase.status,
+        currentStaffId: staff.id,
+      }),
+    });
+  } catch (err) {
+    console.error(`POST /api/support/cases/:id/follow-up-reminder/disable error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'リマインドの停止に失敗しました' }, 500);
+  }
+});
+
 support.patch('/api/support/cases/:id', async (c) => {
   try {
     const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
@@ -2238,8 +2664,23 @@ support.patch('/api/support/cases/:id', async (c) => {
       return c.json({ success: false, error: '再オープンは完了済み案件だけで選択できます' }, 400);
     }
 
+    const existingFollowUpReminder = followUpReminderFromCaseRow(existing);
+    const primaryAssigneeChanged = existing.primary_assignee !== next.primary_assignee;
+    let nextReminderOwnerStaffId: string | null = null;
+    if (primaryAssigneeChanged && existingFollowUpReminder?.status === 'active') {
+      const nextPrimaryAssignee = next.primary_assignee?.trim() ?? '';
+      if (!nextPrimaryAssignee) {
+        return c.json({ success: false, error: 'リマインド中は一次対応者を未設定にできません 先にリマインドを停止してください' }, 400);
+      }
+      const staffIds = await activeStaffIdsByName(c.env.DB, [nextPrimaryAssignee]);
+      nextReminderOwnerStaffId = staffIds.get(nextPrimaryAssignee) ?? null;
+      if (!nextReminderOwnerStaffId) {
+        return c.json({ success: false, error: 'リマインド中の一次対応者は在籍中のスタッフから選択してください' }, 400);
+      }
+    }
+
     if (fields.length === 0) {
-      return c.json({ success: true, data: serializeCase(existing) });
+      return c.json({ success: true, data: serializeCase(existing, staff.id) });
     }
 
     const now = jstNow();
@@ -2269,6 +2710,57 @@ support.patch('/api/support/cases/:id', async (c) => {
           .bind(staff.id, now, id.value, lineAccountId.value),
       );
     }
+    if (primaryAssigneeChanged && existingFollowUpReminder?.status === 'active' && nextReminderOwnerStaffId) {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE support_case_followup_reminders
+             SET owner_staff_id = ?, owner_name = ?, version = version + 1, updated_at = ?
+             WHERE id = ? AND case_id = ? AND line_account_id = ? AND status = 'active'`,
+          )
+          .bind(
+            nextReminderOwnerStaffId,
+            next.primary_assignee,
+            now,
+            existingFollowUpReminder.id,
+            id.value,
+            lineAccountId.value,
+          ),
+        prepareFollowUpReminderEvent(
+          c.env.DB,
+          existingFollowUpReminder.id,
+          id.value,
+          'reconfigured',
+          staff,
+          {
+            reason: 'primary_assignee_changed',
+            previousOwnerStaffId: existingFollowUpReminder.owner_staff_id,
+            previousOwnerName: existingFollowUpReminder.owner_name,
+            ownerStaffId: nextReminderOwnerStaffId,
+            ownerName: next.primary_assignee,
+          },
+          now,
+        ),
+      );
+      if (existingFollowUpReminder.owner_staff_id) {
+        statements.push(
+          c.env.DB
+            .prepare(
+              `UPDATE app_notification_inbox
+               SET dismissed_at = ?, updated_at = ?
+               WHERE recipient_staff_id = ? AND line_account_id = ?
+                 AND notification_key LIKE ?`,
+            )
+            .bind(
+              now,
+              now,
+              existingFollowUpReminder.owner_staff_id,
+              lineAccountId.value,
+              `case_followup:${existingFollowUpReminder.id}:%`,
+            ),
+        );
+      }
+    }
     statements.push(
       prepareCaseEvent(
         c.env.DB,
@@ -2294,7 +2786,7 @@ support.patch('/api/support/cases/:id', async (c) => {
     }
 
     const updated = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
-    return c.json({ success: true, data: serializeCase(updated!) });
+    return c.json({ success: true, data: serializeCase(updated!, staff.id) });
   } catch (err) {
     console.error(`PATCH /api/support/cases/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);

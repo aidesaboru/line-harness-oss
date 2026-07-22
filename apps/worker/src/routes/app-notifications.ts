@@ -19,10 +19,12 @@ import {
   latestInternalMessageEvents,
   projectInternalMessage,
 } from '../services/internal-message-events.js';
+import { currentFollowUpCycleDueAt } from '../services/support-case-reminders.js';
 
 const appNotifications = new Hono<Env>();
 
 const NOTIFICATION_LIMIT = 12;
+const FOLLOW_UP_NOTIFICATION_LIMIT = 100;
 const INTERNAL_CHAT_FEED_DEFAULT_LIMIT = 50;
 const INTERNAL_CHAT_FEED_MAX_LIMIT = 100;
 const CURSOR_MAX_LENGTH = 64;
@@ -37,6 +39,7 @@ const VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 
 type AppNotificationKind =
   | 'urgent_case'
+  | 'case_followup_reminder'
   | 'secondary_assigned'
   | 'secondary_answered'
   | 'support_mention'
@@ -99,6 +102,18 @@ type ChatMentionRow = {
   body: string;
   created_by_name: string | null;
   created_at: string;
+};
+
+type CaseFollowUpReminderRow = {
+  reminder_id: string;
+  case_id: string;
+  interval_days: number;
+  next_due_at: string;
+  case_status: string;
+  closed_at: string | null;
+  updated_at: string;
+  case_title: string;
+  friend_name: string | null;
 };
 
 type SupportInternalChatFeedRow = {
@@ -253,7 +268,20 @@ async function persistNotificationInbox(
 ): Promise<void> {
   if (items.length === 0) return;
   const now = jstNow();
-  await db.batch(items.map((item) => (
+  const supersededFollowUps = items.flatMap((item) => {
+    if (item.kind !== 'case_followup_reminder') return [];
+    const prefix = item.id.split(':').slice(0, 2).join(':');
+    return [db
+      .prepare(
+        `UPDATE app_notification_inbox
+         SET dismissed_at = COALESCE(dismissed_at, ?), updated_at = ?
+         WHERE recipient_staff_id = ?
+           AND notification_key LIKE ?
+           AND notification_key != ?`,
+      )
+      .bind(now, now, staff.id, `${prefix}:%`, item.id)];
+  });
+  const inserts = items.map((item) => (
     db.prepare(
       `INSERT INTO app_notification_inbox (
          id, notification_key, recipient_staff_id, line_account_id,
@@ -280,7 +308,8 @@ async function persistNotificationInbox(
       now,
       now,
     )
-  )));
+  ));
+  await db.batch([...supersededFollowUps, ...inserts]);
 }
 
 function serializeNotificationInboxRow(row: AppNotificationInboxRow) {
@@ -666,10 +695,71 @@ function parseWebPushSubscription(raw: WebPushSubscriptionBody): ValueResult<{
 
 function notificationMatchesSubscription(item: AppNotificationItem, subscription: WebPushSubscriptionRow): boolean {
   if (item.kind === 'urgent_case') return subscription.notify_urgent === 1;
+  if (item.kind === 'case_followup_reminder') return false;
   if (item.kind === 'secondary_assigned' || item.kind === 'secondary_answered') {
     return subscription.notify_secondary === 1;
   }
   return subscription.notify_mentions === 1;
+}
+
+async function fetchCaseFollowUpReminders(
+  db: D1Database,
+  staff: SupportAccessStaff,
+  after: string,
+  lineAccountId?: string,
+  includePersistentDue = false,
+): Promise<AppNotificationItem[]> {
+  const conditions = [
+    "scr.status = 'active'",
+    'scr.owner_staff_id = ?',
+    "(scr.next_due_at <= ? OR sc.status = 'resolved')",
+  ];
+  const now = new Date();
+  const nowText = toJstString(now);
+  const binds: unknown[] = [staff.id, nowText];
+  if (lineAccountId) {
+    conditions.push('scr.line_account_id = ?');
+    binds.push(lineAccountId);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT scr.id AS reminder_id,
+              scr.case_id,
+              scr.interval_days,
+              scr.next_due_at,
+              sc.status AS case_status,
+              sc.closed_at,
+              sc.updated_at,
+              sc.title AS case_title,
+              COALESCE(NULLIF(f.display_name, ''), NULLIF(sc.contact_name, ''), NULLIF(sc.company_name, ''), NULLIF(sc.customer_number, '')) AS friend_name
+       FROM support_case_followup_reminders scr
+       JOIN support_cases sc ON sc.id = scr.case_id AND sc.line_account_id = scr.line_account_id
+       LEFT JOIN friends f ON f.id = sc.friend_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY CASE WHEN sc.status = 'resolved' THEN 0 ELSE 1 END,
+                scr.next_due_at ASC
+       LIMIT ?`,
+    )
+    .bind(...binds, FOLLOW_UP_NOTIFICATION_LIMIT)
+    .all<CaseFollowUpReminderRow>();
+
+  return rows.results.flatMap((row) => {
+    const cycleBase = row.case_status === 'resolved'
+      ? (row.closed_at ?? row.updated_at)
+      : row.next_due_at;
+    const cycleDueAt = currentFollowUpCycleDueAt(cycleBase, row.interval_days, now);
+    if (!cycleDueAt || (!includePersistentDue && cycleDueAt <= after)) return [];
+    const resolved = row.case_status === 'resolved';
+    return [{
+      id: `case_followup:${row.reminder_id}:${cycleDueAt}`,
+      kind: 'case_followup_reminder' as const,
+      title: resolved ? '対応済み案件の本人確認が必要です' : '案件のフォロー確認日です',
+      body: `${row.case_title || 'チケット'}${row.friend_name ? ` / ${row.friend_name}` : ''} / ${row.interval_days}日おき`,
+      href: `/support?case=${encodeURIComponent(row.case_id)}`,
+      createdAt: cycleDueAt,
+    }];
+  });
 }
 
 function toPushPayload(item: AppNotificationItem): WebPushPayload {
@@ -989,24 +1079,34 @@ export async function collectAppNotifications(
   staff: SupportAccessStaff,
   after: string,
   lineAccountId?: string,
+  options: { includePersistentDue?: boolean } = {},
 ): Promise<AppNotificationItem[]> {
   const batches = await Promise.all([
     fetchUrgentCases(db, staff, after, lineAccountId),
+    fetchCaseFollowUpReminders(db, staff, after, lineAccountId, options.includePersistentDue),
     fetchSecondaryAssigned(db, staff, after, lineAccountId),
     fetchSecondaryAnswered(db, staff, after, lineAccountId),
     fetchSupportMentions(db, staff, after, lineAccountId),
     fetchChatMentions(db, staff, after, lineAccountId),
   ]);
   const seen = new Set<string>();
-  return batches
+  const sorted = batches
     .flat()
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .filter((item) => {
       if (seen.has(item.id)) return false;
       seen.add(item.id);
       return true;
-    })
-    .slice(-NOTIFICATION_LIMIT);
+    });
+  if (options.includePersistentDue) {
+    const followUps = sorted.filter((item) => item.kind === 'case_followup_reminder');
+    const recentOthers = sorted
+      .filter((item) => item.kind !== 'case_followup_reminder')
+      .slice(-NOTIFICATION_LIMIT);
+    return [...recentOthers, ...followUps]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+  return sorted.slice(-NOTIFICATION_LIMIT);
 }
 
 appNotifications.get('/api/app-notifications/recent', async (c) => {
@@ -1046,6 +1146,7 @@ appNotifications.get('/api/app-notifications/inbox', async (c) => {
       staff,
       backfillAfter,
       lineAccountId.value,
+      { includePersistentDue: true },
     );
     await persistNotificationInbox(c.env.DB, staff, lineAccountId.value, collected);
 

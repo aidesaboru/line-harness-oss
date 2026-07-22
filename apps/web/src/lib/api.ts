@@ -202,6 +202,7 @@ export type ChatExternalOutgoingResponse = {
 
 export type AppNotificationKind =
   | 'urgent_case'
+  | 'case_followup_reminder'
   | 'secondary_assigned'
   | 'secondary_answered'
   | 'support_mention'
@@ -368,6 +369,26 @@ export type SupportEscalationStatus =
   | 'expert_check'
   | 'closed'
 
+export type SupportCaseFollowUpReminder = {
+  id: string
+  caseId: string
+  lineAccountId: string
+  ownerStaffId: string | null
+  ownerName: string
+  intervalDays: number
+  nextDueAt: string
+  status: 'active' | 'completed' | 'disabled'
+  version: number
+  isDue: boolean
+  requiresPrimaryConfirmation: boolean
+  canConfirm: boolean
+  lastConfirmedAt: string | null
+  lastConfirmedBy: string | null
+  lastConfirmedName: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 export type SupportCase = {
   id: string
   lineAccountId: string | null
@@ -402,6 +423,7 @@ export type SupportCase = {
   createdAt: string
   updatedAt: string
   lastHumanReplyAt?: string | null
+  followUpReminder: SupportCaseFollowUpReminder | null
 }
 
 export type SupportCaseAttachment = {
@@ -1331,6 +1353,21 @@ export const api = {
         )
       },
       attachmentBlob: (attachment: SupportCaseAttachment) => fetchApiBlob(attachment.filePath),
+      configureFollowUpReminder: (id: string, accountId: string, intervalDays: number) =>
+        fetchApi<ApiResponse<SupportCaseFollowUpReminder>>(`/api/support/cases/${id}/follow-up-reminder`, {
+          method: 'PUT',
+          body: JSON.stringify({ lineAccountId: accountId, intervalDays }),
+        }),
+      confirmFollowUpReminder: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<SupportCaseFollowUpReminder>>(`/api/support/cases/${id}/follow-up-reminder/confirm`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId }),
+        }),
+      disableFollowUpReminder: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<SupportCaseFollowUpReminder>>(`/api/support/cases/${id}/follow-up-reminder/disable`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId }),
+        }),
       escalate: (id: string, accountId: string, data: { assignee?: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/cases/${id}/escalations`, {
           method: 'POST',

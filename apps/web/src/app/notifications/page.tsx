@@ -21,6 +21,8 @@ function notificationTone(kind: AppNotificationItem['kind']): string {
   switch (kind) {
     case 'urgent_case':
       return 'border-red-200 bg-red-50 text-red-800'
+    case 'case_followup_reminder':
+      return 'border-amber-200 bg-amber-50 text-amber-800'
     case 'secondary_answered':
       return 'border-emerald-200 bg-emerald-50 text-emerald-800'
     case 'secondary_assigned':
@@ -37,6 +39,8 @@ function notificationKindLabel(kind: AppNotificationItem['kind']): string {
   switch (kind) {
     case 'urgent_case':
       return '大至急'
+    case 'case_followup_reminder':
+      return '本人確認'
     case 'secondary_assigned':
       return '二次対応'
     case 'secondary_answered':
@@ -139,8 +143,13 @@ export default function NotificationsPage() {
     () => feedItems.filter((item) => isMentionForMe(item, staffId, staffName)).slice(0, 10),
     [feedItems, staffId, staffName],
   )
+  const followUpNotifications = useMemo(
+    () => notifications.filter((item) => item.kind === 'case_followup_reminder'),
+    [notifications],
+  )
 
   const cards = [
+    { label: '本人確認待ち', value: followUpNotifications.length, tone: 'text-amber-700 bg-amber-50 border-amber-200' },
     { label: '二次回答済み', value: summary?.totals.secondaryAnswered ?? 0, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
     { label: '大至急', value: summary?.totals.urgent ?? 0, tone: 'text-red-700 bg-red-50 border-red-200' },
     { label: '自分宛メンション', value: myMentions.length, tone: 'text-sky-700 bg-sky-50 border-sky-200' },
@@ -210,7 +219,7 @@ export default function NotificationsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
         {cards.map((card) => (
           <div key={card.label} className={`rounded-lg border px-3 py-2.5 sm:rounded-xl sm:px-4 sm:py-3 ${card.tone}`}>
             <p className="text-xs font-medium opacity-80">{card.label}</p>
@@ -224,15 +233,25 @@ export default function NotificationsPage() {
           <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 px-4 py-3">
               <h2 className="text-sm font-semibold text-slate-900">今見るもの</h2>
-              <p className="mt-0.5 text-xs text-slate-500">二次回答済みと大至急を優先して表示します。</p>
+              <p className="mt-0.5 text-xs text-slate-500">本人確認待ち 二次回答済み 大至急を優先して表示します。</p>
             </div>
             <div className="divide-y divide-slate-100">
               {loading ? (
                 <div className="p-4 text-sm text-slate-500">読み込み中...</div>
-              ) : secondaryAnsweredCases.length === 0 && urgentCases.length === 0 ? (
+              ) : followUpNotifications.length === 0 && secondaryAnsweredCases.length === 0 && urgentCases.length === 0 ? (
                 <div className="p-6 text-sm font-medium text-slate-500">優先して確認するチケットはありません</div>
               ) : (
                 <>
+                  {followUpNotifications.map((item) => (
+                    <Link key={`follow-up-${item.id}`} href={item.href} className="block px-4 py-3 hover:bg-slate-50">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">一次対応者の確認待ち</span>
+                        <span className="text-xs text-slate-400">通知 {formatDateTime(item.createdAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">{item.body}</p>
+                    </Link>
+                  ))}
                   {secondaryAnsweredCases.map((item) => (
                     <Link key={`secondary-${item.id}`} href={caseHref(item)} className="block px-4 py-3 hover:bg-slate-50">
                       <div className="flex flex-wrap items-center gap-2">

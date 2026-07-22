@@ -148,6 +148,25 @@ type SupportKnowledgeImportRow = {
   updated_at: string;
 };
 
+type SupportCaseFollowUpReminderRow = {
+  id: string;
+  case_id: string;
+  line_account_id: string;
+  owner_staff_id: string | null;
+  owner_name: string;
+  interval_days: number;
+  next_due_at: string;
+  status: 'active' | 'completed' | 'disabled';
+  version: number;
+  last_confirmed_at: string | null;
+  last_confirmed_by: string | null;
+  last_confirmed_name: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type FriendRow = {
   id: string;
   line_account_id: string | null;
@@ -307,6 +326,7 @@ function makeSupportDb(state: {
   friends?: FriendRow[];
   manuals?: SupportManualRow[];
   knowledgeImports?: SupportKnowledgeImportRow[];
+  followUpReminders?: SupportCaseFollowUpReminderRow[];
 }) {
   const cases = state.cases ?? [];
   const escalations = state.escalations ?? [];
@@ -316,6 +336,7 @@ function makeSupportDb(state: {
   const friends = state.friends ?? [];
   const manuals = state.manuals ?? [];
   const knowledgeImports = state.knowledgeImports ?? [];
+  const followUpReminders = state.followUpReminders ?? [];
   const calls: DbCall[] = [];
 
   function hydrateCase(row: SupportCaseRow): SupportCaseRow {
@@ -496,6 +517,12 @@ function makeSupportDb(state: {
             const [friendId] = bound as [string];
             const friend = friends.find((item) => item.id === friendId);
             return (friend ?? null) as T | null;
+          }
+          if (sql.includes('FROM support_case_followup_reminders') && sql.includes('WHERE case_id = ? AND line_account_id = ?')) {
+            const [caseId, lineAccountId] = bound as [string, string];
+            return (followUpReminders.find(
+              (item) => item.case_id === caseId && item.line_account_id === lineAccountId,
+            ) ?? null) as T | null;
           }
           if (sql.includes('FROM support_cases sc') && sql.includes('WHERE sc.id = ? AND sc.line_account_id = ?')) {
             const [caseId, lineAccountId] = bound as [string, string];
@@ -939,7 +966,7 @@ function makeSupportDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals, knowledgeImports } };
+  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals, knowledgeImports, followUpReminders } };
 }
 
 function setupApp(
@@ -3166,5 +3193,85 @@ describe('support CRM routes', () => {
       status: 'published',
       reviewed_by: 'owner-1',
     });
+  });
+
+  test('does not let an owner confirm a follow-up reminder for the primary assignee', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [baseCase({
+        id: 'case-follow-up',
+        status: 'resolved',
+        primary_assignee: '田島',
+        closed_at: '2026-07-22T10:00:00.000+09:00',
+      })],
+      followUpReminders: [{
+        id: 'reminder-1',
+        case_id: 'case-follow-up',
+        line_account_id: 'acc-1',
+        owner_staff_id: 'staff-primary',
+        owner_name: '田島',
+        interval_days: 7,
+        next_due_at: '2026-07-29T10:00:00.000+09:00',
+        status: 'active',
+        version: 1,
+        last_confirmed_at: null,
+        last_confirmed_by: null,
+        last_confirmed_name: null,
+        created_by: 'owner-1',
+        created_by_name: 'Owner',
+        created_at: '2026-07-22T10:00:00.000+09:00',
+        updated_at: '2026-07-22T10:00:00.000+09:00',
+      }],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request(
+      '/api/support/cases/case-follow-up/follow-up-reminder/confirm',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ success: false, error: '確認できるのは一次対応者本人だけです' });
+    expect(calls.some((call) => call.sql.includes('UPDATE support_case_followup_reminders'))).toBe(false);
+    expect(calls.some((call) => /DELETE\s+FROM/i.test(call.sql))).toBe(false);
+  });
+
+  test('does not let the primary assignee confirm before the reminder date', async () => {
+    const { db, calls } = makeSupportDb({
+      cases: [baseCase({ id: 'case-future', status: 'in_progress', primary_assignee: '田島' })],
+      followUpReminders: [{
+        id: 'reminder-future',
+        case_id: 'case-future',
+        line_account_id: 'acc-1',
+        owner_staff_id: 'staff-1',
+        owner_name: '田島',
+        interval_days: 30,
+        next_due_at: '2099-12-31T10:00:00.000+09:00',
+        status: 'active',
+        version: 1,
+        last_confirmed_at: null,
+        last_confirmed_by: null,
+        last_confirmed_name: null,
+        created_by: 'owner-1',
+        created_by_name: 'Owner',
+        created_at: '2026-07-22T10:00:00.000+09:00',
+        updated_at: '2026-07-22T10:00:00.000+09:00',
+      }],
+    });
+
+    const res = await setupApp(db, { id: 'staff-1', name: '田島', role: 'staff' }).request(
+      '/api/support/cases/case-future/follow-up-reminder/confirm',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineAccountId: 'acc-1' }),
+      },
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ success: false, error: 'まだ確認予定日になっていません' });
+    expect(calls.some((call) => call.sql.includes('UPDATE support_case_followup_reminders'))).toBe(false);
   });
 });

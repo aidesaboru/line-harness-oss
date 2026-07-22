@@ -125,6 +125,41 @@ function makeInternalChatDb() {
   return { db: { prepare, batch } as unknown as D1Database, calls };
 }
 
+function makeFollowUpReminderDb() {
+  const calls: DbCall[] = [];
+  const prepare = vi.fn((sql: string) => ({
+    bind: (...binds: unknown[]) => {
+      calls.push({ sql, binds });
+      return {
+        all: vi.fn(async () => {
+          if (sql.includes('FROM support_case_followup_reminders scr')) {
+            return {
+              results: [{
+                reminder_id: 'reminder-1',
+                case_id: 'case-1',
+                interval_days: 3,
+                next_due_at: '2026-07-20T10:00:00.000+09:00',
+                case_status: 'resolved',
+                closed_at: '2026-07-22T09:00:00.000+09:00',
+                updated_at: '2026-07-22T09:00:00.000+09:00',
+                case_title: '請求内容の確認',
+                friend_name: '山田 太郎',
+              }],
+            };
+          }
+          return { results: [] };
+        }),
+        first: vi.fn(async () => null),
+        run: vi.fn(async () => ({ success: true })),
+      };
+    },
+  }));
+  const batch = vi.fn(async (statements: Array<{ run: () => Promise<unknown> }>) => (
+    Promise.all(statements.map((statement) => statement.run()))
+  ));
+  return { db: { prepare, batch } as unknown as D1Database, calls };
+}
+
 describe('app notifications', () => {
   test('recent urgent notifications read customer names without support_cases.friend_name', async () => {
     const { db, calls } = makeDb();
@@ -213,5 +248,32 @@ describe('app notifications', () => {
     expect(updateCall?.sql).toContain('read_at = COALESCE(read_at, ?)');
     expect(updateCall?.binds).toContain('owner-1');
     expect(calls.some((call) => /DELETE\s+FROM/i.test(call.sql))).toBe(false);
+  });
+
+  test('keeps a resolved case in primary confirmation notifications', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-22T12:00:00.000+09:00'));
+    try {
+      const { db, calls } = makeFollowUpReminderDb();
+      const res = await setupApp(db).request(
+        '/api/app-notifications/recent?after=2026-07-22T08:00:00.000%2B09:00&lineAccountId=acc-1',
+      );
+      const body = await res.json() as {
+        success: boolean;
+        data: { items: Array<{ kind: string; title: string; body: string }> };
+      };
+
+      expect(res.status).toBe(200);
+      expect(body.data.items).toContainEqual(expect.objectContaining({
+        kind: 'case_followup_reminder',
+        title: '対応済み案件の本人確認が必要です',
+        body: '請求内容の確認 / 山田 太郎 / 3日おき',
+      }));
+      const reminderCall = calls.find((call) => call.sql.includes('FROM support_case_followup_reminders scr'));
+      expect(reminderCall?.binds).toContain('owner-1');
+      expect(calls.some((call) => /DELETE\s+FROM/i.test(call.sql))).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

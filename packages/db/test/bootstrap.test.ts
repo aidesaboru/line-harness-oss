@@ -118,4 +118,36 @@ describe('bootstrap.sql', () => {
     expect(db.prepare('SELECT body FROM internal_message_events WHERE id = ?').get('event-1'))
       .toEqual({ body: '修正後の本文' });
   });
+
+  it('retains case follow-up settings and confirmation history', () => {
+    const db = new Database(':memory:');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+    db.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('account-1', 'channel-1', 'テストアカウント', 'token', 'secret');
+    db.prepare(
+      `INSERT INTO support_cases (id, line_account_id, title)
+       VALUES (?, ?, ?)`,
+    ).run('case-1', 'account-1', 'フォロー確認');
+    db.prepare(
+      `INSERT INTO support_case_followup_reminders (
+        id, case_id, line_account_id, owner_name, interval_days, next_due_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run('reminder-1', 'case-1', 'account-1', '一次担当', 7, '2026-07-29T10:00:00.000+09:00');
+    db.prepare(
+      `INSERT INTO support_case_followup_reminder_events (
+        id, reminder_id, case_id, action, actor_name
+      ) VALUES (?, ?, ?, ?, ?)`,
+    ).run('event-1', 'reminder-1', 'case-1', 'confirmed', '一次担当');
+
+    expect(() => db.prepare('DELETE FROM support_case_followup_reminders WHERE id = ?').run('reminder-1'))
+      .toThrow(/cannot be deleted/i);
+    expect(() => db.prepare('UPDATE support_case_followup_reminder_events SET actor_name = ? WHERE id = ?').run('別担当', 'event-1'))
+      .toThrow(/cannot be updated/i);
+    expect(() => db.prepare('DELETE FROM support_case_followup_reminder_events WHERE id = ?').run('event-1'))
+      .toThrow(/cannot be deleted/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM support_case_followup_reminder_events').get())
+      .toEqual({ count: 1 });
+  });
 });

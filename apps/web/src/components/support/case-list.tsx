@@ -80,6 +80,8 @@ function CaseRow({
   const hasSecondaryAssignee = Boolean(item.escalationAssignee?.trim())
   const hasSecondaryAnswer = item.status === 'secondary_answered'
   const showPriority = item.priority === 'urgent' || item.priority === 'high'
+  const followUpReminder = item.followUpReminder
+  const followUpNeedsConfirmation = Boolean(followUpReminder?.requiresPrimaryConfirmation)
   const dueTone =
     item.status === 'resolved'
       ? 'text-gray-400'
@@ -89,7 +91,9 @@ function CaseRow({
           ? 'font-medium text-amber-700'
           : 'text-gray-500'
   const accentTone =
-    item.priority === 'urgent' || overdue
+    followUpNeedsConfirmation
+      ? 'bg-amber-500'
+      : item.priority === 'urgent' || overdue
       ? 'bg-red-500'
       : item.priority === 'high'
         ? 'bg-orange-500'
@@ -141,6 +145,11 @@ function CaseRow({
               一次確認へ
             </span>
           )}
+          {followUpNeedsConfirmation && (
+            <span className="shrink-0 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium leading-none text-amber-800">
+              本人確認待ち
+            </span>
+          )}
         </div>
 
         <div className="mt-2 grid gap-1.5 text-[11px] leading-4 text-slate-500">
@@ -166,6 +175,11 @@ function CaseRow({
           )}
           {overdue && <span className="rounded-md bg-red-50 px-2 py-0.5 font-medium text-red-700">期限超過</span>}
           {stale && !overdue && <span className="rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700">24h滞留</span>}
+          {followUpReminder?.status === 'active' && !followUpNeedsConfirmation && (
+            <span className="rounded-md bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
+              リマインド {followUpReminder.intervalDays}日おき
+            </span>
+          )}
         </div>
       </div>
     </button>

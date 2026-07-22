@@ -9,6 +9,14 @@ body {
   min-height: 100dvh;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 @media (display-mode: standalone) {
   body {
     overscroll-behavior-y: none;

@@ -37,6 +37,7 @@ export default function PwaInstallButton() {
   useEffect(() => {
     const standalone = window.matchMedia('(display-mode: standalone)').matches || Boolean((navigator as NavigatorWithStandalone).standalone)
     const ios = /iPad|iPhone|iPod/.test(navigator.userAgent)
+      || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
     setIsStandalone(standalone)
     setIsIos(ios)
 
@@ -57,6 +58,20 @@ export default function PwaInstallButton() {
       window.removeEventListener('appinstalled', onInstalled)
     }
   }, [])
+
+  useEffect(() => {
+    if (!showIosGuide) return
+    const previousOverflow = document.body.style.overflow
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowIosGuide(false)
+    }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [showIosGuide])
 
   if (isStandalone || (!installPrompt && !isIos)) return null
 
@@ -83,13 +98,18 @@ export default function PwaInstallButton() {
       </button>
 
       {showIosGuide && (
-        <div className="fixed inset-0 z-[70] flex items-end justify-center bg-slate-950/45 p-3" role="dialog" aria-modal="true" aria-labelledby="pwa-install-title">
+        <div
+          className="fixed inset-0 z-[100] grid place-items-center overflow-y-auto bg-slate-950/50 px-4 pb-[calc(24px_+_env(safe-area-inset-bottom))] pt-[calc(24px_+_env(safe-area-inset-top))]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pwa-install-title"
+        >
           <button type="button" className="absolute inset-0 cursor-default" onClick={() => setShowIosGuide(false)} aria-label="閉じる" />
-          <div className="relative w-full max-w-md rounded-lg bg-white px-5 pb-[calc(20px_+_env(safe-area-inset-bottom))] pt-5 shadow-2xl">
+          <div className="relative max-h-[calc(100dvh_-_48px_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] w-full max-w-md overflow-y-auto rounded-lg bg-white p-5 shadow-2xl">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 id="pwa-install-title" className="text-base font-bold text-slate-900">ホーム画面に追加</h2>
-                <p className="mt-1 text-sm leading-6 text-slate-600">共有メニューを開き「ホーム画面に追加」を選択してください</p>
+                <p className="mt-1 text-sm leading-6 text-slate-600">Safariの共有メニューから「ホーム画面に追加」を選択してください</p>
               </div>
               <button
                 type="button"

@@ -210,11 +210,11 @@ export default function NotificationsPage() {
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
         {cards.map((card) => (
-          <div key={card.label} className={`rounded-xl border px-4 py-3 ${card.tone}`}>
+          <div key={card.label} className={`rounded-lg border px-3 py-2.5 sm:rounded-xl sm:px-4 sm:py-3 ${card.tone}`}>
             <p className="text-xs font-medium opacity-80">{card.label}</p>
-            <p className="mt-1 text-3xl font-semibold tabular-nums">{loading ? '...' : card.value}</p>
+            <p className="mt-1 text-2xl font-semibold tabular-nums sm:text-3xl">{loading ? '...' : card.value}</p>
           </div>
         ))}
       </div>

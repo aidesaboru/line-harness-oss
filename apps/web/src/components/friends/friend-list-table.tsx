@@ -146,7 +146,7 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
   }
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm sm:rounded-2xl">
       {error && (
         <div className="border-b border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -158,8 +158,8 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
         </div>
       )}
 
-      <div className="overflow-x-auto">
-        <div className="min-w-[720px]">
+      <div>
+        <div className="lg:min-w-[720px]">
           <div className="hidden grid-cols-[260px_1fr_160px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[11px] font-semibold uppercase text-slate-500 lg:grid">
             <div>顧客</div>
             <div>基本情報</div>
@@ -177,8 +177,8 @@ export default function FriendListTable({ friends, allTags, onRefresh }: Props) 
                 />
 
                 {isExpanded && profileDraft && (
-                  <div className="border-b border-slate-100 bg-slate-50 px-5 py-5">
-                    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="顧客情報の編集">
+                  <div className="border-b border-slate-100 bg-slate-50 px-3 py-4 sm:px-5 sm:py-5">
+                    <section className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:rounded-2xl sm:p-4" aria-label="顧客情報の編集">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
                           <h2 className="text-sm font-semibold text-slate-950">顧客情報</h2>

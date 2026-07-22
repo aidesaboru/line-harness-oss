@@ -65,7 +65,7 @@ export default function QueueStrip({
   const canViewAllEscalations = staffRole === 'owner' || staffRole === 'admin'
 
   return (
-    <div className="flex flex-wrap gap-2" role="group" aria-label="チケットの状態">
+    <div className="scrollbar-none -mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:px-0" role="group" aria-label="チケットの状態">
       {chips.map((chip) => {
         const count = chipCount(chip.key, summary)
         const isActive = activeKey === chip.key
@@ -86,19 +86,19 @@ export default function QueueStrip({
                     : undefined
                 : undefined
             }
-            className={`group flex min-w-[150px] flex-1 items-center justify-between gap-3 rounded-lg border px-4 py-3 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 sm:flex-none ${
+            className={`group flex min-h-11 shrink-0 items-center justify-between gap-2 rounded-full border px-3 py-2 text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 sm:min-w-[150px] sm:flex-1 sm:rounded-lg sm:px-4 sm:py-3 ${
               isActive
                 ? `${chip.activeCls} shadow-sm ring-1 ring-inset ring-white/60`
                 : 'border-slate-200 bg-white shadow-sm hover:border-slate-300 hover:bg-slate-50'
             } disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:shadow-none`}
           >
             <span className="flex flex-col">
-              <span className={`flex items-center gap-1 text-sm font-medium ${isActive ? '' : 'text-gray-700'}`}>
+              <span className={`flex items-center gap-1 text-xs font-medium sm:text-sm ${isActive ? '' : 'text-gray-700'}`}>
                 {chip.label}
               </span>
             </span>
             <span
-              className={`text-2xl font-semibold tabular-nums leading-none ${
+              className={`text-base font-semibold tabular-nums leading-none sm:text-2xl ${
                 isActive ? '' : hasItems ? chip.countCls : 'text-gray-300'
               }`}
             >

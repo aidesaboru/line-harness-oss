@@ -85,6 +85,7 @@ export default function SupportPage() {
   const [summary, setSummary] = useState<SupportSummary | null>(null)
   const [cases, setCases] = useState<SupportCase[]>([])
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null)
+  const [mobileCaseOpen, setMobileCaseOpen] = useState(false)
   const [detail, setDetail] = useState<SupportCaseDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [chats, setChats] = useState<ChatOption[]>([])
@@ -120,6 +121,7 @@ export default function SupportPage() {
   useEffect(() => { dirtyRef.current = dirty }, [dirty])
   const selectedCaseIdRef = useRef<string | null>(null)
   useEffect(() => { selectedCaseIdRef.current = selectedCaseId }, [selectedCaseId])
+  useEffect(() => { setMobileCaseOpen(false) }, [selectedAccountId])
   const casesRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
   const detailIdRef = useRef<string | null>(null)
@@ -237,7 +239,10 @@ export default function SupportPage() {
     const caseId = params.get('case')
     const createRequested = params.get('create') === '1'
     const createFriendId = params.get('friend') || params.get('createFriend')
-    if (caseId) setSelectedCaseId(caseId)
+    if (caseId) {
+      setSelectedCaseId(caseId)
+      setMobileCaseOpen(true)
+    }
     if (createRequested || createFriendId) {
       setCreateOpen(true)
       setCreateInitialFriendId(createFriendId)
@@ -456,7 +461,10 @@ export default function SupportPage() {
   // ─── 操作 ───
 
   const selectCase = useCallback(async (id: string) => {
-    if (id === selectedCaseId) return
+    if (id === selectedCaseId) {
+      setMobileCaseOpen(true)
+      return
+    }
     if (controlsDisabled) return
     if (dirtyRef.current) {
       const ok = await requestConfirm({
@@ -469,6 +477,7 @@ export default function SupportPage() {
       if (!ok) return
     }
     setSelectedCaseId(id)
+    setMobileCaseOpen(true)
   }, [controlsDisabled, requestConfirm, selectedCaseId])
 
   /** 保存。保留/完了のサーバ側必須条件は事前にチェックして分かりやすく伝える */
@@ -676,6 +685,7 @@ export default function SupportPage() {
 
   const handleQueueSelect = useCallback((key: QueueKey) => {
     if (controlsDisabled) return
+    setMobileCaseOpen(false)
     const toggleOff = activeQueueKey === key && key !== 'all'
     if (toggleOff || key === 'all') {
       setQueueFilter('all')
@@ -696,6 +706,7 @@ export default function SupportPage() {
 
   const handleResetFilters = useCallback(() => {
     if (controlsDisabled) return
+    setMobileCaseOpen(false)
     setQueueFilter('all')
     setStatusFilter('all')
     setCaseFocus('all')
@@ -879,48 +890,65 @@ export default function SupportPage() {
       )}
 
       <div className="grid min-h-0 gap-4 lg:h-[calc(100vh-320px)] lg:min-h-[680px] lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)] lg:items-stretch xl:grid-cols-[minmax(320px,380px)_minmax(0,1fr)] 2xl:grid-cols-[minmax(340px,400px)_minmax(0,1fr)]">
-        <CaseList
-          cases={displayCases}
-          loading={loading}
-          selectedCaseId={selectedCaseId}
-          statusFilter={statusFilter}
-          sortMode={sortMode}
-          search={search}
-          emptyState={caseListEmptyState}
-          disabled={controlsDisabled}
-          onSelect={selectCase}
-          onStatusFilterChange={(value) => {
-            setStatusFilter(value)
-            setQueueFilter('all')
-            setCaseFocus('all')
-          }}
-          onSortChange={setSortMode}
-          onSearchChange={setSearch}
-          onResetFilters={handleResetFilters}
-        />
+        <div className={`${mobileCaseOpen ? 'hidden lg:block' : 'block'} min-h-0`}>
+          <CaseList
+            cases={displayCases}
+            loading={loading}
+            selectedCaseId={selectedCaseId}
+            statusFilter={statusFilter}
+            sortMode={sortMode}
+            search={search}
+            emptyState={caseListEmptyState}
+            disabled={controlsDisabled}
+            onSelect={selectCase}
+            onStatusFilterChange={(value) => {
+              setMobileCaseOpen(false)
+              setStatusFilter(value)
+              setQueueFilter('all')
+              setCaseFocus('all')
+            }}
+            onSortChange={setSortMode}
+            onSearchChange={setSearch}
+            onResetFilters={handleResetFilters}
+          />
+        </div>
 
-        <CaseDetail
-          detail={detail}
-          detailLoading={detailLoading}
-          caseForm={caseForm}
-          dirty={dirty}
-          saving={saving}
-          canEditRouting={canEditCaseRouting}
-          staffOptions={assigneeSuggestions}
-          staffName={verifiedStaffName}
-          onFormChange={(patch) => setCaseForm((prev) => ({ ...prev, ...patch }))}
-          onSave={handleSave}
-          onDiscard={handleDiscard}
-          onQuickStatus={handleQuickStatus}
-          onInternalMessageCreate={handleCreateInternalMessage}
-          onInternalMessageReaction={handleInternalMessageReaction}
-          onOpenChatWithDraft={() => void handleOpenChatWithDraft()}
-          onCopyReplyDraft={() => void handleCopyReplyDraft()}
-          emptyState={detailEmptyState}
-          outsideCurrentList={selectedCaseOutsideList}
-          outsideCurrentListActionLabel={outsideCurrentListAction.label}
-          onResetFilters={revealSelectedCaseInList}
-        />
+        <div className={`${mobileCaseOpen ? 'flex' : 'hidden lg:flex'} min-h-0 flex-col`}>
+          <button
+            type="button"
+            onClick={() => setMobileCaseOpen(false)}
+            className="mb-2 inline-flex min-h-11 w-full items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm lg:hidden"
+          >
+            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+            チケット一覧に戻る
+          </button>
+          <div className="min-h-0 flex-1">
+            <CaseDetail
+              detail={detail}
+              detailLoading={detailLoading}
+              caseForm={caseForm}
+              dirty={dirty}
+              saving={saving}
+              canEditRouting={canEditCaseRouting}
+              staffOptions={assigneeSuggestions}
+              staffName={verifiedStaffName}
+              onFormChange={(patch) => setCaseForm((prev) => ({ ...prev, ...patch }))}
+              onSave={handleSave}
+              onDiscard={handleDiscard}
+              onQuickStatus={handleQuickStatus}
+              onInternalMessageCreate={handleCreateInternalMessage}
+              onInternalMessageReaction={handleInternalMessageReaction}
+              onOpenChatWithDraft={() => void handleOpenChatWithDraft()}
+              onCopyReplyDraft={() => void handleCopyReplyDraft()}
+              emptyState={detailEmptyState}
+              outsideCurrentList={selectedCaseOutsideList}
+              outsideCurrentListActionLabel={outsideCurrentListAction.label}
+              onResetFilters={revealSelectedCaseInList}
+            />
+          </div>
+        </div>
       </div>
 
       {/* 一次担当・二次対応先入力のサジェスト (スタッフ + 既存担当者) */}

@@ -151,7 +151,7 @@ export default function FriendsPage() {
         description="顧客情報と基本情報を管理します。"
       />
 
-      <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-4 rounded-lg border border-slate-200 bg-white p-3 shadow-sm sm:rounded-2xl sm:p-4">
         <form onSubmit={handleSearchSubmit} className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <input
             type="text"

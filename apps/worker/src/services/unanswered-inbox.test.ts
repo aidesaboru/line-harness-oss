@@ -556,6 +556,58 @@ describe('auto_reply マッチ除外', () => {
     expect(result.total).toBe(0);
   });
 
+  test('担当者返信後の了承や締めの挨拶だけなら未対応から除外する', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({
+          friend_id: 'f1',
+          last_incoming: '2026-05-08T10:05:00+09:00',
+          last_incoming_content: 'かしこまりました。よろしくお願いします',
+        }),
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    const requirements = await getChatReplyRequirements(db, ['f1']);
+
+    expect(result.total).toBe(0);
+    expect(requirements.get('f1')).toEqual({
+      needsReply: false,
+      lastUnansweredIncomingAt: null,
+    });
+  });
+
+  test('最後の受信が締めの挨拶なら直前の文面へ遡らず会話を完了扱いにする', async () => {
+    const db = stubDB({
+      rows: [
+        baseRow({ friend_id: 'f1', last_incoming: '2026-05-08T10:05:00+09:00' }),
+      ],
+      recentIncomings: [
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: 'よろしくお願いします',
+          created_at: '2026-05-08T10:05:00+09:00',
+        },
+        {
+          friend_id: 'f1',
+          message_type: 'text',
+          content: '追加で決算月を教えてください',
+          created_at: '2026-05-08T10:00:00+09:00',
+        },
+      ],
+    });
+
+    const result = await computeUnansweredInbox(db);
+    const requirements = await getChatReplyRequirements(db, ['f1']);
+
+    expect(result.total).toBe(0);
+    expect(requirements.get('f1')).toEqual({
+      needsReply: false,
+      lastUnansweredIncomingAt: null,
+    });
+  });
+
   test('現在 active なルールは過去 incoming にも適用される', async () => {
     // 本番事故 2026-05-08 #2: ルールが re-create されると created_at が新しくなり、
     // 古い incoming が「ルール後付け」扱いで除外されない問題があった。

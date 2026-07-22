@@ -2,6 +2,7 @@ import {
   supportFriendVisibilitySql,
   type SupportAccessStaff,
 } from './support-access.js';
+import { isReplyNotRequiredIncoming } from './reply-requirement.js';
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 2000;
@@ -293,8 +294,8 @@ function applyFilters(rows: UnansweredRow[], opts: UnansweredInboxOptions): Unan
  * 2. 候補 friend に scope して「最後の人間返信以降の incoming」と
  *    「auto_reply outgoing」を取る。
  * 3. silent ルール一覧を取る (応答ありルールは outgoing 証拠で判定するので不要)。
- * 4. JS で各 incoming を判定: 応答あり証拠 OR silent ルール match で「マッチ済」、
- *    マッチしない最新の incoming を preview として採用。全部マッチした thread のみ除外。
+ * 4. 最新の incoming が返信不要の締め言葉なら、その時点で会話を完了扱いにする。
+ * 5. それ以外は応答あり証拠と silent ルールを除外し、残った最新の incoming を採用する。
  */
 async function getAllUnansweredRows(
   db: D1Database,
@@ -341,6 +342,14 @@ async function getAllUnansweredRows(
   const rows: UnansweredRow[] = [];
   for (const c of candidates) {
     const incomings = incomingsByFriend.get(c.friend_id) ?? [];
+    const latestIncoming = incomings[0];
+    if (
+      latestIncoming &&
+      isReplyNotRequiredIncoming(latestIncoming.message_type, latestIncoming.content)
+    ) {
+      continue;
+    }
+
     // outgoings は consume するのでコピーを作る (元 Map の他参照を破壊しない)。
     // incomings は新しい順に処理し、各 outgoing を 1 incoming にしか割り当てない。
     const remainingOutgoings = [...(autoReplyOutgoingsByFriend.get(c.friend_id) ?? [])];

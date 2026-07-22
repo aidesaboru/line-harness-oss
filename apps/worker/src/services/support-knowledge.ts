@@ -36,8 +36,13 @@ const sectionAliases: Record<string, 'question' | 'answer' | 'customer' | 'rest'
 };
 
 const pendingOnlyPattern = /^(確認します|確認いたします|確認中です|担当へ確認します|担当者へ確認します|共有します|対応します|承知しました|承知いたしました|ありがとうございます|よろしくお願いします|お願いします)[\s!！。]*$/u;
+const delegationOnlyPattern = /^(?:こちら|上記|本件)?\s*(?:は|を|の)?\s*(?:CO|担当(?:者|部署)?|運営者)(?:に|へ).{0,30}(?:確認|共有|依頼)(?:済み|しました|いたしました|します|中)?[\s。!！]*$/u;
+const directResponseRequestOpeningPattern = /^(?:こちら(?:の|は|も)?|上記|本件|下記)(?:の内容)?\s*(?:ご対応|対応|ご確認|確認|返信|回答)/u;
+const contextResponseRequestOpeningPattern = /^こちらの内容確認のため[\s\S]{0,120}ご対応/u;
+const responseRequestLinePattern = /(?:ご対応|ご確認|返信文|ご回答|ご教示).*(?:お願い|ください|可能でしょうか|できますでしょうか|でしょうか)/u;
+const definitiveAnswerPattern = /対象外|対象です|不要です|必要です|可能です|できません|となります|理由|ため|場合は|してください|てください|お伝えください|ご案内|返信例|回答例|完了|対応済み|振り込み予定|入金します|負担/u;
 const boilerplateLinePattern = /^(?:!channel|<!channel>|cc[:：]?|お疲れ様です[。！!]?|いつもお世話になっております[。！!]?|よろしくお願いいたします[。！!]?|ご確認(?:のほど)?よろしくお願いいたします[。！!]?)$/iu;
-const deadlineLinePattern = /^(?:[:\w_-]+\s*)*[＊*]?\s*(?:回答)?(?:期限|期日)\s*[:：]?/iu;
+const deadlineLinePattern = /^[\s:＊*_\w.-]*(?:回答)?(?:期限|期日)\s*[:：]?/iu;
 const mentionOnlyPattern = /^(?:\s*@[^\s]+(?:\s+さん)?\s*)+(?:cc[:：]?\s*)?$/iu;
 
 function normalize(value: string): string {
@@ -95,12 +100,25 @@ function answerBlocks(value: string): string[] {
 }
 
 function resolutionScore(value: string): number {
-  let score = Math.min(35, Math.floor(value.length / 12));
+  let score = Math.min(28, Math.floor(value.length / 16));
   if (/[。！？!?]/u.test(value)) score += 5;
-  if (/してください|となります|可能です|できません|不要です|必要です|対応済み|完了|案内|回答|送付|連絡|確認後|理由/u.test(value)) score += 24;
-  if (/確認します|確認いたします|確認中|お待ちください|共有します/u.test(value)) score -= 28;
-  if ((value.match(/[?？]/g) ?? []).length >= 2) score -= 18;
-  if (value.length < 18) score -= 24;
+  if (definitiveAnswerPattern.test(value)) score += 32;
+  if (/ただし|例外|契約|手順|確認後|送付先|連絡先/u.test(value)) score += 8;
+  if (/確認します|確認いたします|確認中|お待ちください|共有します/u.test(value)) score -= 32;
+  if (delegationOnlyPattern.test(value)) score -= 48;
+  const firstLine = value.split('\n', 1)[0] ?? '';
+  const responseRequestOpening = !/^こちら(?:の)?対応ありがとうございます/u.test(value)
+    && (
+      directResponseRequestOpeningPattern.test(value)
+      || contextResponseRequestOpeningPattern.test(value)
+      || responseRequestLinePattern.test(firstLine)
+    );
+  if (responseRequestOpening) score -= 50;
+  const questionCount = (value.match(/[?？]/g) ?? []).length;
+  if (questionCount >= 3) score -= 50;
+  else if (questionCount === 2) score -= 28;
+  else if (questionCount === 1 && /[?？]\s*$/u.test(value)) score -= 10;
+  if (value.length < 18) score -= 12;
   return score;
 }
 
@@ -108,8 +126,11 @@ function pickResolution(blocks: string[]): { resolution: string; remaining: stri
   if (blocks.length === 0) return { resolution: '', remaining: [], score: 0 };
   const ranked = blocks
     .map((block, index) => ({ block, index, score: resolutionScore(block) }))
-    .sort((a, b) => b.score - a.score || b.index - a.index);
+    .sort((a, b) => b.score - a.score || a.index - b.index);
   const selected = ranked[0];
+  if (selected.score < 15) {
+    return { resolution: '', remaining: blocks, score: selected.score };
+  }
   return {
     resolution: selected.block,
     remaining: blocks.filter((_, index) => index !== selected.index),
@@ -168,7 +189,7 @@ function qualityStatus(question: string, resolution: string, title: string, pick
   if (title.length >= 8 && !deadlineLinePattern.test(title) && !/^[:!@]/.test(title)) score += 15;
   if (!/@(?:社内メンバー\d+|[UW][A-Z0-9]{4,})\b/u.test(`${question}\n${resolution}`)) score += 10;
   score = Math.max(0, Math.min(100, score));
-  return { status: score >= 70 ? 'ready' : 'needs_review', score };
+  return { status: score >= 70 && pickedScore >= 30 ? 'ready' : 'needs_review', score };
 }
 
 function buildReviewNote(status: KnowledgeStatus, question: string, resolution: string, score: number): string {

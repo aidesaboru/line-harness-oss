@@ -5,7 +5,7 @@ import Link from 'next/link'
 import Header from '@/components/layout/header'
 import MentionText from '@/components/shared/mention-text'
 import { useAccount } from '@/contexts/account-context'
-import { api, type InternalChatFeedItem, type StaffPresenceItem } from '@/lib/api'
+import { api, type InternalChatFeedItem, type InternalTask, type StaffPresenceItem } from '@/lib/api'
 
 type SourceFilter = 'all' | 'support' | 'chat'
 type AttentionFilter = 'all' | 'unread' | 'mentions'
@@ -344,6 +344,18 @@ export default function InternalChatPage() {
   const [nextCursor, setNextCursor] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
+  const [actionMenuId, setActionMenuId] = useState<string | null>(null)
+  const [editingItem, setEditingItem] = useState<InternalChatFeedItem | null>(null)
+  const [editingBody, setEditingBody] = useState('')
+  const [messageActionId, setMessageActionId] = useState<string | null>(null)
+  const [bookmarkedOnly, setBookmarkedOnly] = useState(false)
+  const [tasks, setTasks] = useState<InternalTask[]>([])
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false)
+  const [taskItem, setTaskItem] = useState<InternalChatFeedItem | null>(null)
+  const [taskTitle, setTaskTitle] = useState('')
+  const [taskDueAt, setTaskDueAt] = useState('')
+  const [taskAssigneeIds, setTaskAssigneeIds] = useState<string[]>([])
+  const [savingTask, setSavingTask] = useState(false)
 
   const loadFeed = useCallback(async (options: {
     silent?: boolean
@@ -406,6 +418,16 @@ export default function InternalChatPage() {
     }
   }, [])
 
+  const loadTasks = useCallback(async () => {
+    if (!selectedAccountId) return
+    try {
+      const res = await api.appNotifications.internalTasks({ accountId: selectedAccountId })
+      if (res.success) setTasks(res.data)
+    } catch {
+      // Task retrieval is secondary to reading the conversation.
+    }
+  }, [selectedAccountId])
+
   useEffect(() => {
     void loadFeed()
   }, [loadFeed])
@@ -418,6 +440,10 @@ export default function InternalChatPage() {
   useEffect(() => {
     void loadPresence(false)
   }, [loadPresence])
+
+  useEffect(() => {
+    void loadTasks()
+  }, [loadTasks])
 
   useEffect(() => {
     let active = true
@@ -474,9 +500,9 @@ export default function InternalChatPage() {
   }, [loadPresence])
 
   const sourceVisibleItems = useMemo(() => {
-    if (filter === 'all') return items
-    return items.filter((item) => item.source === filter)
-  }, [filter, items])
+    const filtered = filter === 'all' ? items : items.filter((item) => item.source === filter)
+    return bookmarkedOnly ? filtered.filter((item) => item.isBookmarked) : filtered
+  }, [bookmarkedOnly, filter, items])
 
   const unreadCount = useMemo(
     () => sourceVisibleItems.filter(isUnreadInternalItem).length,
@@ -530,6 +556,8 @@ export default function InternalChatPage() {
 
   const supportCount = items.filter((item) => item.source === 'support').length
   const chatCount = items.filter((item) => item.source === 'chat').length
+  const bookmarkCount = items.filter((item) => item.isBookmarked).length
+  const openTaskCount = tasks.filter((task) => task.status === 'open').length
   const onlineCount = presenceItems.filter((item) => item.isOnline).length
 
   const markContextRead = useCallback(async (context: ContextItem): Promise<void> => {
@@ -594,6 +622,170 @@ export default function InternalChatPage() {
     }
   }
 
+  const mergeMessageResult = (item: InternalChatFeedItem, data: {
+    body: string
+    mentions: string[]
+    mentionStaffIds: string[]
+    reactions: InternalChatFeedItem['reactions']
+    version?: number
+    editedAt?: string | null
+    deletedAt?: string | null
+    deletedByName?: string | null
+    isDeleted?: boolean
+    canEdit?: boolean
+    canDelete?: boolean
+  }) => {
+    setItems((current) => current.map((message) => message.id === item.id ? { ...message, ...data } : message))
+  }
+
+  const startEditing = (item: InternalChatFeedItem) => {
+    setActionMenuId(null)
+    setEditingItem(item)
+    setEditingBody(item.body)
+  }
+
+  const saveEditing = async () => {
+    if (!editingItem || !selectedAccountId || messageActionId) return
+    const body = editingBody.trim()
+    if (!body) return
+    setMessageActionId(editingItem.id)
+    try {
+      const mentions = mentionsFromBody(body, mentionCandidates)
+      const res = editingItem.source === 'support'
+        ? await api.support.cases.editInternalMessage(editingItem.sourceId, selectedAccountId, messageIdFromFeedId(editingItem), {
+          body,
+          baseVersion: editingItem.version ?? 0,
+          mentions: mentions.names,
+          mentionStaffIds: mentions.staffIds,
+        })
+        : await api.chats.editInternalMessage(editingItem.sourceId, messageIdFromFeedId(editingItem), {
+          body,
+          baseVersion: editingItem.version ?? 0,
+          mentions: mentions.names,
+          mentionStaffIds: mentions.staffIds,
+        })
+      if (!res.success || !res.data) {
+        setError('メッセージの編集に失敗しました')
+        return
+      }
+      mergeMessageResult(editingItem, res.data)
+      setEditingItem(null)
+      setEditingBody('')
+      setError('')
+    } catch {
+      setError('メッセージの編集に失敗しました。再読み込みしてからお試しください')
+    } finally {
+      setMessageActionId(null)
+    }
+  }
+
+  const deleteMessage = async (item: InternalChatFeedItem) => {
+    if (!selectedAccountId || messageActionId) return
+    setActionMenuId(null)
+    if (!window.confirm('このメッセージを削除表示にしますか\n原文と操作履歴は保持されます')) return
+    const reason = item.createdBy && item.createdBy !== staffId
+      ? window.prompt('他のスタッフの投稿を削除する理由を入力してください')?.trim()
+      : ''
+    if (item.createdBy && item.createdBy !== staffId && !reason) return
+    setMessageActionId(item.id)
+    try {
+      const res = item.source === 'support'
+        ? await api.support.cases.softDeleteInternalMessage(item.sourceId, selectedAccountId, messageIdFromFeedId(item), {
+          baseVersion: item.version ?? 0,
+          reason,
+        })
+        : await api.chats.softDeleteInternalMessage(item.sourceId, messageIdFromFeedId(item), {
+          baseVersion: item.version ?? 0,
+          reason,
+        })
+      if (!res.success || !res.data) {
+        setError('メッセージの削除に失敗しました')
+        return
+      }
+      mergeMessageResult(item, res.data)
+      setError('')
+    } catch {
+      setError('メッセージの削除に失敗しました。再読み込みしてからお試しください')
+    } finally {
+      setMessageActionId(null)
+    }
+  }
+
+  const toggleBookmark = async (item: InternalChatFeedItem) => {
+    if (!selectedAccountId || messageActionId) return
+    setActionMenuId(null)
+    setMessageActionId(item.id)
+    try {
+      const res = await api.appNotifications.toggleInternalChatBookmark({
+        accountId: selectedAccountId,
+        source: item.source,
+        sourceId: item.sourceId,
+        messageId: messageIdFromFeedId(item),
+      })
+      if (!res.success) {
+        setError('ブックマークの更新に失敗しました')
+        return
+      }
+      setItems((current) => current.map((message) => message.id === item.id
+        ? { ...message, isBookmarked: res.data.isBookmarked }
+        : message))
+      setError('')
+    } catch {
+      setError('ブックマークの更新に失敗しました')
+    } finally {
+      setMessageActionId(null)
+    }
+  }
+
+  const openTaskComposer = (item: InternalChatFeedItem) => {
+    setActionMenuId(null)
+    setTaskItem(item)
+    setTaskTitle(item.body.replace(/\s+/g, ' ').slice(0, 80))
+    setTaskDueAt('')
+    setTaskAssigneeIds([])
+  }
+
+  const createTask = async () => {
+    if (!taskItem || !selectedAccountId || savingTask || !taskTitle.trim()) return
+    setSavingTask(true)
+    try {
+      const res = await api.appNotifications.createInternalTask({
+        accountId: selectedAccountId,
+        source: taskItem.source,
+        sourceId: taskItem.sourceId,
+        sourceMessageId: messageIdFromFeedId(taskItem),
+        title: taskTitle.trim(),
+        description: taskItem.body,
+        dueAt: taskDueAt || null,
+        assigneeStaffIds: taskAssigneeIds,
+      })
+      if (!res.success) {
+        setError('タスクの作成に失敗しました')
+        return
+      }
+      setTasks((current) => [res.data, ...current])
+      setItems((current) => current.map((message) => message.id === taskItem.id
+        ? { ...message, taskCount: (message.taskCount ?? 0) + 1 }
+        : message))
+      setTaskItem(null)
+      setError('')
+    } catch {
+      setError('タスクの作成に失敗しました')
+    } finally {
+      setSavingTask(false)
+    }
+  }
+
+  const toggleTaskStatus = async (task: InternalTask) => {
+    try {
+      const res = await api.appNotifications.updateInternalTask(task.id, task.status === 'open' ? 'done' : 'open')
+      if (!res.success) return
+      setTasks((current) => current.map((item) => item.id === task.id ? res.data : item))
+    } catch {
+      setError('タスクの更新に失敗しました')
+    }
+  }
+
   const submit = async () => {
     if (!activeContext || !selectedAccountId || posting) return
     const body = draft.trim()
@@ -653,9 +845,39 @@ export default function InternalChatPage() {
                 <p className="text-lg font-semibold text-slate-900">社内相談</p>
                 <p className="mt-0.5 hidden text-xs font-medium text-slate-500 sm:block">相談先を選んで会話を確認</p>
               </div>
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-700 ring-1 ring-slate-200">
-                {items.length}{hasMore ? '+' : ''}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setBookmarkedOnly((current) => !current)}
+                  className={`flex h-9 w-9 items-center justify-center rounded-md border text-sm transition-colors ${
+                    bookmarkedOnly
+                      ? 'border-amber-300 bg-amber-50 text-amber-700'
+                      : 'border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                  }`}
+                  title="ブックマーク"
+                  aria-label={`ブックマーク ${bookmarkCount}件`}
+                  aria-pressed={bookmarkedOnly}
+                >
+                  ☆
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTaskPanelOpen(true)}
+                  className="relative flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 bg-white text-sm text-slate-600 transition-colors hover:bg-slate-50"
+                  title="共有タスク"
+                  aria-label={`共有タスク 未完了${openTaskCount}件`}
+                >
+                  ✓
+                  {openTaskCount > 0 && (
+                    <span className="absolute -right-1.5 -top-1.5 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[9px] font-bold leading-4 text-white">
+                      {openTaskCount > 99 ? '99+' : openTaskCount}
+                    </span>
+                  )}
+                </button>
+                <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 ring-1 ring-slate-200">
+                  {items.length}{hasMore ? '+' : ''}
+                </span>
+              </div>
             </div>
             <label className="sr-only" htmlFor="internal-chat-search">社内チャットを検索</label>
             <input
@@ -877,20 +1099,74 @@ export default function InternalChatPage() {
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 ring-1 ring-slate-200 sm:h-10 sm:w-10 sm:text-sm">
                         {avatarInitial(item.createdByName)}
                       </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-baseline gap-2">
-                          <p className="text-sm font-semibold text-slate-900">{item.createdByName || 'スタッフ'}</p>
-                          <span className="text-xs font-medium text-slate-400">{formatDateTime(item.createdAt)}</span>
+                      <div className="relative min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex min-w-0 flex-wrap items-baseline gap-2">
+                            <p className="text-sm font-semibold text-slate-900">{item.createdByName || 'スタッフ'}</p>
+                            <span className="text-xs font-medium text-slate-400">{formatDateTime(item.createdAt)}</span>
+                            {item.editedAt && !item.isDeleted && <span className="text-[11px] font-medium text-slate-400">編集済み</span>}
+                          </div>
+                          <span className="relative shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => setActionMenuId((current) => current === item.id ? null : item.id)}
+                              className="flex h-8 w-8 items-center justify-center rounded-md text-lg leading-none text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 sm:opacity-0 sm:group-hover:opacity-100"
+                              aria-label="メッセージ操作"
+                              aria-expanded={actionMenuId === item.id}
+                            >
+                              ⋯
+                            </button>
+                            {actionMenuId === item.id && (
+                              <div className="absolute right-0 top-full z-40 mt-1 w-40 rounded-md border border-slate-200 bg-white p-1 shadow-lg">
+                                {item.canEdit && !item.isDeleted && (
+                                  <button type="button" onClick={() => startEditing(item)} className="w-full rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">編集</button>
+                                )}
+                                {!item.isDeleted && (
+                                  <button type="button" onClick={() => openTaskComposer(item)} className="w-full rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">タスク化</button>
+                                )}
+                                <button type="button" onClick={() => void toggleBookmark(item)} className="w-full rounded px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50">
+                                  {item.isBookmarked ? 'ブックマーク解除' : 'ブックマーク'}
+                                </button>
+                                {item.canDelete && !item.isDeleted && (
+                                  <button type="button" onClick={() => void deleteMessage(item)} className="w-full rounded px-3 py-2 text-left text-sm text-rose-700 hover:bg-rose-50">削除</button>
+                                )}
+                              </div>
+                            )}
+                          </span>
                         </div>
-                        <div className="mt-1 inline-block max-w-[820px] rounded-2xl rounded-tl-md bg-white px-3 py-2.5 text-sm leading-6 text-slate-800 shadow-sm ring-1 ring-slate-100 sm:px-4 sm:py-3">
-                          <MentionText text={item.body} mentions={item.mentions} />
-                        </div>
+                        {editingItem?.id === item.id ? (
+                          <div className="mt-1 max-w-[820px] rounded-lg border border-indigo-200 bg-white p-2 shadow-sm">
+                            <textarea
+                              value={editingBody}
+                              onChange={(event) => setEditingBody(event.target.value)}
+                              rows={3}
+                              className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-6 text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                              autoFocus
+                            />
+                            <div className="mt-2 flex justify-end gap-2">
+                              <button type="button" onClick={() => setEditingItem(null)} className="rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50">キャンセル</button>
+                              <button type="button" onClick={() => void saveEditing()} disabled={!editingBody.trim() || messageActionId === item.id} className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50">保存</button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className={`mt-1 inline-block max-w-[820px] rounded-2xl rounded-tl-md px-3 py-2.5 text-sm leading-6 shadow-sm ring-1 sm:px-4 sm:py-3 ${
+                            item.isDeleted
+                              ? 'bg-slate-100 italic text-slate-500 ring-slate-200'
+                              : 'bg-white text-slate-800 ring-slate-100'
+                          }`}>
+                            <MentionText text={item.body} mentions={item.mentions} />
+                          </div>
+                        )}
                         {item.parentId && (
                           <span className="mt-2 inline-flex rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-medium text-slate-600">
                             スレッド返信
                           </span>
                         )}
-                        <ReactionStrip item={item} disabled={disabled} onReaction={handleReaction} />
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-medium text-slate-500">
+                          {item.isBookmarked && <span className="rounded-full bg-amber-50 px-2 py-0.5 text-amber-700 ring-1 ring-amber-100">保存済み</span>}
+                          {(item.taskCount ?? 0) > 0 && <span className="rounded-full bg-blue-50 px-2 py-0.5 text-blue-700 ring-1 ring-blue-100">タスク {item.taskCount}</span>}
+                        </div>
+                        {!item.isDeleted && <ReactionStrip item={item} disabled={disabled} onReaction={handleReaction} />}
                       </div>
                     </article>
                   )
@@ -963,6 +1239,91 @@ export default function InternalChatPage() {
 
         <PresencePanel items={presenceItems} loading={presenceLoading} onlineCount={onlineCount} />
       </section>
+
+      {taskPanelOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30" role="dialog" aria-modal="true" aria-label="共有タスク">
+          <button type="button" className="min-w-0 flex-1" onClick={() => setTaskPanelOpen(false)} aria-label="閉じる" />
+          <aside className="flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-4">
+              <div>
+                <p className="text-base font-semibold text-slate-900">共有タスク</p>
+                <p className="mt-0.5 text-xs font-medium text-slate-500">未完了 {openTaskCount}件</p>
+              </div>
+              <button type="button" onClick={() => setTaskPanelOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-md text-xl text-slate-500 hover:bg-slate-100" aria-label="閉じる">×</button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50 p-3">
+              {tasks.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-center text-sm font-medium text-slate-500">共有タスクはありません</div>
+              ) : tasks.map((task) => (
+                <article key={task.id} className={`rounded-lg border bg-white p-3 ${task.status === 'done' ? 'border-slate-200 opacity-70' : 'border-blue-200'}`}>
+                  <div className="flex items-start gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void toggleTaskStatus(task)}
+                      className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs ${
+                        task.status === 'done' ? 'border-emerald-500 bg-emerald-500 text-white' : 'border-slate-300 bg-white text-transparent hover:border-emerald-400'
+                      }`}
+                      aria-label={task.status === 'done' ? '未完了に戻す' : '完了にする'}
+                    >
+                      ✓
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className={`text-sm font-semibold text-slate-900 ${task.status === 'done' ? 'line-through' : ''}`}>{task.title}</p>
+                      <div className="mt-1 flex flex-wrap gap-1.5 text-[11px] font-medium text-slate-500">
+                        <span>{sourceLabel(task.source)}</span>
+                        {task.dueAt && <span>期限 {formatDateTime(task.dueAt)}</span>}
+                        {task.assignees.map((assignee) => <span key={assignee.staffId}>@{assignee.staffName}</span>)}
+                      </div>
+                      <Link href={task.href} className="mt-2 inline-flex text-xs font-semibold text-blue-700 hover:underline">元の相談を開く</Link>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {taskItem && (
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-slate-950/30 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="タスクを作成">
+          <div className="w-full max-w-lg rounded-t-lg bg-white p-4 shadow-2xl sm:rounded-lg sm:p-5">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-base font-semibold text-slate-900">タスクを作成</p>
+              <button type="button" onClick={() => setTaskItem(null)} className="flex h-9 w-9 items-center justify-center rounded-md text-xl text-slate-500 hover:bg-slate-100" aria-label="閉じる">×</button>
+            </div>
+            <label className="mt-4 block">
+              <span className="text-xs font-semibold text-slate-600">件名</span>
+              <input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} maxLength={200} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" />
+            </label>
+            <label className="mt-3 block">
+              <span className="text-xs font-semibold text-slate-600">期限</span>
+              <input type="datetime-local" value={taskDueAt} onChange={(event) => setTaskDueAt(event.target.value)} className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" />
+            </label>
+            <div className="mt-3">
+              <p className="text-xs font-semibold text-slate-600">担当者</p>
+              <div className="mt-2 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto">
+                {mentionCandidates.map((candidate) => (
+                  <button
+                    key={candidate.id}
+                    type="button"
+                    onClick={() => setTaskAssigneeIds((current) => current.includes(candidate.id) ? current.filter((id) => id !== candidate.id) : [...current, candidate.id])}
+                    className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+                      taskAssigneeIds.includes(candidate.id) ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
+                    }`}
+                    aria-pressed={taskAssigneeIds.includes(candidate.id)}
+                  >
+                    {candidate.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setTaskItem(null)} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50">キャンセル</button>
+              <button type="button" onClick={() => void createTask()} disabled={savingTask || !taskTitle.trim()} className="rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50">{savingTask ? '作成中' : '作成'}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

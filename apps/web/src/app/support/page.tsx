@@ -490,13 +490,14 @@ export default function SupportPage() {
     }
     setSaving(true)
     try {
+      const secondaryAssigneesChanged = JSON.stringify([...form.escalationAssignees].sort())
+        !== JSON.stringify([...savedForm.escalationAssignees].sort())
       const res = await api.support.cases.update(detail.id, selectedAccountId, {
         ...(canEditCaseRouting ? {
           title: form.title,
           category: form.category,
           priority: form.priority,
           primaryAssignee: form.primaryAssignee || null,
-          escalationAssignee: form.escalationAssignee || null,
           dueAt: fromInputDateTime(form.dueAt),
           customerNumber: form.customerNumber || null,
           companyName: form.companyName || null,
@@ -513,6 +514,18 @@ export default function SupportPage() {
         eventBody,
       })
       if (res.success) {
+        if (canEditCaseRouting && secondaryAssigneesChanged && form.status !== 'resolved') {
+          const assigneeResult = await api.support.cases.setSecondaryAssignees(
+            detail.id,
+            selectedAccountId,
+            form.escalationAssignees,
+          )
+          if (!assigneeResult.success) {
+            notify('error', 'チケット本体は保存しましたが 二次対応先の更新に失敗しました')
+            await Promise.all([loadCases(), loadDetail(detail.id)])
+            return false
+          }
+        }
         notify('success', 'チケットを保存しました')
         await Promise.all([loadCases(), loadDetail(detail.id)])
         return true
@@ -525,7 +538,7 @@ export default function SupportPage() {
     } finally {
       setSaving(false)
     }
-  }, [detail, selectedAccountId, saving, canEditCaseRouting, notify, loadCases, loadDetail])
+  }, [detail, selectedAccountId, saving, canEditCaseRouting, notify, loadCases, loadDetail, savedForm.escalationAssignees])
 
   const handleSave = useCallback(() => {
     void persistCase(caseForm, '管理画面からチケット情報を更新しました')
@@ -551,7 +564,7 @@ export default function SupportPage() {
     window.history.replaceState(null, '', `${window.location.pathname}${next ? `?${next}` : ''}${window.location.hash}`)
   }, [])
 
-  const handleCreate = useCallback(async (input: CreateCaseInput): Promise<boolean> => {
+  const handleCreate = useCallback(async (input: CreateCaseInput, attachments: File[]): Promise<boolean> => {
     if (!selectedAccountId || saving) return false
     const blockingIssue = getCreateCaseValidationIssues(input).find((issue) => issue.blocking)
     if (blockingIssue) {
@@ -577,12 +590,22 @@ export default function SupportPage() {
         category: input.category,
         priority: input.priority,
         primaryAssignee: input.primaryAssignee || null,
-        escalationAssignee: input.escalationAssignee || null,
+        escalationAssignee: input.escalationAssignees[0] || null,
+        escalationAssignees: input.escalationAssignees,
         dueAt: fromInputDateTime(input.dueAt),
         customerSummary: input.customerSummary,
       })
       if (res.success) {
-        notify('success', 'チケットを作成しました')
+        const attachmentResults = await Promise.allSettled(
+          attachments.map((file) => api.support.cases.uploadAttachment(res.data.id, selectedAccountId, file)),
+        )
+        const failedAttachments = attachmentResults.filter((result) => result.status === 'rejected').length
+        notify(
+          failedAttachments > 0 ? 'error' : 'success',
+          failedAttachments > 0
+            ? `チケットは作成済みです。画像${failedAttachments}件の添付だけ失敗しました`
+            : attachments.length > 0 ? 'チケットと画像を登録しました' : 'チケットを作成しました',
+        )
         setCreateInitialFriendId(null)
         clearCreateDeepLink()
         setSelectedCaseId(res.data.id)

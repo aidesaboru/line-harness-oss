@@ -641,7 +641,7 @@ describe('chat support visibility', () => {
     const listCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM deduped d'));
     expect(listCall?.sql).toContain("f.display_name LIKE ? ESCAPE '\\'");
     expect(listCall?.sql).toContain("rm.content LIKE ? ESCAPE '\\'");
-    expect(listCall?.binds).toEqual(Array.from({ length: 13 }, () => '%隠れる%'));
+    expect(listCall?.binds).toEqual(['staff-1', ...Array.from({ length: 13 }, () => '%隠れる%')]);
   });
 
   test('owner chat list remains unrestricted', async () => {
@@ -965,6 +965,9 @@ describe('chat support visibility', () => {
       'acc-1',
       'acc-1',
       'acc-1',
+      'acc-1',
+      'acc-1',
+      'staff-1',
       'acc-1',
       'in_progress',
       'operator-1',

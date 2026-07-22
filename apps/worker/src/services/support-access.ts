@@ -42,10 +42,10 @@ export function supportCaseVisibilitySql(
           FROM support_escalations ${escalationAlias}
           WHERE ${escalationAlias}.case_id = ${caseAlias}.id
             AND ${escalationAlias}.status != 'closed'
-            AND ${escalationAlias}.assignee = ?
+            AND (${escalationAlias}.assignee_staff_id = ? OR ${escalationAlias}.assignee = ?)
         )
       )`,
-      binds: [assignmentName, assignmentName],
+      binds: [assignmentName, staff.id, assignmentName],
     };
   }
 
@@ -60,10 +60,10 @@ export function supportCaseVisibilitySql(
         FROM support_escalations ${escalationAlias}
         WHERE ${escalationAlias}.case_id = ${caseAlias}.id
           AND ${escalationAlias}.status != 'closed'
-          AND ${escalationAlias}.assignee = ?
+          AND (${escalationAlias}.assignee_staff_id = ? OR ${escalationAlias}.assignee = ?)
       )`,
     );
-    binds.push(assignmentName, assignmentName, assignmentName);
+    binds.push(assignmentName, assignmentName, staff.id, assignmentName);
   }
 
   return {
@@ -83,14 +83,16 @@ export function supportEscalationVisibilitySql(
   if (isSecondaryOnlySupportStaff(staff)) {
     if (!assignmentName) return { sql: '(0 = 1)', binds: [] };
     return {
-      sql: `(${escalationAlias}.assignee = ?)`,
-      binds: [assignmentName],
+      sql: `(${escalationAlias}.assignee_staff_id = ? OR ${escalationAlias}.assignee = ?)`,
+      binds: [staff.id, assignmentName],
     };
   }
 
   const caseScope = supportCaseVisibilitySql(staff, caseAlias, 'se_case_scope');
-  const parts = assignmentName ? [`${escalationAlias}.assignee = ?`] : [];
-  const binds: unknown[] = assignmentName ? [assignmentName] : [];
+  const parts = assignmentName
+    ? [`(${escalationAlias}.assignee_staff_id = ? OR ${escalationAlias}.assignee = ?)`]
+    : [`${escalationAlias}.assignee_staff_id = ?`];
+  const binds: unknown[] = assignmentName ? [staff.id, assignmentName] : [staff.id];
   parts.push(`EXISTS (
         SELECT 1
         FROM support_cases ${caseAlias}

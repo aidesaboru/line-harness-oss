@@ -101,4 +101,21 @@ describe('bootstrap.sql', () => {
 
     expect(readSchemaObjects(bootstrapDb)).toEqual(readSchemaObjects(replayDb));
   });
+
+  it('keeps internal message edit history append-only', () => {
+    const db = new Database(':memory:');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+    db.prepare(
+      `INSERT INTO internal_message_events (
+        id, source_type, source_message_id, version, action, body, actor_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run('event-1', 'chat', 'message-1', 1, 'edit', '修正後の本文', '担当者');
+
+    expect(() => db.prepare('UPDATE internal_message_events SET body = ? WHERE id = ?').run('上書き', 'event-1'))
+      .toThrow(/cannot be updated/i);
+    expect(() => db.prepare('DELETE FROM internal_message_events WHERE id = ?').run('event-1'))
+      .toThrow(/cannot be deleted/i);
+    expect(db.prepare('SELECT body FROM internal_message_events WHERE id = ?').get('event-1'))
+      .toEqual({ body: '修正後の本文' });
+  });
 });

@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import type { SupportCaseDetail, SupportCaseStatus, SupportInternalMessage, SupportMessage } from '@/lib/api'
+import { api, type SupportCaseAttachment, type SupportCaseDetail, type SupportCaseStatus, type SupportInternalMessage, type SupportMessage } from '@/lib/api'
 import { messageSourceLabel } from '@/lib/message-source-label'
 import { parseSupportMessagePreview } from '@/lib/support-message-preview'
 import MentionText from '@/components/shared/mention-text'
@@ -58,6 +58,40 @@ interface CaseDetailProps {
   outsideCurrentList?: boolean
   outsideCurrentListActionLabel?: string
   onResetFilters?: () => void
+}
+
+function AttachmentPreview({ attachment }: { attachment: SupportCaseAttachment }) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    let objectUrl: string | null = null
+    api.support.cases.attachmentBlob(attachment)
+      .then((blob) => {
+        if (!active) return
+        objectUrl = URL.createObjectURL(blob)
+        setUrl(objectUrl)
+      })
+      .catch(() => {
+        if (active) setFailed(true)
+      })
+    return () => {
+      active = false
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+    }
+  }, [attachment])
+
+  if (failed) {
+    return <div className="flex aspect-square items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-2 text-center text-xs text-slate-500">画像を表示できません</div>
+  }
+  if (!url) return <div className="aspect-square animate-pulse rounded-md bg-slate-100" />
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="group block" title={attachment.fileName}>
+      <img src={url} alt={attachment.fileName} className="aspect-square w-full rounded-md border border-slate-200 bg-slate-50 object-cover transition-opacity group-hover:opacity-90" />
+      <span className="mt-1 block truncate text-[11px] font-medium text-slate-600">{attachment.fileName}</span>
+    </a>
+  )
 }
 
 const internalReactionEmojis = ['👍', '🙏', '✅', '👀', '❤️']
@@ -594,8 +628,8 @@ export default function CaseDetail({
 
   const overdue = isOverdueCase(detail)
   const primaryUnassigned = !caseForm.primaryAssignee.trim()
-  const secondaryUnassigned = !caseForm.escalationAssignee.trim()
-  const secondaryAssigneeLabel = caseForm.escalationAssignee.trim() || '未設定'
+  const secondaryUnassigned = caseForm.escalationAssignees.length === 0
+  const secondaryAssigneeLabel = caseForm.escalationAssignees.join('、') || '未設定'
   const primaryAssigneeLabel = caseForm.primaryAssignee.trim() || '未設定'
   const customerLabel = detail.friendName || detail.companyName || detail.contactName || '顧客未紐付け'
   const customerNumberLabel = detail.customerNumber || ticketShortId(detail.id)
@@ -619,7 +653,7 @@ export default function CaseDetail({
     ? answeredEscalations[answeredEscalations.length - 1]
     : null
   const assigneeChoices = Array.from(
-    new Set([caseForm.primaryAssignee, caseForm.escalationAssignee, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
+    new Set([caseForm.primaryAssignee, ...caseForm.escalationAssignees, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
   ).sort((a, b) => a.localeCompare(b, 'ja'))
   const chatStaffOptions = Array.from(
     new Set([staffName, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
@@ -775,6 +809,16 @@ export default function CaseDetail({
                   className={`${textareaCls} mt-1 min-h-[220px] px-3 py-3 text-sm leading-6`}
                 />
               </label>
+              {(detail.attachments?.length ?? 0) > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-slate-500">添付画像</p>
+                  <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    {detail.attachments?.map((attachment) => (
+                      <AttachmentPreview key={attachment.id} attachment={attachment} />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </section>
 
@@ -851,7 +895,7 @@ export default function CaseDetail({
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => onFormChange({ escalationAssignee: '' })}
+                    onClick={() => onFormChange({ escalationAssignee: '', escalationAssignees: [] })}
                     disabled={!canEditRouting}
                     className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
                       secondaryUnassigned
@@ -866,14 +910,19 @@ export default function CaseDetail({
                     <button
                       key={name}
                       type="button"
-                      onClick={() => onFormChange({ escalationAssignee: name })}
+                      onClick={() => {
+                        const next = caseForm.escalationAssignees.includes(name)
+                          ? caseForm.escalationAssignees.filter((value) => value !== name)
+                          : [...caseForm.escalationAssignees, name]
+                        onFormChange({ escalationAssignee: next[0] ?? '', escalationAssignees: next })
+                      }}
                       disabled={!canEditRouting}
                       className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-                        caseForm.escalationAssignee === name
+                        caseForm.escalationAssignees.includes(name)
                           ? 'border-indigo-600 bg-indigo-600 text-white'
                           : 'border-indigo-100 bg-indigo-50 text-indigo-700 hover:border-indigo-200 hover:bg-indigo-100'
                       }`}
-                      aria-pressed={caseForm.escalationAssignee === name}
+                      aria-pressed={caseForm.escalationAssignees.includes(name)}
                     >
                       {name}
                     </button>

@@ -22,6 +22,12 @@ import {
   recordInternalMessageMentions,
   resolveMentionStaffTargets,
 } from '../services/internal-message-mentions.js';
+import {
+  appendInternalMessageEvent,
+  latestInternalMessageEvents,
+  projectInternalMessage,
+  type InternalMessageEventRow,
+} from '../services/internal-message-events.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 
 const support = new Hono<Env>();
@@ -75,6 +81,10 @@ const SUPPORT_LONG_TEXT_MAX_LENGTH = 64 * 1024;
 const SUPPORT_EVENT_METADATA_MAX_LENGTH = 16 * 1024;
 const SUPPORT_INTERNAL_MENTION_MAX = 20;
 const SUPPORT_INTERNAL_MENTION_MAX_LENGTH = 80;
+const SUPPORT_SECONDARY_ASSIGNEE_MAX = 10;
+const SUPPORT_ATTACHMENT_MAX_COUNT = 5;
+const SUPPORT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const SUPPORT_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
@@ -103,6 +113,8 @@ type SupportCaseRow = {
   status: string;
   primary_assignee: string | null;
   escalation_assignee: string | null;
+  escalation_assignees?: string | null;
+  last_human_reply_at?: string | null;
   escalation_level: string;
   due_at: string | null;
   next_check_at: string | null;
@@ -267,6 +279,24 @@ type SupportInternalMessageRow = {
   reactions?: string | null;
   created_by: string | null;
   created_by_name: string | null;
+  edited_at?: string | null;
+  edited_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  deleted_by_name?: string | null;
+  created_at: string;
+};
+
+type SupportCaseAttachmentRow = {
+  id: string;
+  case_id: string;
+  line_account_id: string;
+  r2_key: string;
+  file_name: string;
+  content_type: string;
+  size_bytes: number;
+  created_by: string | null;
+  created_by_name: string | null;
   created_at: string;
 };
 
@@ -417,6 +447,12 @@ function parseOptionalBooleanFlag(raw: unknown, label: string): ValueResult<bool
   return { ok: false, error: `${label} must be a boolean` };
 }
 
+function parseInternalMessageBaseVersion(raw: unknown): ValueResult<number> {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) return { ok: false, error: 'baseVersion must be a non-negative integer' };
+  return { ok: true, value };
+}
+
 function parseManualIdsInput(raw: unknown): ValueResult<string[]> {
   if (raw === undefined) return { ok: true, value: [] };
   if (!Array.isArray(raw)) return { ok: false, error: 'manualIds must be an array' };
@@ -428,6 +464,120 @@ function parseManualIdsInput(raw: unknown): ValueResult<string[]> {
   }
   return { ok: true, value: ids };
 }
+
+function parseSecondaryAssigneeNames(raw: unknown, legacy: unknown): ValueResult<string[]> {
+  const source = raw === undefined
+    ? (typeof legacy === 'string' && legacy.trim() ? [legacy] : [])
+    : raw;
+  if (!Array.isArray(source)) return { ok: false, error: 'escalationAssignees must be an array' };
+  if (source.length > SUPPORT_SECONDARY_ASSIGNEE_MAX) {
+    return { ok: false, error: `二次対応先は${SUPPORT_SECONDARY_ASSIGNEE_MAX}名まで選択できます` };
+  }
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const item of source) {
+    const parsed = parseRequiredTextField(item, 'escalationAssignee');
+    if (!parsed.ok) return parsed;
+    if (!seen.has(parsed.value)) {
+      seen.add(parsed.value);
+      names.push(parsed.value);
+    }
+  }
+  return { ok: true, value: names };
+}
+
+function parseAttachmentFilename(raw: string | undefined): ValueResult<string> {
+  if (!raw) return { ok: false, error: 'X-File-Name is required' };
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Keep the original value and validate it below.
+  }
+  const value = decoded.trim();
+  if (!value || value.length > 255 || /[\u0000-\u001f\u007f/\\]/u.test(value)) {
+    return { ok: false, error: 'invalid file name' };
+  }
+  return { ok: true, value };
+}
+
+function validateAttachmentBytes(bytes: Uint8Array, contentType: string): boolean {
+  if (contentType === 'image/png') {
+    return bytes.length >= 8
+      && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+      && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+  }
+  if (contentType === 'image/jpeg') {
+    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (contentType === 'image/webp') {
+    return bytes.length >= 12
+      && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
+      && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+  }
+  return false;
+}
+
+function attachmentExtension(contentType: string): string {
+  if (contentType === 'image/png') return 'png';
+  if (contentType === 'image/webp') return 'webp';
+  return 'jpg';
+}
+
+function safeR2Segment(value: string): string {
+  return value.replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 128);
+}
+
+function attachmentContentDisposition(filename: string): string {
+  return `inline; filename*=UTF-8''${encodeURIComponent(filename).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+}
+
+function parseCaseAssigneeNames(raw: string | null | undefined, fallback: string | null): string[] {
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const names = parsed.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()));
+        if (names.length > 0) return names;
+      }
+    } catch {
+      // Rolling deploys and old rows fall back to the legacy single assignee.
+    }
+  }
+  return fallback?.trim() ? [fallback.trim()] : [];
+}
+
+async function activeStaffIdsByName(db: D1Database, names: string[]): Promise<Map<string, string>> {
+  if (names.length === 0) return new Map();
+  const placeholders = names.map(() => '?').join(',');
+  const rows = await db
+    .prepare(`SELECT id, name FROM staff_members WHERE is_active = 1 AND name IN (${placeholders})`)
+    .bind(...names)
+    .all<{ id: string; name: string }>();
+  return new Map(rows.results.map((row) => [row.name, row.id]));
+}
+
+const SUPPORT_CASE_ASSIGNEES_SELECT = `(
+  SELECT COALESCE(json_group_array(assigned.assignee), '[]')
+  FROM (
+    SELECT se_assignee.assignee
+    FROM support_escalations se_assignee
+    WHERE se_assignee.case_id = sc.id
+      AND se_assignee.status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+    GROUP BY se_assignee.assignee
+    ORDER BY MIN(se_assignee.created_at) ASC
+  ) assigned
+) AS escalation_assignees`;
+
+const SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT = `(
+  SELECT MAX(ml_reply.created_at)
+  FROM messages_log ml_reply
+  WHERE ml_reply.friend_id = sc.friend_id
+    AND ml_reply.direction = 'outgoing'
+    AND ml_reply.source IN ('manual', 'scheduled_manual', 'line_official')
+    AND (ml_reply.delivery_type IS NULL OR ml_reply.delivery_type != 'test')
+    AND ml_reply.deleted_at IS NULL
+) AS last_human_reply_at`;
 
 function parseMentionNames(raw: unknown, body: string): ValueResult<string[]> {
   if (raw === undefined || raw === null) {
@@ -828,6 +978,8 @@ function serializeCase(row: SupportCaseRow) {
     status: row.status,
     primaryAssignee: row.primary_assignee,
     escalationAssignee: row.escalation_assignee,
+    escalationAssignees: parseCaseAssigneeNames(row.escalation_assignees, row.escalation_assignee),
+    lastHumanReplyAt: row.last_human_reply_at ?? null,
     escalationLevel: row.escalation_level,
     dueAt: row.due_at,
     nextCheckAt: row.next_check_at,
@@ -957,19 +1109,43 @@ function serializeInternalMessage(
   row: SupportInternalMessageRow,
   staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' },
   mentionStaffIds: string[] = [],
+  event?: InternalMessageEventRow,
 ) {
+  const projected = projectInternalMessage(row, event, staff);
   return {
     id: row.id,
     caseId: row.case_id,
     lineAccountId: row.line_account_id,
     parentId: row.parent_id,
-    body: row.body,
-    mentions: parseStoredMentions(row.mentions),
-    mentionStaffIds,
+    body: projected.body,
+    mentions: projected.mentions,
+    mentionStaffIds: event?.action === 'edit' ? projected.mentionStaffIds : projected.isDeleted ? [] : mentionStaffIds,
     reactions: summarizeInternalReactions(row.reactions, staff),
     createdBy: row.created_by,
     createdByName: row.created_by_name,
     createdAt: row.created_at,
+    version: projected.version,
+    editedAt: projected.editedAt,
+    deletedAt: projected.deletedAt,
+    deletedByName: projected.deletedByName,
+    isDeleted: projected.isDeleted,
+    canEdit: projected.canEdit,
+    canDelete: projected.canDelete,
+  };
+}
+
+function serializeCaseAttachment(row: SupportCaseAttachmentRow) {
+  return {
+    id: row.id,
+    caseId: row.case_id,
+    lineAccountId: row.line_account_id,
+    fileName: row.file_name,
+    contentType: row.content_type,
+    sizeBytes: row.size_bytes,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    createdAt: row.created_at,
+    filePath: `/api/support/cases/${encodeURIComponent(row.case_id)}/attachments/${encodeURIComponent(row.id)}/file?lineAccountId=${encodeURIComponent(row.line_account_id)}`,
   };
 }
 
@@ -994,7 +1170,9 @@ async function getCaseRow(
       `SELECT sc.*,
               f.display_name AS friend_name,
               f.picture_url AS friend_picture_url,
-              f.line_user_id
+              f.line_user_id,
+              ${SUPPORT_CASE_ASSIGNEES_SELECT},
+              ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT}
        FROM support_cases sc
        LEFT JOIN friends f ON f.id = sc.friend_id
        WHERE ${conditions.join(' AND ')}`,
@@ -1441,12 +1619,22 @@ support.get('/api/support/cases', async (c) => {
     }
 
     if (assignee.value) {
-      conditions.push(`(sc.primary_assignee LIKE ? OR sc.escalation_assignee LIKE ?)`);
-      binds.push(`%${assignee.value}%`, `%${assignee.value}%`);
+      conditions.push(`(sc.primary_assignee LIKE ? OR sc.escalation_assignee LIKE ? OR EXISTS (
+        SELECT 1 FROM support_escalations se_assignee_filter
+        WHERE se_assignee_filter.case_id = sc.id
+          AND se_assignee_filter.status != 'closed'
+          AND se_assignee_filter.assignee LIKE ?
+      ))`);
+      binds.push(`%${assignee.value}%`, `%${assignee.value}%`, `%${assignee.value}%`);
     }
     if (escalationAssignee.value) {
-      conditions.push(`sc.escalation_assignee LIKE ?`);
-      binds.push(`%${escalationAssignee.value}%`);
+      conditions.push(`(sc.escalation_assignee LIKE ? OR EXISTS (
+        SELECT 1 FROM support_escalations se_secondary_filter
+        WHERE se_secondary_filter.case_id = sc.id
+          AND se_secondary_filter.status != 'closed'
+          AND se_secondary_filter.assignee LIKE ?
+      ))`);
+      binds.push(`%${escalationAssignee.value}%`, `%${escalationAssignee.value}%`);
     }
 
     if (q.value) {
@@ -1463,7 +1651,9 @@ support.get('/api/support/cases', async (c) => {
       SELECT sc.*,
              f.display_name AS friend_name,
              f.picture_url AS friend_picture_url,
-             f.line_user_id
+             f.line_user_id,
+             ${SUPPORT_CASE_ASSIGNEES_SELECT},
+             ${SUPPORT_CASE_LAST_HUMAN_REPLY_SELECT}
       FROM support_cases sc
       LEFT JOIN friends f ON f.id = sc.friend_id
       WHERE ${conditions.join(' AND ')}
@@ -1559,8 +1749,8 @@ support.post('/api/support/cases', async (c) => {
     if (!parsedTitle.ok) return c.json({ success: false, error: parsedTitle.error }, 400);
     const parsedPrimaryAssignee = parseOptionalTextField(body.primaryAssignee, 'primaryAssignee');
     if (!parsedPrimaryAssignee.ok) return c.json({ success: false, error: parsedPrimaryAssignee.error }, 400);
-    const parsedEscalationAssignee = parseOptionalTextField(body.escalationAssignee, 'escalationAssignee');
-    if (!parsedEscalationAssignee.ok) return c.json({ success: false, error: parsedEscalationAssignee.error }, 400);
+    const parsedEscalationAssignees = parseSecondaryAssigneeNames(body.escalationAssignees, body.escalationAssignee);
+    if (!parsedEscalationAssignees.ok) return c.json({ success: false, error: parsedEscalationAssignees.error }, 400);
     const parsedEscalationLevel = parseOptionalTextField(body.escalationLevel, 'escalationLevel');
     if (!parsedEscalationLevel.ok) return c.json({ success: false, error: parsedEscalationLevel.error }, 400);
     const parsedDueAt = parseOptionalTextField(body.dueAt, 'dueAt');
@@ -1581,17 +1771,29 @@ support.post('/api/support/cases', async (c) => {
       parsedTitle.value ??
       (customerSummary ? customerSummary.slice(0, 42) : null) ??
       '新規問い合わせ';
-    const escalationAssignee = parsedEscalationAssignee.value;
+    const escalationAssignees = parsedEscalationAssignees.value;
+    const escalationAssignee = escalationAssignees[0] ?? null;
+    const assigneeStaffIds = await activeStaffIdsByName(c.env.DB, escalationAssignees);
+    if (body.escalationAssignees !== undefined) {
+      const missing = escalationAssignees.filter((name) => !assigneeStaffIds.has(name));
+      if (missing.length > 0) {
+        return c.json({ success: false, error: `選択できない二次対応先が含まれています: ${missing.join('、')}` }, 400);
+      }
+    }
     const escalationLevel = parsedEscalationLevel.value ?? 'L2';
-    if (escalationAssignee && !ESCALATION_LEVELS.has(escalationLevel)) {
+    if (escalationAssignees.length > 0 && !ESCALATION_LEVELS.has(escalationLevel)) {
       return c.json({ success: false, error: 'invalid level' }, 400);
     }
-    if (escalationAssignee && status === 'open') status = 'waiting_secondary';
+    if (escalationAssignees.length > 0 && status === 'open') status = 'waiting_secondary';
     const createdEventId = crypto.randomUUID();
-    const escalationId = escalationAssignee ? crypto.randomUUID() : null;
-    const escalatedEventId = escalationAssignee ? crypto.randomUUID() : null;
     const effectiveEscalationLevel = escalationLevel === 'L1' ? 'L2' : escalationLevel;
     const question = customerSummary.trim() || title;
+    const escalationEntries = escalationAssignees.map((assignee) => ({
+      assignee,
+      assigneeStaffId: assigneeStaffIds.get(assignee) ?? null,
+      escalationId: crypto.randomUUID(),
+      eventId: crypto.randomUUID(),
+    }));
 
     failurePhase = 'database_write';
     await createSupportCaseWithRetry(c.env.DB, () => {
@@ -1648,20 +1850,21 @@ support.post('/api/support/cases', async (c) => {
           now,
         ),
       ];
-      if (escalationAssignee && escalationId && escalatedEventId) {
+      for (const entry of escalationEntries) {
         statements.push(
           c.env.DB
             .prepare(
               `INSERT INTO support_escalations (
-                id, case_id, line_account_id, assignee, level, status, question, answer,
+                id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
                 due_at, answered_at, created_by, updated_by, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
+              ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
             )
             .bind(
-              escalationId,
+              entry.escalationId,
               id,
               lineAccountId,
-              escalationAssignee,
+              entry.assignee,
+              entry.assigneeStaffId,
               effectiveEscalationLevel,
               question,
               parsedDueAt.value,
@@ -1678,13 +1881,14 @@ support.post('/api/support/cases', async (c) => {
             staff.name,
             question,
             {
-              escalationId,
-              assignee: escalationAssignee,
+              escalationId: entry.escalationId,
+              assignee: entry.assignee,
+              assigneeStaffId: entry.assigneeStaffId,
               level: effectiveEscalationLevel,
               dueAt: parsedDueAt.value,
               createdFrom: 'case_create',
             },
-            escalatedEventId,
+            entry.eventId,
             now,
           ),
         );
@@ -1729,7 +1933,7 @@ support.get('/api/support/cases/:id', async (c) => {
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
 
     const staff = currentStaff(c);
-    const [events, escalations, internalMessages] = await Promise.all([
+    const [events, escalations, internalMessages, attachments] = await Promise.all([
       c.env.DB.prepare(
         `SELECT * FROM support_case_events WHERE case_id = ? ORDER BY created_at ASC`,
       ).bind(row.id).all<SupportEventRow>(),
@@ -1748,14 +1952,27 @@ support.get('/api/support/cases/:id', async (c) => {
          ORDER BY created_at ASC
          LIMIT 300`,
       ).bind(row.id, lineAccountId.value).all<SupportInternalMessageRow>(),
+      c.env.DB.prepare(
+        `SELECT *
+         FROM support_case_attachments
+         WHERE case_id = ? AND line_account_id = ?
+         ORDER BY created_at ASC`,
+      ).bind(row.id, lineAccountId.value).all<SupportCaseAttachmentRow>(),
     ]);
 
     const canViewLineConversation = !isSecondaryOnlySupportStaff(staff);
-    const internalMessageMentionIds = await mentionStaffIdsForMessages(
-      c.env.DB,
-      'support',
-      internalMessages.results.map((message) => message.id),
-    );
+    const [internalMessageMentionIds, internalMessageEvents] = await Promise.all([
+      mentionStaffIdsForMessages(
+        c.env.DB,
+        'support',
+        internalMessages.results.map((message) => message.id),
+      ),
+      latestInternalMessageEvents(
+        c.env.DB,
+        'support',
+        internalMessages.results.map((message) => message.id),
+      ),
+    ]);
     const messages = row.friend_id && canViewLineConversation
       ? await c.env.DB.prepare(
         `SELECT id, direction, message_type, content, source, created_at
@@ -1791,7 +2008,9 @@ support.get('/api/support/cases/:id', async (c) => {
           message,
           staff,
           internalMessageMentionIds.get(message.id) ?? [],
+          internalMessageEvents.get(message.id),
         )),
+        attachments: attachments.results.map(serializeCaseAttachment),
         manuals: manuals.map(serializeManual),
         canViewLineConversation,
         recentMessages: [...messages.results].reverse().map((m) => ({
@@ -1807,6 +2026,119 @@ support.get('/api/support/cases/:id', async (c) => {
   } catch (err) {
     console.error(`GET /api/support/cases/:id error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/cases/:id/attachments', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+
+    const currentCount = await c.env.DB
+      .prepare(`SELECT COUNT(*) AS count FROM support_case_attachments WHERE case_id = ? AND line_account_id = ?`)
+      .bind(caseId.value, lineAccountId.value)
+      .first<{ count: number }>();
+    if ((currentCount?.count ?? 0) >= SUPPORT_ATTACHMENT_MAX_COUNT) {
+      return c.json({ success: false, error: `画像は1チケットにつき${SUPPORT_ATTACHMENT_MAX_COUNT}枚まで添付できます` }, 400);
+    }
+
+    const contentType = (c.req.header('Content-Type') || '').split(';')[0].trim().toLowerCase();
+    if (!SUPPORT_ATTACHMENT_MIME_TYPES.has(contentType)) {
+      return c.json({ success: false, error: 'PNG JPEG WebP の画像を選択してください' }, 400);
+    }
+    const filename = parseAttachmentFilename(c.req.header('X-File-Name'));
+    if (!filename.ok) return c.json({ success: false, error: filename.error }, 400);
+    const declaredSize = Number(c.req.header('Content-Length') || 0);
+    if (Number.isFinite(declaredSize) && declaredSize > SUPPORT_ATTACHMENT_MAX_BYTES) {
+      return c.json({ success: false, error: '画像は1枚10MB以下にしてください' }, 400);
+    }
+
+    const data = await c.req.arrayBuffer();
+    if (data.byteLength === 0) return c.json({ success: false, error: '画像ファイルが空です' }, 400);
+    if (data.byteLength > SUPPORT_ATTACHMENT_MAX_BYTES) {
+      return c.json({ success: false, error: '画像は1枚10MB以下にしてください' }, 400);
+    }
+    const bytes = new Uint8Array(data);
+    if (!validateAttachmentBytes(bytes, contentType)) {
+      return c.json({ success: false, error: '画像の形式を確認できませんでした' }, 400);
+    }
+
+    const attachmentId = crypto.randomUUID();
+    const now = jstNow();
+    const r2Key = `support/cases/${safeR2Segment(lineAccountId.value)}/${safeR2Segment(caseId.value)}/${attachmentId}.${attachmentExtension(contentType)}`;
+    await c.env.IMAGES.put(r2Key, data, {
+      httpMetadata: { contentType },
+      customMetadata: { originalFilename: filename.value },
+    });
+    try {
+      await c.env.DB
+        .prepare(
+          `INSERT INTO support_case_attachments (
+            id, case_id, line_account_id, r2_key, file_name, content_type, size_bytes,
+            created_by, created_by_name, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          attachmentId,
+          caseId.value,
+          lineAccountId.value,
+          r2Key,
+          filename.value,
+          contentType,
+          data.byteLength,
+          staff.id,
+          staff.name,
+          now,
+        )
+        .run();
+    } catch (err) {
+      await c.env.IMAGES.delete(r2Key).catch(() => undefined);
+      throw err;
+    }
+
+    const created = await c.env.DB
+      .prepare(`SELECT * FROM support_case_attachments WHERE id = ? AND case_id = ?`)
+      .bind(attachmentId, caseId.value)
+      .first<SupportCaseAttachmentRow>();
+    return c.json({ success: true, data: serializeCaseAttachment(created!) }, 201);
+  } catch (err) {
+    console.error(`POST /api/support/cases/:id/attachments error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '画像の添付に失敗しました' }, 500);
+  }
+});
+
+support.get('/api/support/cases/:id/attachments/:attachmentId/file', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const attachmentId = parseRequiredVisibleId(c.req.param('attachmentId'), 'attachmentId');
+    if (!attachmentId.ok) return c.json({ success: false, error: attachmentId.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, currentStaff(c));
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    const attachment = await c.env.DB
+      .prepare(`SELECT * FROM support_case_attachments WHERE id = ? AND case_id = ? AND line_account_id = ?`)
+      .bind(attachmentId.value, caseId.value, lineAccountId.value)
+      .first<SupportCaseAttachmentRow>();
+    if (!attachment) return c.json({ success: false, error: 'attachment not found' }, 404);
+    const object = await c.env.IMAGES.get(attachment.r2_key);
+    if (!object) return c.json({ success: false, error: 'attachment not found' }, 404);
+    const headers = new Headers({
+      'Content-Type': attachment.content_type,
+      'Content-Disposition': attachmentContentDisposition(attachment.file_name),
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return new Response(object.body, { headers });
+  } catch (err) {
+    console.error(`GET /api/support/cases/:id/attachments/:attachmentId/file error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '画像の取得に失敗しました' }, 500);
   }
 });
 
@@ -1969,6 +2301,124 @@ support.patch('/api/support/cases/:id', async (c) => {
   }
 });
 
+support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const staff = currentStaff(c);
+    if (!canManageSupportCaseRouting(staff)) {
+      return c.json({ success: false, error: '二次対応先を変更できるのはオーナーまたは管理者です' }, 403);
+    }
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (supportCase.status === 'resolved') {
+      return c.json({ success: false, error: '完了済みチケットの二次対応先は変更できません' }, 400);
+    }
+    const parsedAssignees = parseSecondaryAssigneeNames(body.escalationAssignees, undefined);
+    if (!parsedAssignees.ok) return c.json({ success: false, error: parsedAssignees.error }, 400);
+    const staffIds = await activeStaffIdsByName(c.env.DB, parsedAssignees.value);
+    const missing = parsedAssignees.value.filter((name) => !staffIds.has(name));
+    if (missing.length > 0) {
+      return c.json({ success: false, error: `選択できない二次対応先が含まれています: ${missing.join('、')}` }, 400);
+    }
+
+    const current = await c.env.DB
+      .prepare(
+        `SELECT id, assignee
+         FROM support_escalations
+         WHERE case_id = ? AND line_account_id = ?
+           AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')`,
+      )
+      .bind(caseId.value, lineAccountId.value)
+      .all<{ id: string; assignee: string }>();
+    const selected = new Set(parsedAssignees.value);
+    const currentNames = new Set(current.results.map((row) => row.assignee));
+    const now = jstNow();
+    const statements: D1PreparedStatement[] = [];
+
+    for (const row of current.results) {
+      if (selected.has(row.assignee)) continue;
+      statements.push(
+        c.env.DB
+          .prepare(`UPDATE support_escalations SET status = 'closed', updated_by = ?, updated_at = ? WHERE id = ?`)
+          .bind(staff.id, now, row.id),
+      );
+    }
+    for (const assignee of parsedAssignees.value) {
+      if (currentNames.has(assignee)) continue;
+      statements.push(
+        c.env.DB
+          .prepare(
+            `INSERT INTO support_escalations (
+              id, case_id, line_account_id, assignee, assignee_staff_id, level, status,
+              question, answer, due_at, answered_at, created_by, updated_by, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            caseId.value,
+            lineAccountId.value,
+            assignee,
+            staffIds.get(assignee) ?? null,
+            supportCase.escalation_level === 'L3' ? 'L3' : 'L2',
+            supportCase.customer_summary.trim() || supportCase.title,
+            supportCase.due_at,
+            staff.id,
+            staff.id,
+            now,
+            now,
+          ),
+      );
+    }
+
+    let nextStatus = supportCase.status;
+    if (
+      parsedAssignees.value.length > 0
+      && ['open', 'in_progress', 'waiting_primary', 'escalated', 'waiting_secondary', 'reopened'].includes(supportCase.status)
+    ) {
+      nextStatus = 'waiting_secondary';
+    } else if (
+      parsedAssignees.value.length === 0
+      && ['escalated', 'waiting_secondary'].includes(supportCase.status)
+    ) {
+      nextStatus = 'in_progress';
+    }
+    statements.push(
+      c.env.DB
+        .prepare(`UPDATE support_cases SET escalation_assignee = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
+        .bind(parsedAssignees.value[0] ?? null, nextStatus, staff.id, now, caseId.value, lineAccountId.value),
+      prepareCaseEvent(
+        c.env.DB,
+        caseId.value,
+        'secondary_assignees_updated',
+        staff.id,
+        staff.name,
+        parsedAssignees.value.length > 0
+          ? `二次対応先を更新しました: ${parsedAssignees.value.join('、')}`
+          : '二次対応先を未設定にしました',
+        {
+          previous: Array.from(currentNames),
+          next: parsedAssignees.value,
+        },
+        crypto.randomUUID(),
+        now,
+      ),
+    );
+    await c.env.DB.batch(statements);
+    kickWebPushNotifications(c);
+    const updated = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    return c.json({ success: true, data: serializeCase(updated!) });
+  } catch (err) {
+    console.error(`PUT /api/support/cases/:id/secondary-assignees error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '二次対応先の更新に失敗しました' }, 500);
+  }
+});
+
 support.post('/api/support/cases/:id/events', async (c) => {
   try {
     const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
@@ -2108,6 +2558,124 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
   }
 });
 
+support.patch('/api/support/cases/:id/internal-messages/:messageId', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const messageId = parseRequiredVisibleId(c.req.param('messageId'), 'messageId');
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const baseVersion = parseInternalMessageBaseVersion(body.baseVersion);
+    if (!baseVersion.ok) return c.json({ success: false, error: baseVersion.error }, 400);
+    const editedBody = parseRequiredTextField(body.body, 'body', SUPPORT_LONG_TEXT_MAX_LENGTH);
+    if (!editedBody.ok) return c.json({ success: false, error: editedBody.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    const message = await c.env.DB
+      .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND case_id = ? AND line_account_id = ?`)
+      .bind(messageId.value, caseId.value, lineAccountId.value)
+      .first<SupportInternalMessageRow>();
+    if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+
+    const mentions = parseMentionNames(body.mentions, editedBody.value);
+    if (!mentions.ok) return c.json({ success: false, error: mentions.error }, 400);
+    const mentionStaffIds = parseMentionStaffIds(body.mentionStaffIds, SUPPORT_INTERNAL_MENTION_MAX);
+    if (!mentionStaffIds.ok) return c.json({ success: false, error: mentionStaffIds.error }, 400);
+    const resolvedMentions = await resolveMentionStaffTargets(c.env.DB, mentionStaffIds.value);
+    if (resolvedMentions.missingIds.length > 0) {
+      return c.json({ success: false, error: 'mention target not found' }, 400);
+    }
+    if (!mentionTargetsMatchBody(editedBody.value, resolvedMentions.targets)) {
+      return c.json({ success: false, error: 'mention target must appear in body' }, 400);
+    }
+    const mentionNames = Array.from(new Set([
+      ...mentions.value,
+      ...resolvedMentions.targets.map((target) => target.name),
+    ]));
+    const result = await appendInternalMessageEvent({
+      db: c.env.DB,
+      source: 'support',
+      message,
+      staff,
+      baseVersion: baseVersion.value,
+      action: 'edit',
+      body: editedBody.value,
+      mentions: mentionNames,
+      mentionTargets: resolvedMentions.targets,
+      now: jstNow(),
+    });
+    if (!result.ok) {
+      if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
+      if (result.reason === 'deleted') return c.json({ success: false, error: '削除済みメッセージは編集できません' }, 400);
+      return c.json({ success: false, error: '自分が投稿したメッセージだけ編集できます' }, 403);
+    }
+    kickWebPushNotifications(c);
+    return c.json({
+      success: true,
+      data: serializeInternalMessage(message, staff, mentionStaffIds.value, result.event),
+    });
+  } catch (err) {
+    console.error(`PATCH /api/support/cases/:id/internal-messages/:messageId error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'メッセージの編集に失敗しました' }, 500);
+  }
+});
+
+support.post('/api/support/cases/:id/internal-messages/:messageId/soft-delete', async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const messageId = parseRequiredVisibleId(c.req.param('messageId'), 'messageId');
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const baseVersion = parseInternalMessageBaseVersion(body.baseVersion);
+    if (!baseVersion.ok) return c.json({ success: false, error: baseVersion.error }, 400);
+    const reason = parseOptionalTextField(body.reason, 'reason', 500);
+    if (!reason.ok) return c.json({ success: false, error: reason.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    const message = await c.env.DB
+      .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND case_id = ? AND line_account_id = ?`)
+      .bind(messageId.value, caseId.value, lineAccountId.value)
+      .first<SupportInternalMessageRow>();
+    if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+    if (message.created_by !== staff.id && !reason.value) {
+      return c.json({ success: false, error: '他のスタッフの投稿を削除する場合は理由を入力してください' }, 400);
+    }
+    const result = await appendInternalMessageEvent({
+      db: c.env.DB,
+      source: 'support',
+      message,
+      staff,
+      baseVersion: baseVersion.value,
+      action: 'delete',
+      reason: reason.value,
+      now: jstNow(),
+    });
+    if (!result.ok) {
+      if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
+      if (result.reason === 'deleted') return c.json({ success: false, error: 'すでに削除済みです' }, 400);
+      return c.json({ success: false, error: 'このメッセージは削除できません' }, 403);
+    }
+    return c.json({
+      success: true,
+      data: serializeInternalMessage(message, staff, [], result.event),
+    });
+  } catch (err) {
+    console.error(`POST /api/support/cases/:id/internal-messages/:messageId/soft-delete error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'メッセージの削除に失敗しました' }, 500);
+  }
+});
+
 support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', async (c) => {
   try {
     const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
@@ -2135,6 +2703,10 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', as
       .bind(messageId.value, id.value, lineAccountId.value)
       .first<SupportInternalMessageRow>();
     if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+    const messageEvent = (await latestInternalMessageEvents(c.env.DB, 'support', [messageId.value])).get(messageId.value);
+    if (messageEvent?.action === 'delete') {
+      return c.json({ success: false, error: '削除済みメッセージにはリアクションできません' }, 400);
+    }
 
     const { reactionsJson } = toggleInternalReaction(message.reactions, emoji.value, staff);
     await c.env.DB
@@ -2150,7 +2722,7 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', as
 
     return c.json({
       success: true,
-      data: serializeInternalMessage(updated!, staff, mentionIds.get(messageId.value) ?? []),
+      data: serializeInternalMessage(updated!, staff, mentionIds.get(messageId.value) ?? [], messageEvent),
     });
   } catch (err) {
     console.error(`POST /api/support/cases/:id/internal-messages/:messageId/reactions error: ${supportRouteErrorKind(err)}`);

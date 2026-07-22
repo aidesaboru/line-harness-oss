@@ -873,7 +873,7 @@ describe('support staff visibility scope', () => {
     expect(result.rows.map((row) => row.friendId)).toEqual(['f-visible']);
     const candidateCall = db.calls.find((call) => call.sql.includes('FROM friends f') && call.sql.includes('JOIN agg'));
     expect(candidateCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
-    expect(candidateCall?.binds).toEqual(['staff-1', '田島', '田島', '田島']);
+    expect(candidateCall?.binds).toEqual(['staff-1', '田島', '田島', 'staff-1', '田島']);
   });
 
   test('owner unanswered list keeps the global inbox scope', async () => {

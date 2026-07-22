@@ -428,11 +428,12 @@ function makeSupportDb(state: {
   }
 
   function visibilityParts(sql: string, binds: unknown[]) {
-    const stringCounts = new Map<string, number>();
-    for (const item of binds) {
-      if (typeof item === 'string') stringCounts.set(item, (stringCounts.get(item) ?? 0) + 1);
-    }
-    const staffName = [...stringCounts].find(([, count]) => count >= 2)?.[0] ?? null;
+    const staffId = binds.find((item) => typeof item === 'string' && /^(staff|secondary)-/.test(item));
+    const assignmentNames = new Set([
+      ...cases.flatMap((item) => [item.primary_assignee, item.escalation_assignee]),
+      ...escalations.map((item) => item.assignee),
+    ].filter((value): value is string => Boolean(value?.trim())));
+    const staffName = binds.find((item): item is string => typeof item === 'string' && assignmentNames.has(item)) ?? null;
     if (!sql.includes('created_by = ?')) {
       if (!sql.includes('sc.escalation_assignee = ?') || !staffName) return null;
       return {
@@ -441,7 +442,6 @@ function makeSupportDb(state: {
         secondaryOnly: true,
       };
     }
-    const staffId = binds.find((item) => typeof item === 'string' && /^(staff|secondary)-/.test(item));
     if (!staffId) return null;
     return {
       staffId: String(staffId),
@@ -597,11 +597,7 @@ function makeSupportDb(state: {
               rows = rows.filter((item) => item.due_at !== null && item.due_at < dueCutoff);
             }
             if (sql.includes("sc.status != 'resolved' AND (")) {
-              const counts = new Map<string, number>();
-              for (const item of bound) {
-                if (typeof item === 'string') counts.set(item, (counts.get(item) ?? 0) + 1);
-              }
-              const staffName = [...counts].find(([, count]) => count >= 2)?.[0] ?? '';
+              const staffName = visibilityParts(sql, bound)?.staffName ?? '';
               rows = rows.filter(
                 (item) =>
                   item.status !== 'resolved' &&

@@ -94,6 +94,13 @@ export type ChatInternalMessage = {
   createdBy: string | null
   createdByName: string | null
   createdAt: string
+  version?: number
+  editedAt?: string | null
+  deletedAt?: string | null
+  deletedByName?: string | null
+  isDeleted?: boolean
+  canEdit?: boolean
+  canDelete?: boolean
 }
 
 export type ChatTypingParticipant = {
@@ -133,7 +140,7 @@ export type ScheduledChatMessage = {
   status: 'pending' | 'processing' | 'sent' | 'failed' | 'failed_permanent' | 'cancelled'
   attempts: number
   lastError: string | null
-  createdBy: string | null
+  createdBy?: string | null
   createdByName: string | null
   sentAt: string | null
   cancelledAt: string | null
@@ -229,8 +236,18 @@ export type InternalChatFeedItem = {
   mentions: string[]
   mentionStaffIds: string[]
   reactions: InternalMessageReaction[]
+  createdBy: string | null
   createdByName: string | null
   createdAt: string
+  version?: number
+  editedAt?: string | null
+  deletedAt?: string | null
+  deletedByName?: string | null
+  isDeleted?: boolean
+  canEdit?: boolean
+  canDelete?: boolean
+  isBookmarked?: boolean
+  taskCount?: number
   href: string
   isUnread: boolean
 }
@@ -239,6 +256,27 @@ export type InternalChatFeedResponse = {
   items: InternalChatFeedItem[]
   hasMore: boolean
   nextCursor: string | null
+}
+
+export type InternalTask = {
+  id: string
+  lineAccountId: string
+  source: 'support' | 'chat'
+  sourceId: string
+  sourceMessageId: string | null
+  title: string
+  description: string
+  status: 'open' | 'done'
+  dueAt: string | null
+  assignees: Array<{ staffId: string; staffName: string }>
+  createdBy: string | null
+  createdByName: string | null
+  completedBy: string | null
+  completedByName: string | null
+  completedAt: string | null
+  createdAt: string
+  updatedAt: string
+  href: string
 }
 
 export type StaffPresenceItem = {
@@ -343,6 +381,7 @@ export type SupportCase = {
   status: SupportCaseStatus
   primaryAssignee: string | null
   escalationAssignee: string | null
+  escalationAssignees?: string[]
   escalationLevel: 'L1' | 'L2' | 'L3'
   dueAt: string | null
   nextCheckAt: string | null
@@ -362,6 +401,20 @@ export type SupportCase = {
   reopenedAt: string | null
   createdAt: string
   updatedAt: string
+  lastHumanReplyAt?: string | null
+}
+
+export type SupportCaseAttachment = {
+  id: string
+  caseId: string
+  lineAccountId: string
+  fileName: string
+  contentType: string
+  sizeBytes: number
+  createdBy: string | null
+  createdByName: string | null
+  createdAt: string
+  filePath: string
 }
 
 export type SupportEscalation = {
@@ -425,6 +478,13 @@ export type SupportInternalMessage = {
   createdBy: string | null
   createdByName: string | null
   createdAt: string
+  version?: number
+  editedAt?: string | null
+  deletedAt?: string | null
+  deletedByName?: string | null
+  isDeleted?: boolean
+  canEdit?: boolean
+  canDelete?: boolean
 }
 
 export type SupportMessage = {
@@ -440,6 +500,7 @@ export type SupportCaseDetail = SupportCase & {
   events: SupportCaseEvent[]
   escalations: SupportEscalation[]
   internalMessages: SupportInternalMessage[]
+  attachments?: SupportCaseAttachment[]
   manuals: SupportManual[]
   canViewLineConversation: boolean
   recentMessages: SupportMessage[]
@@ -535,6 +596,12 @@ export async function fetchApi<T>(path: string, options?: RequestInit): Promise<
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+export async function fetchApiBlob(path: string): Promise<Blob> {
+  const res = await fetch(buildApiUrl(path), { credentials: 'include' })
+  if (!res.ok) throw new ApiRequestError(res.status)
+  return res.blob()
 }
 
 export type FriendListParams = {
@@ -1175,6 +1242,7 @@ export const api = {
         status?: SupportCaseStatus
         primaryAssignee?: string | null
         escalationAssignee?: string | null
+        escalationAssignees?: string[]
         dueAt?: string | null
         nextCheckAt?: string | null
         customerNumber?: string | null
@@ -1233,6 +1301,36 @@ export const api = {
           method: 'POST',
           body: JSON.stringify({ lineAccountId: accountId, emoji }),
         }),
+      editInternalMessage: (id: string, accountId: string, messageId: string, data: { body: string; baseVersion: number; mentions?: string[]; mentionStaffIds?: string[] }) =>
+        fetchApi<ApiResponse<SupportInternalMessage>>(`/api/support/cases/${id}/internal-messages/${messageId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      softDeleteInternalMessage: (id: string, accountId: string, messageId: string, data: { baseVersion: number; reason?: string }) =>
+        fetchApi<ApiResponse<SupportInternalMessage>>(`/api/support/cases/${id}/internal-messages/${messageId}/soft-delete`, {
+          method: 'POST',
+          body: JSON.stringify({ ...data, lineAccountId: accountId }),
+        }),
+      setSecondaryAssignees: (id: string, accountId: string, escalationAssignees: string[]) =>
+        fetchApi<ApiResponse<SupportCase>>(`/api/support/cases/${id}/secondary-assignees`, {
+          method: 'PUT',
+          body: JSON.stringify({ lineAccountId: accountId, escalationAssignees }),
+        }),
+      uploadAttachment: async (id: string, accountId: string, file: File) => {
+        const data = await file.arrayBuffer()
+        return fetchApi<ApiResponse<SupportCaseAttachment>>(
+          `/api/support/cases/${id}/attachments?${new URLSearchParams({ lineAccountId: accountId })}`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': file.type,
+              'X-File-Name': encodeURIComponent(file.name),
+            },
+            body: data,
+          },
+        )
+      },
+      attachmentBlob: (attachment: SupportCaseAttachment) => fetchApiBlob(attachment.filePath),
       escalate: (id: string, accountId: string, data: { assignee?: string; level?: 'L2' | 'L3'; question: string; dueAt?: string | null }) =>
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/cases/${id}/escalations`, {
           method: 'POST',
@@ -1400,6 +1498,20 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ emoji }),
       }),
+    editInternalMessage: (id: string, messageId: string, data: { body: string; baseVersion: number; mentions?: string[]; mentionStaffIds?: string[] }) =>
+      fetchApi<ApiResponse<ChatInternalMessage>>(`/api/chats/${id}/internal-messages/${messageId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    softDeleteInternalMessage: (id: string, messageId: string, data: { baseVersion: number; reason?: string }) =>
+      fetchApi<ApiResponse<ChatInternalMessage>>(`/api/chats/${id}/internal-messages/${messageId}/soft-delete`, {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    confirm: (id: string) =>
+      fetchApi<ApiResponse<{ isConfirmed: boolean; confirmedMessageId: string; confirmedMessageAt: string; confirmedAt: string }>>(`/api/chats/${id}/confirm`, {
+        method: 'POST',
+      }),
   },
   appNotifications: {
     recent: (params?: { after?: string; accountId?: string }) => {
@@ -1452,6 +1564,39 @@ export const api = {
           }),
         },
       ),
+    toggleInternalChatBookmark: (data: { accountId: string; source: 'support' | 'chat'; sourceId: string; messageId: string }) =>
+      fetchApi<ApiResponse<{ isBookmarked: boolean; updatedAt: string }>>(
+        `/api/app-notifications/internal-chat-bookmarks/${data.source}/${data.messageId}`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ lineAccountId: data.accountId, sourceId: data.sourceId }),
+        },
+      ),
+    internalTasks: (params: { accountId: string; status?: 'all' | 'open' | 'done' }) =>
+      fetchApi<ApiResponse<InternalTask[]>>(
+        `/api/app-notifications/internal-chat-tasks?${new URLSearchParams({
+          lineAccountId: params.accountId,
+          status: params.status ?? 'all',
+        })}`,
+      ),
+    createInternalTask: (data: {
+      accountId: string
+      source: 'support' | 'chat'
+      sourceId: string
+      sourceMessageId: string
+      title: string
+      description?: string
+      dueAt?: string | null
+      assigneeStaffIds?: string[]
+    }) => fetchApi<ApiResponse<InternalTask>>('/api/app-notifications/internal-chat-tasks', {
+      method: 'POST',
+      body: JSON.stringify({ ...data, lineAccountId: data.accountId }),
+    }),
+    updateInternalTask: (taskId: string, status: 'open' | 'done') =>
+      fetchApi<ApiResponse<InternalTask>>(`/api/app-notifications/internal-chat-tasks/${taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      }),
     webPushConfig: () =>
       fetchApi<ApiResponse<WebPushConfigResponse>>('/api/app-notifications/web-push/config'),
     subscribeWebPush: (subscription: PushSubscriptionJSON & { userAgent?: string }) =>

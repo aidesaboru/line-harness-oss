@@ -472,6 +472,7 @@ export interface CaseFormState {
   status: SupportCaseStatus
   primaryAssignee: string
   escalationAssignee: string
+  escalationAssignees: string[]
   dueAt: string
   nextCheckAt: string
   customerNumber: string
@@ -493,6 +494,7 @@ export function emptyCaseForm(): CaseFormState {
     status: 'open',
     primaryAssignee: '',
     escalationAssignee: '',
+    escalationAssignees: [],
     dueAt: '',
     nextCheckAt: '',
     customerNumber: '',
@@ -514,6 +516,7 @@ export function caseFormFromDetail(detail: {
   status: SupportCaseStatus
   primaryAssignee: string | null
   escalationAssignee: string | null
+  escalationAssignees?: string[]
   dueAt: string | null
   nextCheckAt: string | null
   customerNumber: string | null
@@ -533,6 +536,9 @@ export function caseFormFromDetail(detail: {
     status: detail.status,
     primaryAssignee: detail.primaryAssignee ?? '',
     escalationAssignee: detail.escalationAssignee ?? '',
+    escalationAssignees: detail.escalationAssignees?.length
+      ? detail.escalationAssignees
+      : detail.escalationAssignee ? [detail.escalationAssignee] : [],
     dueAt: toInputDateTime(detail.dueAt),
     nextCheckAt: toInputDateTime(detail.nextCheckAt),
     customerNumber: detail.customerNumber ?? '',

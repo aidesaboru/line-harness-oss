@@ -683,11 +683,11 @@ describe('computeUsersGrouped', () => {
 
     const identCall = db.calls.find((call) => call.sql.includes('FROM friends'));
     expect(identCall?.sql).toContain('sc_friend_scope.friend_id = friends.id');
-    expect(identCall?.binds).toEqual(['staff-1', '田島', '田島', '田島']);
+    expect(identCall?.binds).toEqual(['staff-1', '田島', '田島', 'staff-1', '田島']);
 
     const formCall = db.calls.find((call) => call.sql.includes('form_submissions'));
     expect(formCall?.sql).toContain('sc_friend_scope.friend_id = f.id');
-    expect(formCall?.binds).toEqual(['staff-1', '田島', '田島', '田島']);
+    expect(formCall?.binds).toEqual(['staff-1', '田島', '田島', 'staff-1', '田島']);
   });
 
   test('owner は users-grouped の全体スコープを維持する', async () => {

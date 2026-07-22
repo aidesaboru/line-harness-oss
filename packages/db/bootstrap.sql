@@ -235,6 +235,18 @@ CREATE TABLE calendar_bookings (
   updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE chat_confirmation_events (
+  id                    TEXT PRIMARY KEY,
+  friend_id             TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
+  line_account_id       TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  staff_id              TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  staff_name            TEXT NOT NULL,
+  confirmed_message_id  TEXT NOT NULL,
+  confirmed_message_at  TEXT NOT NULL,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (friend_id, staff_id, confirmed_message_id)
+);
+
 CREATE TABLE chat_internal_messages (
   id              TEXT PRIMARY KEY,
   friend_id       TEXT NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
@@ -517,6 +529,31 @@ CREATE TABLE internal_conversations (
   UNIQUE(kind, source_id)
 );
 
+CREATE TABLE internal_message_bookmark_events (
+  id                 TEXT PRIMARY KEY,
+  source_type        TEXT NOT NULL CHECK (source_type IN ('support', 'chat')),
+  source_message_id  TEXT NOT NULL,
+  staff_id           TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  action             TEXT NOT NULL CHECK (action IN ('add', 'remove')),
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE internal_message_events (
+  id                 TEXT PRIMARY KEY,
+  source_type        TEXT NOT NULL CHECK (source_type IN ('support', 'chat')),
+  source_message_id  TEXT NOT NULL,
+  version            INTEGER NOT NULL,
+  action             TEXT NOT NULL CHECK (action IN ('edit', 'delete')),
+  body               TEXT,
+  mentions           TEXT NOT NULL DEFAULT '[]',
+  mention_staff_ids  TEXT NOT NULL DEFAULT '[]',
+  reason             TEXT,
+  actor_id           TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name         TEXT,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (source_type, source_message_id, version)
+);
+
 CREATE TABLE internal_message_mentions (
   source_type         TEXT NOT NULL CHECK (source_type IN ('support', 'chat', 'channel')),
   source_message_id   TEXT NOT NULL,
@@ -524,6 +561,44 @@ CREATE TABLE internal_message_mentions (
   staff_name_snapshot TEXT NOT NULL,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   PRIMARY KEY(source_type, source_message_id, staff_id)
+);
+
+CREATE TABLE internal_task_assignees (
+  task_id          TEXT NOT NULL REFERENCES internal_tasks(id) ON DELETE CASCADE,
+  staff_id         TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  staff_name       TEXT NOT NULL,
+  assigned_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  removed_at       TEXT,
+  PRIMARY KEY (task_id, staff_id)
+);
+
+CREATE TABLE internal_task_events (
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT NOT NULL REFERENCES internal_tasks(id) ON DELETE CASCADE,
+  action      TEXT NOT NULL CHECK (action IN ('created', 'completed', 'reopened', 'updated')),
+  metadata    TEXT NOT NULL DEFAULT '{}',
+  actor_id    TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE internal_tasks (
+  id                 TEXT PRIMARY KEY,
+  line_account_id    TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  source_type        TEXT NOT NULL CHECK (source_type IN ('support', 'chat')),
+  source_id          TEXT NOT NULL,
+  source_message_id  TEXT,
+  title              TEXT NOT NULL,
+  description        TEXT NOT NULL DEFAULT '',
+  status             TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+  due_at              TEXT,
+  created_by          TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  created_by_name     TEXT,
+  completed_by       TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  completed_by_name  TEXT,
+  completed_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
 CREATE TABLE line_accounts (
@@ -865,6 +940,19 @@ CREATE TABLE stripe_events (
   processed_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 );
 
+CREATE TABLE support_case_attachments (
+  id               TEXT PRIMARY KEY,
+  case_id          TEXT NOT NULL REFERENCES support_cases(id) ON DELETE CASCADE,
+  line_account_id  TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE CASCADE,
+  r2_key           TEXT NOT NULL,
+  file_name        TEXT NOT NULL,
+  content_type     TEXT NOT NULL,
+  size_bytes       INTEGER NOT NULL DEFAULT 0,
+  created_by       TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  created_by_name  TEXT,
+  created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE support_case_events (
   id              TEXT PRIMARY KEY,
   case_id         TEXT NOT NULL REFERENCES support_cases(id) ON DELETE CASCADE,
@@ -937,7 +1025,7 @@ CREATE TABLE support_escalations (
   updated_by          TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, reopened_from_id TEXT REFERENCES support_escalations(id));
+, reopened_from_id TEXT REFERENCES support_escalations(id), assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL);
 
 CREATE TABLE support_internal_messages (
   id               TEXT PRIMARY KEY,
@@ -1133,6 +1221,9 @@ CREATE INDEX idx_calendar_bookings_friend ON calendar_bookings (friend_id);
 
 CREATE INDEX idx_calendar_bookings_start ON calendar_bookings (start_at);
 
+CREATE INDEX idx_chat_confirmation_events_staff
+  ON chat_confirmation_events(staff_id, friend_id, confirmed_message_at DESC, confirmed_message_id DESC);
+
 CREATE INDEX idx_chat_internal_messages_account
   ON chat_internal_messages(line_account_id, created_at);
 
@@ -1225,8 +1316,29 @@ CREATE INDEX idx_internal_conversations_account_updated
 CREATE INDEX idx_internal_conversations_kind_source
   ON internal_conversations(kind, source_id);
 
+CREATE INDEX idx_internal_message_bookmark_events_message
+  ON internal_message_bookmark_events(source_type, source_message_id, staff_id, created_at DESC);
+
+CREATE INDEX idx_internal_message_bookmark_events_staff
+  ON internal_message_bookmark_events(staff_id, created_at DESC);
+
+CREATE INDEX idx_internal_message_events_source
+  ON internal_message_events(source_type, source_message_id, version DESC);
+
 CREATE INDEX idx_internal_message_mentions_staff
   ON internal_message_mentions(staff_id, created_at DESC);
+
+CREATE INDEX idx_internal_task_assignees_staff
+  ON internal_task_assignees(staff_id, removed_at, assigned_at DESC);
+
+CREATE INDEX idx_internal_task_events_task
+  ON internal_task_events(task_id, created_at);
+
+CREATE INDEX idx_internal_tasks_account_status
+  ON internal_tasks(line_account_id, status, updated_at DESC);
+
+CREATE INDEX idx_internal_tasks_source
+  ON internal_tasks(source_type, source_id, created_at DESC);
 
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
@@ -1297,6 +1409,9 @@ CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
 CREATE INDEX idx_stripe_events_type ON stripe_events (event_type);
 
+CREATE INDEX idx_support_case_attachments_case
+  ON support_case_attachments(case_id, created_at);
+
 CREATE INDEX idx_support_case_events_case
   ON support_case_events(case_id, created_at);
 
@@ -1320,6 +1435,9 @@ CREATE INDEX idx_support_escalations_account_status_due
 
 CREATE INDEX idx_support_escalations_assignee
   ON support_escalations(assignee, status, due_at);
+
+CREATE INDEX idx_support_escalations_assignee_staff
+  ON support_escalations(assignee_staff_id, status, updated_at DESC);
 
 CREATE INDEX idx_support_escalations_case
   ON support_escalations(case_id, created_at);
@@ -1365,6 +1483,18 @@ CREATE INDEX idx_web_push_deliveries_subscription
 CREATE INDEX idx_web_push_subscriptions_staff
   ON web_push_subscriptions(staff_id, is_active, last_seen_at);
 
+CREATE TRIGGER protect_chat_confirmation_events_delete
+BEFORE DELETE ON chat_confirmation_events
+BEGIN
+  SELECT RAISE(ABORT, 'chat confirmation events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_chat_confirmation_events_update
+BEFORE UPDATE ON chat_confirmation_events
+BEGIN
+  SELECT RAISE(ABORT, 'chat confirmation events cannot be updated');
+END;
+
 CREATE TRIGGER protect_chat_internal_messages_delete
 BEFORE DELETE ON chat_internal_messages
 BEGIN
@@ -1377,10 +1507,58 @@ BEGIN
   SELECT RAISE(ABORT, 'friends history is protected');
 END;
 
+CREATE TRIGGER protect_internal_message_bookmark_events_delete
+BEFORE DELETE ON internal_message_bookmark_events
+BEGIN
+  SELECT RAISE(ABORT, 'bookmark events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_internal_message_bookmark_events_update
+BEFORE UPDATE ON internal_message_bookmark_events
+BEGIN
+  SELECT RAISE(ABORT, 'bookmark events cannot be updated');
+END;
+
+CREATE TRIGGER protect_internal_message_events_delete
+BEFORE DELETE ON internal_message_events
+BEGIN
+  SELECT RAISE(ABORT, 'internal message events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_internal_message_events_update
+BEFORE UPDATE ON internal_message_events
+BEGIN
+  SELECT RAISE(ABORT, 'internal message events cannot be updated');
+END;
+
+CREATE TRIGGER protect_internal_task_events_delete
+BEFORE DELETE ON internal_task_events
+BEGIN
+  SELECT RAISE(ABORT, 'internal task events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_internal_task_events_update
+BEFORE UPDATE ON internal_task_events
+BEGIN
+  SELECT RAISE(ABORT, 'internal task events cannot be updated');
+END;
+
+CREATE TRIGGER protect_internal_tasks_delete
+BEFORE DELETE ON internal_tasks
+BEGIN
+  SELECT RAISE(ABORT, 'internal tasks cannot be deleted');
+END;
+
 CREATE TRIGGER protect_messages_log_delete
 BEFORE DELETE ON messages_log
 BEGIN
   SELECT RAISE(ABORT, 'messages_log history is protected');
+END;
+
+CREATE TRIGGER protect_support_case_attachments_delete
+BEFORE DELETE ON support_case_attachments
+BEGIN
+  SELECT RAISE(ABORT, 'support case attachments cannot be deleted');
 END;
 
 CREATE TRIGGER protect_support_case_events_delete

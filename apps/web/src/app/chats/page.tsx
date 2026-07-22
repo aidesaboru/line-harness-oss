@@ -39,6 +39,11 @@ interface Chat {
   lastMessageType: string | null
   needsReply: boolean
   lastUnansweredAt: string | null
+  lastHumanReplyAt: string | null
+  latestCustomerMessageId: string | null
+  latestCustomerMessageAt: string | null
+  isConfirmed: boolean
+  confirmedMessageAt: string | null
   createdAt: string
   updatedAt: string
   activeSupportCase?: ChatActiveSupportCase | null
@@ -361,6 +366,11 @@ function buildEmptyChatDetailFromFriend(friend: {
     lastMessageType: null,
     needsReply: false,
     lastUnansweredAt: null,
+    lastHumanReplyAt: null,
+    latestCustomerMessageId: null,
+    latestCustomerMessageAt: null,
+    isConfirmed: false,
+    confirmedMessageAt: null,
     createdAt: friend.createdAt ?? now,
     updatedAt: friend.updatedAt ?? now,
     messages: [],
@@ -377,6 +387,14 @@ function formatElapsed(iso: string | null): string {
   const hours = Math.floor((Date.now() - t) / (60 * 60 * 1000))
   if (hours < 24) return `${hours}時間`
   return `${Math.floor(hours / 24)}日`
+}
+
+function formatLastHumanReply(iso: string | null): string {
+  const time = getTime(iso)
+  if (!time) return '対応履歴なし'
+  const elapsed = Math.max(0, Date.now() - time)
+  const days = Math.floor(elapsed / (24 * 60 * 60 * 1000))
+  return days === 0 ? '前回対応 本日' : `前回対応から${days}日`
 }
 
 function FlameIcon({ className = 'h-3.5 w-3.5' }: { className?: string }) {
@@ -1471,6 +1489,7 @@ export default function ChatsPage() {
   const [mediaPreview, setMediaPreview] = useState<ChatMediaPreview | null>(null)
   const [sending, setSending] = useState(false)
   const [markingAsRead, setMarkingAsRead] = useState(false)
+  const [confirmingReview, setConfirmingReview] = useState(false)
   const [reflectingDeletedMessageId, setReflectingDeletedMessageId] = useState<string | null>(null)
   const sendLockRef = useRef(false)
   const sendAttemptRegistryRef = useRef(createSendAttemptRegistry())
@@ -1653,7 +1672,14 @@ export default function ChatsPage() {
       const chatRes = await api.chats.list(params)
       if (!isCurrentRequest()) return
       if (chatRes.success) {
-        setChats(chatRes.data as unknown as Chat[])
+        setChats((chatRes.data as unknown as Chat[]).map((chat) => ({
+          ...chat,
+          lastHumanReplyAt: chat.lastHumanReplyAt ?? null,
+          latestCustomerMessageId: chat.latestCustomerMessageId ?? null,
+          latestCustomerMessageAt: chat.latestCustomerMessageAt ?? null,
+          isConfirmed: chat.isConfirmed ?? false,
+          confirmedMessageAt: chat.confirmedMessageAt ?? null,
+        })))
       } else {
         if (!options.silent) setError(chatFailureMessage('list'))
       }
@@ -1731,7 +1757,15 @@ export default function ChatsPage() {
       const res = await api.chats.get(chatId)
       if (!isCurrentRequest()) return
       if (res.success) {
-        setChatDetail(res.data as unknown as ChatDetail)
+        const detail = res.data as unknown as ChatDetail
+        setChatDetail({
+          ...detail,
+          lastHumanReplyAt: detail.lastHumanReplyAt ?? null,
+          latestCustomerMessageId: detail.latestCustomerMessageId ?? null,
+          latestCustomerMessageAt: detail.latestCustomerMessageAt ?? null,
+          isConfirmed: detail.isConfirmed ?? false,
+          confirmedMessageAt: detail.confirmedMessageAt ?? null,
+        })
       } else {
         if (await loadFriendFallback()) return
         if (!isCurrentRequest()) return
@@ -1910,6 +1944,11 @@ export default function ChatsPage() {
         lastMessageType: chatDetail.lastMessageType ?? lastMsg?.messageType ?? null,
         needsReply: chatDetail.needsReply,
         lastUnansweredAt: chatDetail.lastUnansweredAt,
+        lastHumanReplyAt: chatDetail.lastHumanReplyAt,
+        latestCustomerMessageId: chatDetail.latestCustomerMessageId,
+        latestCustomerMessageAt: chatDetail.latestCustomerMessageAt,
+        isConfirmed: chatDetail.isConfirmed,
+        confirmedMessageAt: chatDetail.confirmedMessageAt,
         activeSupportCase: chatDetail.activeSupportCase ?? null,
         createdAt: chatDetail.createdAt,
         updatedAt: chatDetail.updatedAt,
@@ -2488,6 +2527,34 @@ export default function ChatsPage() {
     }
   }
 
+  const handleConfirmReview = async () => {
+    if (!selectedChatId || confirmingReview || chatDetail?.isConfirmed) return
+    const targetChatId = selectedChatId
+    setConfirmingReview(true)
+    try {
+      const res = await api.chats.confirm(targetChatId)
+      if (!res.success) {
+        setError('確認状態の更新に失敗しました。')
+        return
+      }
+      setChatDetail((current) => current?.id === targetChatId ? {
+        ...current,
+        isConfirmed: true,
+        confirmedMessageAt: res.data.confirmedMessageAt,
+      } : current)
+      setChats((current) => current.map((chat) => chat.id === targetChatId ? {
+        ...chat,
+        isConfirmed: true,
+        confirmedMessageAt: res.data.confirmedMessageAt,
+      } : chat))
+      setError('')
+    } catch (err) {
+      setError(chatActionFailureMessage(err, '確認状態の更新に失敗しました。'))
+    } finally {
+      setConfirmingReview(false)
+    }
+  }
+
   const handleCreateInternalMessage = async (body: string, parentId: string | null, mentions: string[]): Promise<boolean> => {
     if (!selectedChatId || savingInternalChat) return false
     const targetChatId = selectedChatId
@@ -2824,6 +2891,17 @@ export default function ChatsPage() {
                                 <span className="w-2 h-2 rounded-full bg-red-500 flex-shrink-0" aria-label="未読" />
                               )}
                               <p className="text-sm font-medium text-gray-900 truncate">{chat.friendName}</p>
+                              {chat.isConfirmed && (
+                                <span
+                                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+                                  title="最新の顧客メッセージまで確認済み"
+                                  aria-label="確認済み"
+                                >
+                                  <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                    <path d="m5 12 4 4L19 6" />
+                                  </svg>
+                                </span>
+                              )}
                             </div>
                             <span className="text-[10px] text-gray-400 flex-shrink-0">
                               {chat.lastMessageAt ? formatDatetime(chat.lastMessageAt) : `追加 ${formatAddedDate(chat.createdAt)}`}
@@ -2852,6 +2930,9 @@ export default function ChatsPage() {
                               <span className="text-gray-400 mr-1">↪</span>
                             )}
                             {preview || <span className="font-medium text-emerald-600">メッセージを開始</span>}
+                          </p>
+                          <p className="mt-1 text-[10px] font-medium text-slate-400">
+                            {formatLastHumanReply(chat.lastHumanReplyAt)}
                           </p>
                         </div>
                       </div>
@@ -2983,6 +3064,22 @@ export default function ChatsPage() {
                     <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
                       {chatDetail.internalMessages?.length ?? 0}
                     </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleConfirmReview()}
+                    disabled={!chatDetail.latestCustomerMessageId || chatDetail.isConfirmed || confirmingReview}
+                    className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-default ${
+                      chatDetail.isConfirmed
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50'
+                    }`}
+                    title="LINE既読とは別に 自分が最新の顧客メッセージまで確認した位置を記録します"
+                  >
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="m5 12 4 4L19 6" />
+                    </svg>
+                    {chatDetail.isConfirmed ? '確認済み' : confirmingReview ? '確認中' : '確認'}
                   </button>
                   {unansweredOnly && visibleChats.length > 1 && (
                     <button

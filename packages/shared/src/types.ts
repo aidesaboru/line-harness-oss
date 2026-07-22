@@ -727,6 +727,14 @@ export interface Chat {
   needsReply?: boolean;
   /** Timestamp of the latest customer message that still needs a human reply. */
   lastUnansweredAt?: string | null;
+  /** Timestamp of the latest reply sent by a human operator. */
+  lastHumanReplyAt?: string | null;
+  /** Latest customer message used for the staff confirmation marker. */
+  latestCustomerMessageId?: string | null;
+  latestCustomerMessageAt?: string | null;
+  /** Staff-specific review state. This does not change LINE read status. */
+  isConfirmed?: boolean;
+  confirmedMessageAt?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -72,7 +72,8 @@
     "064_internal_communication_foundation.sql",
     "065_protect_operational_history.sql",
     "066_protect_terminal_support_escalations.sql",
-    "067_link_reopened_support_escalations.sql"
+    "067_link_reopened_support_escalations.sql",
+    "068_collaboration_workflow.sql"
   ],
-  "migrationCount": 73
+  "migrationCount": 74
 }

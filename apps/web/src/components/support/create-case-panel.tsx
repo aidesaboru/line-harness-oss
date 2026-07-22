@@ -20,7 +20,7 @@ export interface CreateCaseInput {
   category: string
   priority: SupportPriority
   primaryAssignee: string
-  escalationAssignee: string
+  escalationAssignees: string[]
   dueAt: string
   customerSummary: string
 }
@@ -32,7 +32,7 @@ interface CreateCasePanelProps {
   initialFriendId?: string | null
   draftScope?: string | null
   saving: boolean
-  onCreate: (input: CreateCaseInput) => Promise<boolean>
+  onCreate: (input: CreateCaseInput, attachments: File[]) => Promise<boolean>
   onClose: () => void
 }
 
@@ -45,7 +45,7 @@ function emptyForm(staffName: string): CreateCaseInput {
     category: 'other',
     priority: 'medium',
     primaryAssignee: staffName,
-    escalationAssignee: '',
+    escalationAssignees: [],
     dueAt: '',
     customerSummary: '',
   }
@@ -55,7 +55,7 @@ function uniqueNames(names: Array<string | null | undefined>): string[] {
   return Array.from(new Set(names.map((name) => name?.trim()).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'ja'))
 }
 
-const CREATE_CASE_DRAFT_VERSION = 1
+const CREATE_CASE_DRAFT_VERSION = 2
 const CREATE_CASE_DRAFT_STORAGE_PREFIX = 'lh_support_create_case_draft'
 
 type StoredCreateCaseDraft = {
@@ -75,7 +75,13 @@ function readStoredCreateCaseDraft(key: string): StoredCreateCaseDraft | null {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<StoredCreateCaseDraft>
-    if (parsed.version !== CREATE_CASE_DRAFT_VERSION || !parsed.form || typeof parsed.form !== 'object') return null
+    if (![1, CREATE_CASE_DRAFT_VERSION].includes(Number(parsed.version)) || !parsed.form || typeof parsed.form !== 'object') return null
+    const legacyAssignee = typeof (parsed.form as unknown as { escalationAssignee?: unknown }).escalationAssignee === 'string'
+      ? (parsed.form as unknown as { escalationAssignee: string }).escalationAssignee.trim()
+      : ''
+    const escalationAssignees = Array.isArray(parsed.form.escalationAssignees)
+      ? parsed.form.escalationAssignees.filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+      : legacyAssignee ? [legacyAssignee] : []
     return {
       version: CREATE_CASE_DRAFT_VERSION,
       savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : '',
@@ -86,7 +92,7 @@ function readStoredCreateCaseDraft(key: string): StoredCreateCaseDraft | null {
         category: typeof parsed.form.category === 'string' ? parsed.form.category : 'other',
         priority: ['low', 'medium', 'high', 'urgent'].includes(String(parsed.form.priority)) ? parsed.form.priority as SupportPriority : 'medium',
         primaryAssignee: typeof parsed.form.primaryAssignee === 'string' ? parsed.form.primaryAssignee : '',
-        escalationAssignee: typeof parsed.form.escalationAssignee === 'string' ? parsed.form.escalationAssignee : '',
+        escalationAssignees,
         dueAt: typeof parsed.form.dueAt === 'string' ? parsed.form.dueAt : '',
         customerSummary: typeof parsed.form.customerSummary === 'string' ? parsed.form.customerSummary : '',
       },
@@ -110,6 +116,7 @@ export default function CreateCasePanel({
   const [linkMode, setLinkMode] = useState<LinkMode>('chat')
   const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null)
   const [draftNotice, setDraftNotice] = useState('')
+  const [attachmentFiles, setAttachmentFiles] = useState<File[]>([])
 
   const draftStorageKey = useMemo(() => createCaseDraftStorageKey(draftScope), [draftScope])
   const selectedChat = chats.find((chat) => chat.friendId === form.friendId)
@@ -188,12 +195,13 @@ export default function CreateCasePanel({
 
   const handleSubmit = async () => {
     if (submitDisabled) return
-    const ok = await onCreate(form)
+    const ok = await onCreate(form, attachmentFiles)
     if (ok) {
       if (typeof window !== 'undefined') window.localStorage.removeItem(draftStorageKey)
       setDraftSavedAt(null)
       setDraftNotice('')
       setForm(emptyForm(staffName))
+      setAttachmentFiles([])
       setLinkMode('chat')
       onClose()
     }
@@ -398,13 +406,13 @@ export default function CreateCasePanel({
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => setForm((prev) => ({ ...prev, escalationAssignee: '' }))}
+                  onClick={() => setForm((prev) => ({ ...prev, escalationAssignees: [] }))}
                   className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                    !form.escalationAssignee
+                    form.escalationAssignees.length === 0
                       ? 'border-slate-300 bg-white text-slate-700'
                       : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300'
                   }`}
-                  aria-pressed={!form.escalationAssignee}
+                  aria-pressed={form.escalationAssignees.length === 0}
                 >
                   未設定
                 </button>
@@ -412,18 +420,62 @@ export default function CreateCasePanel({
                   <button
                     key={name}
                     type="button"
-                    onClick={() => setForm((prev) => ({ ...prev, escalationAssignee: name }))}
+                    onClick={() => setForm((prev) => ({
+                      ...prev,
+                      escalationAssignees: prev.escalationAssignees.includes(name)
+                        ? prev.escalationAssignees.filter((value) => value !== name)
+                        : [...prev.escalationAssignees, name],
+                    }))}
                     className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                      form.escalationAssignee === name
+                      form.escalationAssignees.includes(name)
                         ? 'border-indigo-600 bg-indigo-600 text-white'
                         : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:text-slate-900'
                     }`}
-                    aria-pressed={form.escalationAssignee === name}
+                    aria-pressed={form.escalationAssignees.includes(name)}
                   >
                     {name}
                   </button>
                 ))}
               </div>
+              <p className="mt-2 text-[11px] font-medium text-slate-500">複数選択できます</p>
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-500">添付画像</p>
+              <label className="mt-2 flex min-h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:border-emerald-400 hover:text-emerald-700">
+                画像を選択
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  multiple
+                  className="sr-only"
+                  onChange={(event) => {
+                    const files = Array.from(event.target.files ?? [])
+                      .filter((file) => ['image/png', 'image/jpeg', 'image/webp'].includes(file.type) && file.size <= 10 * 1024 * 1024)
+                    setAttachmentFiles((current) => [...current, ...files].slice(0, 5))
+                    event.currentTarget.value = ''
+                  }}
+                  disabled={saving || attachmentFiles.length >= 5}
+                />
+              </label>
+              {attachmentFiles.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {attachmentFiles.map((file, index) => (
+                    <div key={`${file.name}-${file.lastModified}-${index}`} className="flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs">
+                      <span className="min-w-0 truncate text-slate-700">{file.name}</span>
+                      <button
+                        type="button"
+                        onClick={() => setAttachmentFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800"
+                        aria-label={`${file.name}を外す`}
+                      >
+                        <XIcon />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="mt-2 text-[11px] font-medium text-slate-500">PNG JPEG WebP 1枚10MBまで 最大5枚</p>
             </div>
 
             <Field label="期限">
@@ -443,7 +495,7 @@ export default function CreateCasePanel({
             <div className="rounded-lg border border-slate-200 bg-white px-3 py-2">
               <p className="text-xs font-semibold text-slate-700">作成後の表示</p>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                二次担当者を選ぶと、二次対応タブにも回答依頼として自動で表示されます。
+                選択した二次担当者全員に、二次対応タブで回答依頼が表示されます。
               </p>
             </div>
           </div>

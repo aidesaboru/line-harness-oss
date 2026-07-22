@@ -40,6 +40,12 @@ import {
   recordInternalMessageMentions,
   resolveMentionStaffTargets,
 } from '../services/internal-message-mentions.js';
+import {
+  appendInternalMessageEvent,
+  latestInternalMessageEvents,
+  projectInternalMessage,
+  type InternalMessageEventRow,
+} from '../services/internal-message-events.js';
 import { kickWebPushNotifications } from './app-notifications.js';
 import {
   getActiveScheduledChatMessages,
@@ -794,6 +800,14 @@ function parseChatInternalMessageBody(raw: unknown): ValueResult<ChatInternalMes
   };
 }
 
+function parseInternalMessageBaseVersion(raw: unknown): ValueResult<number> {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    return { ok: false, error: 'baseVersion must be a non-negative integer' };
+  }
+  return { ok: true, value };
+}
+
 function parseStoredMentions(raw: string): string[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
@@ -809,19 +823,28 @@ function serializeChatInternalMessage(
   row: ChatInternalMessageRow,
   staff: SupportAccessStaff = { id: 'system', name: 'system', role: 'staff' },
   mentionStaffIds: string[] = [],
+  event?: InternalMessageEventRow,
 ) {
+  const projected = projectInternalMessage(row, event, staff);
   return {
     id: row.id,
     friendId: row.friend_id,
     lineAccountId: row.line_account_id,
     parentId: row.parent_id,
-    body: row.body,
-    mentions: parseStoredMentions(row.mentions),
-    mentionStaffIds,
+    body: projected.body,
+    mentions: projected.mentions,
+    mentionStaffIds: event?.action === 'edit' ? projected.mentionStaffIds : projected.isDeleted ? [] : mentionStaffIds,
     reactions: summarizeInternalReactions(row.reactions, staff),
     createdBy: row.created_by,
     createdByName: row.created_by_name,
     createdAt: row.created_at,
+    version: projected.version,
+    editedAt: projected.editedAt,
+    deletedAt: projected.deletedAt,
+    deletedByName: projected.deletedByName,
+    isDeleted: projected.isDeleted,
+    canEdit: projected.canEdit,
+    canDelete: projected.canDelete,
   };
 }
 
@@ -1489,6 +1512,44 @@ chats.get('/api/chats', async (c) => {
         FROM ranked_any
         WHERE rn = 1
       ),
+      last_human_reply AS (
+        SELECT friend_id, MAX(created_at) AS last_human_reply_at
+        FROM messages_log
+        WHERE direction = 'outgoing'
+          AND source IN ('manual', 'scheduled_manual', 'line_official')
+          AND (delivery_type IS NULL OR delivery_type != 'test')
+          AND deleted_at IS NULL
+          AND ${accountFilterSql}
+        GROUP BY friend_id
+      ),
+      ranked_customer_message AS (
+        SELECT friend_id, id, created_at,
+          ROW_NUMBER() OVER (PARTITION BY friend_id ORDER BY created_at DESC, id DESC) AS rn
+        FROM messages_log
+        WHERE direction = 'incoming'
+          AND message_type != 'postback'
+          AND (delivery_type IS NULL OR delivery_type != 'test')
+          AND deleted_at IS NULL
+          AND ${accountFilterSql}
+      ),
+      latest_customer_message AS (
+        SELECT friend_id, id, created_at
+        FROM ranked_customer_message
+        WHERE rn = 1
+      ),
+      latest_confirmation AS (
+        SELECT friend_id, confirmed_message_id, confirmed_message_at
+        FROM (
+          SELECT friend_id, confirmed_message_id, confirmed_message_at,
+            ROW_NUMBER() OVER (
+              PARTITION BY friend_id
+              ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+            ) AS rn
+          FROM chat_confirmation_events
+          WHERE staff_id = ?
+        ) ranked_confirmation
+        WHERE rn = 1
+      ),
       active_support_cases AS (
         SELECT *
         FROM (
@@ -1544,6 +1605,14 @@ chats.get('/api/chats', async (c) => {
         rm.content AS last_message_content,
         rm.direction AS last_message_direction,
         rm.message_type AS last_message_type,
+        lhr.last_human_reply_at,
+        lcm.id AS latest_customer_message_id,
+        lcm.created_at AS latest_customer_message_at,
+        CASE
+          WHEN lcm.id IS NOT NULL AND lc.confirmed_message_id = lcm.id THEN 1
+          ELSE 0
+        END AS is_confirmed,
+        lc.confirmed_message_at,
         ac.id AS support_case_id,
         ac.title AS support_case_title,
         ac.status AS support_case_status,
@@ -1559,12 +1628,15 @@ chats.get('/api/chats', async (c) => {
         SELECT id FROM chats WHERE friend_id = f.id ORDER BY created_at DESC LIMIT 1
       )
       LEFT JOIN recent_msg rm ON rm.friend_id = f.id
+      LEFT JOIN last_human_reply lhr ON lhr.friend_id = f.id
+      LEFT JOIN latest_customer_message lcm ON lcm.friend_id = f.id
+      LEFT JOIN latest_confirmation lc ON lc.friend_id = f.id
       LEFT JOIN active_support_cases ac ON ac.friend_id = f.id
     `;
     // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 3 箇所 + following friend source → active cases.
     const ctePrebindings: unknown[] = lineAccountId
-      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, ...activeCaseBinds]
-      : activeCaseBinds;
+      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, staff.id, ...activeCaseBinds]
+      : [staff.id, ...activeCaseBinds];
     const conditions: string[] = [];
     const bindings: unknown[] = [];
 
@@ -1636,6 +1708,11 @@ chats.get('/api/chats', async (c) => {
       lastMessageContent: ch.last_message_content || null,
       lastMessageDirection: ch.last_message_direction || null,
       lastMessageType: ch.last_message_type || null,
+      lastHumanReplyAt: ch.last_human_reply_at || null,
+      latestCustomerMessageId: ch.latest_customer_message_id || null,
+      latestCustomerMessageAt: ch.latest_customer_message_at || null,
+      isConfirmed: Number(ch.is_confirmed ?? 0) === 1,
+      confirmedMessageAt: ch.confirmed_message_at || null,
       needsReply: replyRequirement?.needsReply ?? false,
       lastUnansweredAt: replyRequirement?.lastUnansweredIncomingAt ?? null,
       activeSupportCase: ch.support_case_id ? {
@@ -1764,9 +1841,9 @@ chats.get('/api/chats/:id', async (c) => {
     const createdAt = chatRow?.created_at ?? null;
 
     const friend = await c.env.DB
-      .prepare(`SELECT display_name, picture_url, line_user_id FROM friends WHERE id = ?`)
+      .prepare(`SELECT display_name, picture_url, line_user_id, line_account_id FROM friends WHERE id = ?`)
       .bind(resolvedFriendId)
-      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string }>();
+      .first<{ display_name: string | null; picture_url: string | null; line_user_id: string; line_account_id: string | null }>();
 
     // 新しい順で1件多く取り、昇順に戻す。初回は従来どおり最新1000件を返し、
     // beforeCreatedAt/beforeId がある場合だけ古い履歴をページングする。
@@ -1807,11 +1884,18 @@ chats.get('/api/chats/:id', async (c) => {
       )
       .bind(resolvedFriendId)
       .all<ChatInternalMessageRow>();
-    const internalMessageMentionIds = await mentionStaffIdsForMessages(
-      c.env.DB,
-      'chat',
-      internalMessages.results.map((message) => message.id),
-    );
+    const [internalMessageMentionIds, internalMessageEvents] = await Promise.all([
+      mentionStaffIdsForMessages(
+        c.env.DB,
+        'chat',
+        internalMessages.results.map((message) => message.id),
+      ),
+      latestInternalMessageEvents(
+        c.env.DB,
+        'chat',
+        internalMessages.results.map((message) => message.id),
+      ),
+    ]);
     const activeSupportCase = await getActiveSupportCaseForFriend(
       c.env.DB,
       resolvedFriendId,
@@ -1831,6 +1915,44 @@ chats.get('/api/chats/:id', async (c) => {
       [resolvedFriendId],
       staff,
     )).get(resolvedFriendId);
+    const [lastHumanReply, latestCustomerMessage, latestConfirmation] = await Promise.all([
+      c.env.DB
+        .prepare(
+          `SELECT MAX(created_at) AS created_at
+           FROM messages_log
+           WHERE friend_id = ?
+             AND direction = 'outgoing'
+             AND source IN ('manual', 'scheduled_manual', 'line_official')
+             AND (delivery_type IS NULL OR delivery_type != 'test')
+             AND deleted_at IS NULL`,
+        )
+        .bind(resolvedFriendId)
+        .first<{ created_at: string | null }>(),
+      c.env.DB
+        .prepare(
+          `SELECT id, created_at
+           FROM messages_log
+           WHERE friend_id = ?
+             AND direction = 'incoming'
+             AND message_type != 'postback'
+             AND (delivery_type IS NULL OR delivery_type != 'test')
+             AND deleted_at IS NULL
+           ORDER BY created_at DESC, id DESC
+           LIMIT 1`,
+        )
+        .bind(resolvedFriendId)
+        .first<{ id: string; created_at: string }>(),
+      c.env.DB
+        .prepare(
+          `SELECT confirmed_message_id, confirmed_message_at
+           FROM chat_confirmation_events
+           WHERE friend_id = ? AND staff_id = ?
+           ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+           LIMIT 1`,
+        )
+        .bind(resolvedFriendId, staff.id)
+        .first<{ confirmed_message_id: string; confirmed_message_at: string }>(),
+    ]);
     const latestMessage = pageMessages.at(-1);
 
     return c.json({
@@ -1849,6 +1971,14 @@ chats.get('/api/chats/:id', async (c) => {
         lastMessageType: latestMessage?.message_type ?? null,
         needsReply: replyRequirement?.needsReply ?? false,
         lastUnansweredAt: replyRequirement?.lastUnansweredIncomingAt ?? null,
+        lastHumanReplyAt: lastHumanReply?.created_at ?? null,
+        latestCustomerMessageId: latestCustomerMessage?.id ?? null,
+        latestCustomerMessageAt: latestCustomerMessage?.created_at ?? null,
+        isConfirmed: Boolean(
+          latestCustomerMessage?.id
+          && latestConfirmation?.confirmed_message_id === latestCustomerMessage.id
+        ),
+        confirmedMessageAt: latestConfirmation?.confirmed_message_at ?? null,
         createdAt,
         hasMoreMessages,
         nextMessagesBefore: hasMoreMessages && oldestMessage
@@ -1858,6 +1988,7 @@ chats.get('/api/chats/:id', async (c) => {
           message,
           staff,
           internalMessageMentionIds.get(message.id) ?? [],
+          internalMessageEvents.get(message.id),
         )),
         activeSupportCase: serializeActiveSupportCaseForChat(activeSupportCase),
         typingParticipants,
@@ -1883,6 +2014,70 @@ chats.get('/api/chats/:id', async (c) => {
   } catch (err) {
     console.error(`GET /api/chats/:id error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/confirm', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const resolved = await resolveExistingChatOrFriend(c.env.DB, id.value);
+    if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, resolved.friendId);
+    if (denied) return denied;
+    const latestCustomerMessage = await c.env.DB
+      .prepare(
+        `SELECT id, created_at
+         FROM messages_log
+         WHERE friend_id = ?
+           AND direction = 'incoming'
+           AND message_type != 'postback'
+           AND (delivery_type IS NULL OR delivery_type != 'test')
+           AND deleted_at IS NULL
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .bind(resolved.friendId)
+      .first<{ id: string; created_at: string }>();
+    if (!latestCustomerMessage) {
+      return c.json({ success: false, error: '確認対象の顧客メッセージがありません' }, 400);
+    }
+    const friend = await c.env.DB
+      .prepare(`SELECT line_account_id FROM friends WHERE id = ?`)
+      .bind(resolved.friendId)
+      .first<{ line_account_id: string | null }>();
+    const staff = currentStaff(c);
+    const now = jstNow();
+    await c.env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO chat_confirmation_events (
+          id, friend_id, line_account_id, staff_id, staff_name,
+          confirmed_message_id, confirmed_message_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        crypto.randomUUID(),
+        resolved.friendId,
+        friend?.line_account_id ?? null,
+        staff.id,
+        staff.name,
+        latestCustomerMessage.id,
+        latestCustomerMessage.created_at,
+        now,
+      )
+      .run();
+    return c.json({
+      success: true,
+      data: {
+        isConfirmed: true,
+        confirmedMessageId: latestCustomerMessage.id,
+        confirmedMessageAt: latestCustomerMessage.created_at,
+        confirmedAt: now,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/confirm error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '確認状態の更新に失敗しました' }, 500);
   }
 });
 
@@ -2101,6 +2296,120 @@ chats.post('/api/chats/:id/internal-messages', async (c) => {
   }
 });
 
+chats.patch('/api/chats/:id/internal-messages/:messageId', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const rawBody = await readJsonBody(c);
+    if (!isRecord(rawBody)) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const parsed = parseChatInternalMessageBody(rawBody);
+    if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const baseVersion = parseInternalMessageBaseVersion(rawBody.baseVersion);
+    if (!baseVersion.ok) return c.json({ success: false, error: baseVersion.error }, 400);
+    const chat = await resolveOrCreateChat(c.env.DB, id.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+    const message = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages WHERE id = ? AND friend_id = ? LIMIT 1`,
+      )
+      .bind(messageId.value, chat.friend_id)
+      .first<ChatInternalMessageRow>();
+    if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+    const resolvedMentions = await resolveMentionStaffTargets(c.env.DB, parsed.value.mentionStaffIds);
+    if (resolvedMentions.missingIds.length > 0) {
+      return c.json({ success: false, error: 'mention target not found' }, 400);
+    }
+    if (!mentionTargetsMatchBody(parsed.value.body, resolvedMentions.targets)) {
+      return c.json({ success: false, error: 'mention target must appear in body' }, 400);
+    }
+    const mentionNames = Array.from(new Set([
+      ...parsed.value.mentions,
+      ...resolvedMentions.targets.map((target) => target.name),
+    ]));
+    const staff = currentStaff(c);
+    const result = await appendInternalMessageEvent({
+      db: c.env.DB,
+      source: 'chat',
+      message,
+      staff,
+      baseVersion: baseVersion.value,
+      action: 'edit',
+      body: parsed.value.body,
+      mentions: mentionNames,
+      mentionTargets: resolvedMentions.targets,
+      now: jstNow(),
+    });
+    if (!result.ok) {
+      if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
+      if (result.reason === 'deleted') return c.json({ success: false, error: '削除済みメッセージは編集できません' }, 400);
+      return c.json({ success: false, error: '自分が投稿したメッセージだけ編集できます' }, 403);
+    }
+    kickWebPushNotifications(c);
+    return c.json({
+      success: true,
+      data: serializeChatInternalMessage(message, staff, parsed.value.mentionStaffIds, result.event),
+    });
+  } catch (err) {
+    console.error(`PATCH /api/chats/:id/internal-messages/:messageId error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'メッセージの編集に失敗しました' }, 500);
+  }
+});
+
+chats.post('/api/chats/:id/internal-messages/:messageId/soft-delete', async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const messageId = parseChatPathId(c.req.param('messageId'));
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const rawBody = await readJsonBody(c);
+    if (!isRecord(rawBody)) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const baseVersion = parseInternalMessageBaseVersion(rawBody.baseVersion);
+    if (!baseVersion.ok) return c.json({ success: false, error: baseVersion.error }, 400);
+    const reason = parseOptionalSearchString(rawBody.reason, 'reason', 500);
+    if (!reason.ok) return c.json({ success: false, error: reason.error }, 400);
+    const chat = await resolveOrCreateChat(c.env.DB, id.value);
+    if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
+    const denied = await ensureChatFriendAccess(c, chat.friend_id);
+    if (denied) return denied;
+    const message = await c.env.DB
+      .prepare(
+        `SELECT id, friend_id, line_account_id, parent_id, body, mentions, reactions, created_by, created_by_name, created_at
+         FROM chat_internal_messages WHERE id = ? AND friend_id = ? LIMIT 1`,
+      )
+      .bind(messageId.value, chat.friend_id)
+      .first<ChatInternalMessageRow>();
+    if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+    const staff = currentStaff(c);
+    if (message.created_by !== staff.id && !reason.value) {
+      return c.json({ success: false, error: '他のスタッフの投稿を削除する場合は理由を入力してください' }, 400);
+    }
+    const result = await appendInternalMessageEvent({
+      db: c.env.DB,
+      source: 'chat',
+      message,
+      staff,
+      baseVersion: baseVersion.value,
+      action: 'delete',
+      reason: reason.value,
+      now: jstNow(),
+    });
+    if (!result.ok) {
+      if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
+      if (result.reason === 'deleted') return c.json({ success: false, error: 'すでに削除済みです' }, 400);
+      return c.json({ success: false, error: 'このメッセージは削除できません' }, 403);
+    }
+    return c.json({ success: true, data: serializeChatInternalMessage(message, staff, [], result.event) });
+  } catch (err) {
+    console.error(`POST /api/chats/:id/internal-messages/:messageId/soft-delete error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'メッセージの削除に失敗しました' }, 500);
+  }
+});
+
 chats.post('/api/chats/:id/internal-messages/:messageId/reactions', async (c) => {
   try {
     const id = parseChatPathId(c.req.param('id'));
@@ -2127,6 +2436,10 @@ chats.post('/api/chats/:id/internal-messages/:messageId/reactions', async (c) =>
       .bind(messageId.value, chat.friend_id)
       .first<ChatInternalMessageRow>();
     if (!message) return c.json({ success: false, error: 'message not found' }, 404);
+    const messageEvent = (await latestInternalMessageEvents(c.env.DB, 'chat', [messageId.value])).get(messageId.value);
+    if (messageEvent?.action === 'delete') {
+      return c.json({ success: false, error: '削除済みメッセージにはリアクションできません' }, 400);
+    }
 
     const staff = currentStaff(c);
     const { reactionsJson } = toggleInternalReaction(message.reactions, emoji.value, staff);
@@ -2149,7 +2462,7 @@ chats.post('/api/chats/:id/internal-messages/:messageId/reactions', async (c) =>
     return c.json({
       success: true,
       data: updated
-        ? serializeChatInternalMessage(updated, staff, mentionIds.get(messageId.value) ?? [])
+        ? serializeChatInternalMessage(updated, staff, mentionIds.get(messageId.value) ?? [], messageEvent)
         : null,
     });
   } catch (err) {

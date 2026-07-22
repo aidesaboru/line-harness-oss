@@ -15,6 +15,10 @@ import {
 } from '../services/web-push.js';
 import { summarizeInternalReactions } from '../services/internal-message-reactions.js';
 import { mentionStaffIdsForMessages } from '../services/internal-message-mentions.js';
+import {
+  latestInternalMessageEvents,
+  projectInternalMessage,
+} from '../services/internal-message-events.js';
 
 const appNotifications = new Hono<Env>();
 
@@ -133,6 +137,25 @@ type InternalConversationReadRow = {
 type InternalChatCursor = {
   createdAt: string;
   id: string;
+};
+
+type InternalTaskRow = {
+  id: string;
+  line_account_id: string;
+  source_type: 'support' | 'chat';
+  source_id: string;
+  source_message_id: string | null;
+  title: string;
+  description: string;
+  status: 'open' | 'done';
+  due_at: string | null;
+  created_by: string | null;
+  created_by_name: string | null;
+  completed_by: string | null;
+  completed_by_name: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type UrgentCaseRow = {
@@ -319,6 +342,84 @@ function parseInternalChatSearch(raw: unknown): ValueResult<string | undefined> 
   return { ok: true, value };
 }
 
+function parseHumanText(raw: unknown, label: string, maxLength: number, required = false): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null) {
+    return required ? { ok: false, error: `${label} is required` } : { ok: true, value: undefined };
+  }
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value) return required ? { ok: false, error: `${label} is required` } : { ok: true, value: undefined };
+  if (value.length > maxLength || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/u.test(value)) {
+    return { ok: false, error: `${label} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseInternalSource(raw: unknown): ValueResult<'support' | 'chat'> {
+  return raw === 'support' || raw === 'chat'
+    ? { ok: true, value: raw }
+    : { ok: false, error: 'source is invalid' };
+}
+
+function parseStaffIds(raw: unknown): ValueResult<string[]> {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw) || raw.length > 20) return { ok: false, error: 'assigneeStaffIds is invalid' };
+  const values: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const parsed = parseVisibleText(item, 'assigneeStaffId', 128);
+    if (!parsed.ok) return parsed;
+    if (!seen.has(parsed.value)) {
+      seen.add(parsed.value);
+      values.push(parsed.value);
+    }
+  }
+  return { ok: true, value: values };
+}
+
+async function canAccessInternalSource(
+  db: D1Database,
+  staff: SupportAccessStaff,
+  lineAccountId: string,
+  source: 'support' | 'chat',
+  sourceId: string,
+  messageId?: string,
+): Promise<boolean> {
+  if (source === 'support') {
+    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_internal_source_scope');
+    const conditions = ['sc.id = ?', 'sc.line_account_id = ?'];
+    const binds: unknown[] = [sourceId, lineAccountId];
+    if (visibility.sql) {
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
+    }
+    if (messageId) {
+      conditions.push(`EXISTS (
+        SELECT 1 FROM support_internal_messages sim_source
+        WHERE sim_source.id = ? AND sim_source.case_id = sc.id AND sim_source.line_account_id = sc.line_account_id
+      )`);
+      binds.push(messageId);
+    }
+    return Boolean(await db.prepare(`SELECT 1 AS ok FROM support_cases sc WHERE ${conditions.join(' AND ')}`).bind(...binds).first());
+  }
+
+  const visibility = supportFriendVisibilitySql(staff, 'f.id');
+  const conditions = ['f.id = ?', 'f.line_account_id = ?'];
+  const binds: unknown[] = [sourceId, lineAccountId];
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    binds.push(...visibility.binds);
+  }
+  if (messageId) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM chat_internal_messages cim_source
+      WHERE cim_source.id = ? AND cim_source.friend_id = f.id
+    )`);
+    binds.push(messageId);
+  }
+  return Boolean(await db.prepare(`SELECT 1 AS ok FROM friends f WHERE ${conditions.join(' AND ')}`).bind(...binds).first());
+}
+
 function internalConversationId(source: 'support' | 'chat', sourceId: string): string {
   return `${source}:${sourceId}`;
 }
@@ -360,6 +461,122 @@ function parseStoredMentions(raw: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+async function loadBookmarkStates(
+  db: D1Database,
+  staffId: string,
+  supportMessageIds: string[],
+  chatMessageIds: string[],
+): Promise<Set<string>> {
+  const scopes: string[] = [];
+  const binds: unknown[] = [staffId];
+  if (supportMessageIds.length > 0) {
+    scopes.push(`(source_type = 'support' AND source_message_id IN (${supportMessageIds.map(() => '?').join(', ')}))`);
+    binds.push(...supportMessageIds);
+  }
+  if (chatMessageIds.length > 0) {
+    scopes.push(`(source_type = 'chat' AND source_message_id IN (${chatMessageIds.map(() => '?').join(', ')}))`);
+    binds.push(...chatMessageIds);
+  }
+  if (scopes.length === 0) return new Set();
+  const rows = await db
+    .prepare(
+      `SELECT source_type, source_message_id, action
+       FROM internal_message_bookmark_events
+       WHERE staff_id = ? AND (${scopes.join(' OR ')})
+       ORDER BY created_at DESC, id DESC`,
+    )
+    .bind(...binds)
+    .all<{ source_type: 'support' | 'chat'; source_message_id: string; action: 'add' | 'remove' }>();
+  const seen = new Set<string>();
+  const active = new Set<string>();
+  for (const row of rows.results) {
+    const key = `${row.source_type}:${row.source_message_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (row.action === 'add') active.add(key);
+  }
+  return active;
+}
+
+async function loadMessageTaskCounts(
+  db: D1Database,
+  supportMessageIds: string[],
+  chatMessageIds: string[],
+): Promise<Map<string, number>> {
+  const scopes: string[] = [];
+  const binds: unknown[] = [];
+  if (supportMessageIds.length > 0) {
+    scopes.push(`(source_type = 'support' AND source_message_id IN (${supportMessageIds.map(() => '?').join(', ')}))`);
+    binds.push(...supportMessageIds);
+  }
+  if (chatMessageIds.length > 0) {
+    scopes.push(`(source_type = 'chat' AND source_message_id IN (${chatMessageIds.map(() => '?').join(', ')}))`);
+    binds.push(...chatMessageIds);
+  }
+  if (scopes.length === 0) return new Map();
+  const rows = await db
+    .prepare(
+      `SELECT source_type, source_message_id, COUNT(*) AS count
+       FROM internal_tasks
+       WHERE status = 'open' AND source_message_id IS NOT NULL AND (${scopes.join(' OR ')})
+       GROUP BY source_type, source_message_id`,
+    )
+    .bind(...binds)
+    .all<{ source_type: 'support' | 'chat'; source_message_id: string; count: number }>();
+  return new Map(rows.results.map((row) => [`${row.source_type}:${row.source_message_id}`, row.count]));
+}
+
+async function loadTaskAssignees(
+  db: D1Database,
+  taskIds: string[],
+): Promise<Map<string, Array<{ staffId: string; staffName: string }>>> {
+  if (taskIds.length === 0) return new Map();
+  const rows = await db
+    .prepare(
+      `SELECT task_id, staff_id, staff_name
+       FROM internal_task_assignees
+       WHERE removed_at IS NULL AND task_id IN (${taskIds.map(() => '?').join(', ')})
+       ORDER BY assigned_at ASC`,
+    )
+    .bind(...taskIds)
+    .all<{ task_id: string; staff_id: string; staff_name: string }>();
+  const result = new Map<string, Array<{ staffId: string; staffName: string }>>();
+  for (const row of rows.results) {
+    const values = result.get(row.task_id) ?? [];
+    values.push({ staffId: row.staff_id, staffName: row.staff_name });
+    result.set(row.task_id, values);
+  }
+  return result;
+}
+
+function serializeInternalTask(
+  row: InternalTaskRow,
+  assignees: Array<{ staffId: string; staffName: string }> = [],
+) {
+  return {
+    id: row.id,
+    lineAccountId: row.line_account_id,
+    source: row.source_type,
+    sourceId: row.source_id,
+    sourceMessageId: row.source_message_id,
+    title: row.title,
+    description: row.description,
+    status: row.status,
+    dueAt: row.due_at,
+    assignees,
+    createdBy: row.created_by,
+    createdByName: row.created_by_name,
+    completedBy: row.completed_by,
+    completedByName: row.completed_by_name,
+    completedAt: row.completed_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    href: row.source_type === 'support'
+      ? `/support?case=${encodeURIComponent(row.source_id)}`
+      : `/chats?friend=${encodeURIComponent(row.source_id)}`,
+  };
 }
 
 function fallbackContextTitle(prefix: string, id: string): string {
@@ -627,7 +844,15 @@ async function fetchSupportMentions(
         WHERE imm.source_type = 'support'
           AND imm.source_message_id = sim.id
           AND imm.staff_id = ?
-      ) OR sim.mentions LIKE ? ESCAPE '\\')`,
+      ) OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM internal_message_events ime
+          WHERE ime.source_type = 'support'
+            AND ime.source_message_id = sim.id
+        )
+        AND sim.mentions LIKE ? ESCAPE '\\'
+      ))`,
     );
     binds.push(staff.id, mentionPattern);
   } else {
@@ -664,14 +889,19 @@ async function fetchSupportMentions(
     .bind(...binds, NOTIFICATION_LIMIT)
     .all<SupportMentionRow>();
 
-  return rows.results.map((row) => ({
-    id: `support_mention:${row.id}`,
-    kind: 'support_mention',
-    title: `${row.created_by_name || 'スタッフ'}さんからメンション`,
-    body: `${row.case_title || 'チケット'}: ${compact(row.body, '社内チャットを確認してください')}`,
-    href: `/support?case=${encodeURIComponent(row.case_id)}`,
-    createdAt: row.created_at,
-  }));
+  const events = await latestInternalMessageEvents(db, 'support', rows.results.map((row) => row.id));
+  return rows.results.flatMap((row) => {
+    const event = events.get(row.id);
+    if (event?.action === 'delete') return [];
+    return [{
+      id: `support_mention:${row.id}`,
+      kind: 'support_mention' as const,
+      title: `${row.created_by_name || 'スタッフ'}さんからメンション`,
+      body: `${row.case_title || 'チケット'}: ${compact(event?.action === 'edit' ? (event.body ?? '') : row.body, '社内チャットを確認してください')}`,
+      href: `/support?case=${encodeURIComponent(row.case_id)}`,
+      createdAt: row.created_at,
+    }];
+  });
 }
 
 async function fetchChatMentions(
@@ -694,7 +924,15 @@ async function fetchChatMentions(
         WHERE imm.source_type = 'chat'
           AND imm.source_message_id = cim.id
           AND imm.staff_id = ?
-      ) OR cim.mentions LIKE ? ESCAPE '\\')`,
+      ) OR (
+        NOT EXISTS (
+          SELECT 1
+          FROM internal_message_events ime
+          WHERE ime.source_type = 'chat'
+            AND ime.source_message_id = cim.id
+        )
+        AND cim.mentions LIKE ? ESCAPE '\\'
+      ))`,
     );
     binds.push(staff.id, mentionPattern);
   } else {
@@ -731,14 +969,19 @@ async function fetchChatMentions(
     .bind(...binds, NOTIFICATION_LIMIT)
     .all<ChatMentionRow>();
 
-  return rows.results.map((row) => ({
-    id: `chat_mention:${row.id}`,
-    kind: 'chat_mention',
-    title: `${row.created_by_name || 'スタッフ'}さんからメンション`,
-    body: `${row.friend_name || '個別チャット'}: ${compact(row.body, '社内チャットを確認してください')}`,
-    href: `/chats?friend=${encodeURIComponent(row.friend_id)}`,
-    createdAt: row.created_at,
-  }));
+  const events = await latestInternalMessageEvents(db, 'chat', rows.results.map((row) => row.id));
+  return rows.results.flatMap((row) => {
+    const event = events.get(row.id);
+    if (event?.action === 'delete') return [];
+    return [{
+      id: `chat_mention:${row.id}`,
+      kind: 'chat_mention' as const,
+      title: `${row.created_by_name || 'スタッフ'}さんからメンション`,
+      body: `${row.friend_name || '個別チャット'}: ${compact(event?.action === 'edit' ? (event.body ?? '') : row.body, '社内チャットを確認してください')}`,
+      href: `/chats?friend=${encodeURIComponent(row.friend_id)}`,
+      createdAt: row.created_at,
+    }];
+  });
 }
 
 export async function collectAppNotifications(
@@ -1031,14 +1274,24 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         .all<ChatInternalChatFeedRow>(),
     ]);
 
-    const [supportMentionIds, chatMentionIds, readCursors] = await Promise.all([
+    const supportMessageIds = supportRows.results.map((row) => row.id);
+    const chatMessageIds = chatRows.results.map((row) => row.id);
+    const [supportMentionIds, chatMentionIds, readCursors, supportEvents, chatEvents, bookmarks, taskCounts] = await Promise.all([
       mentionStaffIdsForMessages(c.env.DB, 'support', supportRows.results.map((row) => row.id)),
       mentionStaffIdsForMessages(c.env.DB, 'chat', chatRows.results.map((row) => row.id)),
       loadInternalConversationReads(c.env.DB, staff.id, lineAccountId.value),
+      latestInternalMessageEvents(c.env.DB, 'support', supportMessageIds),
+      latestInternalMessageEvents(c.env.DB, 'chat', chatMessageIds),
+      loadBookmarkStates(c.env.DB, staff.id, supportMessageIds, chatMessageIds),
+      loadMessageTaskCounts(c.env.DB, supportMessageIds, chatMessageIds),
     ]);
 
     const allItems = [
-      ...supportRows.results.map((row) => ({
+      ...supportRows.results.map((row) => {
+        const event = supportEvents.get(row.id);
+        const projected = projectInternalMessage(row, event, staff);
+        const key = `support:${row.id}`;
+        return {
         id: `support:${row.id}`,
         source: 'support' as const,
         sourceId: row.case_id,
@@ -1046,17 +1299,32 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         customerName: row.customer_name?.trim() || null,
         ticketTitle: row.case_title?.trim() || fallbackContextTitle('チケットID', row.case_id),
         parentId: row.parent_id,
-        body: row.body,
-        mentions: parseStoredMentions(row.mentions),
-        mentionStaffIds: supportMentionIds.get(row.id) ?? [],
+        body: projected.body,
+        mentions: projected.mentions,
+        mentionStaffIds: event?.action === 'edit' ? projected.mentionStaffIds : projected.isDeleted ? [] : supportMentionIds.get(row.id) ?? [],
         reactions: summarizeInternalReactions(row.reactions, staff),
+        createdBy: row.created_by,
         createdByName: row.created_by_name,
         createdAt: row.created_at,
+        version: projected.version,
+        editedAt: projected.editedAt,
+        deletedAt: projected.deletedAt,
+        deletedByName: projected.deletedByName,
+        isDeleted: projected.isDeleted,
+        canEdit: projected.canEdit,
+        canDelete: projected.canDelete,
+        isBookmarked: bookmarks.has(key),
+        taskCount: taskCounts.get(key) ?? 0,
         href: `/support?case=${encodeURIComponent(row.case_id)}`,
         isUnread: row.created_by !== staff.id
           && row.created_at > (readCursors.get(internalConversationId('support', row.case_id)) ?? ''),
-      })),
-      ...chatRows.results.map((row) => ({
+      };
+      }),
+      ...chatRows.results.map((row) => {
+        const event = chatEvents.get(row.id);
+        const projected = projectInternalMessage(row, event, staff);
+        const key = `chat:${row.id}`;
+        return {
         id: `chat:${row.id}`,
         source: 'chat' as const,
         sourceId: row.friend_id,
@@ -1064,16 +1332,27 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         customerName: row.friend_name?.trim() || fallbackContextTitle('顧客ID', row.friend_id),
         ticketTitle: row.ticket_title?.trim() || null,
         parentId: row.parent_id,
-        body: row.body,
-        mentions: parseStoredMentions(row.mentions),
-        mentionStaffIds: chatMentionIds.get(row.id) ?? [],
+        body: projected.body,
+        mentions: projected.mentions,
+        mentionStaffIds: event?.action === 'edit' ? projected.mentionStaffIds : projected.isDeleted ? [] : chatMentionIds.get(row.id) ?? [],
         reactions: summarizeInternalReactions(row.reactions, staff),
+        createdBy: row.created_by,
         createdByName: row.created_by_name,
         createdAt: row.created_at,
+        version: projected.version,
+        editedAt: projected.editedAt,
+        deletedAt: projected.deletedAt,
+        deletedByName: projected.deletedByName,
+        isDeleted: projected.isDeleted,
+        canEdit: projected.canEdit,
+        canDelete: projected.canDelete,
+        isBookmarked: bookmarks.has(key),
+        taskCount: taskCounts.get(key) ?? 0,
         href: `/chats?friend=${encodeURIComponent(row.friend_id)}`,
         isUnread: row.created_by !== staff.id
           && row.created_at > (readCursors.get(internalConversationId('chat', row.friend_id)) ?? ''),
-      })),
+      };
+      }),
     ]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     const hasMore = allItems.length > limit.value;
@@ -1091,6 +1370,281 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
   } catch (err) {
     console.error(`GET /api/app-notifications/internal-chat-feed error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+appNotifications.put('/api/app-notifications/internal-chat-bookmarks/:source/:messageId', async (c) => {
+  try {
+    const source = parseInternalSource(c.req.param('source'));
+    if (!source.ok) return c.json({ success: false, error: source.error }, 400);
+    const messageId = parseVisibleText(c.req.param('messageId'), 'messageId', 128);
+    if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const lineAccountId = parseAccountId(body.lineAccountId);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    if (!lineAccountId.value) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const sourceId = parseVisibleText(body.sourceId, 'sourceId', 128);
+    if (!sourceId.ok) return c.json({ success: false, error: sourceId.error }, 400);
+    const staff = currentStaff(c);
+    if (!await canAccessInternalSource(
+      c.env.DB,
+      staff,
+      lineAccountId.value,
+      source.value,
+      sourceId.value,
+      messageId.value,
+    )) {
+      return c.json({ success: false, error: 'message not found' }, 404);
+    }
+    const latest = await c.env.DB
+      .prepare(
+        `SELECT action
+         FROM internal_message_bookmark_events
+         WHERE source_type = ? AND source_message_id = ? AND staff_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 1`,
+      )
+      .bind(source.value, messageId.value, staff.id)
+      .first<{ action: 'add' | 'remove' }>();
+    const action = latest?.action === 'add' ? 'remove' : 'add';
+    const now = jstNow();
+    await c.env.DB
+      .prepare(
+        `INSERT INTO internal_message_bookmark_events (
+          id, source_type, source_message_id, staff_id, action, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(crypto.randomUUID(), source.value, messageId.value, staff.id, action, now)
+      .run();
+    return c.json({ success: true, data: { isBookmarked: action === 'add', updatedAt: now } });
+  } catch (err) {
+    console.error(`PUT /api/app-notifications/internal-chat-bookmarks/:source/:messageId error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'ブックマークの更新に失敗しました' }, 500);
+  }
+});
+
+appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => {
+  try {
+    const params = new URL(c.req.url).searchParams;
+    const lineAccountId = parseAccountId(params.get('lineAccountId'));
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    if (!lineAccountId.value) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const status = params.get('status') || 'all';
+    if (!['all', 'open', 'done'].includes(status)) return c.json({ success: false, error: 'status is invalid' }, 400);
+    const staff = currentStaff(c);
+    const supportVisibility = supportCaseVisibilitySql(staff, 'sc_task_scope', 'se_task_scope');
+    const chatVisibility = supportFriendVisibilitySql(staff, 'f_task_scope.id');
+    const conditions = ['it.line_account_id = ?'];
+    const binds: unknown[] = [lineAccountId.value];
+    if (status !== 'all') {
+      conditions.push('it.status = ?');
+      binds.push(status);
+    }
+    const supportScope = supportVisibility.sql
+      ? `EXISTS (
+          SELECT 1 FROM support_cases sc_task_scope
+          WHERE sc_task_scope.id = it.source_id
+            AND sc_task_scope.line_account_id = it.line_account_id
+            AND ${supportVisibility.sql}
+        )`
+      : `EXISTS (
+          SELECT 1 FROM support_cases sc_task_scope
+          WHERE sc_task_scope.id = it.source_id
+            AND sc_task_scope.line_account_id = it.line_account_id
+        )`;
+    const chatScope = chatVisibility.sql
+      ? `EXISTS (
+          SELECT 1 FROM friends f_task_scope
+          WHERE f_task_scope.id = it.source_id
+            AND f_task_scope.line_account_id = it.line_account_id
+            AND ${chatVisibility.sql}
+        )`
+      : `EXISTS (
+          SELECT 1 FROM friends f_task_scope
+          WHERE f_task_scope.id = it.source_id
+            AND f_task_scope.line_account_id = it.line_account_id
+        )`;
+    conditions.push(`(it.created_by = ? OR (it.source_type = 'support' AND ${supportScope}) OR (it.source_type = 'chat' AND ${chatScope}))`);
+    binds.push(staff.id, ...supportVisibility.binds, ...chatVisibility.binds);
+    const rows = await c.env.DB
+      .prepare(
+        `SELECT it.*
+         FROM internal_tasks it
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY CASE it.status WHEN 'open' THEN 0 ELSE 1 END,
+                  CASE WHEN it.due_at IS NULL THEN 1 ELSE 0 END,
+                  it.due_at ASC,
+                  it.updated_at DESC
+         LIMIT 200`,
+      )
+      .bind(...binds)
+      .all<InternalTaskRow>();
+    const assignees = await loadTaskAssignees(c.env.DB, rows.results.map((row) => row.id));
+    return c.json({
+      success: true,
+      data: rows.results.map((row) => serializeInternalTask(row, assignees.get(row.id) ?? [])),
+    });
+  } catch (err) {
+    console.error(`GET /api/app-notifications/internal-chat-tasks error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'タスクの取得に失敗しました' }, 500);
+  }
+});
+
+appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) => {
+  try {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const lineAccountId = parseAccountId(body.lineAccountId);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    if (!lineAccountId.value) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
+    const source = parseInternalSource(body.source);
+    if (!source.ok) return c.json({ success: false, error: source.error }, 400);
+    const sourceId = parseVisibleText(body.sourceId, 'sourceId', 128);
+    if (!sourceId.ok) return c.json({ success: false, error: sourceId.error }, 400);
+    const sourceMessageId = parseVisibleText(body.sourceMessageId, 'sourceMessageId', 128);
+    if (!sourceMessageId.ok) return c.json({ success: false, error: sourceMessageId.error }, 400);
+    const title = parseHumanText(body.title, 'title', 200, true);
+    if (!title.ok) return c.json({ success: false, error: title.error }, 400);
+    const description = parseHumanText(body.description, 'description', 5000);
+    if (!description.ok) return c.json({ success: false, error: description.error }, 400);
+    const dueAt = parseHumanText(body.dueAt, 'dueAt', 64);
+    if (!dueAt.ok) return c.json({ success: false, error: dueAt.error }, 400);
+    const assigneeStaffIds = parseStaffIds(body.assigneeStaffIds);
+    if (!assigneeStaffIds.ok) return c.json({ success: false, error: assigneeStaffIds.error }, 400);
+    const staff = currentStaff(c);
+    if (!await canAccessInternalSource(
+      c.env.DB,
+      staff,
+      lineAccountId.value,
+      source.value,
+      sourceId.value,
+      sourceMessageId.value,
+    )) {
+      return c.json({ success: false, error: 'message not found' }, 404);
+    }
+    const assigneeRows = assigneeStaffIds.value.length > 0
+      ? await c.env.DB
+        .prepare(
+          `SELECT id, name FROM staff_members
+           WHERE is_active = 1 AND id IN (${assigneeStaffIds.value.map(() => '?').join(', ')})`,
+        )
+        .bind(...assigneeStaffIds.value)
+        .all<{ id: string; name: string }>()
+      : { results: [] as Array<{ id: string; name: string }> };
+    if (assigneeRows.results.length !== assigneeStaffIds.value.length) {
+      return c.json({ success: false, error: '選択できない担当者が含まれています' }, 400);
+    }
+    const taskId = crypto.randomUUID();
+    const now = jstNow();
+    const statements: D1PreparedStatement[] = [
+      c.env.DB
+        .prepare(
+          `INSERT INTO internal_tasks (
+            id, line_account_id, source_type, source_id, source_message_id, title,
+            description, status, due_at, created_by, created_by_name, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          taskId,
+          lineAccountId.value,
+          source.value,
+          sourceId.value,
+          sourceMessageId.value,
+          title.value,
+          description.value ?? '',
+          dueAt.value ?? null,
+          staff.id,
+          staff.name,
+          now,
+          now,
+        ),
+      c.env.DB
+        .prepare(
+          `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
+           VALUES (?, ?, 'created', ?, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          taskId,
+          JSON.stringify({ source: source.value, sourceMessageId: sourceMessageId.value }),
+          staff.id,
+          staff.name,
+          now,
+        ),
+    ];
+    for (const assignee of assigneeRows.results) {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `INSERT INTO internal_task_assignees (task_id, staff_id, staff_name, assigned_at)
+             VALUES (?, ?, ?, ?)`,
+          )
+          .bind(taskId, assignee.id, assignee.name, now),
+      );
+    }
+    await c.env.DB.batch(statements);
+    const created = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId).first<InternalTaskRow>();
+    return c.json({ success: true, data: serializeInternalTask(created!, assigneeRows.results.map((row) => ({ staffId: row.id, staffName: row.name }))) }, 201);
+  } catch (err) {
+    console.error(`POST /api/app-notifications/internal-chat-tasks error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'タスクの作成に失敗しました' }, 500);
+  }
+});
+
+appNotifications.patch('/api/app-notifications/internal-chat-tasks/:taskId', async (c) => {
+  try {
+    const taskId = parseVisibleText(c.req.param('taskId'), 'taskId', 128);
+    if (!taskId.ok) return c.json({ success: false, error: taskId.error }, 400);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const status = body.status;
+    if (status !== 'open' && status !== 'done') return c.json({ success: false, error: 'status is invalid' }, 400);
+    const task = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId.value).first<InternalTaskRow>();
+    if (!task) return c.json({ success: false, error: 'task not found' }, 404);
+    const staff = currentStaff(c);
+    const canAccess = await canAccessInternalSource(c.env.DB, staff, task.line_account_id, task.source_type, task.source_id);
+    if (!canAccess && task.created_by !== staff.id) return c.json({ success: false, error: 'task not found' }, 404);
+    const isAssignee = await c.env.DB
+      .prepare(`SELECT 1 AS ok FROM internal_task_assignees WHERE task_id = ? AND staff_id = ? AND removed_at IS NULL`)
+      .bind(task.id, staff.id)
+      .first<{ ok: number }>();
+    if (task.created_by !== staff.id && !isAssignee && staff.role !== 'owner' && staff.role !== 'admin') {
+      return c.json({ success: false, error: 'このタスクは更新できません' }, 403);
+    }
+    if (task.status === status) {
+      const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
+      return c.json({ success: true, data: serializeInternalTask(task, assignees.get(task.id) ?? []) });
+    }
+    const now = jstNow();
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          `UPDATE internal_tasks
+           SET status = ?, completed_by = ?, completed_by_name = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          status,
+          status === 'done' ? staff.id : null,
+          status === 'done' ? staff.name : null,
+          status === 'done' ? now : null,
+          now,
+          task.id,
+        ),
+      c.env.DB
+        .prepare(
+          `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
+           VALUES (?, ?, ?, '{}', ?, ?, ?)`,
+        )
+        .bind(crypto.randomUUID(), task.id, status === 'done' ? 'completed' : 'reopened', staff.id, staff.name, now),
+    ]);
+    const updated = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(task.id).first<InternalTaskRow>();
+    const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
+    return c.json({ success: true, data: serializeInternalTask(updated!, assignees.get(task.id) ?? []) });
+  } catch (err) {
+    console.error(`PATCH /api/app-notifications/internal-chat-tasks/:taskId error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'タスクの更新に失敗しました' }, 500);
   }
 });
 

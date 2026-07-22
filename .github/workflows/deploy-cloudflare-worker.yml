@@ -12,10 +12,25 @@ on:
       - 'packages/line-sdk/**'
       - '.github/workflows/deploy-cloudflare-worker.yml'
 
+# Only one production migration/deploy may run at a time. A queued deploy must
+# wait rather than cancelling a run that may already be changing D1.
+concurrency:
+  group: deploy-cloudflare-worker-production-${{ github.repository }}
+  cancel-in-progress: false
+
+# The GitHub token only needs to read the checked-out repository. The separate
+# CLOUDFLARE_API_TOKEN should be scoped to this account's D1 database and Worker
+# script with edit access; no zone, DNS, Pages, or account-admin access is needed.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      WORKER_NAME: ${{ vars.WORKER_NAME || 'your-worker-name' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,36 +41,15 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Run pending D1 migrations
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
-        run: |
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$D1_DATABASE_NAME"
+      # This must run before any remote D1 or Worker mutation.
+      - name: Check migration safety
+        run: pnpm tsx scripts/check-migrations.ts
 
-          npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
-            "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
-
-          for f in $(ls packages/db/migrations/*.sql | sort); do
-            name=$(basename "$f")
-            applied=$(npx wrangler d1 execute "$D1_DATABASE_NAME" --remote \
-              --command "SELECT name FROM _migrations WHERE name = '${name}'" --json \
-              | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));console.log(d[0]?.results?.length||0)")
-            if [ "$applied" = "0" ]; then
-              echo "Applying: $name"
-              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --file="$f"
-              npx wrangler d1 execute "$D1_DATABASE_NAME" --remote --command \
-                "INSERT INTO _migrations (name, applied_at) VALUES ('${name}', datetime('now'))"
-            else
-              echo "Skipped: $name"
-            fi
-          done
+      - name: Build shared packages
+        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 
       - name: Build Worker and LIFF assets
         run: pnpm --filter worker build
@@ -69,40 +63,415 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
-          WORKER_NAME: ${{ vars.WORKER_NAME || 'your-worker-name' }}
-          # Admin CORS config — set these as repo Variables when the admin panel
-          # and the Worker API are on different origins (e.g. *.pages.dev admin
-          # + *.workers.dev API). Baking them into the deployed config (vars)
-          # means every deploy carries them, so they can't be silently dropped
-          # the way a manually-set dashboard variable is on redeploy.
           ADMIN_ORIGIN: ${{ vars.ADMIN_ORIGIN }}
           ADMIN_ALLOW_CROSS_SITE: ${{ vars.ADMIN_ALLOW_CROSS_SITE }}
           WORKER_URL: ${{ vars.WORKER_URL }}
         run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$D1_DATABASE_NAME"
           test -n "$D1_DATABASE_ID"
+          test -n "$WORKER_NAME"
+
           cd apps/worker
           sed -i \
             -e "s|\"account_id\":\"[^\"]*\"|\"account_id\":\"${CLOUDFLARE_ACCOUNT_ID}\"|g" \
             -e "s|\"database_name\":\"[^\"]*\"|\"database_name\":\"${D1_DATABASE_NAME}\"|g" \
             -e "s|\"database_id\":\"[^\"]*\"|\"database_id\":\"${D1_DATABASE_ID}\"|g" \
             dist/line_harness/wrangler.json
-          # Inject admin CORS vars into the deployed config when ADMIN_ORIGIN is
-          # set. ADMIN_ALLOW_CROSS_SITE defaults to "true" (SameSite=None; Secure
-          # cookies) since cross-origin admin/API is the case that needs it.
+
           if [ -n "$ADMIN_ORIGIN" ]; then
             tmp="$(mktemp)"
             jq --arg o "$ADMIN_ORIGIN" --arg x "$ADMIN_ALLOW_CROSS_SITE" --arg w "$WORKER_URL" '
               .vars.ADMIN_ORIGIN = $o
               | .vars.ADMIN_ALLOW_CROSS_SITE = (if $x == "" then "true" else $x end)
               | (if $w != "" then .vars.WORKER_URL = $w else . end)
-            ' dist/line_harness/wrangler.json > "$tmp" && mv "$tmp" dist/line_harness/wrangler.json
-            echo "Patched admin CORS vars: ADMIN_ORIGIN=$ADMIN_ORIGIN ADMIN_ALLOW_CROSS_SITE=${ADMIN_ALLOW_CROSS_SITE:-true}"
+            ' dist/line_harness/wrangler.json > "$tmp"
+            mv "$tmp" dist/line_harness/wrangler.json
           fi
 
-      - name: Deploy to Cloudflare Workers
-        uses: cloudflare/wrangler-action@v3
+      - name: Preflight production credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+          API_KEY: ${{ secrets.API_KEY }}
+          WORKER_URL: ${{ vars.WORKER_URL || secrets.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$D1_DATABASE_NAME"
+          test -n "$D1_DATABASE_ID"
+          test -n "$API_KEY"
+          test -n "$WORKER_URL"
+          echo "::add-mask::$API_KEY"
+          node -e '
+            const url = new URL(process.argv[1]);
+            if (url.protocol !== "https:") throw new Error("WORKER_URL must use HTTPS");
+          ' "$WORKER_URL"
+
+      - name: Capture recovery point and apply pending D1 migrations
+        id: migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$D1_DATABASE_NAME"
+          test -n "$D1_DATABASE_ID"
+
+          safety_dir="$GITHUB_WORKSPACE/deploy-safety"
+          wrangler_config="$GITHUB_WORKSPACE/apps/worker/dist/line_harness/wrangler.json"
+          mkdir -p "$safety_dir"
+          jq -e --arg name "$D1_DATABASE_NAME" --arg id "$D1_DATABASE_ID" '
+            .d1_databases
+            | any(.binding == "DB" and .database_name == $name and .database_id == $id)
+          ' "$wrangler_config" > /dev/null
+
+          # Time Travel is the required recovery source. Never create or upload
+          # a SQL export here because it would contain customer data and secrets.
+          bookmark_raw="$RUNNER_TEMP/d1-time-travel-raw.json"
+          pnpm exec wrangler d1 time-travel info "$D1_DATABASE_NAME" \
+            --config "$wrangler_config" --json > "$bookmark_raw"
+          node - "$bookmark_raw" "$safety_dir/d1-time-travel.json" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output] = process.argv.slice(2);
+          const raw = JSON.parse(fs.readFileSync(input, 'utf8'));
+          if (!raw || typeof raw.bookmark !== 'string' || raw.bookmark.length === 0) {
+            throw new Error('D1 Time Travel bookmark was not returned');
+          }
+          fs.writeFileSync(output, JSON.stringify({
+            bookmark: raw.bookmark,
+            capturedAt: new Date().toISOString(),
+          }, null, 2) + '\n');
+          NODE
+          rm -f "$bookmark_raw"
+          bookmark="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).bookmark" "$safety_dir/d1-time-travel.json")"
+          echo "::add-mask::$bookmark"
+
+          protected_tables=(
+            line_accounts
+            friends
+            chats
+            messages_log
+            support_cases
+            support_case_events
+            support_escalations
+            support_internal_messages
+            chat_internal_messages
+            internal_message_events
+            internal_message_bookmark_events
+            internal_tasks
+            internal_task_events
+            support_case_attachments
+            chat_confirmation_events
+            support_case_followup_reminders
+            support_case_followup_reminder_events
+            line_conversations
+            line_conversation_messages
+          )
+
+          capture_protected_counts() {
+            local output="$1"
+            local tables_raw="$RUNNER_TEMP/d1-tables-$RANDOM.json"
+            local counts_raw="$RUNNER_TEMP/d1-counts-$RANDOM.json"
+            local sql=""
+
+            pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+              --remote --yes --json \
+              --command "SELECT name FROM sqlite_master WHERE type = 'table'" > "$tables_raw"
+
+            for table in "${protected_tables[@]}"; do
+              if jq -e --arg table "$table" '.[0].results | any(.name == $table)' "$tables_raw" > /dev/null; then
+                sql+="SELECT '$table' AS table_name, COUNT(*) AS row_count FROM \"$table\";"
+              fi
+            done
+
+            if [ -z "$sql" ]; then
+              echo "::error::No protected D1 tables were found"
+              return 1
+            fi
+
+            pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+              --remote --yes --json \
+              --command "$sql" > "$counts_raw"
+            node - "$counts_raw" "$output" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output] = process.argv.slice(2);
+          const payload = JSON.parse(fs.readFileSync(input, 'utf8'));
+          if (!Array.isArray(payload)) throw new Error('Unexpected D1 count response');
+          const counts = {};
+          for (const result of payload) {
+            for (const row of result?.results ?? []) {
+              const count = Number(row.row_count);
+              if (typeof row.table_name !== 'string' || !Number.isSafeInteger(count) || count < 0) {
+                throw new Error('Invalid protected table count');
+              }
+              counts[row.table_name] = count;
+            }
+          }
+          if (Object.keys(counts).length === 0) throw new Error('Protected table counts are empty');
+          fs.writeFileSync(output, JSON.stringify(counts, null, 2) + '\n');
+          NODE
+            rm -f "$tables_raw" "$counts_raw"
+          }
+
+          capture_protected_counts "$safety_dir/protected-counts-before.json"
+
+          # Capture the exact 100%-active Worker version before any deployment.
+          worker_status_raw="$RUNNER_TEMP/worker-status-before.json"
+          pnpm exec wrangler deployments status --name "$WORKER_NAME" --json > "$worker_status_raw"
+          node - "$worker_status_raw" "$safety_dir/previous-worker.json" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output] = process.argv.slice(2);
+          const deployment = JSON.parse(fs.readFileSync(input, 'utf8'));
+          const versions = deployment?.versions;
+          if (!Array.isArray(versions) || versions.length !== 1 || Number(versions[0].percentage) !== 100) {
+            throw new Error('The current Worker deployment is not a single 100% version');
+          }
+          const versionId = versions[0].version_id;
+          if (typeof versionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(versionId)) {
+            throw new Error('Previous Worker version ID was not returned');
+          }
+          fs.writeFileSync(output, JSON.stringify({
+            versionId,
+            capturedAt: new Date().toISOString(),
+          }, null, 2) + '\n');
+          NODE
+          rm -f "$worker_status_raw"
+          previous_version="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).versionId" "$safety_dir/previous-worker.json")"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+
+          mapfile -t migration_files < <(
+            find packages/db/migrations -maxdepth 1 -type f -name '*.sql' -printf '%f\n' | LC_ALL=C sort
+          )
+          if [ "${#migration_files[@]}" -eq 0 ]; then
+            echo "::error::No migration files were found"
+            exit 1
+          fi
+          printf '%s\n' "${migration_files[@]}" > "$safety_dir/local-migrations.txt"
+          for name in "${migration_files[@]}"; do
+            if [[ ! "$name" =~ ^[0-9]{3}_[A-Za-z0-9_-]+\.sql$ ]]; then
+              echo "::error::Invalid migration filename: $name"
+              exit 1
+            fi
+          done
+
+          pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+            --remote --yes \
+            --command "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
+
+          applied_raw="$RUNNER_TEMP/applied-migrations-before.json"
+          pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+            --remote --yes --json \
+            --command "SELECT name FROM _migrations ORDER BY name" > "$applied_raw"
+          jq -r '.[0].results[]?.name' "$applied_raw" | LC_ALL=C sort -u > "$safety_dir/applied-migrations-before.txt"
+          rm -f "$applied_raw"
+
+          unknown_markers="$(comm -13 "$safety_dir/local-migrations.txt" "$safety_dir/applied-migrations-before.txt" || true)"
+          if [ -n "$unknown_markers" ]; then
+            echo "::error::D1 contains migration markers that are not present in this checkout"
+            exit 1
+          fi
+
+          node - "$safety_dir/local-migrations.txt" "$safety_dir/applied-migrations-before.txt" <<'NODE'
+          const fs = require('node:fs');
+          const [localPath, appliedPath] = process.argv.slice(2);
+          const readNames = (path) => fs.readFileSync(path, 'utf8').split(/\r?\n/).filter(Boolean);
+          const localNames = readNames(localPath);
+          const appliedNames = new Set(readNames(appliedPath));
+          let foundPending = false;
+          for (const name of localNames) {
+            if (!appliedNames.has(name)) {
+              foundPending = true;
+              continue;
+            }
+            if (foundPending) {
+              throw new Error(`D1 migration ledger has a gap before ${name}`);
+            }
+          }
+          NODE
+
+          mapfile -t pending_migrations < <(
+            comm -23 "$safety_dir/local-migrations.txt" "$safety_dir/applied-migrations-before.txt"
+          )
+          if [ "${#pending_migrations[@]}" -gt 0 ]; then
+            pending_paths=()
+            for name in "${pending_migrations[@]}"; do
+              pending_paths+=("packages/db/migrations/$name")
+            done
+
+            # Explicit pending-file analysis also blocks replay of grandfathered
+            # destructive migrations if their production marker is ever missing.
+            pnpm tsx scripts/check-migrations.ts "${pending_paths[@]}"
+
+            combined_migration=""
+            trap 'if [ -n "${combined_migration:-}" ]; then rm -f "$combined_migration"; fi' EXIT
+            for name in "${pending_migrations[@]}"; do
+              echo "Applying migration: $name"
+              combined_migration="$(mktemp "$RUNNER_TEMP/d1-migration-XXXXXX.sql")"
+              cp "packages/db/migrations/$name" "$combined_migration"
+              printf '\nINSERT INTO _migrations (name, applied_at) VALUES ('\''%s'\'', datetime('\''now'\''));\n' \
+                "$name" >> "$combined_migration"
+
+              # The schema change and marker are sent as one D1 import. The
+              # temporary SQL never enters deploy-safety or an artifact.
+              pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+                --remote --yes \
+                --file="$combined_migration"
+              rm -f "$combined_migration"
+              combined_migration=""
+            done
+          else
+            echo "No pending D1 migrations"
+          fi
+
+          applied_after_raw="$RUNNER_TEMP/applied-migrations-after.json"
+          pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" --config "$wrangler_config" \
+            --remote --yes --json \
+            --command "SELECT name FROM _migrations ORDER BY name" > "$applied_after_raw"
+          jq -r '.[0].results[]?.name' "$applied_after_raw" | LC_ALL=C sort -u > "$safety_dir/applied-migrations-after.txt"
+          rm -f "$applied_after_raw"
+
+          missing_markers="$(comm -23 "$safety_dir/local-migrations.txt" "$safety_dir/applied-migrations-after.txt" || true)"
+          unknown_markers="$(comm -13 "$safety_dir/local-migrations.txt" "$safety_dir/applied-migrations-after.txt" || true)"
+          if [ -n "$missing_markers" ] || [ -n "$unknown_markers" ]; then
+            echo "::error::D1 migration markers do not exactly match this checkout"
+            exit 1
+          fi
+
+          capture_protected_counts "$safety_dir/protected-counts-after.json"
+          node - "$safety_dir/protected-counts-before.json" "$safety_dir/protected-counts-after.json" <<'NODE'
+          const fs = require('node:fs');
+          const [beforePath, afterPath] = process.argv.slice(2);
+          const before = JSON.parse(fs.readFileSync(beforePath, 'utf8'));
+          const after = JSON.parse(fs.readFileSync(afterPath, 'utf8'));
+          const losses = [];
+          for (const [table, count] of Object.entries(before)) {
+            if (!Number.isSafeInteger(after[table]) || after[table] < count) {
+              losses.push(`${table}: ${count} -> ${String(after[table])}`);
+            }
+          }
+          if (losses.length > 0) {
+            throw new Error(`Protected D1 row count decreased: ${losses.join(', ')}`);
+          }
+          NODE
+
+      - name: Upload recovery metadata
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/worker
-          command: deploy --config dist/line_harness/wrangler.json --name ${{ vars.WORKER_NAME || 'your-worker-name' }}
+          name: worker-deploy-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deploy-safety/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Deploy to Cloudflare Workers
+        id: deploy
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          pnpm exec wrangler deploy \
+            --config apps/worker/dist/line_harness/wrangler.json \
+            --name "$WORKER_NAME"
+
+      - name: Smoke test authenticated chats API
+        id: smoke
+        if: ${{ steps.deploy.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          API_KEY: ${{ secrets.API_KEY }}
+          WORKER_URL: ${{ vars.WORKER_URL || secrets.NEXT_PUBLIC_API_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$API_KEY"
+          test -n "$WORKER_URL"
+          echo "::add-mask::$API_KEY"
+
+          response="$RUNNER_TEMP/chats-smoke-response.json"
+          trap 'rm -f "$response"' EXIT
+          status="$(curl --silent --show-error --location \
+            --retry 5 --retry-all-errors --retry-delay 4 \
+            --connect-timeout 10 --max-time 45 \
+            --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $API_KEY" \
+            "${WORKER_URL%/}/api/chats?q=__deployment_smoke_check__")"
+
+          if [ "$status" != "200" ]; then
+            echo "::error::Authenticated chats smoke test returned HTTP $status"
+            exit 1
+          fi
+          node - "$response" <<'NODE'
+          const fs = require('node:fs');
+          const body = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          if (body?.success !== true || !Array.isArray(body.data)) {
+            throw new Error('Authenticated chats smoke response is invalid');
+          }
+          NODE
+
+      - name: Roll back to previous Worker
+        id: rollback
+        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.migrations.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          test -n "$PREVIOUS_VERSION"
+
+          current_raw="$RUNNER_TEMP/worker-status-current.json"
+          pnpm exec wrangler deployments status --name "$WORKER_NAME" --json > "$current_raw"
+          current_version="$(node - "$current_raw" <<'NODE'
+          const fs = require('node:fs');
+          const deployment = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const versions = deployment?.versions;
+          if (!Array.isArray(versions) || versions.length === 0) process.exit(1);
+          versions.sort((a, b) => Number(b.percentage) - Number(a.percentage));
+          process.stdout.write(String(versions[0].version_id ?? ''));
+          NODE
+          )"
+          rm -f "$current_raw"
+
+          if [ "$current_version" != "$PREVIOUS_VERSION" ]; then
+            pnpm exec wrangler rollback "$PREVIOUS_VERSION" \
+              --name "$WORKER_NAME" \
+              --message "Automatic rollback after failed production smoke test" \
+              --yes
+          fi
+
+          verify_raw="$RUNNER_TEMP/worker-status-rollback.json"
+          pnpm exec wrangler deployments status --name "$WORKER_NAME" --json > "$verify_raw"
+          node - "$verify_raw" "$PREVIOUS_VERSION" <<'NODE'
+          const fs = require('node:fs');
+          const [input, expected] = process.argv.slice(2);
+          const deployment = JSON.parse(fs.readFileSync(input, 'utf8'));
+          const versions = deployment?.versions;
+          if (!Array.isArray(versions) || versions.length !== 1 ||
+              versions[0].version_id !== expected || Number(versions[0].percentage) !== 100) {
+            throw new Error('Previous Worker version was not restored to 100% traffic');
+          }
+          NODE
+          rm -f "$verify_raw"
+
+      - name: Fail deployment after rollback
+        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure') }}
+        run: |
+          if [ "${{ steps.rollback.outcome }}" = "failure" ]; then
+            echo "::error::Deployment failed and automatic Worker rollback also failed"
+          else
+            echo "::error::Deployment failed and the previous Worker was restored"
+          fi
+          exit 1

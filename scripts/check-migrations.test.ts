@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GRANDFATHERED_DESTRUCTIVE_MIGRATIONS,
   POLICY_CUTOFF_PREFIX,
   checkMigration,
   filterMigrationsByPolicy,
@@ -36,6 +37,24 @@ describe('checkMigration', () => {
     const result = checkMigration(sql);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.violation).toMatch(/DROP TABLE/i);
+  });
+
+  it('blocks DELETE FROM', () => {
+    const result = checkMigration(`DELETE FROM messages_log WHERE created_at < '2026-01-01';`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.violation).toMatch(/DELETE FROM/i);
+  });
+
+  it('blocks TRUNCATE', () => {
+    const result = checkMigration(`TRUNCATE TABLE messages_log;`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.violation).toMatch(/TRUNCATE/i);
+  });
+
+  it('blocks REPLACE INTO', () => {
+    const result = checkMigration(`REPLACE INTO friends (id, line_user_id) VALUES ('1', 'U1');`);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.violation).toMatch(/REPLACE INTO/i);
   });
 
   it('blocks DROP COLUMN', () => {
@@ -153,6 +172,13 @@ describe('filterMigrationsByPolicy', () => {
     const filtered = filterMigrationsByPolicy(sample);
     expect(filtered).not.toContain('027_dedup_delivery.sql');
     expect(filtered).not.toContain('029_account_management_v2.sql');
+  });
+
+  it('excludes known legacy table rebuilds from only the default scan', () => {
+    const legacy = [...GRANDFATHERED_DESTRUCTIVE_MIGRATIONS];
+    expect(filterMigrationsByPolicy(legacy)).toEqual([]);
+    expect(filterMigrationsByPolicy(legacy, { all: true })).toEqual(legacy);
+    for (const name of legacy) expect(name).toMatch(/^(051|053)_/);
   });
 
   it('returns an empty array when no files meet the cutoff', () => {

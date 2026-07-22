@@ -78,6 +78,36 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved', 'long_term']);
 const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
 const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
+const OPTIONAL_CHAT_TABLE_NAMES = [
+  'chat_confirmation_events',
+  'line_conversations',
+  'line_conversation_messages',
+] as const;
+
+type OptionalChatTableName = typeof OPTIONAL_CHAT_TABLE_NAMES[number];
+type OptionalChatSchema = Record<OptionalChatTableName, boolean>;
+
+async function getOptionalChatSchema(db: D1Database): Promise<OptionalChatSchema> {
+  const result = await db
+    .prepare(
+      `SELECT name
+       FROM sqlite_master
+       WHERE type = 'table'
+         AND name IN (?, ?, ?)`,
+    )
+    .bind(...OPTIONAL_CHAT_TABLE_NAMES)
+    .all<{ name: string }>();
+  const existing = new Set(result.results.map((row) => row.name));
+  return {
+    chat_confirmation_events: existing.has('chat_confirmation_events'),
+    line_conversations: existing.has('line_conversations'),
+    line_conversation_messages: existing.has('line_conversation_messages'),
+  };
+}
+
+function canReadLineConversations(schema: OptionalChatSchema): boolean {
+  return schema.line_conversations && schema.line_conversation_messages;
+}
 
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
@@ -1449,6 +1479,7 @@ chats.get('/api/chats', async (c) => {
     if (isSecondaryOnlySupportStaff(staff)) {
       return c.json({ success: false, error: '二次対応専用権限では顧客チャットを閲覧できません' }, 403);
     }
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
 
     const activeCaseConditions = activeSupportCaseConditions(staff, 'sc');
     const activeCaseAccountClause = lineAccountId ? 'AND sc.line_account_id = ?' : '';
@@ -1470,6 +1501,27 @@ chats.get('/api/chats', async (c) => {
     const accountFilterSql = lineAccountId
       ? `friend_id IN (SELECT id FROM friends WHERE line_account_id = ?)`
       : `1=1`;
+    const latestConfirmationCte = optionalSchema.chat_confirmation_events
+      ? `latest_confirmation AS (
+          SELECT friend_id, confirmed_message_id, confirmed_message_at
+          FROM (
+            SELECT friend_id, confirmed_message_id, confirmed_message_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY friend_id
+                ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+              ) AS rn
+            FROM chat_confirmation_events
+            WHERE staff_id = ?
+          ) ranked_confirmation
+          WHERE rn = 1
+        )`
+      : `latest_confirmation AS (
+          SELECT
+            CAST(NULL AS TEXT) AS friend_id,
+            CAST(NULL AS TEXT) AS confirmed_message_id,
+            CAST(NULL AS TEXT) AS confirmed_message_at
+          WHERE 0
+        )`;
     let sql = `
       WITH activity AS (
         SELECT friend_id, MAX(created_at) AS last_message_at
@@ -1544,19 +1596,7 @@ chats.get('/api/chats', async (c) => {
         FROM ranked_customer_message
         WHERE rn = 1
       ),
-      latest_confirmation AS (
-        SELECT friend_id, confirmed_message_id, confirmed_message_at
-        FROM (
-          SELECT friend_id, confirmed_message_id, confirmed_message_at,
-            ROW_NUMBER() OVER (
-              PARTITION BY friend_id
-              ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
-            ) AS rn
-          FROM chat_confirmation_events
-          WHERE staff_id = ?
-        ) ranked_confirmation
-        WHERE rn = 1
-      ),
+      ${latestConfirmationCte},
       active_support_cases AS (
         SELECT *
         FROM (
@@ -1640,10 +1680,11 @@ chats.get('/api/chats', async (c) => {
       LEFT JOIN latest_confirmation lc ON lc.friend_id = f.id
       LEFT JOIN active_support_cases ac ON ac.friend_id = f.id
     `;
-    // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 3 箇所 + following friend source → active cases.
+    const confirmationBinds = optionalSchema.chat_confirmation_events ? [staff.id] : [];
+    // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 5 箇所 + following friend source → confirmation → active cases.
     const ctePrebindings: unknown[] = lineAccountId
-      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, staff.id, ...activeCaseBinds]
-      : [staff.id, ...activeCaseBinds];
+      ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, ...confirmationBinds, ...activeCaseBinds]
+      : [...confirmationBinds, ...activeCaseBinds];
     const conditions: string[] = [];
     const bindings: unknown[] = [];
 
@@ -1737,7 +1778,7 @@ chats.get('/api/chats', async (c) => {
       };
     });
 
-    if (!status && !operatorId && !unansweredOnly) {
+    if (!status && !operatorId && !unansweredOnly && canReadLineConversations(optionalSchema)) {
       const conversationConditions = lineAccountId ? ['lc.line_account_id = ?'] : [];
       const conversationBindings: unknown[] = lineAccountId ? [lineAccountId] : [];
       if (search) {
@@ -1851,23 +1892,26 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
       .bind(messageId.value)
       .first<ChatMediaMessageRow>();
     if (!row) {
-      row = await c.env.DB
-        .prepare(
-          `SELECT
-             message.id,
-             NULL AS friend_id,
-             message.conversation_id,
-             message.message_type,
-             message.content,
-             message.line_account_id,
-             conversation.line_account_id AS friend_line_account_id
-           FROM line_conversation_messages message
-           INNER JOIN line_conversations conversation ON conversation.id = message.conversation_id
-           WHERE message.id = ?
-           LIMIT 1`,
-        )
-        .bind(messageId.value)
-        .first<ChatMediaMessageRow>();
+      const optionalSchema = await getOptionalChatSchema(c.env.DB);
+      if (canReadLineConversations(optionalSchema)) {
+        row = await c.env.DB
+          .prepare(
+            `SELECT
+               message.id,
+               NULL AS friend_id,
+               message.conversation_id,
+               message.message_type,
+               message.content,
+               message.line_account_id,
+               conversation.line_account_id AS friend_line_account_id
+             FROM line_conversation_messages message
+             INNER JOIN line_conversations conversation ON conversation.id = message.conversation_id
+             WHERE message.id = ?
+             LIMIT 1`,
+          )
+          .bind(messageId.value)
+          .first<ChatMediaMessageRow>();
+      }
     }
     if (!row) return c.json({ success: false, error: 'Media not found' }, 404);
 
@@ -1920,8 +1964,11 @@ chats.get('/api/chats/:id', async (c) => {
     const query = parseChatDetailQuery(new URL(c.req.url).searchParams);
     if (!query.ok) return c.json({ success: false, error: query.error }, 400);
     const rawId = id.value;
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
 
-    const lineConversation = await getLineConversationById(c.env.DB, rawId);
+    const lineConversation = canReadLineConversations(optionalSchema)
+      ? await getLineConversationById(c.env.DB, rawId)
+      : null;
     if (lineConversation) {
       if (isSecondaryOnlySupportStaff(currentStaff(c))) {
         return c.json({ success: false, error: 'Chat not found' }, 404);
@@ -2113,6 +2160,18 @@ chats.get('/api/chats/:id', async (c) => {
       [resolvedFriendId],
       staff,
     )).get(resolvedFriendId);
+    const latestConfirmationPromise = optionalSchema.chat_confirmation_events
+      ? c.env.DB
+          .prepare(
+            `SELECT confirmed_message_id, confirmed_message_at
+             FROM chat_confirmation_events
+             WHERE friend_id = ? AND staff_id = ?
+             ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+             LIMIT 1`,
+          )
+          .bind(resolvedFriendId, staff.id)
+          .first<{ confirmed_message_id: string; confirmed_message_at: string }>()
+      : Promise.resolve(null);
     const [lastHumanReply, latestCustomerMessage, latestConfirmation] = await Promise.all([
       c.env.DB
         .prepare(
@@ -2140,16 +2199,7 @@ chats.get('/api/chats/:id', async (c) => {
         )
         .bind(resolvedFriendId)
         .first<{ id: string; created_at: string }>(),
-      c.env.DB
-        .prepare(
-          `SELECT confirmed_message_id, confirmed_message_at
-           FROM chat_confirmation_events
-           WHERE friend_id = ? AND staff_id = ?
-           ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
-           LIMIT 1`,
-        )
-        .bind(resolvedFriendId, staff.id)
-        .first<{ confirmed_message_id: string; confirmed_message_at: string }>(),
+      latestConfirmationPromise,
     ]);
     const latestMessage = pageMessages.at(-1);
 

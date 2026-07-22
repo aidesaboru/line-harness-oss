@@ -1587,6 +1587,12 @@ BEGIN
   SELECT RAISE(ABORT, 'chat_internal_messages history is protected');
 END;
 
+CREATE TRIGGER protect_chats_delete
+BEFORE DELETE ON chats
+BEGIN
+  SELECT RAISE(ABORT, 'chats history is protected');
+END;
+
 CREATE TRIGGER protect_friends_delete
 BEFORE DELETE ON friends
 BEGIN
@@ -1633,6 +1639,12 @@ CREATE TRIGGER protect_internal_tasks_delete
 BEFORE DELETE ON internal_tasks
 BEGIN
   SELECT RAISE(ABORT, 'internal tasks cannot be deleted');
+END;
+
+CREATE TRIGGER protect_line_accounts_delete
+BEFORE DELETE ON line_accounts
+BEGIN
+  SELECT RAISE(ABORT, 'line_accounts history is protected');
 END;
 
 CREATE TRIGGER protect_line_conversation_messages_delete

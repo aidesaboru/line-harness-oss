@@ -116,6 +116,11 @@ type LineConversationMessageRow = {
   created_at: string;
 };
 
+type OptionalChatTableName =
+  | 'chat_confirmation_events'
+  | 'line_conversations'
+  | 'line_conversation_messages';
+
 type SupportCaseRow = {
   id: string;
   line_account_id: string;
@@ -161,6 +166,7 @@ function makeChatDb(state: {
   scheduledMessages?: ScheduledChatMessageRow[];
   lineConversations?: Array<Record<string, unknown>>;
   lineConversationMessages?: LineConversationMessageRow[];
+  missingTables?: OptionalChatTableName[];
 }) {
   const calls: Array<{ method: 'first' | 'all' | 'run'; sql: string; binds: unknown[] }> = [];
   const visible = new Set(state.visibleFriendIds);
@@ -171,9 +177,16 @@ function makeChatDb(state: {
   const scheduledMessages = state.scheduledMessages ?? [];
   const lineConversations = state.lineConversations ?? [];
   const lineConversationMessages = state.lineConversationMessages ?? [];
+  const missingTables = new Set(state.missingTables ?? []);
 
   const db = {
     prepare(sql: string) {
+      if (!sql.includes('FROM sqlite_master')) {
+        const missingTable = [...missingTables].find((table) => (
+          new RegExp(`\\b${table}\\b`).test(sql)
+        ));
+        if (missingTable) throw new Error(`no such table: ${missingTable}`);
+      }
       let bound: unknown[] = [];
       const stmt = {
         bind(...args: unknown[]) {
@@ -294,6 +307,12 @@ function makeChatDb(state: {
         },
         async all<T>() {
           calls.push({ method: 'all', sql, binds: bound });
+          if (sql.includes('FROM sqlite_master')) {
+            const results = (bound as OptionalChatTableName[])
+              .filter((name) => !missingTables.has(name))
+              .map((name) => ({ name }));
+            return { results } as { results: T[] };
+          }
           if (sql.includes('FROM line_conversations lc')) {
             return { results: lineConversations } as { results: T[] };
           }
@@ -646,6 +665,42 @@ describe('chat support visibility', () => {
     ]));
   });
 
+  test('chat list keeps individual chats available when optional chat tables are missing', async () => {
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      missingTables: [
+        'chat_confirmation_events',
+        'line_conversations',
+        'line_conversation_messages',
+      ],
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats?lineAccountId=acc-1');
+
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      data: Array<{ id: string; conversationType: string; isConfirmed: boolean }>;
+    };
+    expect(body.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'friend-visible',
+        conversationType: 'user',
+        isConfirmed: false,
+      }),
+    ]));
+    const schemaCall = calls.find((call) => call.sql.includes('FROM sqlite_master'));
+    expect(schemaCall?.binds).toEqual([
+      'chat_confirmation_events',
+      'line_conversations',
+      'line_conversation_messages',
+    ]);
+    const individualListCall = calls.find((call) => call.sql.includes('FROM deduped d'));
+    expect(individualListCall?.sql).not.toContain('FROM chat_confirmation_events');
+    expect(calls.some((call) => call.sql.includes('FROM line_conversations lc'))).toBe(false);
+  });
+
   test('syncs a page of current LINE followers without removing existing history', async () => {
     const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: ['friend-visible'] });
     dbMocks.getLineAccountById.mockResolvedValue({
@@ -807,6 +862,47 @@ describe('chat support visibility', () => {
       'msg-3',
       3,
     ]);
+  });
+
+  test('chat detail keeps an individual chat available when optional chat tables are missing', async () => {
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [{
+        id: 'msg-existing',
+        friend_id: 'friend-visible',
+        direction: 'incoming',
+        message_type: 'text',
+        content: '既存の個別チャットです',
+        created_at: '2026-06-12T09:00:00.000',
+      }],
+      missingTables: [
+        'chat_confirmation_events',
+        'line_conversations',
+        'line_conversation_messages',
+      ],
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+
+    const res = await setupApp(db, 'staff').request('/api/chats/friend-visible');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        id: 'friend-visible',
+        conversationType: 'user',
+        isConfirmed: false,
+        confirmedMessageAt: null,
+        messages: [expect.objectContaining({ id: 'msg-existing' })],
+      },
+    });
+    expect(dbMocks.getLineConversationById).not.toHaveBeenCalled();
+    expect(calls.some((call) => (
+      !call.sql.includes('FROM sqlite_master')
+      && /\b(chat_confirmation_events|line_conversations|line_conversation_messages)\b/.test(call.sql)
+    ))).toBe(false);
   });
 
   test('group chat detail returns sender names without customer-only data', async () => {
@@ -979,6 +1075,39 @@ describe('chat support visibility', () => {
       'https://api-data.line.me/v2/bot/message/line-hidden/content',
       { headers: { Authorization: 'Bearer account-token' } },
     );
+  });
+
+  test('individual chat media remains available when LINE conversation tables are missing', async () => {
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [{
+        id: 'msg-existing-file',
+        friend_id: 'friend-visible',
+        direction: 'incoming',
+        message_type: 'file',
+        content: JSON.stringify({ lineMessageId: 'line-existing', fileName: 'existing.pdf' }),
+        created_at: '2026-06-12T09:00:00.000',
+      }],
+      missingTables: ['line_conversations', 'line_conversation_messages'],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    const fetchMock = vi.fn(async () => new Response('existing-pdf', {
+      headers: { 'Content-Type': 'application/pdf' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await setupApp(db, 'staff').request('/api/chats/messages/msg-existing-file/media');
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('existing-pdf');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api-data.line.me/v2/bot/message/line-existing/content',
+      { headers: { Authorization: 'Bearer account-token' } },
+    );
+    expect(calls.some((call) => /\bline_conversation_messages\b/.test(call.sql))).toBe(false);
+    expect(calls.some((call) => /\bline_conversations\b/.test(call.sql))).toBe(false);
   });
 
   test('staff can post internal chat messages and thread replies on visible chats', async () => {

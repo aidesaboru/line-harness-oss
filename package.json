@@ -8,7 +8,7 @@
     "dev:web": "corepack pnpm --filter web dev",
     "build": "test -n \"$NEXT_PUBLIC_API_URL\" || (echo \"NEXT_PUBLIC_API_URL is required for build\" >&2; exit 1); corepack pnpm -r build",
     "sandbox:create-line-harness": "bash scripts/run-create-line-harness-sandbox.sh",
-    "deploy:worker": "corepack pnpm --filter worker deploy",
+    "deploy:worker": "tsx scripts/production-deploy.ts",
     "deploy:web": "corepack pnpm --filter web build",
     "db:migrate": "wrangler d1 execute line-crm --file=packages/db/schema.sql",
     "db:migrate:local": "wrangler d1 execute line-crm --file=packages/db/schema.sql --local",

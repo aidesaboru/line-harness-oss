@@ -6,7 +6,7 @@ import {
   updateLineAccount,
   updateLineAccountFields,
   updateLineAccountOrder,
-  deleteLineAccount,
+  deactivateLineAccount,
 } from '@line-crm/db';
 import type { LineAccount as DbLineAccount } from '@line-crm/db';
 import { requireRole } from '../middleware/role-guard.js';
@@ -758,12 +758,12 @@ lineAccounts.put('/api/line-accounts/:id', requireRole('owner'), async (c) => {
   }
 });
 
-// DELETE /api/line-accounts/:id - delete
+// DELETE /api/line-accounts/:id - deactivate without deleting account data
 lineAccounts.delete('/api/line-accounts/:id', requireRole('owner'), async (c) => {
   try {
     const id = parseLineAccountPathId(c.req.param('id'));
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
-    await deleteLineAccount(c.env.DB, id.value);
+    await deactivateLineAccount(c.env.DB, id.value);
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/line-accounts/:id error: ${lineAccountRouteErrorKind(err)}`);

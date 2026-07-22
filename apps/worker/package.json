@@ -8,7 +8,8 @@
     "test": "vitest run",
     "build": "vite build",
     "preview": "vite preview",
-    "deploy": "vite build && wrangler deploy",
+    "deploy": "corepack pnpm --dir ../.. deploy:worker",
+    "deploy:raw": "wrangler deploy --strict",
     "typecheck": "tsc --noEmit",
     "inject-version": "tsx scripts/inject-version.ts"
   },

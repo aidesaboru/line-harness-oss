@@ -7,6 +7,9 @@
  *
  *   - DROP TABLE
  *   - DROP COLUMN
+ *   - DELETE FROM
+ *   - TRUNCATE
+ *   - REPLACE INTO
  *   - ALTER COLUMN ... TYPE ...
  *   - ALTER TABLE ... RENAME TO ... (rename table)
  *   - RENAME COLUMN
@@ -53,6 +56,18 @@ interface Rule {
 
 // Order matters: more specific rules first so messages are useful.
 const RULES: Rule[] = [
+  {
+    label: 'DELETE FROM is forbidden in migrations (data deletion must use a separately approved operation)',
+    pattern: /\bDELETE\s+FROM\b/i,
+  },
+  {
+    label: 'TRUNCATE is forbidden in migrations (additive-only migrations)',
+    pattern: /\bTRUNCATE(?:\s+TABLE)?\b/i,
+  },
+  {
+    label: 'REPLACE INTO is forbidden in migrations (SQLite may delete and recreate rows)',
+    pattern: /\bREPLACE\s+INTO\b/i,
+  },
   {
     label: 'DROP TABLE is forbidden (additive-only migrations)',
     pattern: /\bDROP\s+TABLE\b/i,
@@ -137,6 +152,15 @@ const DEFAULT_MIGRATIONS_DIR = 'packages/db/migrations';
  */
 export const POLICY_CUTOFF_PREFIX = '041';
 
+// These migrations predate the additive-only policy and rebuild tables. They
+// are excluded only from the default repository-wide scan. Passing either file
+// explicitly still fails, which prevents a missing production marker from
+// replaying destructive legacy SQL against a live database.
+export const GRANDFATHERED_DESTRUCTIVE_MIGRATIONS = new Set([
+  '051_support_secondary_answered_status.sql',
+  '053_secondary_staff_role.sql',
+]);
+
 /**
  * Filter the list of migration filenames (basenames, not full paths) to those
  * that fall under the active policy. With `all = true`, returns the input
@@ -152,7 +176,10 @@ export function filterMigrationsByPolicy(
   options: { all?: boolean } = {},
 ): string[] {
   if (options.all) return names;
-  return names.filter((name) => name >= POLICY_CUTOFF_PREFIX);
+  return names.filter((name) => (
+    name >= POLICY_CUTOFF_PREFIX
+    && !GRANDFATHERED_DESTRUCTIVE_MIGRATIONS.has(name)
+  ));
 }
 
 function listDefaultMigrations(options: { all?: boolean } = {}): string[] {

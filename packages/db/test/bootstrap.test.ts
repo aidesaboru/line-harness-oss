@@ -187,4 +187,28 @@ describe('bootstrap.sql', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM line_conversation_messages').get())
       .toEqual({ count: 1 });
   });
+
+  it('prevents physical deletion of LINE accounts and chat state', () => {
+    const db = new Database(':memory:');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+    db.prepare(
+      `INSERT INTO line_accounts (id, channel_id, name, channel_access_token, channel_secret)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run('account-1', 'channel-1', 'テストアカウント', 'token', 'secret');
+    db.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name, line_account_id)
+       VALUES (?, ?, ?, ?)`,
+    ).run('friend-1', 'U-test-1', 'テスト顧客', 'account-1');
+    db.prepare(
+      `INSERT INTO chats (id, friend_id, line_account_id)
+       VALUES (?, ?, ?)`,
+    ).run('chat-1', 'friend-1', 'account-1');
+
+    expect(() => db.prepare('DELETE FROM chats WHERE id = ?').run('chat-1'))
+      .toThrow(/history is protected/i);
+    expect(() => db.prepare('DELETE FROM line_accounts WHERE id = ?').run('account-1'))
+      .toThrow(/history is protected/i);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM chats').get()).toEqual({ count: 1 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM line_accounts').get()).toEqual({ count: 1 });
+  });
 });

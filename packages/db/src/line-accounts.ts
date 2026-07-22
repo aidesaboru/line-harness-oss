@@ -167,11 +167,14 @@ export async function updateLineAccount(
   return getLineAccountById(db, id);
 }
 
-export async function deleteLineAccount(
+export async function deactivateLineAccount(
   db: D1Database,
   id: string,
 ): Promise<void> {
-  await db.prepare(`DELETE FROM line_accounts WHERE id = ?`).bind(id).run();
+  await db
+    .prepare(`UPDATE line_accounts SET is_active = 0, updated_at = ? WHERE id = ?`)
+    .bind(jstNow(), id)
+    .run();
 }
 
 export interface UpdateLineAccountFieldsInput {

@@ -12,7 +12,7 @@ const dbMocks = {
   updateLineAccount: vi.fn(),
   updateLineAccountFields: vi.fn(),
   updateLineAccountOrder: vi.fn(),
-  deleteLineAccount: vi.fn(),
+  deactivateLineAccount: vi.fn(),
   getTrafficPoolBySlug: vi.fn(),
   createTrafficPool: vi.fn(),
   addPoolAccount: vi.fn(),
@@ -379,7 +379,28 @@ describe('line account path ID validation', () => {
     expect(dbMocks.getLineAccountById).not.toHaveBeenCalled();
     expect(dbMocks.updateLineAccount).not.toHaveBeenCalled();
     expect(dbMocks.updateLineAccountFields).not.toHaveBeenCalled();
-    expect(dbMocks.deleteLineAccount).not.toHaveBeenCalled();
+    expect(dbMocks.deactivateLineAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/line-accounts/:id', () => {
+  test('owner deactivates the account through the non-destructive DB helper', async () => {
+    dbMocks.deactivateLineAccount.mockResolvedValueOnce(undefined);
+    const app = setupApp('owner');
+
+    const res = await app.request('/api/line-accounts/acc-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.deactivateLineAccount).toHaveBeenCalledWith(expect.anything(), 'acc-1');
+  });
+
+  test('staff cannot deactivate an account', async () => {
+    const app = setupApp('staff');
+
+    const res = await app.request('/api/line-accounts/acc-1', { method: 'DELETE' });
+
+    expect(res.status).toBe(403);
+    expect(dbMocks.deactivateLineAccount).not.toHaveBeenCalled();
   });
 });
 

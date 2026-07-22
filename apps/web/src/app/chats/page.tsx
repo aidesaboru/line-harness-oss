@@ -1477,6 +1477,7 @@ export default function ChatsPage() {
   const [savingInternalChat, setSavingInternalChat] = useState(false)
   const [staffOptions, setStaffOptions] = useState<string[]>([])
   const [internalChatOpen, setInternalChatOpen] = useState(false)
+  const [customerInfoOpen, setCustomerInfoOpen] = useState(false)
   const isComposingRef = useRef(false)
   const messagesScrollRef = useRef<HTMLDivElement | null>(null)
   const preserveScrollOnNextMessagesChangeRef = useRef(false)
@@ -1604,6 +1605,7 @@ export default function ChatsPage() {
     setImageUploadError('')
     setMediaPreview(null)
     setInternalChatOpen(false)
+    setCustomerInfoOpen(false)
     setDetailLoading(false)
     setLoadingOlderMessages(false)
     setError('')
@@ -1970,6 +1972,7 @@ export default function ChatsPage() {
     setPendingImage(null)
     setImageUploadError('')
     setInternalChatOpen(false)
+    setCustomerInfoOpen(false)
   }
 
   const handleClearChatSelection = () => {
@@ -1985,6 +1988,7 @@ export default function ChatsPage() {
     setPendingImage(null)
     setImageUploadError('')
     setInternalChatOpen(false)
+    setCustomerInfoOpen(false)
   }
 
   const handleOpenWorkQueue = (
@@ -2643,7 +2647,9 @@ export default function ChatsPage() {
 
   return (
     <div>
-      <Header title="オペレーターチャット" />
+      <div className="hidden lg:block">
+        <Header title="オペレーターチャット" />
+      </div>
 
       {/* Error */}
       {error && (
@@ -2652,9 +2658,9 @@ export default function ChatsPage() {
         </div>
       )}
 
-      <div className="flex gap-4 h-[calc(100vh-120px)] lg:h-[calc(100vh-180px)]">
+      <div className="flex h-[calc(100dvh_-_128px_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom))] gap-0 lg:h-[calc(100vh-180px)] lg:gap-4">
         {/* Left Panel: Chat List */}
-        <div className={`w-full lg:w-96 lg:flex-shrink-0 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
+        <div className={`w-full flex-col overflow-hidden bg-white lg:w-96 lg:flex-shrink-0 lg:rounded-lg lg:border lg:border-gray-200 lg:shadow-sm ${selectedChatId ? 'hidden lg:flex' : 'flex'}`}>
           {/* タブ (全て / 未読 / 対応中 / 解決済) は意図的に削除。直近メッセージが見やすい LINE 風一覧を優先。 */}
 
           {/* Filter row */}
@@ -2699,7 +2705,7 @@ export default function ChatsPage() {
                 </button>
               )}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="-mx-3 flex items-center gap-2 overflow-x-auto px-3 pb-1 lg:mx-0 lg:flex-wrap lg:overflow-visible lg:px-0 lg:pb-0">
             {statusFilters.map((f) => (
               <button
                 key={f.key}
@@ -2708,7 +2714,7 @@ export default function ChatsPage() {
                   setStaleOnly(false)
                 }}
                 disabled={unansweredOnly}
-                className={`min-h-10 rounded-full px-4 py-2 text-sm font-bold transition-colors ${
+                className={`min-h-10 shrink-0 rounded-full px-4 py-2 text-sm font-bold transition-colors ${
                   statusFilter === f.key
                     ? 'bg-green-500 text-white'
                     : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -2717,17 +2723,19 @@ export default function ChatsPage() {
                 {f.label}
               </button>
             ))}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
             <select
               value={sortMode}
               onChange={(e) => setSortMode(e.target.value as ChatSortMode)}
-              className="ml-auto h-10 rounded-md border border-gray-300 bg-white px-3 text-sm font-bold text-gray-700"
+              className="h-10 min-w-0 flex-1 rounded-md border border-gray-300 bg-white px-3 text-sm font-bold text-gray-700"
               aria-label="チャットの並び順"
             >
               {sortOptions.map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
-            <label className="flex min-h-10 items-center gap-2 rounded-md bg-gray-100 px-3 text-sm font-bold whitespace-nowrap cursor-pointer select-none">
+            <label className="flex min-h-10 shrink-0 cursor-pointer select-none items-center gap-2 whitespace-nowrap rounded-md bg-gray-100 px-3 text-sm font-bold">
               <input
                 type="checkbox"
                 checked={unansweredOnly}
@@ -2856,7 +2864,7 @@ export default function ChatsPage() {
         </div>
 
         {/* Right Panel: Chat Detail */}
-        <div className={`relative flex-1 bg-white rounded-lg shadow-sm border border-gray-200 flex-col overflow-hidden ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
+        <div className={`relative flex-1 flex-col overflow-hidden bg-white lg:rounded-lg lg:border lg:border-gray-200 lg:shadow-sm ${selectedChatId || selectedFriendId ? 'flex' : 'hidden lg:flex'}`}>
           {selectedFriendId && !selectedChatId ? (
             /* Direct message to friend without existing chat */
             <DirectMessagePanel
@@ -2941,7 +2949,19 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
-                <div className="flex w-full flex-wrap items-center justify-end gap-1.5">
+                <div className="-mx-4 flex w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0">
+                  <button
+                    type="button"
+                    onClick={() => setCustomerInfoOpen(true)}
+                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 xl:hidden"
+                    aria-label="顧客詳細を開く"
+                  >
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M20 21a8 8 0 0 0-16 0" />
+                      <circle cx="12" cy="7" r="4" />
+                    </svg>
+                    顧客詳細
+                  </button>
                   <Link
                     href={chatDetail.activeSupportCase
                       ? `/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`
@@ -2957,7 +2977,7 @@ export default function ChatsPage() {
                   <button
                     type="button"
                     onClick={() => setInternalChatOpen(true)}
-                    className="min-h-9 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                    className="inline-flex min-h-9 shrink-0 items-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
                   >
                     社内チャット
                     <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
@@ -2975,7 +2995,7 @@ export default function ChatsPage() {
                           handleSelectChat(next.id)
                         }
                       }}
-                      className="min-h-9 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                      className="min-h-9 shrink-0 whitespace-nowrap rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                       title="次の未対応 friend に進む"
                     >
                       次の未対応 →
@@ -2984,7 +3004,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'unread' && (
                     <button
                       onClick={() => handleStatusUpdate('unread')}
-                      className="min-h-9 rounded-md bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100"
+                      className="min-h-9 shrink-0 whitespace-nowrap rounded-md bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-600 transition-colors hover:bg-red-100"
                     >
                       未読に戻す
                     </button>
@@ -2992,7 +3012,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'in_progress' && (
                     <button
                       onClick={() => handleStatusUpdate('in_progress')}
-                      className="min-h-9 rounded-md bg-yellow-50 px-3 py-1.5 text-xs font-semibold text-yellow-700 transition-colors hover:bg-yellow-100"
+                      className="min-h-9 shrink-0 whitespace-nowrap rounded-md bg-yellow-50 px-3 py-1.5 text-xs font-semibold text-yellow-700 transition-colors hover:bg-yellow-100"
                     >
                       対応中にする
                     </button>
@@ -3000,7 +3020,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'long_term' && (
                     <button
                       onClick={() => handleStatusUpdate('long_term')}
-                      className="min-h-9 rounded-md bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
+                      className="min-h-9 shrink-0 whitespace-nowrap rounded-md bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
                       title="24時間超過と未対応キューの対象から外します"
                     >
                       中長期対応にする
@@ -3009,7 +3029,7 @@ export default function ChatsPage() {
                   {chatDetail.status !== 'resolved' && (
                     <button
                       onClick={() => handleStatusUpdate('resolved')}
-                      className="min-h-9 rounded-md bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100"
+                      className="min-h-9 shrink-0 whitespace-nowrap rounded-md bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 transition-colors hover:bg-green-100"
                     >
                       解決済にする
                     </button>
@@ -3158,7 +3178,7 @@ export default function ChatsPage() {
                           <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                             {/* メッセージバブル */}
                             <div
-                              className={`max-w-[320px] px-3 py-2 text-sm break-words whitespace-pre-wrap ${
+                              className={`max-w-[calc(100vw-96px)] break-words whitespace-pre-wrap px-3 py-2 text-sm sm:max-w-[320px] ${
                                 isOutgoing
                                   ? 'rounded-tl-2xl rounded-tr-md rounded-bl-2xl rounded-br-2xl text-white'
                                   : 'rounded-tl-md rounded-tr-2xl rounded-bl-2xl rounded-br-2xl bg-white text-gray-900'
@@ -3495,9 +3515,9 @@ export default function ChatsPage() {
                     onCompositionEnd={() => { isComposingRef.current = false }}
                     onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
-                    className="min-h-10 flex-1 resize-none overflow-y-auto rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                    className="min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
-                  <div className="flex w-36 flex-col gap-1">
+                  <div className="flex w-24 shrink-0 flex-col gap-1 sm:w-36">
                     <button
                       onClick={handleSendMessage}
                       disabled={sending || scheduling || markingAsRead || (!messageContent.trim() && !pendingImage)}
@@ -3538,6 +3558,31 @@ export default function ChatsPage() {
                       onCreate={handleCreateInternalMessage}
                       onReaction={handleInternalMessageReaction}
                       onClose={() => setInternalChatOpen(false)}
+                    />
+                  </div>
+                </div>
+              )}
+              {customerInfoOpen && (
+                <div className="absolute inset-0 z-30 flex justify-end bg-slate-900/25 xl:hidden">
+                  <button
+                    type="button"
+                    className="absolute inset-0 cursor-default"
+                    onClick={() => setCustomerInfoOpen(false)}
+                    aria-label="顧客詳細を閉じる"
+                  />
+                  <div className="relative h-full w-full max-w-[420px] bg-white shadow-2xl">
+                    <button
+                      type="button"
+                      onClick={() => setCustomerInfoOpen(false)}
+                      className="absolute right-2 top-2 z-10 flex h-10 w-10 items-center justify-center rounded-lg bg-white/90 text-slate-500 shadow-sm ring-1 ring-slate-200 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+                      aria-label="顧客詳細を閉じる"
+                    >
+                      <XIcon className="h-5 w-5" />
+                    </button>
+                    <FriendInfoSidebar
+                      friendId={chatDetail.friendId}
+                      chatStatus={{ status: chatDetail.status }}
+                      onFriendUpdated={handleFriendUpdated}
                     />
                   </div>
                 </div>

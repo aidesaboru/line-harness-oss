@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+html {
+  min-height: 100%;
+  background: #f9fafb;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+@media (display-mode: standalone) {
+  body {
+    overscroll-behavior-y: none;
+  }
+}

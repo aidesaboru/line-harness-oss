@@ -8,7 +8,7 @@ export default function NotificationSettingsPage() {
     <div className="mx-auto max-w-4xl space-y-6">
       <Header
         title="通知設定"
-        description="PC通知と社内チャット通知を管理します。"
+        description="スマホとPCの通知を管理します。"
       />
 
       <WebPushSettings />

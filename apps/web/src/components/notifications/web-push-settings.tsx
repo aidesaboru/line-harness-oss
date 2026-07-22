@@ -39,13 +39,13 @@ function isPushSupported(): boolean {
   )
 }
 
-async function showChromeTestNotification(): Promise<boolean> {
+async function showDeviceTestNotification(): Promise<boolean> {
   if (!isPushSupported() || Notification.permission !== 'granted') return false
   const registration =
     await navigator.serviceWorker.getRegistration('/push-sw.js') ||
     await navigator.serviceWorker.register('/push-sw.js')
   await registration.showNotification('Lリンク 通知テスト', {
-    body: 'Chrome通知の表示テストです。',
+    body: '端末通知の表示テストです。',
     tag: `line-harness-test-${Date.now()}`,
     data: {
       url: '/notification-settings',
@@ -164,7 +164,7 @@ export default function WebPushSettings() {
       const permission = await Notification.requestPermission()
       if (permission === 'denied') {
         setState('denied')
-        setMessage('Chrome側で通知が拒否されています。')
+        setMessage('この端末で通知が拒否されています。')
         return
       }
       if (permission !== 'granted') {
@@ -189,9 +189,9 @@ export default function WebPushSettings() {
       const status = await api.appNotifications.webPushStatus(json.endpoint)
       if (status.success && status.data.settings) setSettings(status.data.settings)
       setState('enabled')
-      setMessage('PC通知を有効にしました。')
+      setMessage('端末通知を有効にしました。')
     } catch {
-      setMessage('PC通知の登録に失敗しました。')
+      setMessage('端末通知の登録に失敗しました。')
       await refresh()
     } finally {
       setBusy(false)
@@ -212,9 +212,9 @@ export default function WebPushSettings() {
       setEndpoint('')
       setSettings(defaultSettings)
       setState('disabled')
-      setMessage('PC通知を停止しました。')
+      setMessage('端末通知を停止しました。')
     } catch {
-      setMessage('PC通知の停止に失敗しました。')
+      setMessage('端末通知の停止に失敗しました。')
       await refresh()
     } finally {
       setBusy(false)
@@ -227,11 +227,11 @@ export default function WebPushSettings() {
     try {
       const res = await api.appNotifications.testWebPush()
       if (res.success && res.data.sent > 0) {
-        const displayed = await showChromeTestNotification().catch(() => false)
+        const displayed = await showDeviceTestNotification().catch(() => false)
         setMessage(
           displayed
-            ? 'テスト通知を送信し、Chromeにも表示しました。'
-            : 'テスト通知を送信しました。表示されない場合はChromeまたはmacOS側の通知設定を確認してください。',
+            ? 'テスト通知を送信し、この端末にも表示しました。'
+            : 'テスト通知を送信しました。表示されない場合はブラウザまたは端末側の通知設定を確認してください。',
         )
       } else {
         setMessage('送信先が見つかりませんでした。')
@@ -293,7 +293,7 @@ export default function WebPushSettings() {
             <BellIcon />
           </span>
           <div>
-            <h2 className="text-base font-bold text-slate-900">Chrome PC通知</h2>
+            <h2 className="text-base font-bold text-slate-900">端末通知</h2>
             <div className="mt-1 flex items-center gap-2 text-sm text-slate-500">
               <span>状態</span>
               <span className={`rounded-full px-2 py-0.5 text-xs font-bold ${

@@ -9,6 +9,7 @@ import { clearAuthSessionCache, readStaffIdentityCache } from '@/lib/auth-sessio
 import { countryFlag } from '@/lib/country-flag'
 import BrandMark, { BrandWordmark } from '@/components/brand-mark'
 import { canShowSidebarItem } from './sidebar-access'
+import PwaInstallButton from '@/components/pwa/pwa-install-button'
 
 const appVersion = process.env.APP_VERSION || '0.0.0'
 const appCommitSha = process.env.APP_COMMIT_SHA || 'local'
@@ -309,31 +310,34 @@ export default function Sidebar() {
   return (
     <>
       {/* モバイル: ハンバーガーヘッダー */}
-      <div className="lg:hidden fixed top-0 left-0 right-0 z-50 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
-        <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-gray-100 transition-colors"
-          aria-label="メニュー"
-        >
-          <svg className="w-6 h-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            {isOpen
-              ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            }
-          </svg>
-        </button>
-        <div className="flex items-center gap-2">
-          <BrandMark size="md" />
-          <BrandWordmark size="sm" className="h-8 w-[150px]" />
+      <div className="fixed inset-x-0 top-0 z-40 border-b border-gray-200 bg-white pt-[env(safe-area-inset-top)] lg:hidden">
+        <div className="flex h-16 items-center gap-2 px-3">
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className="flex min-h-11 min-w-11 items-center justify-center rounded-lg transition-colors hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500"
+            aria-label="メニュー"
+          >
+            <svg className="h-6 w-6 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {isOpen
+                ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              }
+            </svg>
+          </button>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <BrandMark size="md" />
+            <BrandWordmark size="sm" className="h-7 w-[112px] max-w-full" />
+          </div>
+          <PwaInstallButton />
         </div>
       </div>
 
       {/* モバイル: オーバーレイ */}
-      {isOpen && <div className="lg:hidden fixed inset-0 z-40 bg-black/50" onClick={() => setIsOpen(false)} />}
+      {isOpen && <div className="fixed inset-0 z-[45] bg-black/50 lg:hidden" onClick={() => setIsOpen(false)} />}
 
       {/* モバイル: スライドインサイドバー */}
-      <aside className={`lg:hidden fixed top-0 left-0 z-50 w-72 bg-white flex flex-col h-screen transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-        <div className="absolute top-4 right-4">
+      <aside className={`fixed left-0 top-0 z-50 flex h-[100dvh] w-72 flex-col bg-white pt-[env(safe-area-inset-top)] transition-transform duration-300 ease-in-out lg:hidden ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="absolute right-4 top-[calc(1rem_+_env(safe-area-inset-top))]">
           <button onClick={() => setIsOpen(false)} className="min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-gray-100" aria-label="閉じる">
             <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

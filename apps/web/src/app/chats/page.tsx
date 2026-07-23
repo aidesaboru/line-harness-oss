@@ -2907,13 +2907,11 @@ export default function ChatsPage() {
                               )}
                               {chat.isConfirmed && (
                                 <span
-                                  className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+                                  className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-bold text-emerald-700"
                                   title="最新の顧客メッセージまで確認済み"
                                   aria-label="確認済み"
                                 >
-                                  <svg className="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                    <path d="m5 12 4 4L19 6" />
-                                  </svg>
+                                  ✓ {chat.confirmedMessageAt ? formatAddedDate(chat.confirmedMessageAt) : ''}
                                 </span>
                               )}
                             </div>
@@ -3077,6 +3075,19 @@ export default function ChatsPage() {
                     <TicketIcon className="h-3.5 w-3.5" />
                     {chatDetail.activeSupportCase ? 'チケットを開く' : 'チケット化'}
                   </Link>
+                  {chatDetail.latestCustomerMessageId && (
+                    <Link
+                      href={`/tasks?create=1&source=chat&sourceId=${encodeURIComponent(chatDetail.friendId)}&messageId=${encodeURIComponent(chatDetail.latestCustomerMessageId)}&title=${encodeURIComponent(`${chatDetail.friendName}への対応`)}`}
+                      className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
+                      title="この個別チャットを元に社内タスクを作成"
+                    >
+                      <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M9 11l3 3L22 4" />
+                        <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                      </svg>
+                      タスク化
+                    </Link>
+                  )}
                   <button
                     type="button"
                     onClick={() => setInternalChatOpen(true)}
@@ -3096,12 +3107,16 @@ export default function ChatsPage() {
                         ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
                         : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50'
                     }`}
-                    title="LINE既読とは別に 自分が最新の顧客メッセージまで確認した位置を記録します"
+                    title="LINE既読とは別に 最新の顧客メッセージまで確認した日を記録します"
                   >
                     <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="m5 12 4 4L19 6" />
                     </svg>
-                    {chatDetail.isConfirmed ? '確認済み' : confirmingReview ? '確認中' : '確認'}
+                    {chatDetail.isConfirmed
+                      ? `完了 ${chatDetail.confirmedMessageAt ? formatAddedDate(chatDetail.confirmedMessageAt) : ''}`
+                      : confirmingReview
+                        ? '記録中'
+                        : 'リマインド完了'}
                   </button>
                   {unansweredOnly && visibleChats.length > 1 && (
                     <button

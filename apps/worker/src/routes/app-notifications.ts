@@ -171,6 +171,16 @@ type InternalTaskRow = {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  comment_count?: number;
+};
+
+type InternalTaskCommentRow = {
+  id: string;
+  task_id: string;
+  body: string;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
 };
 
 type UrgentCaseRow = {
@@ -415,7 +425,9 @@ async function canAccessInternalSource(
   messageId?: string,
 ): Promise<boolean> {
   if (source === 'support') {
-    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_internal_source_scope');
+    const visibility = staff.role === 'secondary'
+      ? supportCaseVisibilitySql(staff, 'sc', 'se_internal_source_scope')
+      : { sql: '', binds: [] };
     const conditions = ['sc.id = ?', 'sc.line_account_id = ?'];
     const binds: unknown[] = [sourceId, lineAccountId];
     if (visibility.sql) {
@@ -432,7 +444,9 @@ async function canAccessInternalSource(
     return Boolean(await db.prepare(`SELECT 1 AS ok FROM support_cases sc WHERE ${conditions.join(' AND ')}`).bind(...binds).first());
   }
 
-  const visibility = supportFriendVisibilitySql(staff, 'f.id');
+  const visibility = staff.role === 'secondary'
+    ? supportFriendVisibilitySql(staff, 'f.id')
+    : { sql: '', binds: [] };
   const conditions = ['f.id = ?', 'f.line_account_id = ?'];
   const binds: unknown[] = [sourceId, lineAccountId];
   if (visibility.sql) {
@@ -443,8 +457,13 @@ async function canAccessInternalSource(
     conditions.push(`EXISTS (
       SELECT 1 FROM chat_internal_messages cim_source
       WHERE cim_source.id = ? AND cim_source.friend_id = f.id
+      UNION ALL
+      SELECT 1 FROM messages_log ml_source
+      WHERE ml_source.id = ? AND ml_source.friend_id = f.id
+        AND (ml_source.line_account_id = f.line_account_id OR ml_source.line_account_id IS NULL)
+      LIMIT 1
     )`);
-    binds.push(messageId);
+    binds.push(messageId, messageId);
   }
   return Boolean(await db.prepare(`SELECT 1 AS ok FROM friends f WHERE ${conditions.join(' AND ')}`).bind(...binds).first());
 }
@@ -580,9 +599,33 @@ async function loadTaskAssignees(
   return result;
 }
 
+async function loadTaskComments(
+  db: D1Database,
+  taskIds: string[],
+): Promise<Map<string, InternalTaskCommentRow[]>> {
+  if (taskIds.length === 0) return new Map();
+  const rows = await db
+    .prepare(
+      `SELECT id, task_id, body, created_by, created_by_name, created_at
+       FROM internal_task_comments
+       WHERE task_id IN (${taskIds.map(() => '?').join(', ')})
+       ORDER BY created_at ASC, id ASC`,
+    )
+    .bind(...taskIds)
+    .all<InternalTaskCommentRow>();
+  const result = new Map<string, InternalTaskCommentRow[]>();
+  for (const row of rows.results) {
+    const values = result.get(row.task_id) ?? [];
+    values.push(row);
+    result.set(row.task_id, values);
+  }
+  return result;
+}
+
 function serializeInternalTask(
   row: InternalTaskRow,
   assignees: Array<{ staffId: string; staffName: string }> = [],
+  comments: InternalTaskCommentRow[] = [],
 ) {
   return {
     id: row.id,
@@ -595,6 +638,14 @@ function serializeInternalTask(
     status: row.status,
     dueAt: row.due_at,
     assignees,
+    comments: comments.map((comment) => ({
+      id: comment.id,
+      body: comment.body,
+      createdBy: comment.created_by,
+      createdByName: comment.created_by_name,
+      createdAt: comment.created_at,
+    })),
+    commentCount: row.comment_count ?? comments.length,
     createdBy: row.created_by,
     createdByName: row.created_by_name,
     completedBy: row.completed_by,
@@ -1265,10 +1316,14 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
       supportConditions.push('sim.line_account_id = ?');
       supportBinds.push(lineAccountId.value);
     }
-    const supportVisibility = supportCaseVisibilitySql(staff, 'sc', 'internal_feed_support_scope');
-    if (supportVisibility.sql) {
-      supportConditions.push(supportVisibility.sql);
-      supportBinds.push(...supportVisibility.binds);
+    // Primary responders share one internal-chat workspace. Keep the stricter
+    // assignment scope only for the secondary-response role.
+    if (staff.role === 'secondary') {
+      const supportVisibility = supportCaseVisibilitySql(staff, 'sc', 'internal_feed_support_scope');
+      if (supportVisibility.sql) {
+        supportConditions.push(supportVisibility.sql);
+        supportBinds.push(...supportVisibility.binds);
+      }
     }
     if (before.value) {
       supportConditions.push(
@@ -1292,10 +1347,12 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
       chatConditions.push('COALESCE(cim.line_account_id, f.line_account_id) = ?');
       chatBinds.push(lineAccountId.value);
     }
-    const chatVisibility = supportFriendVisibilitySql(staff, 'cim.friend_id');
-    if (chatVisibility.sql) {
-      chatConditions.push(chatVisibility.sql);
-      chatBinds.push(...chatVisibility.binds);
+    if (staff.role === 'secondary') {
+      const chatVisibility = supportFriendVisibilitySql(staff, 'cim.friend_id');
+      if (chatVisibility.sql) {
+        chatConditions.push(chatVisibility.sql);
+        chatBinds.push(...chatVisibility.binds);
+      }
     }
     if (before.value) {
       chatConditions.push(
@@ -1533,9 +1590,15 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
     if (!lineAccountId.value) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
     const status = params.get('status') || 'all';
     if (!['all', 'open', 'done'].includes(status)) return c.json({ success: false, error: 'status is invalid' }, 400);
+    const scope = params.get('scope') || 'all';
+    if (!['all', 'mine'].includes(scope)) return c.json({ success: false, error: 'scope is invalid' }, 400);
     const staff = currentStaff(c);
-    const supportVisibility = supportCaseVisibilitySql(staff, 'sc_task_scope', 'se_task_scope');
-    const chatVisibility = supportFriendVisibilitySql(staff, 'f_task_scope.id');
+    const supportVisibility = staff.role === 'secondary'
+      ? supportCaseVisibilitySql(staff, 'sc_task_scope', 'se_task_scope')
+      : { sql: '', binds: [] };
+    const chatVisibility = staff.role === 'secondary'
+      ? supportFriendVisibilitySql(staff, 'f_task_scope.id')
+      : { sql: '', binds: [] };
     const conditions = ['it.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId.value];
     if (status !== 'all') {
@@ -1568,9 +1631,26 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
         )`;
     conditions.push(`(it.created_by = ? OR (it.source_type = 'support' AND ${supportScope}) OR (it.source_type = 'chat' AND ${chatScope}))`);
     binds.push(staff.id, ...supportVisibility.binds, ...chatVisibility.binds);
+    if (scope === 'mine') {
+      conditions.push(`(
+        it.created_by = ?
+        OR EXISTS (
+          SELECT 1 FROM internal_task_assignees ita_mine
+          WHERE ita_mine.task_id = it.id
+            AND ita_mine.staff_id = ?
+            AND ita_mine.removed_at IS NULL
+        )
+      )`);
+      binds.push(staff.id, staff.id);
+    }
     const rows = await c.env.DB
       .prepare(
-        `SELECT it.*
+        `SELECT it.*,
+                (
+                  SELECT COUNT(*)
+                  FROM internal_task_comments itc_count
+                  WHERE itc_count.task_id = it.id
+                ) AS comment_count
          FROM internal_tasks it
          WHERE ${conditions.join(' AND ')}
          ORDER BY CASE it.status WHEN 'open' THEN 0 ELSE 1 END,
@@ -1584,7 +1664,10 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
     const assignees = await loadTaskAssignees(c.env.DB, rows.results.map((row) => row.id));
     return c.json({
       success: true,
-      data: rows.results.map((row) => serializeInternalTask(row, assignees.get(row.id) ?? [])),
+      data: rows.results.map((row) => serializeInternalTask(
+        row,
+        assignees.get(row.id) ?? [],
+      )),
     });
   } catch (err) {
     console.error(`GET /api/app-notifications/internal-chat-tasks error: ${routeErrorKind(err)}`);
@@ -1624,16 +1707,17 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) =>
     )) {
       return c.json({ success: false, error: 'message not found' }, 404);
     }
-    const assigneeRows = assigneeStaffIds.value.length > 0
+    const requestedAssigneeIds = assigneeStaffIds.value.length > 0 ? assigneeStaffIds.value : [staff.id];
+    const assigneeRows = requestedAssigneeIds.length > 0
       ? await c.env.DB
         .prepare(
           `SELECT id, name FROM staff_members
-           WHERE is_active = 1 AND id IN (${assigneeStaffIds.value.map(() => '?').join(', ')})`,
+           WHERE is_active = 1 AND id IN (${requestedAssigneeIds.map(() => '?').join(', ')})`,
         )
-        .bind(...assigneeStaffIds.value)
+        .bind(...requestedAssigneeIds)
         .all<{ id: string; name: string }>()
       : { results: [] as Array<{ id: string; name: string }> };
-    if (assigneeRows.results.length !== assigneeStaffIds.value.length) {
+    if (assigneeRows.results.length !== requestedAssigneeIds.length) {
       return c.json({ success: false, error: '選択できない担当者が含まれています' }, 400);
     }
     const taskId = crypto.randomUUID();
@@ -1715,7 +1799,10 @@ appNotifications.patch('/api/app-notifications/internal-chat-tasks/:taskId', asy
     }
     if (task.status === status) {
       const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
-      return c.json({ success: true, data: serializeInternalTask(task, assignees.get(task.id) ?? []) });
+      return c.json({
+        success: true,
+        data: serializeInternalTask(task, assignees.get(task.id) ?? []),
+      });
     }
     const now = jstNow();
     await c.env.DB.batch([
@@ -1742,10 +1829,119 @@ appNotifications.patch('/api/app-notifications/internal-chat-tasks/:taskId', asy
     ]);
     const updated = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(task.id).first<InternalTaskRow>();
     const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
-    return c.json({ success: true, data: serializeInternalTask(updated!, assignees.get(task.id) ?? []) });
+    return c.json({
+      success: true,
+      data: serializeInternalTask(updated!, assignees.get(task.id) ?? []),
+    });
   } catch (err) {
     console.error(`PATCH /api/app-notifications/internal-chat-tasks/:taskId error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'タスクの更新に失敗しました' }, 500);
+  }
+});
+
+appNotifications.get('/api/app-notifications/internal-chat-tasks/:taskId/comments', async (c) => {
+  try {
+    const taskId = parseVisibleText(c.req.param('taskId'), 'taskId', 128);
+    if (!taskId.ok) return c.json({ success: false, error: taskId.error }, 400);
+    const task = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId.value).first<InternalTaskRow>();
+    if (!task) return c.json({ success: false, error: 'task not found' }, 404);
+    const staff = currentStaff(c);
+    const canAccess = await canAccessInternalSource(
+      c.env.DB,
+      staff,
+      task.line_account_id,
+      task.source_type,
+      task.source_id,
+    );
+    const isAssignee = await c.env.DB
+      .prepare(`SELECT 1 AS ok FROM internal_task_assignees WHERE task_id = ? AND staff_id = ? AND removed_at IS NULL`)
+      .bind(task.id, staff.id)
+      .first<{ ok: number }>();
+    if (!canAccess && task.created_by !== staff.id && !isAssignee) {
+      return c.json({ success: false, error: 'task not found' }, 404);
+    }
+    const comments = await loadTaskComments(c.env.DB, [task.id]);
+    return c.json({
+      success: true,
+      data: (comments.get(task.id) ?? []).map((comment) => ({
+        id: comment.id,
+        body: comment.body,
+        createdBy: comment.created_by,
+        createdByName: comment.created_by_name,
+        createdAt: comment.created_at,
+      })),
+    });
+  } catch (err) {
+    console.error(`GET /api/app-notifications/internal-chat-tasks/:taskId/comments error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'コメントの取得に失敗しました' }, 500);
+  }
+});
+
+appNotifications.post('/api/app-notifications/internal-chat-tasks/:taskId/comments', async (c) => {
+  try {
+    const taskId = parseVisibleText(c.req.param('taskId'), 'taskId', 128);
+    if (!taskId.ok) return c.json({ success: false, error: taskId.error }, 400);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => null);
+    if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
+    const commentBody = parseHumanText(body.body, 'body', 2000, true);
+    if (!commentBody.ok) return c.json({ success: false, error: commentBody.error }, 400);
+    const task = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId.value).first<InternalTaskRow>();
+    if (!task) return c.json({ success: false, error: 'task not found' }, 404);
+    const staff = currentStaff(c);
+    const canAccess = await canAccessInternalSource(
+      c.env.DB,
+      staff,
+      task.line_account_id,
+      task.source_type,
+      task.source_id,
+    );
+    const isAssignee = await c.env.DB
+      .prepare(`SELECT 1 AS ok FROM internal_task_assignees WHERE task_id = ? AND staff_id = ? AND removed_at IS NULL`)
+      .bind(task.id, staff.id)
+      .first<{ ok: number }>();
+    if (!canAccess && task.created_by !== staff.id && !isAssignee) {
+      return c.json({ success: false, error: 'task not found' }, 404);
+    }
+    const commentId = crypto.randomUUID();
+    const now = jstNow();
+    await c.env.DB.batch([
+      c.env.DB
+        .prepare(
+          `INSERT INTO internal_task_comments (
+            id, task_id, body, created_by, created_by_name, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(commentId, task.id, commentBody.value, staff.id, staff.name, now),
+      c.env.DB
+        .prepare(`UPDATE internal_tasks SET updated_at = ? WHERE id = ?`)
+        .bind(now, task.id),
+      c.env.DB
+        .prepare(
+          `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
+           VALUES (?, ?, 'updated', ?, ?, ?, ?)`,
+        )
+        .bind(
+          crypto.randomUUID(),
+          task.id,
+          JSON.stringify({ field: 'comment', commentId }),
+          staff.id,
+          staff.name,
+          now,
+        ),
+    ]);
+    return c.json({
+      success: true,
+      data: {
+        id: commentId,
+        body: commentBody.value,
+        createdBy: staff.id,
+        createdByName: staff.name,
+        createdAt: now,
+      },
+    }, 201);
+  } catch (err) {
+    console.error(`POST /api/app-notifications/internal-chat-tasks/:taskId/comments error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'コメントの投稿に失敗しました' }, 500);
   }
 });
 

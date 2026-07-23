@@ -274,6 +274,8 @@ export type InternalTask = {
   status: 'open' | 'done'
   dueAt: string | null
   assignees: Array<{ staffId: string; staffName: string }>
+  comments: InternalTaskComment[]
+  commentCount: number
   createdBy: string | null
   createdByName: string | null
   completedBy: string | null
@@ -282,6 +284,14 @@ export type InternalTask = {
   createdAt: string
   updatedAt: string
   href: string
+}
+
+export type InternalTaskComment = {
+  id: string
+  body: string
+  createdBy: string | null
+  createdByName: string | null
+  createdAt: string
 }
 
 export type StaffPresenceItem = {
@@ -1652,11 +1662,12 @@ export const api = {
           body: JSON.stringify({ lineAccountId: data.accountId, sourceId: data.sourceId }),
         },
       ),
-    internalTasks: (params: { accountId: string; status?: 'all' | 'open' | 'done' }) =>
+    internalTasks: (params: { accountId: string; status?: 'all' | 'open' | 'done'; scope?: 'all' | 'mine' }) =>
       fetchApi<ApiResponse<InternalTask[]>>(
         `/api/app-notifications/internal-chat-tasks?${new URLSearchParams({
           lineAccountId: params.accountId,
           status: params.status ?? 'all',
+          scope: params.scope ?? 'all',
         })}`,
       ),
     createInternalTask: (data: {
@@ -1676,6 +1687,15 @@ export const api = {
       fetchApi<ApiResponse<InternalTask>>(`/api/app-notifications/internal-chat-tasks/${taskId}`, {
         method: 'PATCH',
         body: JSON.stringify({ status }),
+      }),
+    internalTaskComments: (taskId: string) =>
+      fetchApi<ApiResponse<InternalTaskComment[]>>(
+        `/api/app-notifications/internal-chat-tasks/${taskId}/comments`,
+      ),
+    addInternalTaskComment: (taskId: string, body: string) =>
+      fetchApi<ApiResponse<InternalTaskComment>>(`/api/app-notifications/internal-chat-tasks/${taskId}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ body }),
       }),
     webPushConfig: () =>
       fetchApi<ApiResponse<WebPushConfigResponse>>('/api/app-notifications/web-push/config'),

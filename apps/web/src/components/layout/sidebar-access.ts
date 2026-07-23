@@ -11,6 +11,7 @@ const TEMPLATE_ENABLED_STAFF_NAMES = new Set([
 const SUPPORT_WORK_HREFS = new Set([
   '/chats',
   '/internal-chat',
+  '/tasks',
   '/notifications',
   '/support',
   '/escalations',
@@ -22,6 +23,7 @@ const STAFF_VISIBLE_HREFS = SUPPORT_WORK_HREFS
 const SECONDARY_VISIBLE_HREFS = new Set([
   '/escalations',
   '/internal-chat',
+  '/tasks',
   '/notifications',
   '/manuals',
 ])

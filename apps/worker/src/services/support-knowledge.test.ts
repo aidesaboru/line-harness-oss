@@ -59,6 +59,53 @@ describe('support knowledge structure', () => {
     expect(result.status).toBe('ready')
   });
 
+  test.each([
+    {
+      question: [
+        'こちらのご対応と返信をお願いします。',
+        'AIUのオールスターズという保険について、契約内容を確認したいです。',
+      ].join('\n'),
+      expectedTitle: 'AIUのオールスターズ保険の契約内容',
+    },
+    {
+      question: [
+        '本件のご確認をお願いいたします。',
+        '振込口座の名義変更はどのように行いますか？',
+      ].join('\n'),
+      expectedTitle: '振込口座の名義変更',
+    },
+    {
+      question: [
+        'こちらの回答をお願いします。',
+        '契約更新時の審査結果はいつ分かりますか？',
+      ].join('\n'),
+      expectedTitle: '契約更新時の審査結果',
+    },
+  ])('uses a concrete topic instead of a generic request: $expectedTitle', ({ question, expectedTitle }) => {
+    const result = deriveOperationalKnowledge({
+      title: 'こちらのご対応と返信をお願いします',
+      body: [
+        '【問い合わせ内容】',
+        question,
+        '',
+        '【解決回答】',
+        '対象情報を確認後、契約者本人へ結果をご案内してください。',
+      ].join('\n'),
+    });
+
+    expect(result.title).toBe(expectedTitle)
+    expect(result.resolution).toBe('対象情報を確認後、契約者本人へ結果をご案内してください。')
+  });
+
+  test('does not reuse a generic request when no concrete title is available', () => {
+    const result = deriveOperationalKnowledge({
+      title: 'こちらのご対応と返信をお願いします',
+      body: '【問い合わせ内容】\nこちらのご確認をお願いいたします。\n\n【解決回答】\n対象情報を確認してご案内してください。',
+    });
+
+    expect(result.title).toBe('対応ナレッジ')
+  });
+
   test('does not treat delegation-only updates as a resolved answer', () => {
     const result = deriveOperationalKnowledge({
       title: '配送遅延への回答を確認したい',

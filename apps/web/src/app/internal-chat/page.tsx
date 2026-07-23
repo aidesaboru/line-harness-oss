@@ -742,7 +742,7 @@ export default function InternalChatPage() {
     setTaskItem(item)
     setTaskTitle(item.body.replace(/\s+/g, ' ').slice(0, 80))
     setTaskDueAt('')
-    setTaskAssigneeIds([])
+    setTaskAssigneeIds(staffId ? [staffId] : [])
   }
 
   const createTask = async () => {
@@ -1249,7 +1249,12 @@ export default function InternalChatPage() {
                 <p className="text-base font-semibold text-slate-900">共有タスク</p>
                 <p className="mt-0.5 text-xs font-medium text-slate-500">未完了 {openTaskCount}件</p>
               </div>
-              <button type="button" onClick={() => setTaskPanelOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-md text-xl text-slate-500 hover:bg-slate-100" aria-label="閉じる">×</button>
+              <div className="flex items-center gap-1">
+                <Link href="/tasks" className="rounded-md border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                  タスク管理を開く
+                </Link>
+                <button type="button" onClick={() => setTaskPanelOpen(false)} className="flex h-9 w-9 items-center justify-center rounded-md text-xl text-slate-500 hover:bg-slate-100" aria-label="閉じる">×</button>
+              </div>
             </div>
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50 p-3">
               {tasks.length === 0 ? (

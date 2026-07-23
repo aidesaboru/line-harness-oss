@@ -1,6 +1,7 @@
 import { jstNow } from './utils';
 
 export type LineConversationSourceType = 'group' | 'room';
+export type LineConversationStatus = 'unread' | 'resolved';
 
 export interface LineConversation {
   id: string;
@@ -10,6 +11,7 @@ export interface LineConversation {
   display_name: string;
   picture_url: string | null;
   last_message_at: string | null;
+  status: LineConversationStatus;
   created_at: string;
   updated_at: string;
 }
@@ -97,8 +99,8 @@ export async function upsertLineConversation(
   await db
     .prepare(
       `INSERT OR IGNORE INTO line_conversations
-         (id, line_account_id, source_type, source_id, display_name, picture_url, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, line_account_id, source_type, source_id, display_name, picture_url, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'resolved', ?, ?)`,
     )
     .bind(
       id,
@@ -160,6 +162,7 @@ export async function insertLineConversationMessage(
                WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
                ELSE last_message_at
              END,
+             status = 'unread',
              updated_at = ?
          WHERE id = ?`,
       )

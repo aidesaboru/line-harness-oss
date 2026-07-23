@@ -656,6 +656,7 @@ describe('chat support visibility', () => {
         display_name: 'ECオーナー連絡グループ',
         picture_url: 'https://example.com/group.png',
         last_message_at: '2026-06-12T12:00:00.000',
+        status: 'unread',
         last_message_content: '銀行名はりそな銀行です',
         last_message_direction: 'incoming',
         last_message_type: 'text',
@@ -672,7 +673,8 @@ describe('chat support visibility', () => {
         id: 'conversation-group-1',
         conversationType: 'group',
         friendName: 'ECオーナー連絡グループ',
-        needsReply: false,
+        status: 'unread',
+        needsReply: true,
         activeSupportCase: null,
       }),
     ]));
@@ -981,6 +983,7 @@ describe('chat support visibility', () => {
       display_name: 'ECオーナー連絡グループ',
       picture_url: 'https://example.com/group.png',
       last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
       created_at: '2026-06-12T08:00:00.000',
       updated_at: '2026-06-12T12:00:00.000',
     });
@@ -1016,6 +1019,8 @@ describe('chat support visibility', () => {
     };
     expect(body.data).toMatchObject({
       conversationType: 'group',
+      status: 'unread',
+      needsReply: true,
       activeSupportCase: null,
       internalMessages: [],
     });
@@ -1026,6 +1031,51 @@ describe('chat support visibility', () => {
       incomingSenderPictureUrl: 'https://example.com/member.png',
       canQuote: false,
     });
+  });
+
+  test('group chat status can be marked as resolved', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: 'https://example.com/group.png',
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'resolved' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: {
+        id: 'conversation-group-1',
+        conversationType: 'group',
+        status: 'resolved',
+      },
+    });
+    expect(calls).toContainEqual(expect.objectContaining({
+      method: 'run',
+      sql: 'UPDATE line_conversations SET status = ?, updated_at = ? WHERE id = ?',
+      binds: [
+        'resolved',
+        '2026-06-12T10:00:00.000',
+        'conversation-group-1',
+      ],
+    }));
   });
 
   test('chat detail includes internal staff chat messages', async () => {

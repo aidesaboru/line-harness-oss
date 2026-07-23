@@ -3029,9 +3029,16 @@ export default function ChatsPage() {
                       {chatDetail.friendName}
                     </p>
                     {selectedIsMultiPersonConversation ? (
-                      <span className="mt-1 inline-flex items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
-                        LINEグループ
-                      </span>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
+                          LINEグループ
+                        </span>
+                        {chatDetail.status === 'unread' && (
+                          <span className="inline-flex items-center rounded-md bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
+                            新着あり
+                          </span>
+                        )}
+                      </div>
                     ) : (
                       <span
                         className={`mt-1 inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
@@ -3061,6 +3068,21 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
+                {selectedIsMultiPersonConversation && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void handleStatusUpdate(chatDetail.status === 'unread' ? 'resolved' : 'unread')}
+                      className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
+                        chatDetail.status === 'unread'
+                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                          : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {chatDetail.status === 'unread' ? '確認済みにする' : '未読に戻す'}
+                    </button>
+                  </div>
+                )}
                 <div className={`-mx-4 w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0 ${selectedIsMultiPersonConversation ? 'hidden' : 'flex'}`}>
                   <button
                     type="button"

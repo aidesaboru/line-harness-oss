@@ -135,6 +135,7 @@ beforeEach(() => {
     display_name: 'ECオーナー連絡グループ',
     picture_url: 'https://example.com/group.png',
     last_message_at: null,
+    status: 'resolved',
     created_at: '2026-06-11T17:45:17.000+09:00',
     updated_at: '2026-06-11T17:45:17.000+09:00',
   });
@@ -903,6 +904,72 @@ describe('POST /webhook — message intake', () => {
     expect(upsertFriend).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
     expect(fireEvent).not.toHaveBeenCalled();
+  });
+
+  test('capture-only mode registers a group as soon as the official account joins', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    const event = {
+      type: 'join',
+      mode: 'active',
+      timestamp: 1781160317000,
+      source: { type: 'group', groupId: 'Cgroup2' },
+      webhookEventId: '01JXGROUPJOIN',
+      deliveryContext: { isRedelivery: false },
+      replyToken: 'reply-token',
+    };
+    const { db } = createDbMock([
+      {
+        webhook_event_id: '01JXGROUPJOIN',
+        line_account_id: 'acc-1',
+        event_payload: JSON.stringify(event),
+        attempts: 0,
+      },
+    ]);
+    const waitUntil = vi.fn();
+    const res = await setupApp().request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({ destination: 'Ubot', events: [event] }),
+      },
+      { ...baseEnv, DB: db, LINE_CAPTURE_ONLY: '1' },
+      { ...baseExecutionCtx, waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await waitUntil.mock.calls[0]?.[0];
+    expect(lineClientMethods.getGroupSummary).toHaveBeenCalledWith('Cgroup2');
+    expect(upsertLineConversation).toHaveBeenCalledWith(db, {
+      lineAccountId: 'acc-1',
+      sourceType: 'group',
+      sourceId: 'Cgroup2',
+      displayName: 'ECオーナー連絡グループ',
+      pictureUrl: 'https://example.com/group.png',
+    });
+    expect(insertLineConversationMessage).not.toHaveBeenCalled();
   });
 
   test('returns 503 when capture-only persistence still fails after a retry', async () => {

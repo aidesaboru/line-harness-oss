@@ -1813,9 +1813,23 @@ chats.get('/api/chats', async (c) => {
       };
     });
 
-    if (!status && !operatorId && !unansweredOnly && canReadLineConversations(optionalSchema)) {
+    const lineConversationStatus = unansweredOnly
+      ? 'unread'
+      : status === 'unread' || status === 'resolved'
+        ? status
+        : null;
+    const shouldLoadLineConversations = (
+      !operatorId
+      && canReadLineConversations(optionalSchema)
+      && (!status || lineConversationStatus !== null)
+    );
+    if (shouldLoadLineConversations) {
       const conversationConditions = lineAccountId ? ['lc.line_account_id = ?'] : [];
       const conversationBindings: unknown[] = lineAccountId ? [lineAccountId] : [];
+      if (lineConversationStatus) {
+        conversationConditions.push('lc.status = ?');
+        conversationBindings.push(lineConversationStatus);
+      }
       if (search) {
         const pattern = `%${escapeLikePattern(search)}%`;
         conversationConditions.push(`(
@@ -1837,6 +1851,7 @@ chats.get('/api/chats', async (c) => {
         `SELECT
            lc.id,
            lc.source_type,
+           lc.status,
            lc.display_name,
            lc.picture_url,
            lc.last_message_at,
@@ -1867,7 +1882,7 @@ chats.get('/api/chats', async (c) => {
         friendName: String(row.display_name || 'グループトーク'),
         friendPictureUrl: row.picture_url || null,
         operatorId: null,
-        status: 'resolved' as const,
+        status: row.status === 'unread' ? 'unread' as const : 'resolved' as const,
         notes: null,
         lastMessageAt: row.last_message_at || null,
         lastMessageContent: row.last_message_content || null,
@@ -1879,8 +1894,8 @@ chats.get('/api/chats', async (c) => {
         isConfirmed: false,
         confirmedMessageAt: null,
         confirmedAt: null,
-        needsReply: false,
-        lastUnansweredAt: null,
+        needsReply: row.status === 'unread',
+        lastUnansweredAt: row.status === 'unread' ? row.last_message_at || null : null,
         activeSupportCase: null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -2045,14 +2060,16 @@ chats.get('/api/chats/:id', async (c) => {
           friendName: lineConversation.display_name,
           friendPictureUrl: lineConversation.picture_url,
           operatorId: null,
-          status: 'resolved',
+          status: lineConversation.status === 'unread' ? 'unread' : 'resolved',
           notes: null,
           lastMessageAt: latestMessage?.created_at ?? lineConversation.last_message_at,
           lastMessageContent: latestMessage?.content ?? null,
           lastMessageDirection: latestMessage?.direction ?? null,
           lastMessageType: latestMessage?.message_type ?? null,
-          needsReply: false,
-          lastUnansweredAt: null,
+          needsReply: lineConversation.status === 'unread',
+          lastUnansweredAt: lineConversation.status === 'unread'
+            ? lineConversation.last_message_at
+            : null,
           lastHumanReplyAt: null,
           latestCustomerMessageId: null,
           latestCustomerMessageAt: null,
@@ -2422,6 +2439,42 @@ chats.put('/api/chats/:id', async (c) => {
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const parsed = parseChatUpdateBody(await readJsonBody(c));
     if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
+    const lineConversation = canReadLineConversations(optionalSchema)
+      ? await getLineConversationById(c.env.DB, id.value)
+      : null;
+    if (lineConversation) {
+      if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+        return c.json({ success: false, error: 'Not found' }, 404);
+      }
+      if (
+        parsed.value.operatorId !== undefined
+        || parsed.value.notes !== undefined
+        || (parsed.value.status !== 'unread' && parsed.value.status !== 'resolved')
+      ) {
+        return c.json({
+          success: false,
+          error: 'グループトークで更新できるのは未読または確認済みの状態だけです',
+        }, 400);
+      }
+      const updatedAt = jstNow();
+      await c.env.DB
+        .prepare('UPDATE line_conversations SET status = ?, updated_at = ? WHERE id = ?')
+        .bind(parsed.value.status, updatedAt, lineConversation.id)
+        .run();
+      return c.json({
+        success: true,
+        data: {
+          id: lineConversation.id,
+          friendId: lineConversation.id,
+          conversationType: lineConversation.source_type,
+          operatorId: null,
+          status: parsed.value.status,
+          notes: null,
+          updatedAt,
+        },
+      });
+    }
     const resolved = await resolveOrCreateChat(c.env.DB, id.value);
     if (!resolved) return c.json({ success: false, error: 'Not found' }, 404);
     const denied = await ensureChatFriendAccess(c, resolved.friend_id);

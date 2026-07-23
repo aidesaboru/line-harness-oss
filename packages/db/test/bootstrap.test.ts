@@ -277,6 +277,8 @@ describe('bootstrap.sql', () => {
       .toThrow(/history is protected/i);
     expect(() => db.prepare('DELETE FROM line_conversations WHERE id = ?').run('conversation-1'))
       .toThrow(/history is protected/i);
+    expect(db.prepare('SELECT status FROM line_conversations WHERE id = ?').get('conversation-1'))
+      .toEqual({ status: 'resolved' });
     expect(db.prepare('SELECT COUNT(*) AS count FROM line_conversation_messages').get())
       .toEqual({ count: 1 });
   });

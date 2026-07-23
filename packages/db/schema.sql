@@ -210,6 +210,7 @@ CREATE TABLE IF NOT EXISTS line_conversations (
   display_name    TEXT NOT NULL,
   picture_url     TEXT,
   last_message_at TEXT,
+  status          TEXT NOT NULL DEFAULT 'resolved' CHECK (status IN ('unread', 'resolved')),
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
 );
@@ -218,6 +219,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_line_conversations_source
 ON line_conversations (COALESCE(line_account_id, ''), source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_line_conversations_account_last_message
 ON line_conversations (line_account_id, last_message_at);
+
+CREATE INDEX IF NOT EXISTS idx_line_conversations_account_status_last_message
+ON line_conversations (line_account_id, status, last_message_at);
 
 CREATE TABLE IF NOT EXISTS line_conversation_messages (
   id                 TEXT PRIMARY KEY,

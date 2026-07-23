@@ -140,11 +140,18 @@ export interface PostbackEvent extends BaseEvent {
   };
 }
 
+export interface JoinEvent extends BaseEvent {
+  type: 'join';
+  replyToken: string;
+  source: GroupSource | RoomSource;
+}
+
 export type WebhookEvent =
   | MessageEvent
   | FollowEvent
   | UnfollowEvent
-  | PostbackEvent;
+  | PostbackEvent
+  | JoinEvent;
 
 export interface WebhookRequestBody {
   destination: string;

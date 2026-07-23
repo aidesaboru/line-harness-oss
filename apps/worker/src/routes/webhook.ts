@@ -367,6 +367,37 @@ async function resolveConversationSender(
   };
 }
 
+async function ensureMultiPersonConversation(params: {
+  db: D1Database;
+  lineClient: LineClient;
+  source: MultiPersonSource;
+  lineAccountId: string | null;
+}) {
+  const { db, lineClient, source, lineAccountId } = params;
+  const sourceId = multiPersonSourceId(source);
+  const existing = await getLineConversationBySource(db, lineAccountId, source.type, sourceId);
+  let displayName = existing?.display_name ?? fallbackConversationName(source);
+  let pictureUrl = existing?.picture_url ?? null;
+
+  if (!existing && source.type === 'group') {
+    try {
+      const summary = await lineClient.getGroupSummary(source.groupId);
+      displayName = summary.groupName?.trim() || displayName;
+      pictureUrl = summary.pictureUrl ?? null;
+    } catch (err) {
+      console.error(`Failed to get LINE group summary: ${webhookErrorKind(err)}`);
+    }
+  }
+
+  return upsertLineConversation(db, {
+    lineAccountId,
+    sourceType: source.type,
+    sourceId,
+    displayName,
+    pictureUrl,
+  });
+}
+
 async function handleMultiPersonMessage(params: {
   db: D1Database;
   lineClient: LineClient;
@@ -389,27 +420,11 @@ async function handleMultiPersonMessage(params: {
     r2,
     durableEventId,
   } = params;
-  const sourceId = multiPersonSourceId(source);
-  const existing = await getLineConversationBySource(db, lineAccountId, source.type, sourceId);
-  let displayName = existing?.display_name ?? fallbackConversationName(source);
-  let pictureUrl = existing?.picture_url ?? null;
-
-  if (!existing && source.type === 'group') {
-    try {
-      const summary = await lineClient.getGroupSummary(source.groupId);
-      displayName = summary.groupName?.trim() || displayName;
-      pictureUrl = summary.pictureUrl ?? null;
-    } catch (err) {
-      console.error(`Failed to get LINE group summary: ${webhookErrorKind(err)}`);
-    }
-  }
-
-  const conversation = await upsertLineConversation(db, {
+  const conversation = await ensureMultiPersonConversation({
+    db,
+    lineClient,
+    source,
     lineAccountId,
-    sourceType: source.type,
-    sourceId,
-    displayName,
-    pictureUrl,
   });
   const sender = await resolveConversationSender(db, lineClient, source);
   const logId = crypto.randomUUID();
@@ -636,6 +651,16 @@ async function handleCaptureOnlyEvent(
     return;
   }
 
+  if (event.type === 'join') {
+    await ensureMultiPersonConversation({
+      db,
+      lineClient,
+      source: event.source,
+      lineAccountId,
+    });
+    return;
+  }
+
   if (event.type === 'message' && event.source.type !== 'user') {
     await handleMultiPersonMessage({
       db,
@@ -816,6 +841,16 @@ async function handleEvent(
   if (isUnsendWebhookEvent(event)) {
     const lineMessageId = eventUnsendMessageId(event);
     if (lineMessageId) await markLineMessageUnsent(db, lineMessageId, lineAccountId);
+    return;
+  }
+
+  if (event.type === 'join') {
+    await ensureMultiPersonConversation({
+      db,
+      lineClient,
+      source: event.source,
+      lineAccountId,
+    });
     return;
   }
 

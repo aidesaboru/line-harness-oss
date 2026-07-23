@@ -259,6 +259,17 @@ CREATE TABLE chat_internal_messages (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , reactions TEXT NOT NULL DEFAULT '{}');
 
+CREATE TABLE chat_reminder_completion_events (
+  id                    TEXT PRIMARY KEY,
+  friend_id             TEXT NOT NULL REFERENCES friends(id) ON DELETE RESTRICT,
+  line_account_id       TEXT REFERENCES line_accounts(id) ON DELETE SET NULL,
+  staff_id              TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  staff_name            TEXT NOT NULL,
+  confirmed_message_id  TEXT NOT NULL,
+  confirmed_message_at  TEXT NOT NULL,
+  completed_at          TEXT NOT NULL
+);
+
 CREATE TABLE chat_typing_status (
   id              TEXT PRIMARY KEY,
   chat_id         TEXT NOT NULL REFERENCES chats (id) ON DELETE CASCADE,
@@ -1337,6 +1348,9 @@ CREATE INDEX idx_chat_internal_messages_friend
 CREATE INDEX idx_chat_internal_messages_parent
   ON chat_internal_messages(parent_id, created_at);
 
+CREATE INDEX idx_chat_reminder_completion_friend_staff
+  ON chat_reminder_completion_events(friend_id, staff_id, completed_at DESC, id DESC);
+
 CREATE INDEX idx_chat_typing_status_chat ON chat_typing_status (chat_id, expires_at);
 
 CREATE INDEX idx_chat_typing_status_friend ON chat_typing_status (friend_id, expires_at);
@@ -1691,6 +1705,18 @@ CREATE TRIGGER protect_chat_internal_messages_delete
 BEFORE DELETE ON chat_internal_messages
 BEGIN
   SELECT RAISE(ABORT, 'chat_internal_messages history is protected');
+END;
+
+CREATE TRIGGER protect_chat_reminder_completion_events_delete
+BEFORE DELETE ON chat_reminder_completion_events
+BEGIN
+  SELECT RAISE(ABORT, 'chat reminder completion events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_chat_reminder_completion_events_update
+BEFORE UPDATE ON chat_reminder_completion_events
+BEGIN
+  SELECT RAISE(ABORT, 'chat reminder completion events cannot be updated');
 END;
 
 CREATE TRIGGER protect_chats_delete

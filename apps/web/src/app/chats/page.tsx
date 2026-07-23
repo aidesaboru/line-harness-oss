@@ -45,6 +45,7 @@ interface Chat {
   latestCustomerMessageAt: string | null
   isConfirmed: boolean
   confirmedMessageAt: string | null
+  confirmedAt: string | null
   createdAt: string
   updatedAt: string
   activeSupportCase?: ChatActiveSupportCase | null
@@ -375,6 +376,7 @@ function buildEmptyChatDetailFromFriend(friend: {
     latestCustomerMessageAt: null,
     isConfirmed: false,
     confirmedMessageAt: null,
+    confirmedAt: null,
     createdAt: friend.createdAt ?? now,
     updatedAt: friend.updatedAt ?? now,
     messages: [],
@@ -1683,6 +1685,7 @@ export default function ChatsPage() {
           latestCustomerMessageAt: chat.latestCustomerMessageAt ?? null,
           isConfirmed: chat.isConfirmed ?? false,
           confirmedMessageAt: chat.confirmedMessageAt ?? null,
+          confirmedAt: chat.confirmedAt ?? null,
         })))
       } else {
         if (!options.silent) setError(chatFailureMessage('list'))
@@ -1769,6 +1772,7 @@ export default function ChatsPage() {
           latestCustomerMessageAt: detail.latestCustomerMessageAt ?? null,
           isConfirmed: detail.isConfirmed ?? false,
           confirmedMessageAt: detail.confirmedMessageAt ?? null,
+          confirmedAt: detail.confirmedAt ?? null,
         })
       } else {
         if (await loadFriendFallback()) return
@@ -1953,6 +1957,7 @@ export default function ChatsPage() {
         latestCustomerMessageAt: chatDetail.latestCustomerMessageAt,
         isConfirmed: chatDetail.isConfirmed,
         confirmedMessageAt: chatDetail.confirmedMessageAt,
+        confirmedAt: chatDetail.confirmedAt,
         activeSupportCase: chatDetail.activeSupportCase ?? null,
         createdAt: chatDetail.createdAt,
         updatedAt: chatDetail.updatedAt,
@@ -2532,7 +2537,7 @@ export default function ChatsPage() {
   }
 
   const handleConfirmReview = async () => {
-    if (!selectedChatId || confirmingReview || chatDetail?.isConfirmed) return
+    if (!selectedChatId || confirmingReview) return
     const targetChatId = selectedChatId
     setConfirmingReview(true)
     try {
@@ -2545,11 +2550,13 @@ export default function ChatsPage() {
         ...current,
         isConfirmed: true,
         confirmedMessageAt: res.data.confirmedMessageAt,
+        confirmedAt: res.data.confirmedAt,
       } : current)
       setChats((current) => current.map((chat) => chat.id === targetChatId ? {
         ...chat,
         isConfirmed: true,
         confirmedMessageAt: res.data.confirmedMessageAt,
+        confirmedAt: res.data.confirmedAt,
       } : chat))
       setError('')
     } catch (err) {
@@ -2911,7 +2918,11 @@ export default function ChatsPage() {
                                   title="最新の顧客メッセージまで確認済み"
                                   aria-label="確認済み"
                                 >
-                                  ✓ {chat.confirmedMessageAt ? formatAddedDate(chat.confirmedMessageAt) : ''}
+                                  ✓ {chat.confirmedAt
+                                    ? formatAddedDate(chat.confirmedAt)
+                                    : chat.confirmedMessageAt
+                                      ? formatAddedDate(chat.confirmedMessageAt)
+                                      : ''}
                                 </span>
                               )}
                             </div>
@@ -3101,21 +3112,25 @@ export default function ChatsPage() {
                   <button
                     type="button"
                     onClick={() => void handleConfirmReview()}
-                    disabled={!chatDetail.latestCustomerMessageId || chatDetail.isConfirmed || confirmingReview}
+                    disabled={!chatDetail.latestCustomerMessageId || confirmingReview}
                     className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-default ${
                       chatDetail.isConfirmed
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                         : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50'
                     }`}
-                    title="LINE既読とは別に 最新の顧客メッセージまで確認した日を記録します"
+                    title="押すたびにリマインド完了日を履歴として記録します"
                   >
                     <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="m5 12 4 4L19 6" />
                     </svg>
-                    {chatDetail.isConfirmed
-                      ? `完了 ${chatDetail.confirmedMessageAt ? formatAddedDate(chatDetail.confirmedMessageAt) : ''}`
-                      : confirmingReview
-                        ? '記録中'
+                    {confirmingReview
+                      ? '記録中'
+                      : chatDetail.isConfirmed
+                        ? `完了 ${chatDetail.confirmedAt
+                          ? formatAddedDate(chatDetail.confirmedAt)
+                          : chatDetail.confirmedMessageAt
+                            ? formatAddedDate(chatDetail.confirmedMessageAt)
+                            : ''}`
                         : 'リマインド完了'}
                   </button>
                   {unansweredOnly && visibleChats.length > 1 && (

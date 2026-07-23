@@ -80,6 +80,7 @@ const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
 const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
 const OPTIONAL_CHAT_TABLE_NAMES = [
   'chat_confirmation_events',
+  'chat_reminder_completion_events',
   'line_conversations',
   'line_conversation_messages',
 ] as const;
@@ -93,16 +94,46 @@ async function getOptionalChatSchema(db: D1Database): Promise<OptionalChatSchema
       `SELECT name
        FROM sqlite_master
        WHERE type = 'table'
-         AND name IN (?, ?, ?)`,
+         AND name IN (?, ?, ?, ?)`,
     )
     .bind(...OPTIONAL_CHAT_TABLE_NAMES)
     .all<{ name: string }>();
   const existing = new Set(result.results.map((row) => row.name));
   return {
     chat_confirmation_events: existing.has('chat_confirmation_events'),
+    chat_reminder_completion_events: existing.has('chat_reminder_completion_events'),
     line_conversations: existing.has('line_conversations'),
     line_conversation_messages: existing.has('line_conversation_messages'),
   };
+}
+
+function chatConfirmationHistorySql(schema: OptionalChatSchema): string {
+  const sources: string[] = [];
+  if (schema.chat_confirmation_events) {
+    sources.push(
+      `SELECT
+        id AS event_id,
+        friend_id,
+        staff_id,
+        confirmed_message_id,
+        confirmed_message_at,
+        created_at AS confirmed_at
+      FROM chat_confirmation_events`,
+    );
+  }
+  if (schema.chat_reminder_completion_events) {
+    sources.push(
+      `SELECT
+        id AS event_id,
+        friend_id,
+        staff_id,
+        confirmed_message_id,
+        confirmed_message_at,
+        completed_at AS confirmed_at
+      FROM chat_reminder_completion_events`,
+    );
+  }
+  return sources.join('\nUNION ALL\n');
 }
 
 function canReadLineConversations(schema: OptionalChatSchema): boolean {
@@ -1501,16 +1532,17 @@ chats.get('/api/chats', async (c) => {
     const accountFilterSql = lineAccountId
       ? `friend_id IN (SELECT id FROM friends WHERE line_account_id = ?)`
       : `1=1`;
-    const latestConfirmationCte = optionalSchema.chat_confirmation_events
+    const confirmationHistorySql = chatConfirmationHistorySql(optionalSchema);
+    const latestConfirmationCte = confirmationHistorySql
       ? `latest_confirmation AS (
-          SELECT friend_id, confirmed_message_id, confirmed_message_at
+          SELECT friend_id, confirmed_message_id, confirmed_message_at, confirmed_at
           FROM (
-            SELECT friend_id, confirmed_message_id, confirmed_message_at,
+            SELECT friend_id, confirmed_message_id, confirmed_message_at, confirmed_at,
               ROW_NUMBER() OVER (
                 PARTITION BY friend_id
-                ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+                ORDER BY confirmed_at DESC, event_id DESC
               ) AS rn
-            FROM chat_confirmation_events
+            FROM (${confirmationHistorySql}) confirmation_history
             WHERE staff_id = ?
           ) ranked_confirmation
           WHERE rn = 1
@@ -1519,7 +1551,8 @@ chats.get('/api/chats', async (c) => {
           SELECT
             CAST(NULL AS TEXT) AS friend_id,
             CAST(NULL AS TEXT) AS confirmed_message_id,
-            CAST(NULL AS TEXT) AS confirmed_message_at
+            CAST(NULL AS TEXT) AS confirmed_message_at,
+            CAST(NULL AS TEXT) AS confirmed_at
           WHERE 0
         )`;
     let sql = `
@@ -1660,6 +1693,7 @@ chats.get('/api/chats', async (c) => {
           ELSE 0
         END AS is_confirmed,
         lc.confirmed_message_at,
+        lc.confirmed_at,
         ac.id AS support_case_id,
         ac.title AS support_case_title,
         ac.status AS support_case_status,
@@ -1680,7 +1714,7 @@ chats.get('/api/chats', async (c) => {
       LEFT JOIN latest_confirmation lc ON lc.friend_id = f.id
       LEFT JOIN active_support_cases ac ON ac.friend_id = f.id
     `;
-    const confirmationBinds = optionalSchema.chat_confirmation_events ? [staff.id] : [];
+    const confirmationBinds = confirmationHistorySql ? [staff.id] : [];
     // CTE 内 placeholder は SQL 登場順に積む: accountFilterSql 5 箇所 + following friend source → confirmation → active cases.
     const ctePrebindings: unknown[] = lineAccountId
       ? [lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, lineAccountId, ...confirmationBinds, ...activeCaseBinds]
@@ -1762,6 +1796,7 @@ chats.get('/api/chats', async (c) => {
       latestCustomerMessageAt: ch.latest_customer_message_at || null,
       isConfirmed: Number(ch.is_confirmed ?? 0) === 1,
       confirmedMessageAt: ch.confirmed_message_at || null,
+      confirmedAt: ch.confirmed_at || null,
       needsReply: replyRequirement?.needsReply ?? false,
       lastUnansweredAt: replyRequirement?.lastUnansweredIncomingAt ?? null,
       activeSupportCase: ch.support_case_id ? {
@@ -1843,6 +1878,7 @@ chats.get('/api/chats', async (c) => {
         latestCustomerMessageAt: null,
         isConfirmed: false,
         confirmedMessageAt: null,
+        confirmedAt: null,
         needsReply: false,
         lastUnansweredAt: null,
         activeSupportCase: null,
@@ -2022,6 +2058,7 @@ chats.get('/api/chats/:id', async (c) => {
           latestCustomerMessageAt: null,
           isConfirmed: false,
           confirmedMessageAt: null,
+          confirmedAt: null,
           createdAt: lineConversation.created_at,
           hasMoreMessages,
           nextMessagesBefore: hasMoreMessages && oldestMessage
@@ -2160,17 +2197,18 @@ chats.get('/api/chats/:id', async (c) => {
       [resolvedFriendId],
       staff,
     )).get(resolvedFriendId);
-    const latestConfirmationPromise = optionalSchema.chat_confirmation_events
+    const confirmationHistorySql = chatConfirmationHistorySql(optionalSchema);
+    const latestConfirmationPromise = confirmationHistorySql
       ? c.env.DB
           .prepare(
-            `SELECT confirmed_message_id, confirmed_message_at
-             FROM chat_confirmation_events
+            `SELECT confirmed_message_id, confirmed_message_at, confirmed_at
+             FROM (${confirmationHistorySql}) confirmation_history
              WHERE friend_id = ? AND staff_id = ?
-             ORDER BY confirmed_message_at DESC, confirmed_message_id DESC, created_at DESC
+             ORDER BY confirmed_at DESC, event_id DESC
              LIMIT 1`,
           )
           .bind(resolvedFriendId, staff.id)
-          .first<{ confirmed_message_id: string; confirmed_message_at: string }>()
+          .first<{ confirmed_message_id: string; confirmed_message_at: string; confirmed_at: string }>()
       : Promise.resolve(null);
     const [lastHumanReply, latestCustomerMessage, latestConfirmation] = await Promise.all([
       c.env.DB
@@ -2228,6 +2266,7 @@ chats.get('/api/chats/:id', async (c) => {
           && latestConfirmation?.confirmed_message_id === latestCustomerMessage.id
         ),
         confirmedMessageAt: latestConfirmation?.confirmed_message_at ?? null,
+        confirmedAt: latestConfirmation?.confirmed_at ?? null,
         createdAt,
         hasMoreMessages,
         nextMessagesBefore: hasMoreMessages && oldestMessage
@@ -2297,24 +2336,49 @@ chats.post('/api/chats/:id/confirm', async (c) => {
       .first<{ line_account_id: string | null }>();
     const staff = currentStaff(c);
     const now = jstNow();
-    await c.env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO chat_confirmation_events (
-          id, friend_id, line_account_id, staff_id, staff_name,
-          confirmed_message_id, confirmed_message_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .bind(
-        crypto.randomUUID(),
-        resolved.friendId,
-        friend?.line_account_id ?? null,
-        staff.id,
-        staff.name,
-        latestCustomerMessage.id,
-        latestCustomerMessage.created_at,
-        now,
-      )
-      .run();
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
+    const eventId = crypto.randomUUID();
+    if (optionalSchema.chat_reminder_completion_events) {
+      await c.env.DB
+        .prepare(
+          `INSERT INTO chat_reminder_completion_events (
+            id, friend_id, line_account_id, staff_id, staff_name,
+            confirmed_message_id, confirmed_message_at, completed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          eventId,
+          resolved.friendId,
+          friend?.line_account_id ?? null,
+          staff.id,
+          staff.name,
+          latestCustomerMessage.id,
+          latestCustomerMessage.created_at,
+          now,
+        )
+        .run();
+    } else if (optionalSchema.chat_confirmation_events) {
+      await c.env.DB
+        .prepare(
+          `INSERT OR IGNORE INTO chat_confirmation_events (
+            id, friend_id, line_account_id, staff_id, staff_name,
+            confirmed_message_id, confirmed_message_at, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .bind(
+          eventId,
+          resolved.friendId,
+          friend?.line_account_id ?? null,
+          staff.id,
+          staff.name,
+          latestCustomerMessage.id,
+          latestCustomerMessage.created_at,
+          now,
+        )
+        .run();
+    } else {
+      return c.json({ success: false, error: 'リマインド完了機能の準備中です' }, 503);
+    }
     return c.json({
       success: true,
       data: {

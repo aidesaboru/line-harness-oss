@@ -118,6 +118,7 @@ type LineConversationMessageRow = {
 
 type OptionalChatTableName =
   | 'chat_confirmation_events'
+  | 'chat_reminder_completion_events'
   | 'line_conversations'
   | 'line_conversation_messages';
 
@@ -270,6 +271,18 @@ function makeChatDb(state: {
               mark_as_read_token: row.mark_as_read_token ?? null,
               marked_as_read_at: row.marked_as_read_at ?? null,
             } : null) as T | null;
+          }
+          if (sql.includes('SELECT id, created_at') && sql.includes('direction = \'incoming\'')) {
+            const [friendId] = bound as [string];
+            const row = messages
+              .filter((message) => (
+                message.friend_id === friendId
+                && message.direction === 'incoming'
+                && message.message_type !== 'postback'
+                && !message.deleted_at
+              ))
+              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
+            return (row ? { id: row.id, created_at: row.created_at } : null) as T | null;
           }
           if (sql.includes('SELECT id, friend_id, direction, deleted_at')) {
             const [messageId, friendId] = bound as [string, string];
@@ -672,6 +685,7 @@ describe('chat support visibility', () => {
       visibleFriendIds: ['friend-visible'],
       missingTables: [
         'chat_confirmation_events',
+        'chat_reminder_completion_events',
         'line_conversations',
         'line_conversation_messages',
       ],
@@ -693,6 +707,7 @@ describe('chat support visibility', () => {
     const schemaCall = calls.find((call) => call.sql.includes('FROM sqlite_master'));
     expect(schemaCall?.binds).toEqual([
       'chat_confirmation_events',
+      'chat_reminder_completion_events',
       'line_conversations',
       'line_conversation_messages',
     ]);
@@ -879,6 +894,7 @@ describe('chat support visibility', () => {
       }],
       missingTables: [
         'chat_confirmation_events',
+        'chat_reminder_completion_events',
         'line_conversations',
         'line_conversation_messages',
       ],
@@ -901,8 +917,59 @@ describe('chat support visibility', () => {
     expect(dbMocks.getLineConversationById).not.toHaveBeenCalled();
     expect(calls.some((call) => (
       !call.sql.includes('FROM sqlite_master')
-      && /\b(chat_confirmation_events|line_conversations|line_conversation_messages)\b/.test(call.sql)
+      && /\b(chat_confirmation_events|chat_reminder_completion_events|line_conversations|line_conversation_messages)\b/.test(call.sql)
     ))).toBe(false);
+  });
+
+  test('records every reminder completion press as a new append-only event', async () => {
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [{
+        id: 'incoming-reminder-1',
+        friend_id: 'friend-visible',
+        direction: 'incoming',
+        message_type: 'text',
+        content: '確認をお願いします',
+        created_at: '2026-06-12T09:30:00.000',
+      }],
+    });
+    dbMocks.getChatById.mockResolvedValue(null);
+
+    const first = await setupApp(db, 'staff').request('/api/chats/friend-visible/confirm', {
+      method: 'POST',
+    });
+    const second = await setupApp(db, 'staff').request('/api/chats/friend-visible/confirm', {
+      method: 'POST',
+    });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    await expect(first.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        isConfirmed: true,
+        confirmedMessageId: 'incoming-reminder-1',
+        confirmedMessageAt: '2026-06-12T09:30:00.000',
+        confirmedAt: '2026-06-12T10:00:00.000',
+      },
+    });
+    const inserts = calls.filter((call) => (
+      call.method === 'run'
+      && call.sql.includes('INSERT INTO chat_reminder_completion_events')
+    ));
+    expect(inserts).toHaveLength(2);
+    expect(inserts[0].binds.slice(1)).toEqual([
+      'friend-visible',
+      null,
+      'staff-1',
+      '田島',
+      'incoming-reminder-1',
+      '2026-06-12T09:30:00.000',
+      '2026-06-12T10:00:00.000',
+    ]);
+    expect(inserts[0].binds[0]).not.toBe(inserts[1].binds[0]);
   });
 
   test('group chat detail returns sender names without customer-only data', async () => {

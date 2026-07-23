@@ -79,8 +79,9 @@
     "071_protect_accounts_and_chats.sql",
     "072_register_environment_owner_reference.sql",
     "073_support_knowledge_operations.sql",
-    "074_internal_task_comments.sql"
+    "074_internal_task_comments.sql",
+    "075_repeatable_chat_reminder_completions.sql"
   ],
-  "migrationCount": 80,
+  "migrationCount": 81,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

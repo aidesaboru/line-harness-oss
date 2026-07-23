@@ -191,6 +191,59 @@ describe('bootstrap.sql', () => {
     ).toEqual({ staff_id: 'env-owner', staff_name: '環境オーナー' });
   });
 
+  it('retains every repeated chat reminder completion', () => {
+    const db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));
+    db.prepare(
+      `INSERT INTO friends (id, line_user_id, display_name)
+       VALUES (?, ?, ?)`,
+    ).run('friend-repeat-reminder', 'Urepeat-reminder', '繰り返し確認');
+    const insert = db.prepare(
+      `INSERT INTO chat_reminder_completion_events (
+        id, friend_id, staff_id, staff_name,
+        confirmed_message_id, confirmed_message_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    insert.run(
+      'completion-1',
+      'friend-repeat-reminder',
+      'env-owner',
+      '環境オーナー',
+      'message-repeat-reminder',
+      '2026-07-23T09:00:00.000+09:00',
+      '2026-07-23T10:00:00.000+09:00',
+    );
+    insert.run(
+      'completion-2',
+      'friend-repeat-reminder',
+      'env-owner',
+      '環境オーナー',
+      'message-repeat-reminder',
+      '2026-07-23T09:00:00.000+09:00',
+      '2026-07-24T11:00:00.000+09:00',
+    );
+
+    expect(
+      db.prepare(
+        `SELECT id, completed_at
+         FROM chat_reminder_completion_events
+         ORDER BY completed_at`,
+      ).all(),
+    ).toEqual([
+      { id: 'completion-1', completed_at: '2026-07-23T10:00:00.000+09:00' },
+      { id: 'completion-2', completed_at: '2026-07-24T11:00:00.000+09:00' },
+    ]);
+    expect(() => db.prepare(
+      `UPDATE chat_reminder_completion_events
+       SET completed_at = ?
+       WHERE id = ?`,
+    ).run('2026-07-25T12:00:00.000+09:00', 'completion-1')).toThrow(/cannot be updated/i);
+    expect(() => db.prepare(
+      'DELETE FROM chat_reminder_completion_events WHERE id = ?',
+    ).run('completion-1')).toThrow(/cannot be deleted/i);
+  });
+
   it('retains LINE group conversations and message history', () => {
     const db = new Database(':memory:');
     db.exec(readFileSync(BOOTSTRAP_PATH, 'utf8'));

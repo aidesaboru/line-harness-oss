@@ -75,7 +75,11 @@ import { profileRefresh } from './routes/profile-refresh.js';
 import { richMenuGroups } from './routes/rich-menu-groups.js';
 import { support } from './routes/support.js';
 import { appNotifications, processWebPushNotifications } from './routes/app-notifications.js';
-import { processSupportNotificationDigests } from './services/support-notifications.js';
+import {
+  getSupportTicketSlackNotificationHealth,
+  processPendingSupportTicketSlackNotifications,
+  processSupportNotificationDigests,
+} from './services/support-notifications.js';
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 import { updateHistory } from './routes/update-history.js';
@@ -143,6 +147,8 @@ export type Env = {
     WEB_PUSH_CONTACT?: string;
     SLACK_BOT_TOKEN?: string;
     SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?: string;
+    SUPPORT_TICKET_SLACK_CHANNEL_ID?: string;
+    SUPPORT_TICKET_SLACK_MENTION_MAP?: string;
   };
   Variables: {
     staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' };
@@ -767,6 +773,28 @@ async function scheduled(
     }
   } catch (e) {
     console.error(`line-webhook-inbox error: ${scheduledErrorKind(e)}`);
+  }
+
+  try {
+    const ticketResult = await processPendingSupportTicketSlackNotifications(env.DB, {
+      adminPublicUrl: env.ADMIN_PUBLIC_URL,
+      slackBotToken: env.SLACK_BOT_TOKEN,
+      slackChannelId: env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      slackMentionMap: env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+      now: new Date(),
+    });
+    if (ticketResult.sent + ticketResult.failed > 0) {
+      console.log(`[support-ticket-slack] sent=${ticketResult.sent} failed=${ticketResult.failed}`);
+    }
+    const ticketHealth = await getSupportTicketSlackNotificationHealth(env.DB);
+    if (ticketHealth.pending + ticketHealth.sending + ticketHealth.failed + ticketHealth.deadLetter > 0) {
+      console.warn(
+        `[support-ticket-slack-health] pending=${ticketHealth.pending} sending=${ticketHealth.sending} `
+        + `failed=${ticketHealth.failed} dead_letter=${ticketHealth.deadLetter}`,
+      );
+    }
+  } catch (e) {
+    console.error(`support-ticket-slack error: ${scheduledErrorKind(e)}`);
   }
 
   try {

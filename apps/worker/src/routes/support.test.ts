@@ -11,6 +11,8 @@ type TestEnv = {
     FILES?: KVNamespace;
     SLACK_BOT_TOKEN?: string;
     SUPPORT_KNOWLEDGE_SLACK_CHANNEL_ID?: string;
+    SUPPORT_TICKET_SLACK_CHANNEL_ID?: string;
+    SUPPORT_TICKET_SLACK_MENTION_MAP?: string;
   };
 };
 
@@ -353,7 +355,8 @@ function makeSupportDb(state: {
   manuals?: SupportManualRow[];
   knowledgeImports?: SupportKnowledgeImportRow[];
   followUpReminders?: SupportCaseFollowUpReminderRow[];
-}) {
+  staffMembers?: Array<{ id: string; name: string; is_active?: number }>;
+} = {}) {
   const cases = state.cases ?? [];
   const escalations = state.escalations ?? [];
   const internalMessages = state.internalMessages ?? [];
@@ -363,6 +366,7 @@ function makeSupportDb(state: {
   const manuals = state.manuals ?? [];
   const knowledgeImports = state.knowledgeImports ?? [];
   const followUpReminders = state.followUpReminders ?? [];
+  const staffMembers = state.staffMembers ?? [];
   const calls: DbCall[] = [];
 
   function hydrateCase(row: SupportCaseRow): SupportCaseRow {
@@ -620,6 +624,12 @@ function makeSupportDb(state: {
         },
         async all<T>() {
           calls.push({ method: 'all', sql, binds: bound });
+          if (sql.includes('FROM staff_members')) {
+            const names = new Set(bound.filter((value): value is string => typeof value === 'string'));
+            return {
+              results: staffMembers.filter((staff) => staff.is_active !== 0 && names.has(staff.name)) as T[],
+            };
+          }
           if (sql.includes('FROM support_cases sc')) {
             const lineAccountId = bound[0] as string;
             let rows = cases.filter((item) => item.line_account_id === lineAccountId);
@@ -825,7 +835,20 @@ function makeSupportDb(state: {
               created_at: String(createdAt),
             });
           } else if (sql.includes('INSERT INTO support_escalations')) {
-            const [id, caseId, lineAccountId, assignee, level, question, dueAt, createdBy, updatedBy, createdAt, updatedAt, reopenedFromId] = bound as string[];
+            const hasAssigneeStaffId = sql.includes('assignee_staff_id');
+            const id = String(bound[0]);
+            const caseId = String(bound[1]);
+            const lineAccountId = String(bound[2]);
+            const assignee = String(bound[3]);
+            const offset = hasAssigneeStaffId ? 1 : 0;
+            const level = String(bound[4 + offset]);
+            const question = String(bound[5 + offset] ?? '');
+            const dueAt = bound[6 + offset] as string | null;
+            const createdBy = bound[7 + offset] as string | null;
+            const updatedBy = bound[8 + offset] as string | null;
+            const createdAt = String(bound[9 + offset]);
+            const updatedAt = String(bound[10 + offset]);
+            const reopenedFromId = bound[11 + offset] as string | null;
             escalations.push({
               id,
               case_id: caseId,
@@ -1046,6 +1069,75 @@ beforeEach(() => {
 });
 
 describe('support CRM routes', () => {
+  test('owner can send the ticket Slack notification test with a resolved mention', async () => {
+    const { db } = makeSupportDb();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      ok: true,
+      ts: '1784811600.123456',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      const res = await setupApp(
+        db,
+        { id: 'owner-1', name: 'Owner', role: 'owner' },
+        {
+          SLACK_BOT_TOKEN: 'xoxb-test',
+          SUPPORT_TICKET_SLACK_CHANNEL_ID: 'C09SPA06P0S',
+          SUPPORT_TICKET_SLACK_MENTION_MAP: JSON.stringify({ '宮本 森一': 'U075LTP888L' }),
+        },
+      ).request('/api/support/notifications/slack/test-ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mentionStaffName: '宮本 森一' }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(res.json()).resolves.toEqual({
+        success: true,
+        data: { sent: true, messageTs: '1784811600.123456' },
+      });
+      const request = fetchMock.mock.calls[0] as [string, RequestInit];
+      const payload = JSON.parse(String(request[1].body)) as { channel: string; text: string };
+      expect(payload.channel).toBe('C09SPA06P0S');
+      expect(payload.text).toContain('<@U075LTP888L>');
+      expect(payload.text).toContain('一次対応: L-Link 動作確認');
+      expect(payload.text).toContain('緊急度: 通常');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test('owner can inspect ticket Slack queue health without exposing credentials', async () => {
+    const { db } = makeSupportDb();
+    const res = await setupApp(
+      db,
+      { id: 'owner-1', name: 'Owner', role: 'owner' },
+      {
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SUPPORT_TICKET_SLACK_CHANNEL_ID: 'C09SPA06P0S',
+      },
+    ).request('/api/support/notifications/slack/status');
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      success: true,
+      data: {
+        pending: 0,
+        sending: 0,
+        failed: 0,
+        deadLetter: 0,
+        sent: 0,
+        lastUpdatedAt: null,
+        tokenConfigured: true,
+        channelConfigured: true,
+      },
+    });
+  });
+
   test('summary failure logs only the error kind', async () => {
     const db = makeThrowingDb('customer secret account-token friend-visible manual body');
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -1156,7 +1248,7 @@ describe('support CRM routes', () => {
   });
 
   test('creates a case from a friend and records an audit event', async () => {
-    const { db, state } = makeSupportDb({
+    const { db, calls, state } = makeSupportDb({
       friends: [{
         id: 'friend-1',
         line_account_id: 'acc-1',
@@ -1196,16 +1288,21 @@ describe('support CRM routes', () => {
         actor_name: 'Owner',
       }),
     ]);
+    expect(calls.some((call) => call.sql.includes('INSERT INTO support_slack_notification_outbox'))).toBe(false);
   });
 
   test('retries an atomic case creation batch after a temporary write failure', async () => {
-    const { db, state } = makeSupportDb({
+    const { db, calls, state } = makeSupportDb({
       friends: [{
         id: 'friend-1',
         line_account_id: 'acc-1',
         display_name: '山田さん',
         picture_url: null,
         line_user_id: 'U123',
+      }],
+      staffMembers: [{
+        id: 'staff-kajiwara',
+        name: '梶原 麻奈美',
       }],
     });
     const originalBatch = db.batch.bind(db);
@@ -1237,6 +1334,18 @@ describe('support CRM routes', () => {
     expect(state.cases).toHaveLength(1);
     expect(state.escalations).toHaveLength(1);
     expect(state.events.map((event) => event.event_type)).toEqual(['created', 'escalated']);
+    const outboxCall = calls.find((call) => call.sql.includes('INSERT INTO support_slack_notification_outbox'));
+    expect(outboxCall).toBeDefined();
+    expect(JSON.parse(String(outboxCall?.binds[3]))).toMatchObject({
+      primaryAssignee: '林 静香',
+      secondaryAssignees: [
+        {
+          name: '梶原 麻奈美',
+          staffId: expect.any(String),
+        },
+      ],
+      priority: 'medium',
+    });
   });
 
   test('does not retry a deterministic case creation constraint failure', async () => {

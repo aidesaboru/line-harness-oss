@@ -9,7 +9,12 @@ import {
   supportStaffAssignmentName,
   type SupportAccessStaff,
 } from '../services/support-access.js';
-import { notifyUrgentSupportCase } from '../services/support-notifications.js';
+import {
+  deliverSupportTicketSlackNotification,
+  getSupportTicketSlackNotificationHealth,
+  notifyUrgentSupportCase,
+  sendSupportTicketSlackTestNotification,
+} from '../services/support-notifications.js';
 import {
   normalizeInternalReactionEmoji,
   summarizeInternalReactions,
@@ -1125,6 +1130,23 @@ function currentStaff(c: Context<Env>) {
   return staff ?? { id: 'system', name: 'system', role: 'staff' as const };
 }
 
+function kickSupportTicketSlackNotification(c: Context<Env>, outboxId: string): void {
+  const task = deliverSupportTicketSlackNotification(c.env.DB, outboxId, {
+    adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
+    slackBotToken: c.env.SLACK_BOT_TOKEN,
+    slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+    slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+  }).catch((error) => {
+    console.error(`support ticket Slack dispatch error: ${supportRouteErrorKind(error)}`);
+    return { sent: false, reason: 'error' };
+  });
+  try {
+    c.executionCtx.waitUntil(task);
+  } catch {
+    void task;
+  }
+}
+
 function canManageSupportCaseRouting(staff: SupportAccessStaff): boolean {
   return staff.role === 'owner' || staff.role === 'admin';
 }
@@ -2144,6 +2166,7 @@ support.post('/api/support/cases', async (c) => {
     }
     if (escalationAssignees.length > 0 && status === 'open') status = 'waiting_secondary';
     const createdEventId = crypto.randomUUID();
+    const slackOutboxId = escalationAssignees.length > 0 ? crypto.randomUUID() : null;
     const effectiveEscalationLevel = escalationLevel === 'L1' ? 'L2' : escalationLevel;
     const question = customerSummary.trim() || title;
     const escalationEntries = escalationAssignees.map((assignee) => ({
@@ -2251,10 +2274,47 @@ support.post('/api/support/cases', async (c) => {
           ),
         );
       }
+      if (slackOutboxId) {
+        statements.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO support_slack_notification_outbox (
+                id, case_id, line_account_id, notification_type, payload, status,
+                attempts, next_attempt_at, created_at, updated_at
+              ) VALUES (?, ?, ?, 'ticket_created', ?, 'pending', 0, ?, ?, ?)`,
+            )
+            .bind(
+              slackOutboxId,
+              id,
+              lineAccountId,
+              JSON.stringify({
+                caseId: id,
+                title,
+                priority,
+                primaryAssignee: parsedPrimaryAssignee.value ?? staff.name,
+                secondaryAssignees: escalationEntries.map((entry) => ({
+                  name: entry.assignee,
+                  staffId: entry.assigneeStaffId,
+                })),
+                customerSummary: question,
+                customerNumber: parsedCustomerNumber.value ?? null,
+                companyName: parsedCompanyName.value ?? null,
+                contactName: parsedContactName.value ?? null,
+                dueAt: parsedDueAt.value ?? null,
+              }),
+              now,
+              now,
+              now,
+            ),
+        );
+      }
       return statements;
     });
     failurePhase = 'notifications';
-    if (priority === 'urgent' && status !== 'resolved') {
+    if (slackOutboxId) {
+      kickSupportTicketSlackNotification(c, slackOutboxId);
+    }
+    if (priority === 'urgent' && status !== 'resolved' && !slackOutboxId) {
       c.executionCtx.waitUntil(notifyUrgentSupportCase(c.env.DB, lineAccountId, id, {
         adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
       }));
@@ -2277,6 +2337,46 @@ support.post('/api/support/cases', async (c) => {
     console.error(
       `POST /api/support/cases error: ${errorKind} phase=${failurePhase} code=${errorCode} diagnostic=${diagnosticId}`,
     );
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/notifications/slack/test-ticket', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const mentionStaffName = parseOptionalTextField(parsedBody.value.mentionStaffName, 'mentionStaffName');
+    if (!mentionStaffName.ok) return c.json({ success: false, error: mentionStaffName.error }, 400);
+    const staffName = mentionStaffName.value ?? currentStaff(c).name;
+    const result = await sendSupportTicketSlackTestNotification({
+      adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
+      slackBotToken: c.env.SLACK_BOT_TOKEN,
+      slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+    }, staffName);
+    if (!result.sent) {
+      return c.json({ success: false, error: result.reason }, 503);
+    }
+    return c.json({ success: true, data: { sent: true, messageTs: result.messageTs ?? null } });
+  } catch (err) {
+    console.error(`POST /api/support/notifications/slack/test-ticket error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.get('/api/support/notifications/slack/status', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const health = await getSupportTicketSlackNotificationHealth(c.env.DB);
+    return c.json({
+      success: true,
+      data: {
+        ...health,
+        tokenConfigured: Boolean(c.env.SLACK_BOT_TOKEN?.trim()),
+        channelConfigured: Boolean(c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID?.trim()),
+      },
+    });
+  } catch (err) {
+    console.error(`GET /api/support/notifications/slack/status error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

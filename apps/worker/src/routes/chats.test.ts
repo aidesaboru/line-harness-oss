@@ -35,6 +35,7 @@ const dbMocks = {
   getFriendById: vi.fn(),
   getLineAccountById: vi.fn(),
   getLineConversationById: vi.fn(),
+  insertLineConversationMessage: vi.fn(),
   updateChat: vi.fn(),
   jstNow: vi.fn(() => '2026-06-12T10:00:00.000'),
 };
@@ -620,6 +621,7 @@ beforeEach(() => {
   lineSdkMocks.markMessagesAsRead.mockReset().mockResolvedValue(undefined);
   followerSyncMocks.syncFollowerPage.mockReset();
   dbMocks.getLineConversationById.mockResolvedValue(null);
+  dbMocks.insertLineConversationMessage.mockResolvedValue(true);
   dbMocks.getFriendById.mockImplementation(async (_db: D1Database, id: string) =>
     friends.find((friend) => friend.id === id) ?? null,
   );
@@ -1076,6 +1078,148 @@ describe('chat support visibility', () => {
         'conversation-group-1',
       ],
     }));
+  });
+
+  test('staff can send a message to a LINE group and records it after LINE accepts it', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: null,
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'group-account-token' });
+    lineSdkMocks.pushTextMessage.mockResolvedValueOnce({
+      sentMessages: [{ id: 'line-group-message-1', quoteToken: 'line-group-quote-1' }],
+    });
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+    });
+    const idempotencyKey = '33333333-3333-4333-8333-333333333333';
+
+    const res = await setupApp(db, 'staff', {
+      LINE_CAPTURE_ONLY: '1',
+      LINE_MANUAL_SEND_ENABLED: '1',
+    }).request('/api/chats/conversation-group-1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        content: 'グループへ返信します。',
+        markAsRead: false,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(lineSdkMocks.LineClient).toHaveBeenCalledWith('group-account-token', {
+      allowMutationsWhenDisabled: true,
+    });
+    expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith(
+      'Cgroup1',
+      'グループへ返信します。',
+      undefined,
+      idempotencyKey,
+    );
+    expect(dbMocks.insertLineConversationMessage).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        id: idempotencyKey,
+        conversationId: 'conversation-group-1',
+        direction: 'outgoing',
+        messageType: 'text',
+        content: 'グループへ返信します。',
+        source: 'manual',
+        lineAccountId: 'account-1',
+        lineMessageId: 'line-group-message-1',
+        quoteToken: 'line-group-quote-1',
+        senderName: '田島',
+      }),
+    );
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        sent: true,
+        messageId: idempotencyKey,
+        sentByStaffId: 'staff-1',
+        sentByStaffName: '田島',
+        supportCase: null,
+        markAsRead: {
+          requested: false,
+          marked: false,
+          reason: 'not_requested',
+        },
+      },
+    });
+  });
+
+  test('failed LINE group delivery is not written to the conversation history', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: null,
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'group-account-token' });
+    lineSdkMocks.pushTextMessage.mockRejectedValueOnce(new Error('LINE API error: 500 Internal Server Error'));
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '保存してはいけない送信です。' }),
+    });
+
+    expect(res.status).toBe(502);
+    expect(dbMocks.insertLineConversationMessage).not.toHaveBeenCalled();
+  });
+
+  test('secondary-only staff cannot send to LINE groups', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: null,
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+    });
+
+    const res = await setupApp(db, 'secondary').request('/api/chats/conversation-group-1/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: '送信できません。' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(lineSdkMocks.pushTextMessage).not.toHaveBeenCalled();
+    expect(dbMocks.insertLineConversationMessage).not.toHaveBeenCalled();
   });
 
   test('chat detail includes internal staff chat messages', async () => {

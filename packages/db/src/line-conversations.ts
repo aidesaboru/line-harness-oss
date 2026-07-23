@@ -155,18 +155,25 @@ export async function insertLineConversationMessage(
     .run();
   const inserted = Number((result as { meta?: { changes?: unknown } }).meta?.changes ?? 0) > 0;
   if (inserted) {
+    const nextStatus: LineConversationStatus = input.direction === 'incoming'
+      ? 'unread'
+      : 'resolved';
     await db
       .prepare(
         `UPDATE line_conversations
-         SET last_message_at = CASE
-               WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
-               ELSE last_message_at
-             END,
-             status = 'unread',
+         SET last_message_at = ?,
+             status = ?,
              updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ?
+           AND (last_message_at IS NULL OR last_message_at <= ?)`,
       )
-      .bind(input.createdAt, input.createdAt, jstNow(), input.conversationId)
+      .bind(
+        input.createdAt,
+        nextStatus,
+        jstNow(),
+        input.conversationId,
+        input.createdAt,
+      )
       .run();
   }
   return inserted;

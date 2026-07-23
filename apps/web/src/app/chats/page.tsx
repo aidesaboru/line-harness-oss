@@ -2112,13 +2112,16 @@ export default function ChatsPage() {
   const handleSendMessage = async () => {
     if (!selectedChatId || sending || scheduling || sendLockRef.current) return
     if (!messageContent.trim() && !pendingImage) return
-    if (quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
+    const sendingChatId = selectedChatId
+    const sendingIsMultiPersonConversation = chatDetail?.id === sendingChatId
+      && (chatDetail.conversationType === 'group' || chatDetail.conversationType === 'room')
+    if (!sendingIsMultiPersonConversation && quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
       setError('返信機能を使うときは、返信文を入力して送信してください。')
       return
     }
-    const sendingChatId = selectedChatId  // capture the chat id for this send
-    const sendingQuoteTarget = quoteTarget
-    const supportContext = supportDraftContext
+    const sendingQuoteTarget = sendingIsMultiPersonConversation ? null : quoteTarget
+    const supportContext = sendingIsMultiPersonConversation ? null : supportDraftContext
+    const sentStatus: Chat['status'] = sendingIsMultiPersonConversation ? 'resolved' : 'in_progress'
     const pdfAttachment = pendingImage?.mode === 'pdf-link' ? pendingImage : null
     const pdfMessage = pdfAttachment
       ? `PDF: ${pdfAttachment.fileName}\n${pdfAttachment.url}`
@@ -2152,7 +2155,7 @@ export default function ChatsPage() {
         const imageResult = await api.chats.send(sendingChatId, {
           messageType: 'image',
           content: imgPayload,
-          markAsRead: true,
+          markAsRead: !sendingIsMultiPersonConversation,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
         }, sendAttemptRegistryRef.current.keyFor(imageFingerprint))
         if (!imageResult.success) {
@@ -2176,7 +2179,7 @@ export default function ChatsPage() {
           setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
             ...prev,
             lastMessageAt: now,
-            status: 'in_progress',
+            status: sentStatus,
             needsReply: false,
             lastUnansweredAt: null,
             messages: [
@@ -2200,7 +2203,7 @@ export default function ChatsPage() {
             const updated = prev.map((c) => c.id === sendingChatId ? {
               ...c,
               lastMessageAt: now,
-              status: 'in_progress' as const,
+              status: sentStatus,
               lastMessageContent: '[画像]',
               lastMessageDirection: 'outgoing' as const,
               lastMessageType: 'image' as const,
@@ -2233,7 +2236,7 @@ export default function ChatsPage() {
         })
         const sendResult = await api.chats.send(sendingChatId, {
           content,
-          markAsRead: true,
+          markAsRead: !sendingIsMultiPersonConversation,
           quoteMessageId: sendingQuoteTarget?.id ?? undefined,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
         }, sendAttemptRegistryRef.current.keyFor(textFingerprint))
@@ -2259,7 +2262,7 @@ export default function ChatsPage() {
           setChatDetail((prev) => (prev && prev.id === sendingChatId) ? {
             ...prev,
             lastMessageAt: now,
-            status: 'in_progress',
+            status: sentStatus,
             needsReply: false,
             lastUnansweredAt: null,
             messages: [
@@ -2285,7 +2288,7 @@ export default function ChatsPage() {
             const updated = prev.map((c) => c.id === sendingChatId ? {
               ...c,
               lastMessageAt: now,
-              status: 'in_progress' as const,
+              status: sentStatus,
               // 一覧の preview も即時更新する。incoming 優先ロジックで上書きされ得るが、
               // 楽観 UI では「operator が今送った文面」が一瞬見えるのが期待動作。
               // 次回 loadChats() で server 側の真の最新 (incoming 優先) に reconcile される。
@@ -2312,7 +2315,7 @@ export default function ChatsPage() {
     } catch (err) {
       if (isCurrentWorkspace()) setError(chatActionFailureMessage(err, sendFailureFallback))
     } finally {
-      stopTypingStatus(sendingChatId)
+      if (!sendingIsMultiPersonConversation) stopTypingStatus(sendingChatId)
       setSending(false)
       sendLockRef.current = false
     }
@@ -3440,13 +3443,8 @@ export default function ChatsPage() {
               </div>
 
               {/* Send Message Form */}
-              {selectedIsMultiPersonConversation && (
-                <div className="border-t border-blue-100 bg-blue-50 px-4 py-3 text-center text-xs font-semibold text-blue-800">
-                  グループトークは現在閲覧のみ対応しています
-                </div>
-              )}
               <div
-                className={`border-t border-gray-200 px-4 py-2 ${selectedIsMultiPersonConversation ? 'hidden' : ''}`}
+                className="border-t border-gray-200 px-4 py-2"
                 onDragOver={(e) => {
                   e.preventDefault()
                   e.dataTransfer.dropEffect = 'copy'
@@ -3456,7 +3454,15 @@ export default function ChatsPage() {
                   void handleImageFiles(e.dataTransfer.files)
                 }}
               >
-                {chatDetail.scheduledMessages && chatDetail.scheduledMessages.length > 0 && (
+                {selectedIsMultiPersonConversation && (
+                  <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                    <span className="inline-flex h-5 items-center rounded bg-green-50 px-2 text-green-700">
+                      送信先
+                    </span>
+                    <span className="truncate">{chatDetail.friendName}</span>
+                  </div>
+                )}
+                {!selectedIsMultiPersonConversation && chatDetail.scheduledMessages && chatDetail.scheduledMessages.length > 0 && (
                   <div className="mb-2 border-b border-slate-200 pb-2">
                     <div className="mb-1.5 flex items-center justify-between">
                       <p className="text-xs font-semibold text-slate-700">予約送信</p>
@@ -3503,7 +3509,7 @@ export default function ChatsPage() {
                     </div>
                   </div>
                 )}
-                {supportDraftContext && (
+                {!selectedIsMultiPersonConversation && supportDraftContext && (
                   <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs text-green-800">
                     <span className="font-medium">
                       サポート案件「{supportDraftContext.caseTitle || supportDraftContext.caseId}」
@@ -3558,7 +3564,7 @@ export default function ChatsPage() {
                     </div>
                   </div>
                 )}
-                {quoteTarget && (
+                {!selectedIsMultiPersonConversation && quoteTarget && (
                   <div className="mb-2 flex items-start justify-between gap-3 rounded-lg border border-green-200 border-l-4 border-l-green-500 bg-white px-3 py-2 text-xs shadow-sm">
                     <div className="min-w-0">
                       <div className="font-bold text-green-700">
@@ -3624,7 +3630,7 @@ export default function ChatsPage() {
                     {imageUploadError && <span className="font-semibold text-red-600">{imageUploadError}</span>}
                   </div>
                 )}
-                {scheduleOpen && (
+                {!selectedIsMultiPersonConversation && scheduleOpen && (
                   <div className="mb-2 flex flex-wrap items-end gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
                     <label className="min-w-[220px] flex-1 text-xs font-semibold text-blue-900">
                       送信日時
@@ -3663,26 +3669,28 @@ export default function ChatsPage() {
                   >
                     <PaperclipIcon />
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setScheduleOpen((open) => {
-                        if (!open && !scheduledAt) setScheduledAt(defaultScheduledAt())
-                        return !open
-                      })
-                      setError('')
-                    }}
-                    disabled={sending || scheduling || markingAsRead}
-                    aria-expanded={scheduleOpen}
-                    className={`mb-0.5 inline-flex h-10 shrink-0 items-center justify-center rounded-md border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                      scheduleOpen
-                        ? 'border-blue-600 bg-blue-600 text-white'
-                        : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
-                    }`}
-                    title="日時を指定して送信"
-                  >
-                    予約
-                  </button>
+                  {!selectedIsMultiPersonConversation && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setScheduleOpen((open) => {
+                          if (!open && !scheduledAt) setScheduledAt(defaultScheduledAt())
+                          return !open
+                        })
+                        setError('')
+                      }}
+                      disabled={sending || scheduling || markingAsRead}
+                      aria-expanded={scheduleOpen}
+                      className={`mb-0.5 inline-flex h-10 shrink-0 items-center justify-center rounded-md border px-3 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                        scheduleOpen
+                          ? 'border-blue-600 bg-blue-600 text-white'
+                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                      title="日時を指定して送信"
+                    >
+                      予約
+                    </button>
+                  )}
                   <textarea
                     ref={textareaRef}
                     rows={1}
@@ -3691,19 +3699,21 @@ export default function ChatsPage() {
                     onChange={(e) => {
                       const value = e.target.value
                       setMessageContent(value)
-                      if (selectedChatId && value.trim()) markTypingActive(selectedChatId)
+                      if (!selectedIsMultiPersonConversation && selectedChatId && value.trim()) markTypingActive(selectedChatId)
                     }}
                     onFocus={() => {
-                      if (selectedChatId && messageContent.trim()) markTypingActive(selectedChatId)
+                      if (!selectedIsMultiPersonConversation && selectedChatId && messageContent.trim()) markTypingActive(selectedChatId)
                     }}
-                    onBlur={() => stopTypingStatus(selectedChatId)}
+                    onBlur={() => {
+                      if (!selectedIsMultiPersonConversation) stopTypingStatus(selectedChatId)
+                    }}
                     onCompositionStart={() => { isComposingRef.current = true }}
                     onCompositionEnd={() => { isComposingRef.current = false }}
                     onKeyDown={handleKeyDown}
                     placeholder="メッセージを入力..."
                     className="min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-2xl border border-gray-300 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
                   />
-                  <div className="flex w-24 shrink-0 flex-col gap-1 sm:w-36">
+                  <div className={`flex shrink-0 flex-col gap-1 ${selectedIsMultiPersonConversation ? 'w-24 sm:w-28' : 'w-24 sm:w-36'}`}>
                     <button
                       onClick={handleSendMessage}
                       disabled={sending || scheduling || markingAsRead || (!messageContent.trim() && !pendingImage)}
@@ -3712,19 +3722,21 @@ export default function ChatsPage() {
                     >
                       {sending ? '送信中...' : '送信'}
                     </button>
-                    <button
-                      type="button"
-                      onClick={handleMarkLatestAsRead}
-                      disabled={sending || scheduling || markingAsRead || !canMarkLatestIncomingAsRead}
-                      className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                        latestIncomingMarkedAsRead
-                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'
-                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50'
-                      }`}
-                      title={markReadButtonTitle}
-                    >
-                      {markReadButtonLabel}
-                    </button>
+                    {!selectedIsMultiPersonConversation && (
+                      <button
+                        type="button"
+                        onClick={handleMarkLatestAsRead}
+                        disabled={sending || scheduling || markingAsRead || !canMarkLatestIncomingAsRead}
+                        className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                          latestIncomingMarkedAsRead
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'
+                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                        }`}
+                        title={markReadButtonTitle}
+                      >
+                        {markReadButtonLabel}
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

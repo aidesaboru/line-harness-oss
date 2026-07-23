@@ -115,7 +115,7 @@ describe('LINE conversations', () => {
     expect((await getLineConversationById(db, conversation.id))?.status).toBe('resolved');
   });
 
-  it('marks the conversation unread only when a message is inserted', async () => {
+  it('marks the conversation unread when an incoming message is inserted', async () => {
     const conversation = await upsertLineConversation(db, {
       lineAccountId: 'account-1',
       sourceType: 'group',
@@ -128,6 +128,95 @@ describe('LINE conversations', () => {
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'unread',
       last_message_at: '2026-07-23T10:00:00.000+09:00',
+    });
+  });
+
+  it('marks the conversation resolved when a newer outgoing message is inserted', async () => {
+    const conversation = await upsertLineConversation(db, {
+      lineAccountId: 'account-1',
+      sourceType: 'group',
+      sourceId: 'Cgroup1',
+      displayName: 'ECオーナー連絡グループ',
+      pictureUrl: null,
+    });
+
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id))).toBe(true);
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      id: 'message-2',
+      direction: 'outgoing',
+      content: '確認いたしました',
+      lineMessageId: 'line-message-2',
+      webhookEventId: 'webhook-event-2',
+      createdAt: '2026-07-23T10:05:00.000+09:00',
+    }))).toBe(true);
+
+    expect(await getLineConversationById(db, conversation.id)).toMatchObject({
+      status: 'resolved',
+      last_message_at: '2026-07-23T10:05:00.000+09:00',
+    });
+  });
+
+  it('does not let a delayed older incoming message overwrite a newer outgoing state', async () => {
+    const conversation = await upsertLineConversation(db, {
+      lineAccountId: 'account-1',
+      sourceType: 'group',
+      sourceId: 'Cgroup1',
+      displayName: 'ECオーナー連絡グループ',
+      pictureUrl: null,
+    });
+
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      id: 'message-newer',
+      direction: 'outgoing',
+      content: '対応済みです',
+      lineMessageId: 'line-message-newer',
+      webhookEventId: 'webhook-event-newer',
+      createdAt: '2026-07-23T10:10:00.000+09:00',
+    }))).toBe(true);
+    const beforeDelayedMessage = await getLineConversationById(db, conversation.id);
+
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      id: 'message-delayed',
+      lineMessageId: 'line-message-delayed',
+      webhookEventId: 'webhook-event-delayed',
+      createdAt: '2026-07-23T10:05:00.000+09:00',
+    }))).toBe(true);
+
+    expect(await getLineConversationById(db, conversation.id)).toMatchObject({
+      status: 'resolved',
+      last_message_at: '2026-07-23T10:10:00.000+09:00',
+      updated_at: beforeDelayedMessage?.updated_at,
+    });
+  });
+
+  it('does not let a delayed older outgoing message overwrite a newer incoming state', async () => {
+    const conversation = await upsertLineConversation(db, {
+      lineAccountId: 'account-1',
+      sourceType: 'group',
+      sourceId: 'Cgroup1',
+      displayName: 'ECオーナー連絡グループ',
+      pictureUrl: null,
+    });
+
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      id: 'message-newer',
+      createdAt: '2026-07-23T10:10:00.000+09:00',
+    }))).toBe(true);
+    const beforeDelayedMessage = await getLineConversationById(db, conversation.id);
+
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      id: 'message-delayed',
+      direction: 'outgoing',
+      content: '古い送信メッセージ',
+      lineMessageId: 'line-message-delayed',
+      webhookEventId: 'webhook-event-delayed',
+      createdAt: '2026-07-23T10:05:00.000+09:00',
+    }))).toBe(true);
+
+    expect(await getLineConversationById(db, conversation.id)).toMatchObject({
+      status: 'unread',
+      last_message_at: '2026-07-23T10:10:00.000+09:00',
+      updated_at: beforeDelayedMessage?.updated_at,
     });
   });
 

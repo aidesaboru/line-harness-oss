@@ -13,6 +13,7 @@ import {
   getFriendById,
   getLineAccountById,
   getLineConversationById,
+  insertLineConversationMessage,
   updateChat,
   jstNow,
 } from '@line-crm/db';
@@ -3228,6 +3229,115 @@ chats.post('/api/chats/:id/send', async (c) => {
     if (!normalized.ok) return c.json({ success: false, error: normalized.error }, 400);
     const idempotencyKey = parseChatIdempotencyKey(c.req.header('Idempotency-Key'));
     if (!idempotencyKey.ok) return c.json({ success: false, error: idempotencyKey.error }, 400);
+    const staff = currentStaff(c);
+
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
+    const lineConversation = canReadLineConversations(optionalSchema)
+      ? await getLineConversationById(c.env.DB, chatId.value)
+      : null;
+    if (lineConversation) {
+      if (isSecondaryOnlySupportStaff(staff)) {
+        return c.json({ success: false, error: 'Chat not found' }, 404);
+      }
+      if (body.value.supportCaseId || body.value.lineAccountId || body.value.quoteMessageId) {
+        return c.json({ success: false, error: 'グループトークでは案件連携と引用返信を利用できません' }, 400);
+      }
+
+      const safetyBlock = await getLineSendSafetyBlock(c.env.DB, lineConversation.line_account_id);
+      if (safetyBlock) return lineSafetyBlockedResponse(c, safetyBlock);
+
+      const accessToken = await resolveLineAccessTokenByAccount(
+        c.env.DB,
+        lineConversation.line_account_id,
+        c.env.LINE_CHANNEL_ACCESS_TOKEN,
+      );
+      const { LineClient } = await import('@line-crm/line-sdk');
+      const lineClient = new LineClient(accessToken, {
+        allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
+      });
+      const { messageType, content } = normalized.payload;
+      let lineSendResult: unknown = null;
+
+      try {
+        if (messageType === 'text') {
+          lineSendResult = idempotencyKey.value
+            ? await lineClient.pushTextMessage(
+                lineConversation.source_id,
+                content,
+                undefined,
+                idempotencyKey.value,
+              )
+            : await lineClient.pushTextMessage(lineConversation.source_id, content);
+        } else if (messageType === 'flex') {
+          const contents = normalized.payload.flexContents;
+          lineSendResult = idempotencyKey.value
+            ? await lineClient.pushFlexMessage(
+                lineConversation.source_id,
+                extractFlexAltText(contents),
+                contents,
+                idempotencyKey.value,
+              )
+            : await lineClient.pushFlexMessage(
+                lineConversation.source_id,
+                extractFlexAltText(contents),
+                contents,
+              );
+        } else if (messageType === 'image') {
+          const parsed = normalized.payload.image;
+          lineSendResult = idempotencyKey.value
+            ? await lineClient.pushImageMessage(
+                lineConversation.source_id,
+                parsed.originalContentUrl,
+                parsed.previewImageUrl,
+                idempotencyKey.value,
+              )
+            : await lineClient.pushImageMessage(
+                lineConversation.source_id,
+                parsed.originalContentUrl,
+                parsed.previewImageUrl,
+              );
+        }
+      } catch (err) {
+        if (idempotencyKey.value && lineApiErrorStatus(err) === 409) {
+          lineSendResult = null;
+        } else {
+          console.error(`manual LINE group send failed: ${chatRouteErrorKind(err)}`);
+          return c.json({ success: false, error: manualLineSendFailureMessage(err) }, 502);
+        }
+      }
+
+      const logId = idempotencyKey.value ?? crypto.randomUUID();
+      const now = jstNow();
+      await insertLineConversationMessage(c.env.DB, {
+        id: logId,
+        conversationId: lineConversation.id,
+        direction: 'outgoing',
+        messageType,
+        content,
+        source: 'manual',
+        lineAccountId: lineConversation.line_account_id,
+        lineMessageId: extractLineSentMessageId(lineSendResult),
+        webhookEventId: null,
+        quoteToken: extractLineSentQuoteToken(lineSendResult),
+        senderUserId: null,
+        senderName: staff.name,
+        senderPictureUrl: null,
+        createdAt: now,
+      });
+
+      return c.json({
+        success: true,
+        data: {
+          sent: true,
+          messageId: logId,
+          sentByStaffId: staff.id,
+          sentByStaffName: staff.name,
+          quotedMessageId: null,
+          supportCase: null,
+          markAsRead: initialMarkAsReadResult(false),
+        },
+      });
+    }
 
     const chat = await resolveOrCreateChat(c.env.DB, chatId.value);
     if (!chat) return c.json({ success: false, error: 'Chat not found' }, 404);
@@ -3241,7 +3351,6 @@ chats.post('/api/chats/:id/send', async (c) => {
     );
     if (!friend) return c.json({ success: false, error: 'Friend not found' }, 404);
 
-    const staff = currentStaff(c);
     const validation = await validateSupportCaseForSend(c, staff, friend, body.value);
     if (!validation.ok) return validation.response;
     const { supportCase, supportLineAccountId } = validation;

@@ -67,6 +67,7 @@ export type ChatMessage = {
   content: string
   source?: string | null
   canQuote?: boolean
+  canMarkAsRead?: boolean
   quotedMessageId?: string | null
   markedAsReadAt?: string | null
   markedAsReadBy?: string | null
@@ -131,6 +132,12 @@ export type ChatDetailResponse = Chat & {
   typingParticipants?: ChatTypingParticipant[]
   activeSupportCase?: ChatActiveSupportCase | null
   scheduledMessages?: ScheduledChatMessage[]
+  groupParticipants?: Array<{
+    userId: string
+    name: string
+    pictureUrl: string | null
+    lastSeenAt: string
+  }>
 }
 
 export type ScheduledChatMessage = {

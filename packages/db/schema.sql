@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS line_conversations (
   picture_url     TEXT,
   last_message_at TEXT,
   status          TEXT NOT NULL DEFAULT 'resolved' CHECK (status IN ('unread', 'resolved')),
+  workflow_status TEXT CHECK (workflow_status IN ('unread', 'in_progress', 'long_term', 'resolved')),
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL
 );
@@ -223,6 +224,9 @@ ON line_conversations (line_account_id, last_message_at);
 CREATE INDEX IF NOT EXISTS idx_line_conversations_account_status_last_message
 ON line_conversations (line_account_id, status, last_message_at);
 
+CREATE INDEX IF NOT EXISTS idx_line_conversations_account_workflow_last_message
+ON line_conversations (line_account_id, workflow_status, last_message_at);
+
 CREATE TABLE IF NOT EXISTS line_conversation_messages (
   id                 TEXT PRIMARY KEY,
   conversation_id    TEXT NOT NULL REFERENCES line_conversations (id) ON DELETE CASCADE,
@@ -234,6 +238,12 @@ CREATE TABLE IF NOT EXISTS line_conversation_messages (
   line_message_id    TEXT,
   webhook_event_id   TEXT,
   quote_token        TEXT,
+  mark_as_read_token TEXT,
+  marked_as_read_at  TEXT,
+  marked_as_read_by  TEXT,
+  quoted_message_id  TEXT,
+  sent_by_staff_id   TEXT,
+  sent_by_staff_name TEXT,
   sender_user_id     TEXT,
   sender_name        TEXT,
   sender_picture_url TEXT,
@@ -246,6 +256,8 @@ CREATE INDEX IF NOT EXISTS idx_line_conversation_messages_conversation_created
 ON line_conversation_messages (conversation_id, created_at, id);
 CREATE INDEX IF NOT EXISTS idx_line_conversation_messages_line_message
 ON line_conversation_messages (line_message_id);
+CREATE INDEX IF NOT EXISTS idx_line_conversation_messages_quoted_message
+ON line_conversation_messages (quoted_message_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_line_conversation_messages_webhook_event
 ON line_conversation_messages (webhook_event_id)
 WHERE webhook_event_id IS NOT NULL;

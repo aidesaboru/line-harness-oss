@@ -136,6 +136,7 @@ beforeEach(() => {
     picture_url: 'https://example.com/group.png',
     last_message_at: null,
     status: 'resolved',
+    workflow_status: 'resolved',
     created_at: '2026-06-11T17:45:17.000+09:00',
     updated_at: '2026-06-11T17:45:17.000+09:00',
   });
@@ -854,7 +855,14 @@ describe('POST /webhook — message intake', () => {
       webhookEventId: '01JXGROUPMESSAGE',
       deliveryContext: { isRedelivery: false },
       replyToken: 'reply-token',
-      message: { id: 'group-msg-1', type: 'text', text: '銀行名はりそな銀行です' },
+      message: {
+        id: 'group-msg-1',
+        type: 'text',
+        text: '銀行名はりそな銀行です',
+        quoteToken: 'group-quote-token',
+        quotedMessageId: 'group-msg-parent',
+        markAsReadToken: 'group-read-token',
+      },
     };
     const { db } = createDbMock([
       {
@@ -897,6 +905,9 @@ describe('POST /webhook — message intake', () => {
       source: 'group',
       lineMessageId: 'group-msg-1',
       webhookEventId: '01JXGROUPMESSAGE',
+      quoteToken: 'group-quote-token',
+      quotedMessageId: 'group-msg-parent',
+      markAsReadToken: 'group-read-token',
       senderUserId: 'Ugroupmember',
       senderName: '中田 匠',
       senderPictureUrl: 'https://example.com/member.png',
@@ -904,6 +915,77 @@ describe('POST /webhook — message intake', () => {
     expect(upsertFriend).not.toHaveBeenCalled();
     expect(upsertChatOnMessage).not.toHaveBeenCalled();
     expect(fireEvent).not.toHaveBeenCalled();
+  });
+
+  test('capture-only mode stores null read and quote metadata when a room event omits it', async () => {
+    vi.mocked(verifySignature).mockResolvedValue(true);
+    vi.mocked(getLineAccounts).mockResolvedValue([
+      {
+        id: 'acc-1',
+        name: 'Account 1',
+        channel_id: 'channel-1',
+        channel_secret: 'env-default-secret',
+        channel_access_token: 'account-token',
+        login_channel_id: null,
+        login_channel_secret: null,
+        liff_id: null,
+        is_active: 1,
+        country: null,
+        role: null,
+        display_order: 0,
+        token_expires_at: null,
+        created_at: '2026-06-11T00:00:00.000+09:00',
+        updated_at: '2026-06-11T00:00:00.000+09:00',
+      },
+    ]);
+    const event = {
+      type: 'message',
+      mode: 'active',
+      timestamp: 1781160317000,
+      source: { type: 'room', roomId: 'Rroom1', userId: 'Ugroupmember' },
+      webhookEventId: '01JXROOMMESSAGE',
+      deliveryContext: { isRedelivery: false },
+      replyToken: 'reply-token',
+      message: { id: 'room-msg-1', type: 'text', text: '確認をお願いします' },
+    };
+    const { db } = createDbMock([
+      {
+        webhook_event_id: '01JXROOMMESSAGE',
+        line_account_id: 'acc-1',
+        event_payload: JSON.stringify(event),
+        attempts: 0,
+      },
+    ]);
+    const waitUntil = vi.fn();
+    const res = await setupApp().request(
+      '/webhook',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Line-Signature': 'A'.repeat(43) + '=',
+        },
+        body: JSON.stringify({ destination: 'Ubot', events: [event] }),
+      },
+      { ...baseEnv, DB: db, LINE_CAPTURE_ONLY: '1' },
+      { ...baseExecutionCtx, waitUntil } as unknown as ExecutionContext,
+    );
+
+    expect(res.status).toBe(200);
+    await waitUntil.mock.calls[0]?.[0];
+    expect(lineClientMethods.getRoomMemberProfile).toHaveBeenCalledWith('Rroom1', 'Ugroupmember');
+    expect(upsertLineConversation).toHaveBeenCalledWith(db, expect.objectContaining({
+      sourceType: 'room',
+      sourceId: 'Rroom1',
+    }));
+    expect(insertLineConversationMessage).toHaveBeenCalledWith(db, expect.objectContaining({
+      source: 'room',
+      lineMessageId: 'room-msg-1',
+      webhookEventId: '01JXROOMMESSAGE',
+      quoteToken: null,
+      quotedMessageId: null,
+      markAsReadToken: null,
+    }));
   });
 
   test('capture-only mode registers a group as soon as the official account joins', async () => {

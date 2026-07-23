@@ -444,6 +444,34 @@ async function canAccessInternalSource(
     return Boolean(await db.prepare(`SELECT 1 AS ok FROM support_cases sc WHERE ${conditions.join(' AND ')}`).bind(...binds).first());
   }
 
+  if (staff.role !== 'secondary') {
+    const conversationConditions = [
+      'lc.id = ?',
+      'lc.line_account_id = ?',
+    ];
+    const conversationBinds: unknown[] = [sourceId, lineAccountId];
+    if (messageId) {
+      conversationConditions.push(`EXISTS (
+        SELECT 1
+        FROM line_conversation_messages lcm_source
+        WHERE lcm_source.id = ?
+          AND lcm_source.conversation_id = lc.id
+          AND lcm_source.deleted_at IS NULL
+      )`);
+      conversationBinds.push(messageId);
+    }
+    const conversation = await db
+      .prepare(
+        `SELECT 1 AS ok
+         FROM line_conversations lc
+         WHERE ${conversationConditions.join(' AND ')}
+         LIMIT 1`,
+      )
+      .bind(...conversationBinds)
+      .first<{ ok: number }>();
+    if (conversation) return true;
+  }
+
   const visibility = staff.role === 'secondary'
     ? supportFriendVisibilitySql(staff, 'f.id')
     : { sql: '', binds: [] };

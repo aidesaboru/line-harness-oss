@@ -58,6 +58,7 @@ interface ChatMessage {
   content: string
   source?: string | null
   canQuote?: boolean
+  canMarkAsRead?: boolean
   quotedMessageId?: string | null
   markedAsReadAt?: string | null
   markedAsReadBy?: string | null
@@ -81,6 +82,12 @@ interface ChatDetail extends Chat {
   typingParticipants?: ChatTypingParticipant[]
   activeSupportCase?: ChatActiveSupportCase | null
   scheduledMessages?: ScheduledChatMessage[]
+  groupParticipants?: Array<{
+    userId: string
+    name: string
+    pictureUrl: string | null
+    lastSeenAt: string
+  }>
 }
 
 type StatusFilter = 'all' | 'unread' | 'in_progress' | 'long_term' | 'resolved'
@@ -113,6 +120,71 @@ const statusConfig: Record<Chat['status'], { label: string; className: string }>
   in_progress: { label: '対応中', className: 'bg-yellow-100 text-yellow-700' },
   resolved: { label: '解決済', className: 'bg-green-100 text-green-700' },
   long_term: { label: '中長期対応', className: 'bg-blue-100 text-blue-700' },
+}
+
+function GroupInfoSidebar({ chat }: { chat: ChatDetail }) {
+  const participants = chat.groupParticipants ?? []
+  return (
+    <aside className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+      <div className="border-b border-gray-200 px-4 py-3">
+        <h2 className="text-base font-bold text-gray-900">グループ詳細</h2>
+        <p className="mt-0.5 text-xs text-gray-500">会話と参加メンバーを確認</p>
+      </div>
+      <div className="border-b border-gray-100 px-4 py-4">
+        <div className="flex items-center gap-3">
+          {chat.friendPictureUrl ? (
+            <img src={chat.friendPictureUrl} alt="" className="h-12 w-12 shrink-0 rounded-full object-cover" />
+          ) : (
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-blue-50 text-sm font-bold text-blue-700">
+              GROUP
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="break-words text-sm font-bold text-gray-900">{chat.friendName}</p>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                LINEグループ
+              </span>
+              <span className={`rounded px-2 py-0.5 text-[11px] font-semibold ${statusConfig[chat.status].className}`}>
+                {statusConfig[chat.status].label}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-gray-900">確認できた参加メンバー</h3>
+          <span className="text-xs font-semibold text-gray-500">{participants.length}名</span>
+        </div>
+        {participants.length === 0 ? (
+          <p className="rounded-md bg-gray-50 px-3 py-4 text-xs leading-5 text-gray-500">
+            参加メンバーが発言するとここに表示されます
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {participants.map((participant) => (
+              <div key={participant.userId} className="flex min-w-0 items-center gap-2 rounded-md border border-gray-100 px-3 py-2">
+                {participant.pictureUrl ? (
+                  <img src={participant.pictureUrl} alt="" className="h-8 w-8 shrink-0 rounded-full object-cover" />
+                ) : (
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-500">
+                    {participant.name.slice(0, 1)}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-gray-800">{participant.name}</p>
+                  <p className="text-[11px] text-gray-400">
+                    最終発言 {formatAddedDate(participant.lastSeenAt)}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </aside>
+  )
 }
 
 function activeSupportCaseBadge(supportCase?: ChatActiveSupportCase | null): {
@@ -2115,13 +2187,13 @@ export default function ChatsPage() {
     const sendingChatId = selectedChatId
     const sendingIsMultiPersonConversation = chatDetail?.id === sendingChatId
       && (chatDetail.conversationType === 'group' || chatDetail.conversationType === 'room')
-    if (!sendingIsMultiPersonConversation && quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
+    if (quoteTarget && !messageContent.trim() && pendingImage?.mode !== 'pdf-link') {
       setError('返信機能を使うときは、返信文を入力して送信してください。')
       return
     }
-    const sendingQuoteTarget = sendingIsMultiPersonConversation ? null : quoteTarget
+    const sendingQuoteTarget = quoteTarget
     const supportContext = sendingIsMultiPersonConversation ? null : supportDraftContext
-    const sentStatus: Chat['status'] = sendingIsMultiPersonConversation ? 'resolved' : 'in_progress'
+    const sentStatus: Chat['status'] = 'in_progress'
     const pdfAttachment = pendingImage?.mode === 'pdf-link' ? pendingImage : null
     const pdfMessage = pdfAttachment
       ? `PDF: ${pdfAttachment.fileName}\n${pdfAttachment.url}`
@@ -2155,7 +2227,7 @@ export default function ChatsPage() {
         const imageResult = await api.chats.send(sendingChatId, {
           messageType: 'image',
           content: imgPayload,
-          markAsRead: !sendingIsMultiPersonConversation,
+          markAsRead: true,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToImage),
         }, sendAttemptRegistryRef.current.keyFor(imageFingerprint))
         if (!imageResult.success) {
@@ -2236,7 +2308,7 @@ export default function ChatsPage() {
         })
         const sendResult = await api.chats.send(sendingChatId, {
           content,
-          markAsRead: !sendingIsMultiPersonConversation,
+          markAsRead: true,
           quoteMessageId: sendingQuoteTarget?.id ?? undefined,
           ...buildSupportChatSendCasePayload(supportContext, attachSupportToText),
         }, sendAttemptRegistryRef.current.keyFor(textFingerprint))
@@ -2723,13 +2795,17 @@ export default function ChatsPage() {
   )
   const latestChatMessage = chatDetail?.messages?.slice().reverse().find((message) => !message.deletedAt)
   const latestIncomingMarkedAsRead = latestChatMessage?.direction === 'incoming' && Boolean(latestChatMessage.markedAsReadAt)
-  const canMarkLatestIncomingAsRead = latestChatMessage?.direction === 'incoming' && !latestIncomingMarkedAsRead
+  const canMarkLatestIncomingAsRead = latestChatMessage?.direction === 'incoming'
+    && latestChatMessage.canMarkAsRead !== false
+    && !latestIncomingMarkedAsRead
   const markReadButtonLabel = markingAsRead ? '既読中...' : latestIncomingMarkedAsRead ? '既読済み' : '既読にする'
   const markReadButtonTitle = latestIncomingMarkedAsRead
     ? '最後の顧客メッセージは既読済みです'
     : canMarkLatestIncomingAsRead
       ? '最後の顧客メッセージに既読を付けます'
-      : '最後が顧客メッセージの時だけ使えます'
+      : latestChatMessage?.direction === 'incoming' && latestChatMessage.canMarkAsRead === false
+        ? 'このメッセージにはLINEの既読情報がありません'
+        : '最後が顧客メッセージの時だけ使えます'
 
   return (
     <div>
@@ -3031,25 +3107,19 @@ export default function ChatsPage() {
                     <p className="truncate text-base font-semibold text-gray-900">
                       {chatDetail.friendName}
                     </p>
-                    {selectedIsMultiPersonConversation ? (
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      {selectedIsMultiPersonConversation && (
                         <span className="inline-flex items-center rounded-md bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">
                           LINEグループ
                         </span>
-                        {chatDetail.status === 'unread' && (
-                          <span className="inline-flex items-center rounded-md bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
-                            新着あり
-                          </span>
-                        )}
-                      </div>
-                    ) : (
+                      )}
                       <span
-                        className={`mt-1 inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
+                        className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs font-semibold ${statusConfig[chatDetail.status].className}`}
                       >
                         {statusConfig[chatDetail.status].label}
                       </span>
-                    )}
-                    {!selectedIsMultiPersonConversation && isStaleChat(chatDetail) && (
+                    </div>
+                    {isStaleChat(chatDetail) && (
                       <span className="ml-1 mt-1 inline-flex items-center gap-1 rounded-md bg-orange-50 px-2 py-0.5 text-xs font-semibold text-orange-700">
                         <FlameIcon className="h-3 w-3" />
                         24h超過 {formatElapsed(chatDetail.lastUnansweredAt ?? chatDetail.lastMessageAt)}
@@ -3071,51 +3141,40 @@ export default function ChatsPage() {
                     )}
                   </div>
                 </div>
-                {selectedIsMultiPersonConversation && (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => void handleStatusUpdate(chatDetail.status === 'unread' ? 'resolved' : 'unread')}
-                      className={`inline-flex min-h-9 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-semibold transition-colors ${
-                        chatDetail.status === 'unread'
-                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                          : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      {chatDetail.status === 'unread' ? '確認済みにする' : '未読に戻す'}
-                    </button>
-                  </div>
-                )}
-                <div className={`-mx-4 w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0 ${selectedIsMultiPersonConversation ? 'hidden' : 'flex'}`}>
+                <div className="-mx-4 flex w-[calc(100%+2rem)] items-center justify-start gap-1.5 overflow-x-auto px-4 pb-1 lg:mx-0 lg:w-full lg:flex-wrap lg:justify-end lg:overflow-visible lg:px-0 lg:pb-0">
                   <button
                     type="button"
                     onClick={() => setCustomerInfoOpen(true)}
                     className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 xl:hidden"
-                    aria-label="顧客詳細を開く"
+                    aria-label={selectedIsMultiPersonConversation ? 'グループ詳細を開く' : '顧客詳細を開く'}
                   >
                     <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                       <path d="M20 21a8 8 0 0 0-16 0" />
                       <circle cx="12" cy="7" r="4" />
                     </svg>
-                    顧客詳細
+                    {selectedIsMultiPersonConversation ? 'グループ詳細' : '顧客詳細'}
                   </button>
-                  <Link
-                    href={chatDetail.activeSupportCase
-                      ? `/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`
-                      : `/support?create=1&friend=${encodeURIComponent(chatDetail.friendId)}`}
-                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
-                    title={chatDetail.activeSupportCase
-                      ? `チケット「${chatDetail.activeSupportCase.title}」を開く`
-                      : 'このチャットをチケット化'}
-                  >
-                    <TicketIcon className="h-3.5 w-3.5" />
-                    {chatDetail.activeSupportCase ? 'チケットを開く' : 'チケット化'}
-                  </Link>
+                  {!selectedIsMultiPersonConversation && (
+                    <>
+                      <Link
+                        href={chatDetail.activeSupportCase
+                          ? `/support?case=${encodeURIComponent(chatDetail.activeSupportCase.id)}`
+                          : `/support?create=1&friend=${encodeURIComponent(chatDetail.friendId)}`}
+                        className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 transition-colors hover:bg-emerald-100"
+                        title={chatDetail.activeSupportCase
+                          ? `チケット「${chatDetail.activeSupportCase.title}」を開く`
+                          : 'このチャットをチケット化'}
+                      >
+                        <TicketIcon className="h-3.5 w-3.5" />
+                        {chatDetail.activeSupportCase ? 'チケットを開く' : 'チケット化'}
+                      </Link>
+                    </>
+                  )}
                   {chatDetail.latestCustomerMessageId && (
                     <Link
                       href={`/tasks?create=1&source=chat&sourceId=${encodeURIComponent(chatDetail.friendId)}&messageId=${encodeURIComponent(chatDetail.latestCustomerMessageId)}&title=${encodeURIComponent(`${chatDetail.friendName}への対応`)}`}
                       className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
-                      title="この個別チャットを元に社内タスクを作成"
+                      title="このLINEトークを元に社内タスクを作成"
                     >
                       <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M9 11l3 3L22 4" />
@@ -3124,40 +3183,44 @@ export default function ChatsPage() {
                       タスク化
                     </Link>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setInternalChatOpen(true)}
-                    className="inline-flex min-h-9 shrink-0 items-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
-                  >
-                    社内チャット
-                    <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
-                      {chatDetail.internalMessages?.length ?? 0}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void handleConfirmReview()}
-                    disabled={!chatDetail.latestCustomerMessageId || confirmingReview}
-                    className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-default ${
-                      chatDetail.isConfirmed
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                        : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50'
-                    }`}
-                    title="押すたびにリマインド完了日を履歴として記録します"
-                  >
-                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="m5 12 4 4L19 6" />
-                    </svg>
-                    {confirmingReview
-                      ? '記録中'
-                      : chatDetail.isConfirmed
-                        ? `完了 ${chatDetail.confirmedAt
-                          ? formatAddedDate(chatDetail.confirmedAt)
-                          : chatDetail.confirmedMessageAt
-                            ? formatAddedDate(chatDetail.confirmedMessageAt)
-                            : ''}`
-                        : 'リマインド完了'}
-                  </button>
+                  {!selectedIsMultiPersonConversation && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setInternalChatOpen(true)}
+                        className="inline-flex min-h-9 shrink-0 items-center whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50"
+                      >
+                        社内チャット
+                        <span className="ml-2 rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
+                          {chatDetail.internalMessages?.length ?? 0}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleConfirmReview()}
+                        disabled={!chatDetail.latestCustomerMessageId || confirmingReview}
+                        className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-semibold transition-colors disabled:cursor-default ${
+                          chatDetail.isConfirmed
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                            : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 disabled:opacity-50'
+                        }`}
+                        title="押すたびにリマインド完了日を履歴として記録します"
+                      >
+                        <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d="m5 12 4 4L19 6" />
+                        </svg>
+                        {confirmingReview
+                          ? '記録中'
+                          : chatDetail.isConfirmed
+                            ? `完了 ${chatDetail.confirmedAt
+                              ? formatAddedDate(chatDetail.confirmedAt)
+                              : chatDetail.confirmedMessageAt
+                                ? formatAddedDate(chatDetail.confirmedMessageAt)
+                                : ''}`
+                            : 'リマインド完了'}
+                      </button>
+                    </>
+                  )}
                   {unansweredOnly && visibleChats.length > 1 && (
                     <button
                       type="button"
@@ -3564,7 +3627,7 @@ export default function ChatsPage() {
                     </div>
                   </div>
                 )}
-                {!selectedIsMultiPersonConversation && quoteTarget && (
+                {quoteTarget && (
                   <div className="mb-2 flex items-start justify-between gap-3 rounded-lg border border-green-200 border-l-4 border-l-green-500 bg-white px-3 py-2 text-xs shadow-sm">
                     <div className="min-w-0">
                       <div className="font-bold text-green-700">
@@ -3722,21 +3785,19 @@ export default function ChatsPage() {
                     >
                       {sending ? '送信中...' : '送信'}
                     </button>
-                    {!selectedIsMultiPersonConversation && (
-                      <button
-                        type="button"
-                        onClick={handleMarkLatestAsRead}
-                        disabled={sending || scheduling || markingAsRead || !canMarkLatestIncomingAsRead}
-                        className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
-                          latestIncomingMarkedAsRead
-                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'
-                            : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50'
-                        }`}
-                        title={markReadButtonTitle}
-                      >
-                        {markReadButtonLabel}
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={handleMarkLatestAsRead}
+                      disabled={sending || scheduling || markingAsRead || !canMarkLatestIncomingAsRead}
+                      className={`min-h-8 whitespace-nowrap rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed ${
+                        latestIncomingMarkedAsRead
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700 disabled:opacity-100'
+                          : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-50'
+                      }`}
+                      title={markReadButtonTitle}
+                    >
+                      {markReadButtonLabel}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -3760,7 +3821,7 @@ export default function ChatsPage() {
                   </div>
                 </div>
               )}
-              {!selectedIsMultiPersonConversation && customerInfoOpen && (
+              {customerInfoOpen && (
                 <div className="absolute inset-0 z-30 flex justify-end bg-slate-900/25 xl:hidden">
                   <button
                     type="button"
@@ -3777,11 +3838,15 @@ export default function ChatsPage() {
                     >
                       <XIcon className="h-5 w-5" />
                     </button>
-                    <FriendInfoSidebar
-                      friendId={chatDetail.friendId}
-                      chatStatus={{ status: chatDetail.status }}
-                      onFriendUpdated={handleFriendUpdated}
-                    />
+                    {selectedIsMultiPersonConversation ? (
+                      <GroupInfoSidebar chat={chatDetail} />
+                    ) : (
+                      <FriendInfoSidebar
+                        friendId={chatDetail.friendId}
+                        chatStatus={{ status: chatDetail.status }}
+                        onFriendUpdated={handleFriendUpdated}
+                      />
+                    )}
                   </div>
                 </div>
               )}
@@ -3796,17 +3861,21 @@ export default function ChatsPage() {
           表示し続けて pane 間の不整合になる。selection ID 自体が friend_id なので
           直接渡せる (chat list SQL が `id: f.id` で friend_id を返す)。
         */}
-        {(selectedFriendId || (selectedChatId && !selectedIsMultiPersonConversation)) && (
+        {(selectedFriendId || selectedChatId) && (
           <div className="hidden w-80 min-w-0 shrink-0 xl:flex">
-            <FriendInfoSidebar
-              friendId={selectedFriendId || selectedChatId}
-              chatStatus={
-                chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
-                  ? { status: chatDetail.status }
-                  : undefined
-              }
-              onFriendUpdated={handleFriendUpdated}
-            />
+            {selectedIsMultiPersonConversation && chatDetail ? (
+              <GroupInfoSidebar chat={chatDetail} />
+            ) : (
+              <FriendInfoSidebar
+                friendId={selectedFriendId || selectedChatId}
+                chatStatus={
+                  chatDetail && chatDetail.id === (selectedFriendId || selectedChatId)
+                    ? { status: chatDetail.status }
+                    : undefined
+                }
+                onFriendUpdated={handleFriendUpdated}
+              />
+            )}
           </div>
         )}
       </div>

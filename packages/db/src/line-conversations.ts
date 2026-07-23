@@ -2,6 +2,7 @@ import { jstNow } from './utils';
 
 export type LineConversationSourceType = 'group' | 'room';
 export type LineConversationStatus = 'unread' | 'resolved';
+export type LineConversationWorkflowStatus = 'unread' | 'in_progress' | 'long_term' | 'resolved';
 
 export interface LineConversation {
   id: string;
@@ -12,6 +13,7 @@ export interface LineConversation {
   picture_url: string | null;
   last_message_at: string | null;
   status: LineConversationStatus;
+  workflow_status: LineConversationWorkflowStatus | null;
   created_at: string;
   updated_at: string;
 }
@@ -27,6 +29,12 @@ export type LineConversationMessageInput = {
   lineMessageId: string | null;
   webhookEventId: string | null;
   quoteToken: string | null;
+  markAsReadToken?: string | null;
+  markedAsReadAt?: string | null;
+  markedAsReadBy?: string | null;
+  quotedMessageId?: string | null;
+  sentByStaffId?: string | null;
+  sentByStaffName?: string | null;
   senderUserId: string | null;
   senderName: string | null;
   senderPictureUrl: string | null;
@@ -99,8 +107,9 @@ export async function upsertLineConversation(
   await db
     .prepare(
       `INSERT OR IGNORE INTO line_conversations
-         (id, line_account_id, source_type, source_id, display_name, picture_url, status, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'resolved', ?, ?)`,
+         (id, line_account_id, source_type, source_id, display_name, picture_url,
+          status, workflow_status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'resolved', 'resolved', ?, ?)`,
     )
     .bind(
       id,
@@ -132,9 +141,10 @@ export async function insertLineConversationMessage(
     .prepare(
       `INSERT OR IGNORE INTO line_conversation_messages
          (id, conversation_id, direction, message_type, content, source, line_account_id,
-          line_message_id, webhook_event_id, quote_token, sender_user_id, sender_name,
-          sender_picture_url, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          line_message_id, webhook_event_id, quote_token, mark_as_read_token,
+          marked_as_read_at, marked_as_read_by, quoted_message_id, sent_by_staff_id,
+          sent_by_staff_name, sender_user_id, sender_name, sender_picture_url, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       input.id,
@@ -147,6 +157,12 @@ export async function insertLineConversationMessage(
       input.lineMessageId,
       input.webhookEventId,
       input.quoteToken,
+      input.markAsReadToken ?? null,
+      input.markedAsReadAt ?? null,
+      input.markedAsReadBy ?? null,
+      input.quotedMessageId ?? null,
+      input.sentByStaffId ?? null,
+      input.sentByStaffName ?? null,
       input.senderUserId,
       input.senderName,
       input.senderPictureUrl,
@@ -158,11 +174,15 @@ export async function insertLineConversationMessage(
     const nextStatus: LineConversationStatus = input.direction === 'incoming'
       ? 'unread'
       : 'resolved';
+    const nextWorkflowStatus: LineConversationWorkflowStatus = input.direction === 'incoming'
+      ? 'unread'
+      : 'in_progress';
     await db
       .prepare(
         `UPDATE line_conversations
          SET last_message_at = ?,
              status = ?,
+             workflow_status = ?,
              updated_at = ?
          WHERE id = ?
            AND (last_message_at IS NULL OR last_message_at <= ?)`,
@@ -170,6 +190,7 @@ export async function insertLineConversationMessage(
       .bind(
         input.createdAt,
         nextStatus,
+        nextWorkflowStatus,
         jstNow(),
         input.conversationId,
         input.createdAt,

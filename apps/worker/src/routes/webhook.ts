@@ -173,6 +173,12 @@ function eventQuoteToken(event: WebhookEvent): string | null {
   return typeof token === 'string' && token.trim() ? token.trim() : null;
 }
 
+function eventQuotedMessageId(event: WebhookEvent): string | null {
+  if (event.type !== 'message') return null;
+  const id = (event.message as { quotedMessageId?: unknown }).quotedMessageId;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
 function isUnsendWebhookEvent(event: WebhookEvent): boolean {
   return (event as { type?: unknown }).type === 'unsend';
 }
@@ -452,6 +458,8 @@ async function handleMultiPersonMessage(params: {
     lineMessageId: eventLineMessageId(event),
     webhookEventId: durableEventId ?? eventWebhookEventId(event),
     quoteToken: eventQuoteToken(event),
+    markAsReadToken: eventMarkAsReadToken(event),
+    quotedMessageId: eventQuotedMessageId(event),
     senderUserId: sender.userId,
     senderName: sender.name,
     senderPictureUrl: sender.pictureUrl,

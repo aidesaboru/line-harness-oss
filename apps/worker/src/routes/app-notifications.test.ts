@@ -163,7 +163,7 @@ function makeFollowUpReminderDb() {
   return { db: { prepare, batch } as unknown as D1Database, calls };
 }
 
-function makeInternalTaskDb() {
+function makeInternalTaskDb(options: { groupSource?: boolean } = {}) {
   const calls: DbCall[] = [];
   const task = {
     id: 'task-1',
@@ -212,7 +212,8 @@ function makeInternalTaskDb() {
         }),
         first: vi.fn(async () => {
           if (sql.includes('SELECT * FROM internal_tasks')) return task;
-          if (sql.includes('FROM friends f')) return { ok: 1 };
+          if (sql.includes('FROM line_conversations lc')) return options.groupSource ? { ok: 1 } : null;
+          if (sql.includes('FROM friends f')) return options.groupSource ? null : { ok: 1 };
           if (sql.includes('FROM internal_task_assignees')) return { ok: 1 };
           return null;
         }),
@@ -422,6 +423,35 @@ describe('app notifications', () => {
     expect(staffCall?.binds).toEqual(['staff-1']);
     const assigneeInsert = calls.find((call) => call.sql.includes('INSERT INTO internal_task_assignees'));
     expect(assigneeInsert?.binds).toContain('staff-1');
+  });
+
+  test('creates a task from a LINE group message without requiring a friend row', async () => {
+    const { db, calls } = makeInternalTaskDb({ groupSource: true });
+    const res = await setupApp(db, {
+      id: 'staff-1',
+      name: '林 静香',
+      role: 'staff',
+    }).request('/api/app-notifications/internal-chat-tasks', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        source: 'chat',
+        sourceId: 'conversation-group-1',
+        sourceMessageId: 'group-message-1',
+        title: 'グループ内の確認事項を対応する',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const sourceCall = calls.find((call) => call.sql.includes('FROM line_conversations lc'));
+    expect(sourceCall?.sql).toContain('FROM line_conversation_messages lcm_source');
+    expect(sourceCall?.binds).toEqual([
+      'conversation-group-1',
+      'acc-1',
+      'group-message-1',
+    ]);
+    expect(calls.some((call) => call.sql.includes('INSERT INTO internal_tasks'))).toBe(true);
   });
 
   test('marks notification inbox items as read without removing history', async () => {

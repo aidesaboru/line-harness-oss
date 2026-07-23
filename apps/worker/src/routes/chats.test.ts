@@ -109,6 +109,13 @@ type LineConversationMessageRow = {
   message_type: string;
   content: string;
   source: 'group' | 'room';
+  quote_token?: string | null;
+  mark_as_read_token?: string | null;
+  marked_as_read_at?: string | null;
+  marked_as_read_by?: string | null;
+  quoted_message_id?: string | null;
+  sent_by_staff_id?: string | null;
+  sent_by_staff_name?: string | null;
   sender_user_id: string | null;
   sender_name: string | null;
   sender_picture_url: string | null;
@@ -260,13 +267,20 @@ function makeChatDb(state: {
             return (chatInternalMessages.find((item) => item.id === messageId) ?? null) as T | null;
           }
           if (sql.includes('SELECT id, mark_as_read_token, marked_as_read_at')) {
-            const [friendId] = bound as [string];
-            const row = messages
-              .filter((message) => (
-                message.friend_id === friendId &&
-                message.direction === 'incoming'
-              ))
-              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
+            const [sourceId] = bound as [string];
+            const row = sql.includes('FROM line_conversation_messages')
+              ? lineConversationMessages
+                .filter((message) => (
+                  message.conversation_id === sourceId
+                  && message.direction === 'incoming'
+                ))
+                .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0]
+              : messages
+                .filter((message) => (
+                  message.friend_id === sourceId &&
+                  message.direction === 'incoming'
+                ))
+                .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
             return (row ? {
               id: row.id,
               mark_as_read_token: row.mark_as_read_token ?? null,
@@ -274,15 +288,23 @@ function makeChatDb(state: {
             } : null) as T | null;
           }
           if (sql.includes('SELECT id, created_at') && sql.includes('direction = \'incoming\'')) {
-            const [friendId] = bound as [string];
-            const row = messages
-              .filter((message) => (
-                message.friend_id === friendId
-                && message.direction === 'incoming'
-                && message.message_type !== 'postback'
-                && !message.deleted_at
-              ))
-              .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
+            const [sourceId] = bound as [string];
+            const row = sql.includes('FROM line_conversation_messages')
+              ? lineConversationMessages
+                .filter((message) => (
+                  message.conversation_id === sourceId
+                  && message.direction === 'incoming'
+                  && !message.deleted_at
+                ))
+                .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0]
+              : messages
+                .filter((message) => (
+                  message.friend_id === sourceId
+                  && message.direction === 'incoming'
+                  && message.message_type !== 'postback'
+                  && !message.deleted_at
+                ))
+                .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
             return (row ? { id: row.id, created_at: row.created_at } : null) as T | null;
           }
           if (sql.includes('SELECT id, friend_id, direction, deleted_at')) {
@@ -300,12 +322,17 @@ function makeChatDb(state: {
             } : null) as T | null;
           }
           if (sql.includes('SELECT id, direction, quote_token, deleted_at')) {
-            const [messageId, friendId] = bound as [string, string];
-            const row = messages.find((message) => (
-              message.id === messageId &&
-              message.friend_id === friendId &&
-              (message.delivery_type === undefined || message.delivery_type === null || message.delivery_type !== 'test')
-            ));
+            const [messageId, sourceId] = bound as [string, string];
+            const row = sql.includes('FROM line_conversation_messages')
+              ? lineConversationMessages.find((message) => (
+                message.id === messageId
+                && message.conversation_id === sourceId
+              ))
+              : messages.find((message) => (
+                message.id === messageId &&
+                message.friend_id === sourceId &&
+                (message.delivery_type === undefined || message.delivery_type === null || message.delivery_type !== 'test')
+              ));
             return (row ? {
               id: row.id,
               direction: row.direction,
@@ -1071,8 +1098,9 @@ describe('chat support visibility', () => {
     });
     expect(calls).toContainEqual(expect.objectContaining({
       method: 'run',
-      sql: 'UPDATE line_conversations SET status = ?, updated_at = ? WHERE id = ?',
+      sql: expect.stringContaining('SET workflow_status = ?'),
       binds: [
+        'resolved',
         'resolved',
         '2026-06-12T10:00:00.000',
         'conversation-group-1',
@@ -1157,6 +1185,153 @@ describe('chat support visibility', () => {
           marked: false,
           reason: 'not_requested',
         },
+      },
+    });
+  });
+
+  test('staff can mark the latest LINE group message as read', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: null,
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      workflow_status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'group-account-token' });
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+      lineConversationMessages: [{
+        id: 'group-incoming-1',
+        conversation_id: 'conversation-group-1',
+        direction: 'incoming',
+        message_type: 'text',
+        content: '確認をお願いします',
+        source: 'group',
+        quote_token: 'group-quote-1',
+        mark_as_read_token: 'group-read-1',
+        sender_user_id: 'Ugroupmember',
+        sender_name: '中田 匠',
+        sender_picture_url: null,
+        deleted_at: null,
+        deleted_reason: null,
+        created_at: '2026-06-12T12:00:00.000',
+      }],
+    });
+
+    const res = await setupApp(db, 'staff', {
+      LINE_CAPTURE_ONLY: '1',
+      LINE_MANUAL_SEND_ENABLED: '1',
+    }).request('/api/chats/conversation-group-1/read', { method: 'POST' });
+
+    expect(res.status).toBe(200);
+    expect(lineSdkMocks.markMessagesAsRead).toHaveBeenCalledWith('group-read-1');
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        status: 'in_progress',
+        markedMessageId: 'group-incoming-1',
+        markAsRead: {
+          requested: true,
+          marked: true,
+          reason: null,
+        },
+      },
+    });
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: 'run',
+        sql: expect.stringContaining('UPDATE line_conversation_messages'),
+        binds: [
+          '2026-06-12T10:00:00.000',
+          'staff-1',
+          'group-incoming-1',
+        ],
+      }),
+      expect.objectContaining({
+        method: 'run',
+        sql: expect.stringContaining("SET workflow_status = 'in_progress'"),
+      }),
+    ]));
+  });
+
+  test('staff can quote an incoming LINE group message', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー連絡グループ',
+      picture_url: null,
+      last_message_at: '2026-06-12T12:00:00.000',
+      status: 'unread',
+      workflow_status: 'unread',
+      created_at: '2026-06-12T08:00:00.000',
+      updated_at: '2026-06-12T12:00:00.000',
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'group-account-token' });
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: friends.map((friend) => friend.id),
+      lineConversationMessages: [{
+        id: 'group-incoming-1',
+        conversation_id: 'conversation-group-1',
+        direction: 'incoming',
+        message_type: 'text',
+        content: 'この内容を確認してください',
+        source: 'group',
+        quote_token: 'group-quote-1',
+        sender_user_id: 'Ugroupmember',
+        sender_name: '中田 匠',
+        sender_picture_url: null,
+        deleted_at: null,
+        deleted_reason: null,
+        created_at: '2026-06-12T12:00:00.000',
+      }],
+    });
+    const idempotencyKey = '44444444-4444-4444-8444-444444444444';
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: JSON.stringify({
+        content: 'こちらの件を確認します。',
+        quoteMessageId: 'group-incoming-1',
+        markAsRead: false,
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(lineSdkMocks.pushTextMessage).toHaveBeenCalledWith(
+      'Cgroup1',
+      'こちらの件を確認します。',
+      'group-quote-1',
+      idempotencyKey,
+    );
+    expect(dbMocks.insertLineConversationMessage).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        id: idempotencyKey,
+        quotedMessageId: 'group-incoming-1',
+        sentByStaffId: 'staff-1',
+        sentByStaffName: '田島',
+      }),
+    );
+    await expect(res.json()).resolves.toMatchObject({
+      success: true,
+      data: {
+        quotedMessageId: 'group-incoming-1',
       },
     });
   });

@@ -141,6 +141,14 @@ function canReadLineConversations(schema: OptionalChatSchema): boolean {
   return schema.line_conversations && schema.line_conversation_messages;
 }
 
+function lineConversationWorkflowStatus(
+  conversation: { workflow_status?: unknown; status?: unknown },
+): ChatStatus {
+  const workflowStatus = String(conversation.workflow_status ?? '');
+  if (CHAT_STATUSES.has(workflowStatus)) return workflowStatus as ChatStatus;
+  return conversation.status === 'unread' ? 'unread' : 'resolved';
+}
+
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
 }
@@ -1151,6 +1159,39 @@ async function resolveQuoteTargetForSend(
   return { ok: true, value: { id: row.id, quoteToken: row.quote_token } };
 }
 
+async function resolveLineConversationQuoteTargetForSend(
+  db: D1Database,
+  conversationId: string,
+  quoteMessageId: string | undefined,
+  messageType: ChatMessageType,
+): Promise<ValueResult<{ id: string; quoteToken: string } | null>> {
+  const targetId = quoteMessageId?.trim();
+  if (!targetId) return { ok: true, value: null };
+  if (messageType !== 'text') {
+    return { ok: false, error: '返信機能はテキスト送信時だけ使えます' };
+  }
+
+  const row = await db
+    .prepare(
+      `SELECT id, direction, quote_token, deleted_at
+       FROM line_conversation_messages
+       WHERE id = ?
+         AND conversation_id = ?
+       LIMIT 1`,
+    )
+    .bind(targetId, conversationId)
+    .first<ChatQuoteTargetRow>();
+  if (!row) return { ok: false, error: '返信元メッセージが見つかりません' };
+  if (row.deleted_at) return { ok: false, error: '取り消し済みメッセージには返信できません' };
+  if (row.direction !== 'incoming') {
+    return { ok: false, error: '参加メンバーから届いたメッセージだけ返信元にできます' };
+  }
+  if (!row.quote_token) {
+    return { ok: false, error: 'このメッセージはLINEの返信対象にできません。新しく届いたメッセージでお試しください' };
+  }
+  return { ok: true, value: { id: row.id, quoteToken: row.quote_token } };
+}
+
 async function addSupportReplyEvent(
   db: D1Database,
   supportCase: SupportCaseForChat,
@@ -1402,6 +1443,61 @@ async function markLatestIncomingAsRead(
     return { requested: true, marked: true, reason: null, messageId: latest.id, markedAt };
   } catch (err) {
     console.error(`mark-as-read failed: ${chatRouteErrorKind(err)}`);
+    return { requested: true, marked: false, reason: 'line_error', messageId: latest.id, markedAt: null };
+  }
+}
+
+async function markLatestLineConversationIncomingAsRead(
+  db: D1Database,
+  lineClient: { markMessagesAsRead(markAsReadToken: string): Promise<unknown> },
+  conversationId: string,
+  requested: boolean | undefined,
+  actorId?: string | null,
+): Promise<MarkAsReadResult> {
+  const result = initialMarkAsReadResult(requested === true);
+  if (!result.requested) return result;
+
+  const latest = await db
+    .prepare(
+      `SELECT id, mark_as_read_token, marked_as_read_at
+       FROM line_conversation_messages
+       WHERE conversation_id = ?
+         AND direction = 'incoming'
+         AND deleted_at IS NULL
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+    )
+    .bind(conversationId)
+    .first<LatestIncomingReadMessage>();
+  if (!latest) return result;
+  if (latest.marked_as_read_at) {
+    return {
+      requested: true,
+      marked: true,
+      reason: null,
+      messageId: latest.id,
+      markedAt: latest.marked_as_read_at,
+    };
+  }
+  if (!latest.mark_as_read_token) {
+    return { ...result, messageId: latest.id };
+  }
+
+  try {
+    await lineClient.markMessagesAsRead(latest.mark_as_read_token);
+    const markedAt = jstNow();
+    await db
+      .prepare(
+        `UPDATE line_conversation_messages
+         SET marked_as_read_at = ?,
+             marked_as_read_by = ?
+         WHERE id = ?`,
+      )
+      .bind(markedAt, actorId ?? null, latest.id)
+      .run();
+    return { requested: true, marked: true, reason: null, messageId: latest.id, markedAt };
+  } catch (err) {
+    console.error(`group mark-as-read failed: ${chatRouteErrorKind(err)}`);
     return { requested: true, marked: false, reason: 'line_error', messageId: latest.id, markedAt: null };
   }
 }
@@ -1814,21 +1910,19 @@ chats.get('/api/chats', async (c) => {
       };
     });
 
-    const lineConversationStatus = unansweredOnly
-      ? 'unread'
-      : status === 'unread' || status === 'resolved'
-        ? status
-        : null;
+    const lineConversationStatus = unansweredOnly ? 'unread' : status ?? null;
     const shouldLoadLineConversations = (
       !operatorId
       && canReadLineConversations(optionalSchema)
-      && (!status || lineConversationStatus !== null)
     );
     if (shouldLoadLineConversations) {
       const conversationConditions = lineAccountId ? ['lc.line_account_id = ?'] : [];
       const conversationBindings: unknown[] = lineAccountId ? [lineAccountId] : [];
       if (lineConversationStatus) {
-        conversationConditions.push('lc.status = ?');
+        conversationConditions.push(`COALESCE(
+          lc.workflow_status,
+          CASE WHEN lc.status = 'unread' THEN 'unread' ELSE 'resolved' END
+        ) = ?`);
         conversationBindings.push(lineConversationStatus);
       }
       if (search) {
@@ -1852,6 +1946,7 @@ chats.get('/api/chats', async (c) => {
         `SELECT
            lc.id,
            lc.source_type,
+           lc.workflow_status,
            lc.status,
            lc.display_name,
            lc.picture_url,
@@ -1860,7 +1955,9 @@ chats.get('/api/chats', async (c) => {
            lc.updated_at,
            latest.content AS last_message_content,
            latest.direction AS last_message_direction,
-           latest.message_type AS last_message_type
+           latest.message_type AS last_message_type,
+           latest_incoming.id AS latest_customer_message_id,
+           latest_incoming.created_at AS latest_customer_message_at
          FROM line_conversations lc
          LEFT JOIN line_conversation_messages latest ON latest.id = (
            SELECT message.id
@@ -1868,6 +1965,15 @@ chats.get('/api/chats', async (c) => {
            WHERE message.conversation_id = lc.id
              AND message.deleted_at IS NULL
            ORDER BY message.created_at DESC, message.id DESC
+           LIMIT 1
+         )
+         LEFT JOIN line_conversation_messages latest_incoming ON latest_incoming.id = (
+           SELECT incoming.id
+           FROM line_conversation_messages incoming
+           WHERE incoming.conversation_id = lc.id
+             AND incoming.direction = 'incoming'
+             AND incoming.deleted_at IS NULL
+           ORDER BY incoming.created_at DESC, incoming.id DESC
            LIMIT 1
          )
          ${conversationWhere}
@@ -1883,20 +1989,20 @@ chats.get('/api/chats', async (c) => {
         friendName: String(row.display_name || 'グループトーク'),
         friendPictureUrl: row.picture_url || null,
         operatorId: null,
-        status: row.status === 'unread' ? 'unread' as const : 'resolved' as const,
+        status: lineConversationWorkflowStatus(row),
         notes: null,
         lastMessageAt: row.last_message_at || null,
         lastMessageContent: row.last_message_content || null,
         lastMessageDirection: row.last_message_direction || null,
         lastMessageType: row.last_message_type || null,
         lastHumanReplyAt: null,
-        latestCustomerMessageId: null,
-        latestCustomerMessageAt: null,
+        latestCustomerMessageId: row.latest_customer_message_id || null,
+        latestCustomerMessageAt: row.latest_customer_message_at || null,
         isConfirmed: false,
         confirmedMessageAt: null,
         confirmedAt: null,
-        needsReply: row.status === 'unread',
-        lastUnansweredAt: row.status === 'unread' ? row.last_message_at || null : null,
+        needsReply: lineConversationWorkflowStatus(row) === 'unread',
+        lastUnansweredAt: lineConversationWorkflowStatus(row) === 'unread' ? row.last_message_at || null : null,
         activeSupportCase: null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -2035,9 +2141,12 @@ chats.get('/api/chats/:id', async (c) => {
         messageConditions.push('created_at < ?');
         messageBindings.push(beforeCreatedAt);
       }
-      const result = await c.env.DB
+      const [result, latestCustomerMessage, lastHumanReply, participants] = await Promise.all([
+        c.env.DB
         .prepare(
           `SELECT id, direction, message_type, content, source, quote_token,
+                  quoted_message_id, mark_as_read_token, marked_as_read_at, marked_as_read_by,
+                  sent_by_staff_id, sent_by_staff_name,
                   sender_user_id, sender_name, sender_picture_url,
                   deleted_at, deleted_reason, created_at
            FROM line_conversation_messages
@@ -2046,7 +2155,47 @@ chats.get('/api/chats/:id', async (c) => {
            LIMIT ?`,
         )
         .bind(...messageBindings, messageLimit + 1)
-        .all<Record<string, unknown>>();
+        .all<Record<string, unknown>>(),
+        c.env.DB
+          .prepare(
+            `SELECT id, created_at
+             FROM line_conversation_messages
+             WHERE conversation_id = ?
+               AND direction = 'incoming'
+               AND deleted_at IS NULL
+             ORDER BY created_at DESC, id DESC
+             LIMIT 1`,
+          )
+          .bind(lineConversation.id)
+          .first<{ id: string; created_at: string }>(),
+        c.env.DB
+          .prepare(
+            `SELECT MAX(created_at) AS created_at
+             FROM line_conversation_messages
+             WHERE conversation_id = ?
+               AND direction = 'outgoing'
+               AND deleted_at IS NULL`,
+          )
+          .bind(lineConversation.id)
+          .first<{ created_at: string | null }>(),
+        c.env.DB
+          .prepare(
+            `SELECT sender_user_id,
+                    MAX(sender_name) AS sender_name,
+                    MAX(sender_picture_url) AS sender_picture_url,
+                    MAX(created_at) AS last_seen_at
+             FROM line_conversation_messages
+             WHERE conversation_id = ?
+               AND direction = 'incoming'
+               AND sender_user_id IS NOT NULL
+               AND deleted_at IS NULL
+             GROUP BY sender_user_id
+             ORDER BY last_seen_at DESC
+             LIMIT 100`,
+          )
+          .bind(lineConversation.id)
+          .all<Record<string, unknown>>(),
+      ]);
       const hasMoreMessages = result.results.length > messageLimit;
       const pageMessages = result.results.slice(0, messageLimit).reverse();
       const oldestMessage = pageMessages[0];
@@ -2061,19 +2210,19 @@ chats.get('/api/chats/:id', async (c) => {
           friendName: lineConversation.display_name,
           friendPictureUrl: lineConversation.picture_url,
           operatorId: null,
-          status: lineConversation.status === 'unread' ? 'unread' : 'resolved',
+          status: lineConversationWorkflowStatus(lineConversation),
           notes: null,
           lastMessageAt: latestMessage?.created_at ?? lineConversation.last_message_at,
           lastMessageContent: latestMessage?.content ?? null,
           lastMessageDirection: latestMessage?.direction ?? null,
           lastMessageType: latestMessage?.message_type ?? null,
-          needsReply: lineConversation.status === 'unread',
-          lastUnansweredAt: lineConversation.status === 'unread'
+          needsReply: lineConversationWorkflowStatus(lineConversation) === 'unread',
+          lastUnansweredAt: lineConversationWorkflowStatus(lineConversation) === 'unread'
             ? lineConversation.last_message_at
             : null,
-          lastHumanReplyAt: null,
-          latestCustomerMessageId: null,
-          latestCustomerMessageAt: null,
+          lastHumanReplyAt: lastHumanReply?.created_at ?? null,
+          latestCustomerMessageId: latestCustomerMessage?.id ?? null,
+          latestCustomerMessageAt: latestCustomerMessage?.created_at ?? null,
           isConfirmed: false,
           confirmedMessageAt: null,
           confirmedAt: null,
@@ -2086,20 +2235,32 @@ chats.get('/api/chats/:id', async (c) => {
           activeSupportCase: null,
           typingParticipants: [],
           scheduledMessages: [],
+          groupParticipants: participants.results.map((participant) => ({
+            userId: participant.sender_user_id,
+            name: participant.sender_name || '参加メンバー',
+            pictureUrl: participant.sender_picture_url || null,
+            lastSeenAt: participant.last_seen_at,
+          })),
           messages: pageMessages.map((message) => ({
             id: message.id,
             direction: message.direction,
             messageType: message.message_type,
             content: message.content,
             source: message.source,
-            canQuote: false,
-            quotedMessageId: null,
-            markedAsReadAt: null,
-            markedAsReadBy: null,
+            canQuote: message.direction === 'incoming'
+              && typeof message.quote_token === 'string'
+              && message.quote_token.trim() !== ''
+              && !message.deleted_at,
+            canMarkAsRead: message.direction === 'incoming'
+              && typeof message.mark_as_read_token === 'string'
+              && message.mark_as_read_token.trim() !== '',
+            quotedMessageId: message.quoted_message_id,
+            markedAsReadAt: message.marked_as_read_at,
+            markedAsReadBy: message.marked_as_read_by,
             deletedAt: message.deleted_at,
             deletedReason: message.deleted_reason,
-            sentByStaffId: null,
-            sentByStaffName: null,
+            sentByStaffId: message.sent_by_staff_id,
+            sentByStaffName: message.sent_by_staff_name,
             incomingSenderUserId: message.sender_user_id,
             incomingSenderName: message.sender_name,
             incomingSenderPictureUrl: message.sender_picture_url,
@@ -2451,17 +2612,28 @@ chats.put('/api/chats/:id', async (c) => {
       if (
         parsed.value.operatorId !== undefined
         || parsed.value.notes !== undefined
-        || (parsed.value.status !== 'unread' && parsed.value.status !== 'resolved')
+        || !parsed.value.status
       ) {
         return c.json({
           success: false,
-          error: 'グループトークで更新できるのは未読または確認済みの状態だけです',
+          error: 'グループトークでは対応状態だけ更新できます',
         }, 400);
       }
       const updatedAt = jstNow();
       await c.env.DB
-        .prepare('UPDATE line_conversations SET status = ?, updated_at = ? WHERE id = ?')
-        .bind(parsed.value.status, updatedAt, lineConversation.id)
+        .prepare(
+          `UPDATE line_conversations
+           SET workflow_status = ?,
+               status = ?,
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .bind(
+          parsed.value.status,
+          parsed.value.status === 'unread' ? 'unread' : 'resolved',
+          updatedAt,
+          lineConversation.id,
+        )
         .run();
       return c.json({
         success: true,
@@ -2985,6 +3157,56 @@ chats.post('/api/chats/:id/read', async (c) => {
     const chatId = parseChatPathId(c.req.param('id'));
     if (!chatId.ok) return c.json({ success: false, error: chatId.error }, 400);
 
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
+    const lineConversation = canReadLineConversations(optionalSchema)
+      ? await getLineConversationById(c.env.DB, chatId.value)
+      : null;
+    if (lineConversation) {
+      if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+        return c.json({ success: false, error: 'Chat not found' }, 404);
+      }
+      const accessToken = await resolveLineAccessTokenByAccount(
+        c.env.DB,
+        lineConversation.line_account_id,
+        c.env.LINE_CHANNEL_ACCESS_TOKEN,
+      );
+      const staff = currentStaff(c);
+      const { LineClient } = await import('@line-crm/line-sdk');
+      const lineClient = new LineClient(accessToken, {
+        allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
+      });
+      const markAsRead = await markLatestLineConversationIncomingAsRead(
+        c.env.DB,
+        lineClient,
+        lineConversation.id,
+        true,
+        staff.id,
+      );
+      const updatedAt = jstNow();
+      if (markAsRead.marked) {
+        await c.env.DB
+          .prepare(
+            `UPDATE line_conversations
+             SET workflow_status = 'in_progress',
+                 status = 'resolved',
+                 updated_at = ?
+             WHERE id = ?`,
+          )
+          .bind(updatedAt, lineConversation.id)
+          .run();
+      }
+      return c.json({
+        success: true,
+        data: {
+          markAsRead,
+          status: markAsRead.marked ? 'in_progress' : lineConversationWorkflowStatus(lineConversation),
+          markedMessageId: markAsRead.messageId,
+          markedAt: markAsRead.markedAt,
+          updatedAt,
+        } satisfies ChatMarkAsReadResponse,
+      });
+    }
+
     const resolved = await resolveExistingChatOrFriend(c.env.DB, chatId.value);
     if (!resolved) return c.json({ success: false, error: 'Chat not found' }, 404);
     const denied = await ensureChatFriendAccess(c, resolved.friendId);
@@ -3239,8 +3461,8 @@ chats.post('/api/chats/:id/send', async (c) => {
       if (isSecondaryOnlySupportStaff(staff)) {
         return c.json({ success: false, error: 'Chat not found' }, 404);
       }
-      if (body.value.supportCaseId || body.value.lineAccountId || body.value.quoteMessageId) {
-        return c.json({ success: false, error: 'グループトークでは案件連携と引用返信を利用できません' }, 400);
+      if (body.value.supportCaseId || body.value.lineAccountId) {
+        return c.json({ success: false, error: 'グループトークでは個人チケットとの連携を利用できません' }, 400);
       }
 
       const safetyBlock = await getLineSendSafetyBlock(c.env.DB, lineConversation.line_account_id);
@@ -3256,6 +3478,13 @@ chats.post('/api/chats/:id/send', async (c) => {
         allowMutationsWhenDisabled: isLineCaptureOnly(c.env) && isLineManualSendEnabled(c.env),
       });
       const { messageType, content } = normalized.payload;
+      const quoteTarget = await resolveLineConversationQuoteTargetForSend(
+        c.env.DB,
+        lineConversation.id,
+        body.value.quoteMessageId,
+        messageType,
+      );
+      if (!quoteTarget.ok) return c.json({ success: false, error: quoteTarget.error }, 400);
       let lineSendResult: unknown = null;
 
       try {
@@ -3264,10 +3493,16 @@ chats.post('/api/chats/:id/send', async (c) => {
             ? await lineClient.pushTextMessage(
                 lineConversation.source_id,
                 content,
-                undefined,
+                quoteTarget.value?.quoteToken,
                 idempotencyKey.value,
               )
-            : await lineClient.pushTextMessage(lineConversation.source_id, content);
+            : quoteTarget.value
+              ? await lineClient.pushTextMessage(
+                  lineConversation.source_id,
+                  content,
+                  quoteTarget.value.quoteToken,
+                )
+              : await lineClient.pushTextMessage(lineConversation.source_id, content);
         } else if (messageType === 'flex') {
           const contents = normalized.payload.flexContents;
           lineSendResult = idempotencyKey.value
@@ -3306,6 +3541,13 @@ chats.post('/api/chats/:id/send', async (c) => {
         }
       }
 
+      const markAsRead = await markLatestLineConversationIncomingAsRead(
+        c.env.DB,
+        lineClient,
+        lineConversation.id,
+        body.value.markAsRead,
+        staff.id,
+      );
       const logId = idempotencyKey.value ?? crypto.randomUUID();
       const now = jstNow();
       await insertLineConversationMessage(c.env.DB, {
@@ -3319,6 +3561,12 @@ chats.post('/api/chats/:id/send', async (c) => {
         lineMessageId: extractLineSentMessageId(lineSendResult),
         webhookEventId: null,
         quoteToken: extractLineSentQuoteToken(lineSendResult),
+        markAsReadToken: null,
+        quotedMessageId: quoteTarget.value?.id ?? null,
+        markedAsReadAt: null,
+        markedAsReadBy: null,
+        sentByStaffId: staff.id,
+        sentByStaffName: staff.name,
         senderUserId: null,
         senderName: staff.name,
         senderPictureUrl: null,
@@ -3332,9 +3580,9 @@ chats.post('/api/chats/:id/send', async (c) => {
           messageId: logId,
           sentByStaffId: staff.id,
           sentByStaffName: staff.name,
-          quotedMessageId: null,
+          quotedMessageId: quoteTarget.value?.id ?? null,
           supportCase: null,
-          markAsRead: initialMarkAsReadResult(false),
+          markAsRead,
         },
       });
     }

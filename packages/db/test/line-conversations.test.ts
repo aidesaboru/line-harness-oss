@@ -49,6 +49,8 @@ describe('LINE conversations', () => {
         last_message_at TEXT,
         status          TEXT NOT NULL DEFAULT 'resolved'
                         CHECK (status IN ('unread', 'resolved')),
+        workflow_status TEXT
+                        CHECK (workflow_status IN ('unread', 'in_progress', 'long_term', 'resolved')),
         created_at      TEXT NOT NULL,
         updated_at      TEXT NOT NULL
       );
@@ -66,6 +68,12 @@ describe('LINE conversations', () => {
         line_message_id    TEXT,
         webhook_event_id   TEXT UNIQUE,
         quote_token        TEXT,
+        mark_as_read_token TEXT,
+        marked_as_read_at  TEXT,
+        marked_as_read_by  TEXT,
+        quoted_message_id  TEXT,
+        sent_by_staff_id   TEXT,
+        sent_by_staff_name TEXT,
         sender_user_id     TEXT,
         sender_name        TEXT,
         sender_picture_url TEXT,
@@ -112,10 +120,12 @@ describe('LINE conversations', () => {
     });
 
     expect(conversation.status).toBe('resolved');
+    expect(conversation.workflow_status).toBe('resolved');
     expect((await getLineConversationById(db, conversation.id))?.status).toBe('resolved');
+    expect((await getLineConversationById(db, conversation.id))?.workflow_status).toBe('resolved');
   });
 
-  it('marks the conversation unread when an incoming message is inserted', async () => {
+  it('stores message workflow metadata and marks an incoming conversation unread', async () => {
     const conversation = await upsertLineConversation(db, {
       lineAccountId: 'account-1',
       sourceType: 'group',
@@ -124,14 +134,37 @@ describe('LINE conversations', () => {
       pictureUrl: null,
     });
 
-    expect(await insertLineConversationMessage(db, messageInput(conversation.id))).toBe(true);
+    expect(await insertLineConversationMessage(db, messageInput(conversation.id, {
+      markAsReadToken: 'read-token-1',
+      markedAsReadAt: '2026-07-23T10:01:00.000+09:00',
+      markedAsReadBy: 'staff-1',
+      quotedMessageId: 'line-message-parent',
+      sentByStaffId: 'staff-1',
+      sentByStaffName: '担当者',
+    }))).toBe(true);
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'unread',
+      workflow_status: 'unread',
       last_message_at: '2026-07-23T10:00:00.000+09:00',
+    });
+    expect(
+      sqlite.prepare(
+        `SELECT mark_as_read_token, marked_as_read_at, marked_as_read_by,
+                quoted_message_id, sent_by_staff_id, sent_by_staff_name
+         FROM line_conversation_messages
+         WHERE id = ?`,
+      ).get('message-1'),
+    ).toEqual({
+      mark_as_read_token: 'read-token-1',
+      marked_as_read_at: '2026-07-23T10:01:00.000+09:00',
+      marked_as_read_by: 'staff-1',
+      quoted_message_id: 'line-message-parent',
+      sent_by_staff_id: 'staff-1',
+      sent_by_staff_name: '担当者',
     });
   });
 
-  it('marks the conversation resolved when a newer outgoing message is inserted', async () => {
+  it('keeps legacy resolved and marks workflow in progress for a newer outgoing message', async () => {
     const conversation = await upsertLineConversation(db, {
       lineAccountId: 'account-1',
       sourceType: 'group',
@@ -152,6 +185,7 @@ describe('LINE conversations', () => {
 
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'resolved',
+      workflow_status: 'in_progress',
       last_message_at: '2026-07-23T10:05:00.000+09:00',
     });
   });
@@ -184,6 +218,7 @@ describe('LINE conversations', () => {
 
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'resolved',
+      workflow_status: 'in_progress',
       last_message_at: '2026-07-23T10:10:00.000+09:00',
       updated_at: beforeDelayedMessage?.updated_at,
     });
@@ -215,6 +250,7 @@ describe('LINE conversations', () => {
 
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'unread',
+      workflow_status: 'unread',
       last_message_at: '2026-07-23T10:10:00.000+09:00',
       updated_at: beforeDelayedMessage?.updated_at,
     });
@@ -232,13 +268,14 @@ describe('LINE conversations', () => {
     expect(await insertLineConversationMessage(db, input)).toBe(true);
     sqlite.prepare(
       `UPDATE line_conversations
-       SET status = 'resolved', updated_at = ?
+       SET status = 'resolved', workflow_status = 'resolved', updated_at = ?
        WHERE id = ?`,
     ).run('2026-07-23T10:05:00.000+09:00', conversation.id);
 
     expect(await insertLineConversationMessage(db, input)).toBe(false);
     expect(await getLineConversationById(db, conversation.id)).toMatchObject({
       status: 'resolved',
+      workflow_status: 'resolved',
       last_message_at: '2026-07-23T10:00:00.000+09:00',
       updated_at: '2026-07-23T10:05:00.000+09:00',
     });

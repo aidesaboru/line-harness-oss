@@ -453,14 +453,12 @@ export default function EscalationsPage() {
                   >
                     案件詳細
                   </button>
-                  {!isSecondaryOnly && (
-                    <Link
-                      href={`/support?case=${encodeURIComponent(item.caseId)}`}
-                      className="rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
-                    >
-                      チケットを開く
-                    </Link>
-                  )}
+                  <Link
+                    href={`/support?case=${encodeURIComponent(item.caseId)}`}
+                    className="rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50"
+                  >
+                    チケットを開く
+                  </Link>
                 </div>
               </div>
 

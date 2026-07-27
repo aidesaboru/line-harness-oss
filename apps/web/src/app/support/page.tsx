@@ -198,6 +198,7 @@ export default function SupportPage() {
   const permissions = getSupportRolePermissions(verifiedStaffRole)
   const canCreateCases = permissions.canCreateCases
   const canEditCaseRouting = permissions.canEditCaseRouting
+  const canEditCaseWork = permissions.canEditCaseWork
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
@@ -840,7 +841,9 @@ export default function SupportPage() {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault()
-        if (dirtyRef.current && detail && !saving) void persistCase(caseForm, '管理画面からチケット情報を更新しました')
+        if (canEditCaseWork && dirtyRef.current && detail && !saving) {
+          void persistCase(caseForm, '管理画面からチケット情報を更新しました')
+        }
         return
       }
       const target = e.target as HTMLElement | null
@@ -858,7 +861,7 @@ export default function SupportPage() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [displayCases, selectedCaseId, selectCase, detail, saving, persistCase, caseForm])
+  }, [displayCases, selectedCaseId, selectCase, detail, saving, persistCase, caseForm, canEditCaseWork])
 
   if (accountLoading) {
     return <div className="p-6 text-sm text-gray-500">読み込み中…</div>
@@ -952,6 +955,12 @@ export default function SupportPage() {
         </div>
       )}
 
+      {verifiedStaffRole === 'secondary' && (
+        <div className="rounded-md border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-800">
+          自分が二次対応先に指定されたチケットだけを閲覧しています。チケット本体の変更と顧客LINEの会話履歴は制限されています。
+        </div>
+      )}
+
       {canCreateCases && createOpen && chatOptionsError && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" role="status">
           {chatOptionsError}。会話に紐付けないチケット化はできますが、LINE会話の候補は更新後にもう一度確認してください。
@@ -1019,6 +1028,7 @@ export default function SupportPage() {
               saving={saving}
               reminderSaving={reminderSaving}
               canEditRouting={canEditCaseRouting}
+              canEditCaseWork={canEditCaseWork}
               staffOptions={assigneeSuggestions}
               staffName={verifiedStaffName}
               onFormChange={(patch) => setCaseForm((prev) => ({ ...prev, ...patch }))}

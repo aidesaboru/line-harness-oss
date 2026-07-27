@@ -177,21 +177,22 @@ describe('support case URL state', () => {
 
 describe('support role permissions', () => {
   it.each([
-    ['owner', true, true],
-    ['admin', true, true],
-    ['staff', true, false],
-    ['', false, false],
-    ['manager', false, false],
-    [null, false, false],
-    [undefined, false, false],
-  ] as const)('maps management controls for role %s', (role, canCreate, canManage) => {
+    ['owner', true, true, true],
+    ['admin', true, true, true],
+    ['staff', true, false, true],
+    ['secondary', false, false, false],
+    ['', false, false, false],
+    ['manager', false, false, false],
+    [null, false, false, false],
+    [undefined, false, false, false],
+  ] as const)('maps management controls for role %s', (role, canCreate, canManage, canEditWork) => {
     const permissions = getSupportRolePermissions(role)
 
     expect(permissions.canCreateCases).toBe(canCreate)
     expect(permissions.canEditCaseRouting).toBe(canManage)
     expect(permissions.canManageManuals).toBe(canManage)
-    expect(permissions.canEditCaseWork).toBe(true)
-    expect(permissions.canLinkManuals).toBe(true)
+    expect(permissions.canEditCaseWork).toBe(canEditWork)
+    expect(permissions.canLinkManuals).toBe(canEditWork)
   })
 })
 

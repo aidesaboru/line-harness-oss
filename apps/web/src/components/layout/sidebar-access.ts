@@ -27,6 +27,10 @@ const SECONDARY_VISIBLE_HREFS = new Set([
   '/notifications',
   '/manuals',
 ])
+const SECONDARY_ACCESSIBLE_HREFS = new Set([
+  ...SECONDARY_VISIBLE_HREFS,
+  '/support',
+])
 
 const OPERATION_DISABLED_HREFS = new Set([
   '/broadcasts',
@@ -109,7 +113,7 @@ export function canAccessSidebarRoute(
   }
 
   if (isSecondaryRole(normalizedRole)) {
-    return Array.from(SECONDARY_VISIBLE_HREFS).some((href) => matchesPath(pathname, href))
+    return Array.from(SECONDARY_ACCESSIBLE_HREFS).some((href) => matchesPath(pathname, href))
   }
 
   if (!isStaffRole(normalizedRole)) return true

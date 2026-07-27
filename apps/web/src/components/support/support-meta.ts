@@ -49,8 +49,8 @@ export function getSupportRolePermissions(role: SupportStaffRole): SupportRolePe
     canCreateCases: canUseSupport,
     canEditCaseRouting: canManageRouting,
     canManageManuals: canManageRouting,
-    canEditCaseWork: true,
-    canLinkManuals: true,
+    canEditCaseWork: canUseSupport,
+    canLinkManuals: canUseSupport,
   }
 }
 

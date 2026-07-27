@@ -45,6 +45,7 @@ interface CaseDetailProps {
   saving: boolean
   reminderSaving: boolean
   canEditRouting: boolean
+  canEditCaseWork: boolean
   staffOptions: string[]
   staffName: string
   onFormChange: (patch: Partial<CaseFormState>) => void
@@ -739,6 +740,7 @@ export default function CaseDetail({
   saving,
   reminderSaving,
   canEditRouting,
+  canEditCaseWork,
   staffOptions,
   staffName,
   onFormChange,
@@ -787,7 +789,7 @@ export default function CaseDetail({
   const lockedInputCls = `${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
   const validationIssues = getCaseFormValidationIssues(caseForm, { hasChat: Boolean(chatHref) })
   const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
-  const canSave = dirty && blockingValidationIssues.length === 0
+  const canSave = canEditCaseWork && dirty && blockingValidationIssues.length === 0
   const showChatReplyAction = canOpenChatWithDraft({
     status: caseForm.status,
     hasDraft: Boolean(caseForm.customerReplyDraft.trim()),
@@ -855,14 +857,16 @@ export default function CaseDetail({
               </span>
             </div>
           </div>
-          <button
-            onClick={onSave}
-            disabled={saving || !canSave}
-            title={blockingValidationIssues[0]?.message ?? '⌘S / Ctrl+S でも保存できます'}
-            className={btnPrimaryCls}
-          >
-            {saving ? '保存中…' : '保存'}
-          </button>
+          {canEditCaseWork && (
+            <button
+              onClick={onSave}
+              disabled={saving || !canSave}
+              title={blockingValidationIssues[0]?.message ?? '⌘S / Ctrl+S でも保存できます'}
+              className={btnPrimaryCls}
+            >
+              {saving ? '保存中…' : '保存'}
+            </button>
+          )}
         </div>
 
         {outsideCurrentList && (
@@ -889,13 +893,17 @@ export default function CaseDetail({
           </div>
         )}
 
-        {!canEditRouting && (
+        {!canEditCaseWork ? (
+          <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800">
+            二次対応専用権限では、自分が二次対応先に指定されたチケットを閲覧できます。チケット本体の変更と顧客LINEの会話履歴は制限されています。
+          </div>
+        ) : !canEditRouting && (
           <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
             staff権限では対応内容だけ編集できます。担当割り、期限、緊急度、顧客属性はowner/adminが管理します。
           </div>
         )}
 
-        {validationIssues.length > 0 && (
+        {canEditCaseWork && validationIssues.length > 0 && (
           <div
             className={`rounded-lg border px-3 py-2 text-sm ${
               blockingValidationIssues.length > 0
@@ -953,9 +961,10 @@ export default function CaseDetail({
                 <textarea
                   value={caseForm.customerSummary}
                   onChange={(e) => onFormChange({ customerSummary: e.target.value })}
+                  disabled={!canEditCaseWork}
                   rows={8}
                   placeholder="顧客からの相談内容を、要約せずにそのまま残す"
-                  className={`${textareaCls} mt-1 min-h-[220px] px-3 py-3 text-sm leading-6`}
+                  className={`${textareaCls} mt-1 min-h-[220px] px-3 py-3 text-sm leading-6 disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-600`}
                 />
               </label>
               {(detail.attachments?.length ?? 0) > 0 && (
@@ -990,7 +999,7 @@ export default function CaseDetail({
               detail={detail}
               primaryAssignee={caseForm.primaryAssignee.trim()}
               staffName={staffName}
-              canEditRouting={canEditRouting}
+              canEditRouting={canEditRouting && canEditCaseWork}
               dirty={dirty}
               saving={saving || reminderSaving}
               onConfigure={onFollowUpReminderConfigure}
@@ -1138,81 +1147,83 @@ export default function CaseDetail({
         </div>
 
         {/* クイックアクション */}
-        {completing ? (
-          <CompletionPanel
-            resolutionNote={caseForm.resolutionNote}
-            saving={saving}
-            onNoteChange={(value) => onFormChange({ resolutionNote: value })}
-            onConfirm={handleConfirmComplete}
-            onCancel={() => setCompleting(false)}
-          />
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            {(caseForm.status === 'open' || caseForm.status === 'reopened') && (
-              <button
-                type="button"
-                onClick={() => void onQuickStatus('in_progress', '対応を開始しました')}
-                disabled={saving}
-                className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
-              >
-                対応開始
-              </button>
-            )}
-            {(caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
-              <button
-                type="button"
-                onClick={() => void onQuickStatus('in_progress', '二次回答を確認し、一次対応を再開しました')}
-                disabled={saving}
-                className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
-              >
-                対応中にする
-              </button>
-            )}
-            {caseForm.status !== 'resolved' && (
-              <button
-                type="button"
-                onClick={() => setCompleting(true)}
-                disabled={saving}
-                className="rounded-md border border-green-600 bg-white px-3 py-1.5 text-sm font-semibold text-green-700 transition-colors hover:bg-green-50 disabled:opacity-50"
-              >
-                完了にする…
-              </button>
-            )}
-            {caseForm.status === 'resolved' && (
-              <button
-                type="button"
-                onClick={() => void onQuickStatus('reopened', 'チケットを再オープンしました')}
-                disabled={saving}
-                className="rounded-md border border-pink-300 bg-white px-3 py-1.5 text-sm font-semibold text-pink-700 transition-colors hover:bg-pink-50 disabled:opacity-50"
-                title="完了後の再連絡は未対応に戻さず再オープンで扱います"
-              >
-                再オープン
-              </button>
-            )}
-            {caseForm.customerReplyDraft.trim() && (
-              <>
-                {showChatReplyAction && (
-                  <button
-                    type="button"
-                    onClick={onOpenChatWithDraft}
-                    disabled={saving}
-                    className="inline-flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-green-700 disabled:opacity-50"
-                  >
-                    <ChatIcon className="h-3.5 w-3.5" />
-                    チャットで返信
-                  </button>
-                )}
+        {canEditCaseWork && (
+          completing ? (
+            <CompletionPanel
+              resolutionNote={caseForm.resolutionNote}
+              saving={saving}
+              onNoteChange={(value) => onFormChange({ resolutionNote: value })}
+              onConfirm={handleConfirmComplete}
+              onCancel={() => setCompleting(false)}
+            />
+          ) : (
+            <div className="flex flex-wrap items-center gap-2">
+              {(caseForm.status === 'open' || caseForm.status === 'reopened') && (
                 <button
                   type="button"
-                  onClick={onCopyReplyDraft}
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                  onClick={() => void onQuickStatus('in_progress', '対応を開始しました')}
+                  disabled={saving}
+                  className="rounded-md bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
                 >
-                  <CopyIcon className="h-3.5 w-3.5" />
-                  返信案をコピー
+                  対応開始
                 </button>
-              </>
-            )}
-          </div>
+              )}
+              {(caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
+                <button
+                  type="button"
+                  onClick={() => void onQuickStatus('in_progress', '二次回答を確認し、一次対応を再開しました')}
+                  disabled={saving}
+                  className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  対応中にする
+                </button>
+              )}
+              {caseForm.status !== 'resolved' && (
+                <button
+                  type="button"
+                  onClick={() => setCompleting(true)}
+                  disabled={saving}
+                  className="rounded-md border border-green-600 bg-white px-3 py-1.5 text-sm font-semibold text-green-700 transition-colors hover:bg-green-50 disabled:opacity-50"
+                >
+                  完了にする…
+                </button>
+              )}
+              {caseForm.status === 'resolved' && (
+                <button
+                  type="button"
+                  onClick={() => void onQuickStatus('reopened', 'チケットを再オープンしました')}
+                  disabled={saving}
+                  className="rounded-md border border-pink-300 bg-white px-3 py-1.5 text-sm font-semibold text-pink-700 transition-colors hover:bg-pink-50 disabled:opacity-50"
+                  title="完了後の再連絡は未対応に戻さず再オープンで扱います"
+                >
+                  再オープン
+                </button>
+              )}
+              {caseForm.customerReplyDraft.trim() && (
+                <>
+                  {showChatReplyAction && (
+                    <button
+                      type="button"
+                      onClick={onOpenChatWithDraft}
+                      disabled={saving}
+                      className="inline-flex items-center gap-1 rounded-md bg-green-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-green-700 disabled:opacity-50"
+                    >
+                      <ChatIcon className="h-3.5 w-3.5" />
+                      チャットで返信
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={onCopyReplyDraft}
+                    className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                  >
+                    <CopyIcon className="h-3.5 w-3.5" />
+                    返信案をコピー
+                  </button>
+                </>
+              )}
+            </div>
+          )
         )}
 
         {latestAnsweredEscalation && (
@@ -1332,7 +1343,7 @@ export default function CaseDetail({
       </div>
 
       {/* 未保存変更バー */}
-      {dirty && (
+      {canEditCaseWork && dirty && (
         <div className="sticky bottom-0 flex items-center justify-between gap-3 rounded-b-lg border-t border-amber-200 bg-amber-50/95 px-4 py-2.5 backdrop-blur-sm">
           <span className="text-xs font-semibold text-amber-800">未保存の変更があります</span>
           <div className="flex gap-2">

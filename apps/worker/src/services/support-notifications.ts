@@ -874,22 +874,28 @@ async function updateSlackMessage(
   payload: Record<string, unknown>,
   updater?: SlackMessageUpdater,
 ): Promise<void> {
+  const { channel: _channel, client_msg_id: _clientMessageId, ...message } = payload;
+  const updatePayload = {
+    ...message,
+    channel: channelId,
+    ts: messageTs,
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+  };
   if (updater) {
-    await updater(token, channelId, messageTs, payload);
+    await updater(token, channelId, messageTs, updatePayload);
     return;
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), SLACK_API_TIMEOUT_MS);
   try {
-    const { channel: _channel, client_msg_id: _clientMessageId, ...message } = payload;
     const res = await fetch('https://slack.com/api/chat.update', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json; charset=utf-8',
       },
-      body: JSON.stringify({ ...message, channel: channelId, ts: messageTs }),
+      body: JSON.stringify(updatePayload),
       signal: controller.signal,
     });
     if (!res.ok) {

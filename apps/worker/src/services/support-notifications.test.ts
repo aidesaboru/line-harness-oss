@@ -610,7 +610,7 @@ describe('support Slack notifications', () => {
     const { db, state } = makeDb({ outbox: [outbox, preservedOutbox] });
     const posted: Array<Record<string, unknown>> = [];
     const deleted: string[] = [];
-    const updated: string[] = [];
+    const updated: Array<{ messageTs: string; payload: Record<string, unknown> }> = [];
     const runtime = {
       adminPublicUrl: 'https://admin.test',
       slackBotToken: 'xoxb-test',
@@ -624,8 +624,13 @@ describe('support Slack notifications', () => {
       deleteSlackMessage: async (_token: string, _channelId: string, messageTs: string) => {
         deleted.push(messageTs);
       },
-      updateSlackMessage: async (_token: string, _channelId: string, messageTs: string) => {
-        updated.push(messageTs);
+      updateSlackMessage: async (
+        _token: string,
+        _channelId: string,
+        messageTs: string,
+        payload: Record<string, unknown>,
+      ) => {
+        updated.push({ messageTs, payload });
       },
     };
     const window = {
@@ -663,7 +668,17 @@ describe('support Slack notifications', () => {
     });
     expect(posted).toHaveLength(1);
     expect(deleted).toEqual(['1785166800.111111']);
-    expect(updated).toEqual(['1785166801.111111']);
+    expect(updated).toEqual([
+      {
+        messageTs: '1785166801.111111',
+        payload: expect.objectContaining({
+          channel: 'C09SPA06P0S',
+          ts: '1785166801.111111',
+          attachments: [],
+          blocks: expect.any(Array),
+        }),
+      },
+    ]);
     expect(outbox.slack_message_ts).toBe('1785168000.222222');
     expect(outbox.sent_at).toBe('2026-07-28T01:00:00.000+09:00');
     expect(preservedOutbox.slack_message_ts).toBe('1785166801.111111');

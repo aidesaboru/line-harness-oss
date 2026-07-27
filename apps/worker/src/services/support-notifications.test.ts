@@ -1,15 +1,18 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   buildTicketCreatedSlackPayload,
+  deliverSupportSecondarySlackNotification,
   deliverSupportTicketSlackNotification,
   getSupportNotificationSettings,
   getSupportTicketSlackNotificationHealth,
   notifyUrgentSupportCase,
   parseSupportNotificationSettings,
   parseSupportSlackMentionMap,
+  processPendingSupportSecondarySlackNotifications,
   processPendingSupportTicketSlackNotifications,
   processSupportNotificationDigests,
   publicSupportNotificationSettings,
+  requeueDeadLetterSupportSlackNotifications,
   sendSupportTicketSlackTestNotification,
   setSupportNotificationSettings,
   SUPPORT_NOTIFICATION_SETTING_KEY,
@@ -63,6 +66,7 @@ function makeDb(state: {
   cases?: SupportCase[];
   events?: SupportEvent[];
   outbox?: TicketSlackOutbox[];
+  secondaryOutbox?: TicketSlackOutbox[];
 } = {}) {
   const settings = new Map<string, AccountSetting>(
     Object.entries(state.settings ?? {}).map(([key, value]) => [key, { value }]),
@@ -70,6 +74,7 @@ function makeDb(state: {
   const cases = state.cases ?? [];
   const events = state.events ?? [];
   const outbox = state.outbox ?? [];
+  const secondaryOutbox = state.secondaryOutbox ?? [];
   const calls: DbCall[] = [];
 
   function settingKey(accountId: string, key: string): string {
@@ -95,9 +100,13 @@ function makeDb(state: {
             const row = events.find((event) => event.case_id === caseId && event.event_type === eventType);
             return (row ? { id: row.id } : null) as T | null;
           }
-          if (sql.includes('FROM support_slack_notification_outbox')) {
+          if (
+            sql.includes('FROM support_slack_notification_outbox')
+            || sql.includes('FROM support_secondary_slack_notification_outbox')
+          ) {
             const [outboxId] = bound as [string];
-            return (outbox.find((row) => row.id === outboxId) ?? null) as T | null;
+            const rows = sql.includes('support_secondary_slack_notification_outbox') ? secondaryOutbox : outbox;
+            return (rows.find((row) => row.id === outboxId) ?? null) as T | null;
           }
           if (sql.includes('FROM support_cases sc') && sql.includes('WHERE sc.id = ?')) {
             const [caseId, accountId] = bound as [string, string];
@@ -107,10 +116,14 @@ function makeDb(state: {
         },
         async all<T>() {
           calls.push({ method: 'all', sql, binds: bound });
-          if (sql.includes('FROM support_slack_notification_outbox')) {
+          if (
+            sql.includes('FROM support_slack_notification_outbox')
+            || sql.includes('FROM support_secondary_slack_notification_outbox')
+          ) {
+            const queueRows = sql.includes('support_secondary_slack_notification_outbox') ? secondaryOutbox : outbox;
             if (sql.includes('GROUP BY status')) {
               const counts = new Map<string, { count: number; lastUpdatedAt: string | null }>();
-              for (const row of outbox) {
+              for (const row of queueRows) {
                 const current = counts.get(row.status) ?? { count: 0, lastUpdatedAt: null };
                 current.count += 1;
                 if (!current.lastUpdatedAt || row.updated_at > current.lastUpdatedAt) {
@@ -127,7 +140,7 @@ function makeDb(state: {
               };
             }
             const [nowText, staleBefore, limit] = bound as [string, string, number];
-            const rows = outbox
+            const rows = queueRows
               .filter((row) => (
                 (['pending', 'failed'].includes(row.status) && row.next_attempt_at <= nowText)
                 || (row.status === 'sending' && row.updated_at <= staleBefore)
@@ -153,10 +166,27 @@ function makeDb(state: {
           } else if (sql.includes('INSERT INTO support_case_events')) {
             const [id, caseId, eventType, , , body, metadata] = bound as string[];
             events.push({ id, case_id: caseId, event_type: eventType, body, metadata });
-          } else if (sql.includes('UPDATE support_slack_notification_outbox')) {
+          } else if (
+            sql.includes('UPDATE support_slack_notification_outbox')
+            || sql.includes('UPDATE support_secondary_slack_notification_outbox')
+          ) {
+            const queueRows = sql.includes('support_secondary_slack_notification_outbox') ? secondaryOutbox : outbox;
+            if (sql.includes("SET status = 'pending', attempts = 0")) {
+              changes = 0;
+              for (const row of queueRows) {
+                if (row.status !== 'dead_letter') continue;
+                row.status = 'pending';
+                row.attempts = 0;
+                row.next_attempt_at = String(bound[0]);
+                row.claim_token = null;
+                row.last_error_code = null;
+                row.updated_at = String(bound[1]);
+                changes += 1;
+              }
+            } else
             if (sql.includes("SET status = 'sending'")) {
               const [claimToken, updatedAt, outboxId, nowText, staleBefore] = bound as [string, string, string, string, string];
-              const row = outbox.find((item) => item.id === outboxId);
+              const row = queueRows.find((item) => item.id === outboxId);
               const claimable = Boolean(row) && (
                 (['pending', 'failed'].includes(row!.status) && row!.next_attempt_at <= nowText)
                 || (row!.status === 'sending' && row!.updated_at <= staleBefore)
@@ -173,7 +203,7 @@ function makeDb(state: {
             } else if (sql.includes('SET status = ?, last_error_code = ?')) {
               const [status, errorCode, nextAttemptAt, updatedAt, outboxId, claimToken] =
                 bound as ['failed' | 'dead_letter', string, string, string, string, string];
-              const row = outbox.find(
+              const row = queueRows.find(
                 (item) => item.id === outboxId && item.status === 'sending' && item.claim_token === claimToken,
               );
               if (!row) changes = 0;
@@ -186,7 +216,7 @@ function makeDb(state: {
             } else if (sql.includes("SET status = 'sent'")) {
               const [messageTs, sentAt, updatedAt, outboxId, claimToken] =
                 bound as [string | null, string, string, string, string];
-              const row = outbox.find(
+              const row = queueRows.find(
                 (item) => item.id === outboxId && item.status === 'sending' && item.claim_token === claimToken,
               );
               if (!row) changes = 0;
@@ -205,7 +235,7 @@ function makeDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { settings, cases, events, outbox } };
+  return { db, calls, state: { settings, cases, events, outbox, secondaryOutbox } };
 }
 
 describe('support notification settings', () => {
@@ -542,6 +572,95 @@ describe('support Slack notifications', () => {
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  test('secondary assignment events use their event id and are delivered by the secondary queue', async () => {
+    const outbox: TicketSlackOutbox = {
+      id: 'secondary-outbox-1',
+      case_id: 'case-secondary-1',
+      line_account_id: 'acc-1',
+      payload: JSON.stringify({
+        notificationId: 'event-secondary-1',
+        notificationKind: 'secondary_assigned',
+        caseId: 'case-secondary-1',
+        title: '追加確認',
+        priority: 'high',
+        primaryAssignee: '林 静香',
+        secondaryAssignees: [{ name: '吉田 京平', staffId: 'staff-yoshida' }],
+        customerSummary: '返金状況を確認してください',
+        customerNumber: '4408',
+        companyName: null,
+        contactName: null,
+        dueAt: null,
+      }),
+      status: 'pending',
+      attempts: 0,
+      next_attempt_at: '2026-07-28T09:59:00.000+09:00',
+      claim_token: null,
+      last_error_code: null,
+      slack_message_ts: null,
+      sent_at: null,
+      created_at: '2026-07-28T09:59:00.000+09:00',
+      updated_at: '2026-07-28T09:59:00.000+09:00',
+    };
+    const { db, state } = makeDb({ secondaryOutbox: [outbox] });
+    const sent: Array<Record<string, unknown>> = [];
+
+    await expect(processPendingSupportSecondarySlackNotifications(db, {
+      adminPublicUrl: 'https://admin.test',
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+      slackMentionMap: JSON.stringify({ 'staff-yoshida': 'U06SWBHATLY' }),
+      now: new Date('2026-07-28T01:00:00.000Z'),
+      sendSlackMessage: async (_token, payload) => {
+        sent.push(payload);
+        return { messageTs: '1785200400.123456' };
+      },
+    })).resolves.toEqual({ sent: 1, skipped: 0, failed: 0 });
+
+    expect(outbox.status).toBe('sent');
+    expect(sent[0]).toMatchObject({ client_msg_id: 'event-secondary-1' });
+    expect(String(sent[0].text)).toContain('L-Link 二次対応追加');
+    expect(state.events).toEqual([
+      expect.objectContaining({ event_type: 'slack_secondary_assigned_sent' }),
+    ]);
+    await expect(deliverSupportSecondarySlackNotification(db, outbox.id, {
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+    })).resolves.toEqual({ sent: false, reason: 'already_sent' });
+  });
+
+  test('dead-letter recovery preserves rows and requeues both notification queues', async () => {
+    const base: Omit<TicketSlackOutbox, 'id'> = {
+      case_id: 'case-1',
+      line_account_id: 'acc-1',
+      payload: '{}',
+      status: 'dead_letter',
+      attempts: 8,
+      next_attempt_at: '2026-07-27T22:00:00.000+09:00',
+      claim_token: null,
+      last_error_code: 'missing_scope',
+      slack_message_ts: null,
+      sent_at: null,
+      created_at: '2026-07-27T22:00:00.000+09:00',
+      updated_at: '2026-07-27T22:00:00.000+09:00',
+    };
+    const ticketRow = { ...base, id: 'ticket-dead' };
+    const secondaryRow = { ...base, id: 'secondary-dead' };
+    const { db, state } = makeDb({
+      outbox: [ticketRow],
+      secondaryOutbox: [secondaryRow],
+    });
+
+    await expect(requeueDeadLetterSupportSlackNotifications(
+      db,
+      new Date('2026-07-28T01:00:00.000Z'),
+    )).resolves.toEqual({ ticketCreated: 1, secondaryEvents: 1, total: 2 });
+
+    expect(state.outbox).toHaveLength(1);
+    expect(state.secondaryOutbox).toHaveLength(1);
+    expect(ticketRow).toMatchObject({ status: 'pending', attempts: 0, last_error_code: null });
+    expect(secondaryRow).toMatchObject({ status: 'pending', attempts: 0, last_error_code: null });
   });
 
   test('test notification requires a resolved Slack mention', async () => {

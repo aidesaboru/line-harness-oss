@@ -77,6 +77,7 @@ import { support } from './routes/support.js';
 import { appNotifications, processWebPushNotifications } from './routes/app-notifications.js';
 import {
   getSupportTicketSlackNotificationHealth,
+  processPendingSupportSecondarySlackNotifications,
   processPendingSupportTicketSlackNotifications,
   processSupportNotificationDigests,
 } from './services/support-notifications.js';
@@ -785,6 +786,16 @@ async function scheduled(
     });
     if (ticketResult.sent + ticketResult.failed > 0) {
       console.log(`[support-ticket-slack] sent=${ticketResult.sent} failed=${ticketResult.failed}`);
+    }
+    const secondaryResult = await processPendingSupportSecondarySlackNotifications(env.DB, {
+      adminPublicUrl: env.ADMIN_PUBLIC_URL,
+      slackBotToken: env.SLACK_BOT_TOKEN,
+      slackChannelId: env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      slackMentionMap: env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+      now: new Date(),
+    });
+    if (secondaryResult.sent + secondaryResult.failed > 0) {
+      console.log(`[support-secondary-slack] sent=${secondaryResult.sent} failed=${secondaryResult.failed}`);
     }
     const ticketHealth = await getSupportTicketSlackNotificationHealth(env.DB);
     if (ticketHealth.pending + ticketHealth.sending + ticketHealth.failed + ticketHealth.deadLetter > 0) {

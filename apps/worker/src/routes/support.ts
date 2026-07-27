@@ -10,9 +10,13 @@ import {
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import {
+  deliverSupportSecondarySlackNotification,
   deliverSupportTicketSlackNotification,
   getSupportTicketSlackNotificationHealth,
   notifyUrgentSupportCase,
+  processPendingSupportSecondarySlackNotifications,
+  processPendingSupportTicketSlackNotifications,
+  requeueDeadLetterSupportSlackNotifications,
   sendSupportTicketSlackTestNotification,
 } from '../services/support-notifications.js';
 import {
@@ -174,6 +178,7 @@ type SupportEscalationRow = {
   friend_name?: string | null;
   line_account_id: string | null;
   assignee: string;
+  assignee_staff_id?: string | null;
   level: string;
   status: string;
   question: string;
@@ -600,6 +605,54 @@ async function activeStaffIdsByName(db: D1Database, names: string[]): Promise<Ma
     .bind(...names)
     .all<{ id: string; name: string }>();
   return new Map(rows.results.map((row) => [row.name, row.id]));
+}
+
+function prepareSecondarySlackOutbox(
+  db: D1Database,
+  input: {
+    id: string;
+    sourceEventId: string;
+    notificationType: 'secondary_assigned' | 'secondary_reopened';
+    supportCase: SupportCaseRow;
+    secondaryAssignees: Array<{ name: string; staffId: string | null }>;
+    primaryAssigneeFallback: string;
+    customerSummary?: string;
+    dueAt?: string | null;
+    now: string;
+  },
+): D1PreparedStatement {
+  const supportCase = input.supportCase;
+  return db
+    .prepare(
+      `INSERT INTO support_secondary_slack_notification_outbox (
+        id, case_id, line_account_id, source_event_id, notification_type, payload, status,
+        attempts, next_attempt_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+    )
+    .bind(
+      input.id,
+      supportCase.id,
+      supportCase.line_account_id,
+      input.sourceEventId,
+      input.notificationType,
+      JSON.stringify({
+        notificationId: input.sourceEventId,
+        notificationKind: input.notificationType,
+        caseId: supportCase.id,
+        title: supportCase.title,
+        priority: supportCase.priority,
+        primaryAssignee: supportCase.primary_assignee ?? input.primaryAssigneeFallback,
+        secondaryAssignees: input.secondaryAssignees,
+        customerSummary: input.customerSummary ?? (supportCase.customer_summary.trim() || supportCase.title),
+        customerNumber: supportCase.customer_number,
+        companyName: supportCase.company_name,
+        contactName: supportCase.contact_name,
+        dueAt: input.dueAt === undefined ? supportCase.due_at : input.dueAt,
+      }),
+      input.now,
+      input.now,
+      input.now,
+    );
 }
 
 const SUPPORT_CASE_ASSIGNEES_SELECT = `(
@@ -1138,6 +1191,23 @@ function kickSupportTicketSlackNotification(c: Context<Env>, outboxId: string): 
     slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
   }).catch((error) => {
     console.error(`support ticket Slack dispatch error: ${supportRouteErrorKind(error)}`);
+    return { sent: false, reason: 'error' };
+  });
+  try {
+    c.executionCtx.waitUntil(task);
+  } catch {
+    void task;
+  }
+}
+
+function kickSupportSecondarySlackNotification(c: Context<Env>, outboxId: string): void {
+  const task = deliverSupportSecondarySlackNotification(c.env.DB, outboxId, {
+    adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
+    slackBotToken: c.env.SLACK_BOT_TOKEN,
+    slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+    slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+  }).catch((error) => {
+    console.error(`support secondary Slack dispatch error: ${supportRouteErrorKind(error)}`);
     return { sent: false, reason: 'error' };
   });
   try {
@@ -2164,6 +2234,9 @@ support.post('/api/support/cases', async (c) => {
     if (escalationAssignees.length > 0 && !ESCALATION_LEVELS.has(escalationLevel)) {
       return c.json({ success: false, error: 'invalid level' }, 400);
     }
+    if (['escalated', 'waiting_secondary'].includes(status) && escalationAssignees.length === 0) {
+      return c.json({ success: false, error: '二次対応中にする場合は二次対応先を選択してください' }, 400);
+    }
     if (escalationAssignees.length > 0 && status === 'open') status = 'waiting_secondary';
     const createdEventId = crypto.randomUUID();
     const slackOutboxId = escalationAssignees.length > 0 ? crypto.randomUUID() : null;
@@ -2377,6 +2450,52 @@ support.get('/api/support/notifications/slack/status', requireRole('owner', 'adm
     });
   } catch (err) {
     console.error(`GET /api/support/notifications/slack/status error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/notifications/slack/retry-dead-letters', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const mentionStaffName = parseOptionalTextField(parsedBody.value.mentionStaffName, 'mentionStaffName');
+    if (!mentionStaffName.ok) return c.json({ success: false, error: mentionStaffName.error }, 400);
+    const runtime = {
+      adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
+      slackBotToken: c.env.SLACK_BOT_TOKEN,
+      slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+    };
+    const connectionCheck = await sendSupportTicketSlackTestNotification(
+      runtime,
+      mentionStaffName.value ?? currentStaff(c).name,
+    );
+    if (!connectionCheck.sent) {
+      return c.json({ success: false, error: connectionCheck.reason }, 503);
+    }
+
+    const requeued = await requeueDeadLetterSupportSlackNotifications(c.env.DB);
+    const task = Promise.all([
+      processPendingSupportTicketSlackNotifications(c.env.DB, runtime),
+      processPendingSupportSecondarySlackNotifications(c.env.DB, runtime),
+    ]).catch((error) => {
+      console.error(`support Slack retry dispatch error: ${supportRouteErrorKind(error)}`);
+    });
+    try {
+      c.executionCtx.waitUntil(task);
+    } catch {
+      void task;
+    }
+    return c.json({
+      success: true,
+      data: {
+        connectionChecked: true,
+        requeued,
+        testMessageTs: connectionCheck.messageTs ?? null,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/support/notifications/slack/retry-dead-letters error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -2957,6 +3076,21 @@ support.patch('/api/support/cases/:id', async (c) => {
     if (statusRequested && next.status === 'reopened' && existing.status !== 'resolved' && existing.status !== 'reopened') {
       return c.json({ success: false, error: '再オープンは完了済み案件だけで選択できます' }, 400);
     }
+    if (statusRequested && ['escalated', 'waiting_secondary'].includes(next.status)) {
+      const activeEscalation = await c.env.DB
+        .prepare(
+          `SELECT id
+           FROM support_escalations
+           WHERE case_id = ? AND line_account_id = ?
+             AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+           LIMIT 1`,
+        )
+        .bind(id.value, lineAccountId.value)
+        .first<{ id: string }>();
+      if (!activeEscalation) {
+        return c.json({ success: false, error: '二次対応中にする場合は有効な二次対応先が必要です' }, 400);
+      }
+    }
 
     const existingFollowUpReminder = followUpReminderFromCaseRow(existing);
     const primaryAssigneeChanged = existing.primary_assignee !== next.primary_assignee;
@@ -3124,7 +3258,10 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
       .all<{ id: string; assignee: string }>();
     const selected = new Set(parsedAssignees.value);
     const currentNames = new Set(current.results.map((row) => row.assignee));
+    const addedAssignees = parsedAssignees.value.filter((name) => !currentNames.has(name));
     const now = jstNow();
+    const routingEventId = crypto.randomUUID();
+    const slackOutboxId = addedAssignees.length > 0 ? crypto.randomUUID() : null;
     const statements: D1PreparedStatement[] = [];
 
     for (const row of current.results) {
@@ -3191,11 +3328,28 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
           previous: Array.from(currentNames),
           next: parsedAssignees.value,
         },
-        crypto.randomUUID(),
+        routingEventId,
         now,
       ),
     );
+    if (slackOutboxId) {
+      statements.push(
+        prepareSecondarySlackOutbox(c.env.DB, {
+          id: slackOutboxId,
+          sourceEventId: routingEventId,
+          notificationType: 'secondary_assigned',
+          supportCase,
+          secondaryAssignees: addedAssignees.map((name) => ({
+            name,
+            staffId: staffIds.get(name) ?? null,
+          })),
+          primaryAssigneeFallback: staff.name,
+          now,
+        }),
+      );
+    }
     await c.env.DB.batch(statements);
+    if (slackOutboxId) kickSupportSecondarySlackNotification(c, slackOutboxId);
     kickWebPushNotifications(c);
     const updated = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     return c.json({ success: true, data: serializeCase(updated!) });
@@ -3565,20 +3719,40 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     }
     if (!question) return c.json({ success: false, error: 'question is required' }, 400);
     if (!ESCALATION_LEVELS.has(level)) return c.json({ success: false, error: 'invalid level' }, 400);
+    const assigneeStaffIds = await activeStaffIdsByName(c.env.DB, [assignee]);
+    const assigneeStaffId = assigneeStaffIds.get(assignee) ?? null;
+    if (canRouteEscalation && !assigneeStaffId) {
+      return c.json({ success: false, error: '二次対応先は在籍中のスタッフから選択してください' }, 400);
+    }
 
     const now = jstNow();
     const id = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const slackOutboxId = crypto.randomUUID();
     const parsedDueAt = canRouteEscalation ? parseOptionalTextField(body.dueAt, 'dueAt') : { ok: true as const, value: null };
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
     const dueAt = parsedDueAt.value;
     const escalationInsert = c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
-          id, case_id, line_account_id, assignee, level, status, question, answer,
+          id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
           due_at, answered_at, created_by, updated_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
       )
-      .bind(id, caseId.value, row.line_account_id, assignee, level, question, dueAt, staff.id, staff.id, now, now);
+      .bind(
+        id,
+        caseId.value,
+        row.line_account_id,
+        assignee,
+        assigneeStaffId,
+        level,
+        question,
+        dueAt,
+        staff.id,
+        staff.id,
+        now,
+        now,
+      );
 
     let caseUpdate: D1PreparedStatement;
     if (canRouteEscalation) {
@@ -3616,16 +3790,28 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
         staff.id,
         staff.name,
         question,
-        { escalationId: id, assignee, level, dueAt },
-        crypto.randomUUID(),
+        { escalationId: id, assignee, assigneeStaffId, level, dueAt },
+        eventId,
         now,
       ),
+      prepareSecondarySlackOutbox(c.env.DB, {
+        id: slackOutboxId,
+        sourceEventId: eventId,
+        notificationType: 'secondary_assigned',
+        supportCase: row,
+        secondaryAssignees: [{ name: assignee, staffId: assigneeStaffId }],
+        primaryAssigneeFallback: staff.name,
+        customerSummary: question,
+        dueAt,
+        now,
+      }),
     ]);
 
     const escalation = await c.env.DB
       .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
       .bind(id, lineAccountId.value)
       .first<SupportEscalationRow>();
+    kickSupportSecondarySlackNotification(c, slackOutboxId);
     kickWebPushNotifications(c);
     return c.json({ success: true, data: serializeEscalation(escalation!) }, 201);
   } catch (err) {
@@ -3764,9 +3950,22 @@ support.patch('/api/support/escalations/:id', async (c) => {
       }
     }
 
+    const nextAssignee = parsedAssignee.value ?? existing.assignee;
+    const assigneeChanged = 'assignee' in body && nextAssignee !== existing.assignee;
+    let nextAssigneeStaffId = existing.assignee_staff_id ?? null;
+    if (assigneeChanged) {
+      const staffIds = await activeStaffIdsByName(c.env.DB, [nextAssignee]);
+      nextAssigneeStaffId = staffIds.get(nextAssignee) ?? null;
+      if (!nextAssigneeStaffId) {
+        return c.json({ success: false, error: '二次対応先は在籍中のスタッフから選択してください' }, 400);
+      }
+    }
+
     if ('status' in body) fields.push(['status', status]);
     if ('level' in body) fields.push(['level', level]);
-    if ('assignee' in body) fields.push(['assignee', parsedAssignee.value ?? existing.assignee]);
+    if ('assignee' in body) {
+      fields.push(['assignee', nextAssignee], ['assignee_staff_id', nextAssigneeStaffId]);
+    }
     if ('question' in body) fields.push(['question', parsedQuestion.value ?? existing.question]);
     if ('answer' in body) fields.push(['answer', nextAnswer]);
     if ('dueAt' in body) fields.push(['due_at', parsedDueAt.value]);
@@ -3778,19 +3977,21 @@ support.patch('/api/support/escalations/:id', async (c) => {
       if (status === 'pending' || status === 'transferred' || status === 'expert_check') nextCaseStatus = 'waiting_secondary';
       if (status === 'closed') nextCaseStatus = 'in_progress';
     }
-    if (nextCaseStatus) {
-      const linkedCase = await c.env.DB
-        .prepare(`SELECT status FROM support_cases WHERE id = ? AND line_account_id = ?`)
-        .bind(existing.case_id, lineAccountId.value)
-        .first<{ status: string }>();
+    let linkedCase: SupportCaseRow | null = null;
+    if (nextCaseStatus || assigneeChanged) {
+      linkedCase = await getCaseRow(c.env.DB, existing.case_id, lineAccountId.value, staffForScope);
       if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
-      if (linkedCase.status === 'resolved') {
+      if (nextCaseStatus && linkedCase.status === 'resolved') {
         return c.json({ success: false, error: '完了済み案件は再オープンしてからエスカレーションを更新してください' }, 400);
       }
     }
 
     const staff = staffForScope;
     const now = jstNow();
+    const eventId = crypto.randomUUID();
+    const shouldNotifyAssigneeChange = assigneeChanged
+      && ['pending', 'needs_info', 'transferred', 'expert_check'].includes(status);
+    const slackOutboxId = shouldNotifyAssigneeChange ? crypto.randomUUID() : null;
     if ((status === 'answered' || status === 'closed') && !existing.answered_at) {
       fields.push(['answered_at', now]);
     }
@@ -3837,11 +4038,33 @@ support.patch('/api/support/escalations/:id', async (c) => {
         staff.id,
         staff.name,
         parsedEventBody.value ?? parsedAnswer.value ?? 'エスカレーションを更新しました',
-        { escalationId: id.value, status, nextCaseStatus },
-        crypto.randomUUID(),
+        {
+          escalationId: id.value,
+          status,
+          nextCaseStatus,
+          previousAssignee: existing.assignee,
+          nextAssignee,
+          nextAssigneeStaffId,
+        },
+        eventId,
         now,
       ),
     );
+    if (slackOutboxId && linkedCase) {
+      statements.push(
+        prepareSecondarySlackOutbox(c.env.DB, {
+          id: slackOutboxId,
+          sourceEventId: eventId,
+          notificationType: 'secondary_assigned',
+          supportCase: linkedCase,
+          secondaryAssignees: [{ name: nextAssignee, staffId: nextAssigneeStaffId }],
+          primaryAssigneeFallback: staff.name,
+          customerSummary: parsedQuestion.value ?? existing.question,
+          dueAt: parsedDueAt.value ?? existing.due_at,
+          now,
+        }),
+      );
+    }
     await c.env.DB.batch(statements);
 
     const updated = await c.env.DB
@@ -3854,6 +4077,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
       )
       .bind(id.value, lineAccountId.value)
       .first<SupportEscalationRow>();
+    if (slackOutboxId) kickSupportSecondarySlackNotification(c, slackOutboxId);
     kickWebPushNotifications(c);
     return c.json({ success: true, data: serializeEscalation(updated!) });
   } catch (err) {
@@ -3897,26 +4121,30 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
       return c.json({ success: false, error: 'この二次対応はすでに再開されています' }, 409);
     }
 
-    const linkedCase = await c.env.DB
-      .prepare(`SELECT status FROM support_cases WHERE id = ? AND line_account_id = ?`)
-      .bind(existing.case_id, lineAccountId.value)
-      .first<{ status: string }>();
+    const linkedCase = await getCaseRow(c.env.DB, existing.case_id, lineAccountId.value);
     if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
 
     const now = jstNow();
     const reopenedId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const slackOutboxId = crypto.randomUUID();
+    const assigneeStaffIds = existing.assignee_staff_id
+      ? new Map([[existing.assignee, existing.assignee_staff_id]])
+      : await activeStaffIdsByName(c.env.DB, [existing.assignee]);
+    const assigneeStaffId = assigneeStaffIds.get(existing.assignee) ?? null;
     const reopenedInsert = c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
-          id, case_id, line_account_id, assignee, level, status, question, answer,
+          id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
           due_at, answered_at, created_by, updated_by, created_at, updated_at, reopened_from_id
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?)`,
       )
       .bind(
         reopenedId,
         existing.case_id,
         existing.line_account_id,
         existing.assignee,
+        assigneeStaffId,
         existing.level,
         existing.question,
         existing.due_at,
@@ -3955,12 +4183,24 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
           previousEscalationId: existing.id,
           previousStatus: existing.status,
           reopenedEscalationId: reopenedId,
+          assigneeStaffId,
           previousCaseStatus: linkedCase.status,
           nextCaseStatus: 'waiting_secondary',
         },
-        crypto.randomUUID(),
+        eventId,
         now,
       ),
+      prepareSecondarySlackOutbox(c.env.DB, {
+        id: slackOutboxId,
+        sourceEventId: eventId,
+        notificationType: 'secondary_reopened',
+        supportCase: linkedCase,
+        secondaryAssignees: [{ name: existing.assignee, staffId: assigneeStaffId }],
+        primaryAssigneeFallback: staff.name,
+        customerSummary: existing.question,
+        dueAt: existing.due_at,
+        now,
+      }),
     ]);
 
     const reopened = await c.env.DB
@@ -3973,6 +4213,7 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
       )
       .bind(reopenedId, lineAccountId.value)
       .first<SupportEscalationRow>();
+    kickSupportSecondarySlackNotification(c, slackOutboxId);
     kickWebPushNotifications(c);
     return c.json({ success: true, data: serializeEscalation(reopened!) }, 201);
   } catch (err) {

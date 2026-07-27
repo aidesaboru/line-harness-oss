@@ -6,6 +6,9 @@ const SUPPORT_NOTIFICATION_DIGEST_EVENT = 'slack_digest_sent';
 const SUPPORT_NOTIFICATION_URGENT_EVENT = 'slack_urgent_sent';
 const SUPPORT_TICKET_CREATED_EVENT = 'slack_ticket_created_sent';
 const SUPPORT_TICKET_STATE_CONFLICT_EVENT = 'slack_ticket_created_state_conflict';
+const SUPPORT_SECONDARY_ASSIGNED_EVENT = 'slack_secondary_assigned_sent';
+const SUPPORT_SECONDARY_REOPENED_EVENT = 'slack_secondary_reopened_sent';
+const SUPPORT_SECONDARY_STATE_CONFLICT_EVENT = 'slack_secondary_state_conflict';
 
 const DEFAULT_DIGEST_HOURS = [12, 14, 17];
 const DEFAULT_DUE_SOON_HOURS = 4;
@@ -66,6 +69,8 @@ type NotificationRuntime = {
 };
 
 export type SupportTicketSlackSnapshot = {
+  notificationId?: string;
+  notificationKind?: 'ticket_created' | 'secondary_assigned' | 'secondary_reopened';
   caseId: string;
   title: string;
   priority: string;
@@ -91,6 +96,22 @@ type SupportSlackOutboxRow = {
   next_attempt_at: string;
   claim_token: string | null;
   updated_at: string;
+};
+
+type SupportSlackQueue = 'ticket_created' | 'secondary_event';
+
+const SUPPORT_SLACK_QUEUE_CONFIG: Record<SupportSlackQueue, {
+  tableName: string;
+  notificationFilter: string;
+}> = {
+  ticket_created: {
+    tableName: 'support_slack_notification_outbox',
+    notificationFilter: "notification_type = 'ticket_created'",
+  },
+  secondary_event: {
+    tableName: 'support_secondary_slack_notification_outbox',
+    notificationFilter: "notification_type IN ('secondary_assigned', 'secondary_reopened')",
+  },
 };
 
 type SlackMessageSender = (
@@ -498,8 +519,17 @@ function parseTicketSlackSnapshot(raw: string): SupportTicketSlackSnapshot | nul
       }
     }
     if (secondaryAssignees.length === 0) return null;
+    const notificationKind = safeText(row.notificationKind);
+    if (
+      notificationKind
+      && !['ticket_created', 'secondary_assigned', 'secondary_reopened'].includes(notificationKind)
+    ) {
+      return null;
+    }
 
     return {
+      notificationId: safeText(row.notificationId) ?? undefined,
+      notificationKind: (notificationKind as SupportTicketSlackSnapshot['notificationKind']) ?? 'ticket_created',
       caseId,
       title,
       priority: safeText(row.priority) ?? 'medium',
@@ -533,6 +563,30 @@ function ticketMentionText(
   return { text: targets.join(' '), unmappedAssignees };
 }
 
+function supportSlackNotificationLabel(
+  kind: SupportTicketSlackSnapshot['notificationKind'],
+): { title: string; fallbackPrefix: string; actionId: string } {
+  if (kind === 'secondary_assigned') {
+    return {
+      title: '二次対応が追加されました',
+      fallbackPrefix: 'L-Link 二次対応追加',
+      actionId: 'open_assigned_support_case',
+    };
+  }
+  if (kind === 'secondary_reopened') {
+    return {
+      title: '二次対応が再開されました',
+      fallbackPrefix: 'L-Link 二次対応再開',
+      actionId: 'open_reopened_support_case',
+    };
+  }
+  return {
+    title: '二次対応チケットが発行されました',
+    fallbackPrefix: 'L-Link 二次対応チケット',
+    actionId: 'open_created_support_case',
+  };
+}
+
 export function buildTicketCreatedSlackPayload(
   snapshot: SupportTicketSlackSnapshot,
   input: {
@@ -542,13 +596,14 @@ export function buildTicketCreatedSlackPayload(
   },
 ): { payload: Record<string, unknown>; unmappedAssignees: string[] } {
   const mentions = ticketMentionText(snapshot.secondaryAssignees, input.mentionMap);
+  const label = supportSlackNotificationLabel(snapshot.notificationKind ?? 'ticket_created');
   const summary = truncateText(snapshot.customerSummary, 800);
   const priority = priorityLabel(snapshot.priority);
   const due = snapshot.dueAt ?? '未設定';
   const secondaryNames = snapshot.secondaryAssignees.map((assignee) => assignee.name).join('、');
   const fallback = [
     mentions.text,
-    `【L-Link 二次対応チケット】${slackEscape(snapshot.title)}`,
+    `【${label.fallbackPrefix}】${slackEscape(snapshot.title)}`,
     `一次対応: ${slackEscape(snapshot.primaryAssignee)}`,
     `二次対応: ${slackEscape(secondaryNames)}`,
     `緊急度: ${priority.replace(/:[a-z_]+:\s*/g, '')}`,
@@ -560,7 +615,7 @@ export function buildTicketCreatedSlackPayload(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: truncateText(`${mentions.text}\n:ticket: *二次対応チケットが発行されました*`, SLACK_SECTION_TEXT_LIMIT),
+        text: truncateText(`${mentions.text}\n:ticket: *${label.title}*`, SLACK_SECTION_TEXT_LIMIT),
       },
     },
     {
@@ -614,7 +669,7 @@ export function buildTicketCreatedSlackPayload(
           },
           url: input.url,
           value: snapshot.caseId,
-          action_id: 'open_created_support_case',
+          action_id: label.actionId,
         },
       ],
     });
@@ -626,7 +681,7 @@ export function buildTicketCreatedSlackPayload(
       blocks,
       unfurl_links: false,
       unfurl_media: false,
-      client_msg_id: snapshot.caseId,
+      client_msg_id: snapshot.notificationId ?? snapshot.caseId,
     },
     unmappedAssignees: mentions.unmappedAssignees,
   };
@@ -836,33 +891,37 @@ function slackDeliveryFailure(error: unknown): {
   return { code: 'delivery_error', retryable: true, retryAfterSeconds: null };
 }
 
-async function getTicketSlackOutboxRow(
+async function getSupportSlackOutboxRow(
   db: D1Database,
   outboxId: string,
+  queue: SupportSlackQueue,
 ): Promise<SupportSlackOutboxRow | null> {
+  const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
   return db
     .prepare(
       `SELECT id, case_id, line_account_id, payload, status, attempts, next_attempt_at, claim_token, updated_at
-       FROM support_slack_notification_outbox
-       WHERE id = ? AND notification_type = 'ticket_created'`,
+       FROM ${config.tableName}
+       WHERE id = ? AND ${config.notificationFilter}`,
     )
     .bind(outboxId)
     .first<SupportSlackOutboxRow>();
 }
 
-async function markTicketSlackDeliveryFailed(
+async function markSupportSlackDeliveryFailed(
   db: D1Database,
   outboxId: string,
   claimToken: string,
   failure: { code: string; retryable: boolean; retryAfterSeconds: number | null },
   attempt: number,
   now: Date,
+  queue: SupportSlackQueue,
 ): Promise<void> {
+  const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
   const nowText = toJstString(now);
   const shouldRetry = failure.retryable && attempt < MAX_TICKET_NOTIFICATION_ATTEMPTS;
   await db
     .prepare(
-      `UPDATE support_slack_notification_outbox
+      `UPDATE ${config.tableName}
        SET status = ?, last_error_code = ?, next_attempt_at = ?, updated_at = ?
        WHERE id = ? AND status = 'sending' AND claim_token = ?`,
     )
@@ -914,10 +973,11 @@ async function resolveTicketSlackMentionMap(
   return mentionMap;
 }
 
-export async function deliverSupportTicketSlackNotification(
+async function deliverSupportSlackNotification(
   db: D1Database,
   outboxId: string,
   runtime: SupportTicketSlackRuntime = {},
+  queue: SupportSlackQueue,
 ): Promise<{ sent: boolean; reason: string }> {
   const token = runtime.slackBotToken?.trim();
   const channelId = runtime.slackChannelId?.trim();
@@ -926,7 +986,8 @@ export async function deliverSupportTicketSlackNotification(
 
   const now = runtime.now ?? new Date();
   const nowText = toJstString(now);
-  const row = await getTicketSlackOutboxRow(db, outboxId);
+  const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
+  const row = await getSupportSlackOutboxRow(db, outboxId, queue);
   if (!row) return { sent: false, reason: 'outbox_not_found' };
   if (row.status === 'sent') return { sent: false, reason: 'already_sent' };
 
@@ -934,7 +995,7 @@ export async function deliverSupportTicketSlackNotification(
   const claimToken = crypto.randomUUID();
   const claim = await db
     .prepare(
-      `UPDATE support_slack_notification_outbox
+      `UPDATE ${config.tableName}
        SET status = 'sending', attempts = attempts + 1, claim_token = ?,
            last_error_code = NULL, updated_at = ?
        WHERE id = ?
@@ -950,13 +1011,14 @@ export async function deliverSupportTicketSlackNotification(
   const attempt = row.attempts + 1;
   const snapshot = parseTicketSlackSnapshot(row.payload);
   if (!snapshot) {
-    await markTicketSlackDeliveryFailed(
+    await markSupportSlackDeliveryFailed(
       db,
       outboxId,
       claimToken,
       { code: 'invalid_payload', retryable: false, retryAfterSeconds: null },
       attempt,
       now,
+      queue,
     );
     return { sent: false, reason: 'invalid_payload' };
   }
@@ -969,13 +1031,14 @@ export async function deliverSupportTicketSlackNotification(
     mentionMap,
   });
   if (built.unmappedAssignees.length > 0) {
-    await markTicketSlackDeliveryFailed(
+    await markSupportSlackDeliveryFailed(
       db,
       outboxId,
       claimToken,
       { code: 'mention_mapping_missing', retryable: true, retryAfterSeconds: 60 * 60 },
       attempt,
       now,
+      queue,
     );
     console.error('support ticket Slack notification error: mention_mapping_missing');
     return { sent: false, reason: 'delivery_failed' };
@@ -985,7 +1048,7 @@ export async function deliverSupportTicketSlackNotification(
     const delivered = await sendSlackMessage(token, built.payload, runtime.sendSlackMessage);
     const marked = await db
       .prepare(
-        `UPDATE support_slack_notification_outbox
+        `UPDATE ${config.tableName}
          SET status = 'sent', slack_message_ts = ?, sent_at = ?, updated_at = ?
          WHERE id = ? AND status = 'sending' AND claim_token = ?`,
       )
@@ -993,13 +1056,26 @@ export async function deliverSupportTicketSlackNotification(
       .run();
     const stateConflict = Number(marked.meta.changes ?? 0) === 0;
     try {
+      const notificationKind = snapshot.notificationKind ?? 'ticket_created';
+      const successEventType = notificationKind === 'secondary_assigned'
+        ? SUPPORT_SECONDARY_ASSIGNED_EVENT
+        : notificationKind === 'secondary_reopened'
+          ? SUPPORT_SECONDARY_REOPENED_EVENT
+          : SUPPORT_TICKET_CREATED_EVENT;
+      const successBody = notificationKind === 'secondary_assigned'
+        ? '二次対応追加のSlack通知を送信しました'
+        : notificationKind === 'secondary_reopened'
+          ? '二次対応再開のSlack通知を送信しました'
+          : 'チケット発行Slack通知を送信しました';
       await addNotificationEvent(
         db,
         snapshot.caseId,
-        stateConflict ? SUPPORT_TICKET_STATE_CONFLICT_EVENT : SUPPORT_TICKET_CREATED_EVENT,
+        stateConflict
+          ? (queue === 'secondary_event' ? SUPPORT_SECONDARY_STATE_CONFLICT_EVENT : SUPPORT_TICKET_STATE_CONFLICT_EVENT)
+          : successEventType,
         stateConflict
           ? 'Slack送信後の通知状態更新が競合しました'
-          : 'チケット発行Slack通知を送信しました',
+          : successBody,
         {
           channel: 'slack',
           channelId,
@@ -1019,19 +1095,37 @@ export async function deliverSupportTicketSlackNotification(
     return { sent: true, reason: 'sent' };
   } catch (error) {
     const failure = slackDeliveryFailure(error);
-    await markTicketSlackDeliveryFailed(db, outboxId, claimToken, failure, attempt, now);
+    await markSupportSlackDeliveryFailed(db, outboxId, claimToken, failure, attempt, now, queue);
     console.error(`support ticket Slack notification error: ${failure.code}`);
     return { sent: false, reason: 'delivery_failed' };
   }
 }
 
-export async function getSupportTicketSlackNotificationHealth(
+export async function deliverSupportTicketSlackNotification(
   db: D1Database,
+  outboxId: string,
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<{ sent: boolean; reason: string }> {
+  return deliverSupportSlackNotification(db, outboxId, runtime, 'ticket_created');
+}
+
+export async function deliverSupportSecondarySlackNotification(
+  db: D1Database,
+  outboxId: string,
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<{ sent: boolean; reason: string }> {
+  return deliverSupportSlackNotification(db, outboxId, runtime, 'secondary_event');
+}
+
+async function getSupportSlackQueueHealth(
+  db: D1Database,
+  queue: SupportSlackQueue,
 ): Promise<SupportTicketSlackHealth> {
+  const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
   const rows = await db
     .prepare(
       `SELECT status, COUNT(*) AS count, MAX(updated_at) AS last_updated_at
-       FROM support_slack_notification_outbox
+       FROM ${config.tableName}
        GROUP BY status`,
     )
     .all<{ status: string; count: number; last_updated_at: string | null }>();
@@ -1056,21 +1150,43 @@ export async function getSupportTicketSlackNotificationHealth(
   return health;
 }
 
-export async function processPendingSupportTicketSlackNotifications(
+export async function getSupportTicketSlackNotificationHealth(
+  db: D1Database,
+): Promise<SupportTicketSlackHealth> {
+  const [ticketHealth, secondaryHealth] = await Promise.all([
+    getSupportSlackQueueHealth(db, 'ticket_created'),
+    getSupportSlackQueueHealth(db, 'secondary_event'),
+  ]);
+  return {
+    pending: ticketHealth.pending + secondaryHealth.pending,
+    sending: ticketHealth.sending + secondaryHealth.sending,
+    failed: ticketHealth.failed + secondaryHealth.failed,
+    deadLetter: ticketHealth.deadLetter + secondaryHealth.deadLetter,
+    sent: ticketHealth.sent + secondaryHealth.sent,
+    lastUpdatedAt: [ticketHealth.lastUpdatedAt, secondaryHealth.lastUpdatedAt]
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? null,
+  };
+}
+
+async function processPendingSupportSlackNotifications(
   db: D1Database,
   runtime: SupportTicketSlackRuntime = {},
+  queue: SupportSlackQueue,
 ): Promise<{ sent: number; skipped: number; failed: number }> {
   if (!runtime.slackBotToken?.trim() || !runtime.slackChannelId?.trim()) {
     return { sent: 0, skipped: 1, failed: 0 };
   }
+  const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
   const now = runtime.now ?? new Date();
   const nowText = toJstString(now);
   const staleBefore = toJstString(new Date(now.getTime() - TICKET_NOTIFICATION_STALE_MINUTES * 60_000));
   const rows = await db
     .prepare(
       `SELECT id
-       FROM support_slack_notification_outbox
-       WHERE notification_type = 'ticket_created'
+       FROM ${config.tableName}
+       WHERE ${config.notificationFilter}
          AND (
            (status IN ('pending', 'failed') AND next_attempt_at <= ?)
            OR (status = 'sending' AND updated_at <= ?)
@@ -1085,15 +1201,52 @@ export async function processPendingSupportTicketSlackNotifications(
   let skipped = 0;
   let failed = 0;
   for (const row of rows.results) {
-    const result = await deliverSupportTicketSlackNotification(db, row.id, {
-      ...runtime,
-      now,
-    });
+    const result = await deliverSupportSlackNotification(db, row.id, { ...runtime, now }, queue);
     if (result.sent) sent += 1;
     else if (result.reason === 'delivery_failed' || result.reason === 'invalid_payload') failed += 1;
     else skipped += 1;
   }
   return { sent, skipped, failed };
+}
+
+export async function processPendingSupportTicketSlackNotifications(
+  db: D1Database,
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<{ sent: number; skipped: number; failed: number }> {
+  return processPendingSupportSlackNotifications(db, runtime, 'ticket_created');
+}
+
+export async function processPendingSupportSecondarySlackNotifications(
+  db: D1Database,
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<{ sent: number; skipped: number; failed: number }> {
+  return processPendingSupportSlackNotifications(db, runtime, 'secondary_event');
+}
+
+export async function requeueDeadLetterSupportSlackNotifications(
+  db: D1Database,
+  now: Date = new Date(),
+): Promise<{ ticketCreated: number; secondaryEvents: number; total: number }> {
+  const nowText = toJstString(now);
+  const results: number[] = [];
+  for (const queue of ['ticket_created', 'secondary_event'] as const) {
+    const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
+    const result = await db
+      .prepare(
+        `UPDATE ${config.tableName}
+         SET status = 'pending', attempts = 0, next_attempt_at = ?,
+             claim_token = NULL, last_error_code = NULL, updated_at = ?
+         WHERE status = 'dead_letter'`,
+      )
+      .bind(nowText, nowText)
+      .run();
+    results.push(Number(result.meta.changes ?? 0));
+  }
+  return {
+    ticketCreated: results[0] ?? 0,
+    secondaryEvents: results[1] ?? 0,
+    total: (results[0] ?? 0) + (results[1] ?? 0),
+  };
 }
 
 export async function sendSupportTicketSlackTestNotification(

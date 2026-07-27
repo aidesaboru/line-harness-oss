@@ -1210,6 +1210,27 @@ CREATE TABLE support_manuals (
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , knowledge_question TEXT NOT NULL DEFAULT '', knowledge_resolution TEXT NOT NULL DEFAULT '', knowledge_procedure TEXT NOT NULL DEFAULT '', knowledge_applicability TEXT NOT NULL DEFAULT '', knowledge_cautions TEXT NOT NULL DEFAULT '', knowledge_source_body TEXT NOT NULL DEFAULT '', knowledge_status TEXT NOT NULL DEFAULT 'needs_review', knowledge_quality_score INTEGER NOT NULL DEFAULT 0, knowledge_review_note TEXT NOT NULL DEFAULT '', knowledge_use_count INTEGER NOT NULL DEFAULT 0, knowledge_last_used_at TEXT, knowledge_helpful_count INTEGER NOT NULL DEFAULT 0, knowledge_needs_improvement_count INTEGER NOT NULL DEFAULT 0);
 
+CREATE TABLE support_secondary_slack_notification_outbox (
+  id                TEXT PRIMARY KEY,
+  case_id           TEXT NOT NULL REFERENCES support_cases(id) ON DELETE RESTRICT,
+  line_account_id   TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE RESTRICT,
+  source_event_id   TEXT NOT NULL REFERENCES support_case_events(id) ON DELETE RESTRICT,
+  notification_type TEXT NOT NULL
+                    CHECK (notification_type IN ('secondary_assigned', 'secondary_reopened')),
+  payload           TEXT NOT NULL CHECK (json_valid(payload)),
+  status            TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'sending', 'failed', 'dead_letter', 'sent')),
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at   TEXT NOT NULL,
+  claim_token       TEXT,
+  last_error_code   TEXT,
+  slack_message_ts  TEXT,
+  sent_at           TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (source_event_id, notification_type)
+);
+
 CREATE TABLE support_slack_notification_outbox (
   id                TEXT PRIMARY KEY,
   case_id           TEXT NOT NULL REFERENCES support_cases(id) ON DELETE RESTRICT,
@@ -1662,6 +1683,12 @@ CREATE INDEX idx_support_manuals_account_category
 CREATE INDEX idx_support_manuals_account_knowledge_status
   ON support_manuals(line_account_id, knowledge_status, is_active, revised_at);
 
+CREATE INDEX idx_support_secondary_slack_outbox_account
+  ON support_secondary_slack_notification_outbox(line_account_id, created_at DESC);
+
+CREATE INDEX idx_support_secondary_slack_outbox_delivery
+  ON support_secondary_slack_notification_outbox(status, next_attempt_at, created_at);
+
 CREATE INDEX idx_support_slack_outbox_account
   ON support_slack_notification_outbox(line_account_id, created_at DESC);
 
@@ -1901,6 +1928,19 @@ CREATE TRIGGER protect_support_internal_messages_delete
 BEFORE DELETE ON support_internal_messages
 BEGIN
   SELECT RAISE(ABORT, 'support_internal_messages history is protected');
+END;
+
+CREATE TRIGGER protect_support_secondary_slack_outbox_delete
+BEFORE DELETE ON support_secondary_slack_notification_outbox
+BEGIN
+  SELECT RAISE(ABORT, 'secondary support Slack notification outbox cannot be deleted');
+END;
+
+CREATE TRIGGER protect_support_secondary_slack_outbox_sent_status
+BEFORE UPDATE OF status ON support_secondary_slack_notification_outbox
+WHEN OLD.status = 'sent' AND NEW.status != 'sent'
+BEGIN
+  SELECT RAISE(ABORT, 'sent secondary support Slack notification cannot be reopened');
 END;
 
 CREATE TRIGGER protect_support_slack_outbox_delete

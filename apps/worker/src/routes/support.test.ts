@@ -57,6 +57,7 @@ type SupportEscalationRow = {
   friend_name?: string | null;
   line_account_id: string | null;
   assignee: string;
+  assignee_staff_id?: string | null;
   level: string;
   status: string;
   question: string;
@@ -840,6 +841,7 @@ function makeSupportDb(state: {
             const caseId = String(bound[1]);
             const lineAccountId = String(bound[2]);
             const assignee = String(bound[3]);
+            const assigneeStaffId = hasAssigneeStaffId ? bound[4] as string | null : null;
             const offset = hasAssigneeStaffId ? 1 : 0;
             const level = String(bound[4 + offset]);
             const question = String(bound[5 + offset] ?? '');
@@ -854,6 +856,7 @@ function makeSupportDb(state: {
               case_id: caseId,
               line_account_id: lineAccountId,
               assignee,
+              assignee_staff_id: assigneeStaffId,
               level,
               status: 'pending',
               question,
@@ -1737,8 +1740,67 @@ describe('support CRM routes', () => {
     });
   });
 
+  test('queues a Slack notification when an owner adds secondary assignees later', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-routing', status: 'in_progress' })],
+      staffMembers: [
+        { id: 'staff-yoshida', name: '吉田 京平' },
+        { id: 'staff-tajima', name: '田島' },
+      ],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+      .request('/api/support/cases/case-routing/secondary-assignees', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          escalationAssignees: ['吉田 京平', '田島'],
+        }),
+      });
+
+    expect(res.status).toBe(200);
+    expect(state.cases[0]).toMatchObject({
+      status: 'waiting_secondary',
+      escalation_assignee: '吉田 京平',
+    });
+    const outboxCall = calls.find((call) => call.sql.includes('INSERT INTO support_secondary_slack_notification_outbox'));
+    expect(outboxCall).toBeDefined();
+    const payload = JSON.parse(String(outboxCall?.binds[5])) as {
+      notificationKind: string;
+      secondaryAssignees: Array<{ name: string; staffId: string }>;
+    };
+    expect(payload.notificationKind).toBe('secondary_assigned');
+    expect(payload.secondaryAssignees).toEqual([
+      { name: '吉田 京平', staffId: 'staff-yoshida' },
+      { name: '田島', staffId: 'staff-tajima' },
+    ]);
+  });
+
+  test('rejects moving a case into secondary handling without an active escalation', async () => {
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-without-secondary', status: 'in_progress' })],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' })
+      .request('/api/support/cases/case-without-secondary', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          status: 'waiting_secondary',
+        }),
+      });
+
+    expect(res.status).toBe(400);
+    expect(state.cases[0].status).toBe('in_progress');
+  });
+
   test('owner escalates an open case and moves it to waiting_secondary', async () => {
-    const { db, state } = makeSupportDb({ cases: [baseCase({ id: 'case-esc' })] });
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-esc' })],
+      staffMembers: [{ id: 'staff-tajima', name: '田島' }],
+    });
 
     const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases/case-esc/escalations', {
       method: 'POST',
@@ -1770,6 +1832,7 @@ describe('support CRM routes', () => {
       event_type: 'escalated',
       actor_name: 'Owner',
     });
+    expect(calls.some((call) => call.sql.includes('INSERT INTO support_secondary_slack_notification_outbox'))).toBe(true);
   });
 
   test('staff creates an escalation question only using the case routing', async () => {
@@ -2353,9 +2416,10 @@ describe('support CRM routes', () => {
   });
 
   test('owner can change escalation routing fields', async () => {
-    const { db, state } = makeSupportDb({
+    const { db, calls, state } = makeSupportDb({
       cases: [baseCase({ id: 'case-esc', status: 'waiting_secondary' })],
       escalations: [baseEscalation({ id: 'esc-visible', case_id: 'case-esc' })],
+      staffMembers: [{ id: 'staff-other-admin', name: 'Other Admin' }],
     });
 
     const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/escalations/esc-visible', {
@@ -2378,6 +2442,7 @@ describe('support CRM routes', () => {
       question: '追加確認をお願いします',
       updated_by: 'owner-1',
     });
+    expect(calls.some((call) => call.sql.includes('INSERT INTO support_secondary_slack_notification_outbox'))).toBe(true);
   });
 
   test('filters my escalations by the logged-in staff name', async () => {

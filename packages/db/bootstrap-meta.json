@@ -83,8 +83,9 @@
     "075_repeatable_chat_reminder_completions.sql",
     "076_support_ticket_slack_outbox.sql",
     "077_line_conversation_status.sql",
-    "078_line_conversation_workflow.sql"
+    "078_line_conversation_workflow.sql",
+    "079_support_secondary_slack_outbox.sql"
   ],
-  "migrationCount": 84,
+  "migrationCount": 85,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

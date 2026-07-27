@@ -523,19 +523,6 @@ function priorityLabel(priority: string): string {
   }
 }
 
-function priorityColor(priority: string): string {
-  switch (priority) {
-    case 'urgent':
-      return '#e01e5a';
-    case 'high':
-      return '#e8912d';
-    case 'low':
-      return '#868686';
-    default:
-      return '#1264a3';
-  }
-}
-
 function compactSlackSummary(value: string): string {
   return truncateText(value.replace(/\s+/g, ' ').trim(), 160);
 }
@@ -719,12 +706,7 @@ export function buildTicketCreatedSlackPayload(
     payload: {
       channel: input.channelId,
       text: truncateText(fallback, 4000),
-      attachments: [
-        {
-          color: priorityColor(snapshot.priority),
-          blocks,
-        },
-      ],
+      blocks,
       unfurl_links: false,
       unfurl_media: false,
       client_msg_id: snapshot.notificationId ?? snapshot.caseId,

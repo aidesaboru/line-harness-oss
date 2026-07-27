@@ -482,8 +482,8 @@ describe('support Slack notifications', () => {
     expect(payloadJson).toContain('確認してほしいこと');
     expect(payloadJson).toContain('今すぐチケットを確認する →');
     expect(payloadJson).toContain('"style":"primary"');
-    expect(payloadJson).toContain('"color":"#e01e5a"');
     expect(payloadJson).not.toContain('"fields"');
+    expect(payloadJson).not.toContain('"attachments"');
     expect(payloadJson).not.toContain('顧客番号');
     expect(payloadJson).not.toContain('法人名');
     expect(payloadJson).not.toContain('顧客名');

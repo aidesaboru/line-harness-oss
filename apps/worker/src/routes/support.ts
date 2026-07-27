@@ -17,6 +17,7 @@ import {
   processPendingSupportSecondarySlackNotifications,
   processPendingSupportTicketSlackNotifications,
   requeueDeadLetterSupportSlackNotifications,
+  reissueSentSupportSlackNotifications,
   sendSupportTicketSlackTestNotification,
 } from '../services/support-notifications.js';
 import {
@@ -495,6 +496,43 @@ function parseOptionalBooleanFlag(raw: unknown, label: string): ValueResult<bool
     if (value === 'false' || value === '0' || value === '') return { ok: true, value: false };
   }
   return { ok: false, error: `${label} must be a boolean` };
+}
+
+function parseRequiredOperationalTimestamp(raw: unknown, label: string): ValueResult<Date> {
+  const parsed = parseRequiredTextField(raw, label, 64);
+  if (!parsed.ok) return parsed;
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(parsed.value)) {
+    return { ok: false, error: `${label} must include a timezone` };
+  }
+  const value = new Date(parsed.value);
+  if (Number.isNaN(value.getTime())) return { ok: false, error: `${label} is invalid` };
+  return { ok: true, value };
+}
+
+function parseRequiredExpectedCount(raw: unknown): ValueResult<number> {
+  if (!Number.isInteger(raw) || Number(raw) < 1 || Number(raw) > 100) {
+    return { ok: false, error: 'expectedCount must be an integer between 1 and 100' };
+  }
+  return { ok: true, value: Number(raw) };
+}
+
+function parseSlackMessageTimestamps(
+  raw: unknown,
+  label: string,
+  maxItems: number,
+): ValueResult<string[]> {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw) || raw.length > maxItems) {
+    return { ok: false, error: `${label} must be an array with at most ${maxItems} items` };
+  }
+  const timestamps: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string' || !/^\d{10,}\.\d{6}$/.test(item.trim())) {
+      return { ok: false, error: `${label} contains an invalid Slack message timestamp` };
+    }
+    timestamps.push(item.trim());
+  }
+  return { ok: true, value: Array.from(new Set(timestamps)) };
 }
 
 function parseInternalMessageBaseVersion(raw: unknown): ValueResult<number> {
@@ -2450,6 +2488,62 @@ support.get('/api/support/notifications/slack/status', requireRole('owner', 'adm
     });
   } catch (err) {
     console.error(`GET /api/support/notifications/slack/status error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/notifications/slack/reissue-sent', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const sentAfter = parseRequiredOperationalTimestamp(parsedBody.value.sentAfter, 'sentAfter');
+    if (!sentAfter.ok) return c.json({ success: false, error: sentAfter.error }, 400);
+    const sentBefore = parseRequiredOperationalTimestamp(parsedBody.value.sentBefore, 'sentBefore');
+    if (!sentBefore.ok) return c.json({ success: false, error: sentBefore.error }, 400);
+    const expectedCount = parseRequiredExpectedCount(parsedBody.value.expectedCount);
+    if (!expectedCount.ok) return c.json({ success: false, error: expectedCount.error }, 400);
+    const previewOnly = parseOptionalBooleanFlag(parsedBody.value.previewOnly, 'previewOnly');
+    if (!previewOnly.ok) return c.json({ success: false, error: previewOnly.error }, 400);
+    const checkedMessageTs = parseSlackMessageTimestamps(parsedBody.value.checkedMessageTs, 'checkedMessageTs', 100);
+    if (!checkedMessageTs.ok) return c.json({ success: false, error: checkedMessageTs.error }, 400);
+    const preserveMessageTs = parseSlackMessageTimestamps(parsedBody.value.preserveMessageTs, 'preserveMessageTs', 100);
+    if (!preserveMessageTs.ok) return c.json({ success: false, error: preserveMessageTs.error }, 400);
+    const extraMessageTs = parseSlackMessageTimestamps(parsedBody.value.extraMessageTs, 'extraMessageTs', 10);
+    if (!extraMessageTs.ok) return c.json({ success: false, error: extraMessageTs.error }, 400);
+
+    const rangeMs = sentBefore.value.getTime() - sentAfter.value.getTime();
+    if (rangeMs <= 0 || rangeMs > 6 * 60 * 60 * 1_000) {
+      return c.json({
+        success: false,
+        error: 'The Slack reissue window must be greater than 0 and no longer than 6 hours',
+      }, 400);
+    }
+    if (!c.env.SLACK_BOT_TOKEN?.trim() || !c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID?.trim()) {
+      return c.json({ success: false, error: 'Slack notification is not configured' }, 503);
+    }
+
+    const result = await reissueSentSupportSlackNotifications(c.env.DB, {
+      adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
+      slackBotToken: c.env.SLACK_BOT_TOKEN,
+      slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      slackMentionMap: c.env.SUPPORT_TICKET_SLACK_MENTION_MAP,
+    }, {
+      sentAfter: sentAfter.value,
+      sentBefore: sentBefore.value,
+      expectedCount: expectedCount.value,
+      checkedMessageTs: checkedMessageTs.value,
+      preserveMessageTs: preserveMessageTs.value,
+      previewOnly: previewOnly.value,
+      extraMessageTs: extraMessageTs.value,
+    });
+    const preconditionFailed = result.failures.some((failure) => (
+      failure.reason.startsWith('selection_mismatch_')
+      || failure.reason === 'checked_message_set_mismatch'
+      || failure.reason === 'preserve_message_set_invalid'
+    ));
+    return c.json({ success: result.failures.length === 0, data: result }, preconditionFailed ? 409 : 200);
+  } catch (err) {
+    console.error(`POST /api/support/notifications/slack/reissue-sent error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

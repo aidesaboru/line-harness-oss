@@ -9,6 +9,7 @@ const SUPPORT_TICKET_STATE_CONFLICT_EVENT = 'slack_ticket_created_state_conflict
 const SUPPORT_SECONDARY_ASSIGNED_EVENT = 'slack_secondary_assigned_sent';
 const SUPPORT_SECONDARY_REOPENED_EVENT = 'slack_secondary_reopened_sent';
 const SUPPORT_SECONDARY_STATE_CONFLICT_EVENT = 'slack_secondary_state_conflict';
+const SUPPORT_SLACK_NOTIFICATION_REISSUED_EVENT = 'slack_notification_reissued';
 
 const DEFAULT_DIGEST_HOURS = [12, 14, 17];
 const DEFAULT_DUE_SOON_HOURS = 4;
@@ -95,6 +96,8 @@ type SupportSlackOutboxRow = {
   attempts: number;
   next_attempt_at: string;
   claim_token: string | null;
+  slack_message_ts: string | null;
+  sent_at: string | null;
   updated_at: string;
 };
 
@@ -119,13 +122,43 @@ type SlackMessageSender = (
   payload: Record<string, unknown>,
 ) => Promise<{ messageTs: string | null }>;
 
+type SlackMessageDeleter = (
+  token: string,
+  channelId: string,
+  messageTs: string,
+) => Promise<void>;
+
+type SlackMessageUpdater = (
+  token: string,
+  channelId: string,
+  messageTs: string,
+  payload: Record<string, unknown>,
+) => Promise<void>;
+
 export type SupportTicketSlackRuntime = {
   adminPublicUrl?: string;
   slackBotToken?: string;
   slackChannelId?: string;
   slackMentionMap?: string;
   sendSlackMessage?: SlackMessageSender;
+  deleteSlackMessage?: SlackMessageDeleter;
+  updateSlackMessage?: SlackMessageUpdater;
   now?: Date;
+};
+
+export type SupportSlackReissueResult = {
+  selected: number;
+  previewOnly: boolean;
+  reissued: number;
+  updatedInPlace: number;
+  oldMessagesDeleted: number;
+  extraMessagesDeleted: number;
+  failures: Array<{
+    queue: 'ticket_created' | 'secondary_event' | 'extra';
+    outboxId: string | null;
+    messageTs: string | null;
+    reason: string;
+  }>;
 };
 
 export type SupportTicketSlackHealth = {
@@ -486,8 +519,25 @@ function priorityLabel(priority: string): string {
     case 'low':
       return ':white_circle: 低';
     default:
-      return ':large_green_circle: 通常';
+      return ':large_blue_circle: 通常';
   }
+}
+
+function priorityColor(priority: string): string {
+  switch (priority) {
+    case 'urgent':
+      return '#e01e5a';
+    case 'high':
+      return '#e8912d';
+    case 'low':
+      return '#868686';
+    default:
+      return '#1264a3';
+  }
+}
+
+function compactSlackSummary(value: string): string {
+  return truncateText(value.replace(/\s+/g, ' ').trim(), 160);
 }
 
 function parseTicketSlackSnapshot(raw: string): SupportTicketSlackSnapshot | null {
@@ -581,7 +631,7 @@ function supportSlackNotificationLabel(
     };
   }
   return {
-    title: '二次対応チケットが発行されました',
+    title: '二次対応をお願いします',
     fallbackPrefix: 'L-Link 二次対応チケット',
     actionId: 'open_created_support_case',
   };
@@ -593,21 +643,27 @@ export function buildTicketCreatedSlackPayload(
     channelId: string;
     url: string;
     mentionMap: Map<string, string>;
+    now?: Date;
   },
 ): { payload: Record<string, unknown>; unmappedAssignees: string[] } {
+  if (!isHttpUrl(input.url)) {
+    throw new SlackDeliveryError('ticket_url_invalid', false);
+  }
   const mentions = ticketMentionText(snapshot.secondaryAssignees, input.mentionMap);
   const label = supportSlackNotificationLabel(snapshot.notificationKind ?? 'ticket_created');
-  const summary = truncateText(snapshot.customerSummary, 800);
+  const title = truncateText(snapshot.title, 120);
+  const summary = compactSlackSummary(snapshot.customerSummary);
   const priority = priorityLabel(snapshot.priority);
-  const due = snapshot.dueAt ?? '未設定';
-  const secondaryNames = snapshot.secondaryAssignees.map((assignee) => assignee.name).join('、');
+  const due = snapshot.dueAt
+    ? (formatJstShort(snapshot.dueAt, input.now ?? new Date()) ?? snapshot.dueAt)
+    : '未設定';
   const fallback = [
     mentions.text,
-    `【${label.fallbackPrefix}】${slackEscape(snapshot.title)}`,
+    `${priority} ${label.title}`,
+    `【${label.fallbackPrefix}】${slackEscape(title)}`,
+    `確認内容: ${slackEscape(summary)}`,
     `一次対応: ${slackEscape(snapshot.primaryAssignee)}`,
-    `二次対応: ${slackEscape(secondaryNames)}`,
-    `緊急度: ${priority.replace(/:[a-z_]+:\s*/g, '')}`,
-    `対応内容: ${slackEscape(truncateText(summary, 240))}`,
+    `期限: ${slackEscape(due)}`,
     `チケットURL: ${input.url}`,
   ].join('\n');
   const blocks: Array<Record<string, unknown>> = [
@@ -615,70 +671,60 @@ export function buildTicketCreatedSlackPayload(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: truncateText(`${mentions.text}\n:ticket: *${label.title}*`, SLACK_SECTION_TEXT_LIMIT),
+        text: truncateText(
+          `${mentions.text}\n${priority} *${slackEscape(label.title)}*`,
+          SLACK_SECTION_TEXT_LIMIT,
+        ),
       },
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: truncateText(`*${slackEscape(snapshot.title)}*`, SLACK_SECTION_TEXT_LIMIT),
+        text: truncateText(
+          `:ticket: *${slackEscape(title)}*\n\n*確認してほしいこと*\n${slackEscape(summary)}`,
+          SLACK_SECTION_TEXT_LIMIT,
+        ),
       },
-    },
-    {
-      type: 'section',
-      fields: [
-        slackField('一次対応', snapshot.primaryAssignee),
-        slackField('二次対応', secondaryNames),
-        {
-          type: 'mrkdwn',
-          text: `*緊急度*\n${priority}`,
-        },
-        slackField('期限', due),
-      ],
     },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: truncateText(`*簡易的な対応内容*\n${slackEscape(summary)}`, SLACK_SECTION_TEXT_LIMIT),
+        text: truncateText(
+          `*一次対応*　${slackEscape(snapshot.primaryAssignee)}\n*期限*　${slackEscape(due)}`,
+          SLACK_SECTION_TEXT_LIMIT,
+        ),
       },
     },
   ];
-  const customerContext = [
-    snapshot.customerNumber ? `顧客番号: ${slackEscape(snapshot.customerNumber)}` : null,
-    snapshot.companyName ? `法人名: ${slackEscape(snapshot.companyName)}` : null,
-    snapshot.contactName ? `顧客名: ${slackEscape(snapshot.contactName)}` : null,
-  ].filter((value): value is string => Boolean(value));
-  if (customerContext.length > 0) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: truncateText(customerContext.join(' / '), SLACK_SECTION_TEXT_LIMIT) }],
-    });
-  }
-  if (isHttpUrl(input.url)) {
-    blocks.push({
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: {
-            type: 'plain_text',
-            text: 'チケットを開く',
-            emoji: true,
-          },
-          url: input.url,
-          value: snapshot.caseId,
-          action_id: label.actionId,
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: {
+          type: 'plain_text',
+          text: '今すぐチケットを確認する →',
+          emoji: true,
         },
-      ],
-    });
-  }
+        url: input.url,
+        value: snapshot.caseId,
+        action_id: label.actionId,
+        style: 'primary',
+      },
+    ],
+  });
   return {
     payload: {
       channel: input.channelId,
       text: truncateText(fallback, 4000),
-      blocks,
+      attachments: [
+        {
+          color: priorityColor(snapshot.priority),
+          blocks,
+        },
+      ],
       unfurl_links: false,
       unfurl_media: false,
       client_msg_id: snapshot.notificationId ?? snapshot.caseId,
@@ -771,6 +817,122 @@ async function sendSlackMessage(
       throw new SlackDeliveryError(errorCode, retryable);
     }
     return { messageTs: safeText(response.ts) };
+  } catch (error) {
+    if (error instanceof SlackDeliveryError) throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new SlackDeliveryError('timeout', true);
+    }
+    throw new SlackDeliveryError('network_error', true);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deleteSlackMessage(
+  token: string,
+  channelId: string,
+  messageTs: string,
+  deleter?: SlackMessageDeleter,
+): Promise<void> {
+  if (deleter) {
+    await deleter(token, channelId, messageTs);
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SLACK_API_TIMEOUT_MS);
+  try {
+    const res = await fetch('https://slack.com/api/chat.delete', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({ channel: channelId, ts: messageTs }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const retryAfter = Number(res.headers.get('Retry-After'));
+      throw new SlackDeliveryError(
+        `http_${res.status}`,
+        res.status === 429 || res.status >= 500,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null,
+      );
+    }
+    const parsed = await res.json() as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new SlackDeliveryError('invalid_response', false);
+    }
+    const response = parsed as Record<string, unknown>;
+    if (response.ok === true || response.error === 'message_not_found') return;
+    const errorCode = safeText(response.error) ?? 'slack_api_error';
+    const retryable = new Set([
+      'ratelimited',
+      'internal_error',
+      'fatal_error',
+      'request_timeout',
+      'service_unavailable',
+    ]).has(errorCode);
+    throw new SlackDeliveryError(errorCode, retryable);
+  } catch (error) {
+    if (error instanceof SlackDeliveryError) throw error;
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new SlackDeliveryError('timeout', true);
+    }
+    throw new SlackDeliveryError('network_error', true);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function updateSlackMessage(
+  token: string,
+  channelId: string,
+  messageTs: string,
+  payload: Record<string, unknown>,
+  updater?: SlackMessageUpdater,
+): Promise<void> {
+  if (updater) {
+    await updater(token, channelId, messageTs, payload);
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SLACK_API_TIMEOUT_MS);
+  try {
+    const { channel: _channel, client_msg_id: _clientMessageId, ...message } = payload;
+    const res = await fetch('https://slack.com/api/chat.update', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+      body: JSON.stringify({ ...message, channel: channelId, ts: messageTs }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const retryAfter = Number(res.headers.get('Retry-After'));
+      throw new SlackDeliveryError(
+        `http_${res.status}`,
+        res.status === 429 || res.status >= 500,
+        Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null,
+      );
+    }
+    const parsed = await res.json() as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new SlackDeliveryError('invalid_response', false);
+    }
+    const response = parsed as Record<string, unknown>;
+    if (response.ok === true) return;
+    const errorCode = safeText(response.error) ?? 'slack_api_error';
+    const retryable = new Set([
+      'ratelimited',
+      'internal_error',
+      'fatal_error',
+      'request_timeout',
+      'service_unavailable',
+    ]).has(errorCode);
+    throw new SlackDeliveryError(errorCode, retryable);
   } catch (error) {
     if (error instanceof SlackDeliveryError) throw error;
     if (error instanceof DOMException && error.name === 'AbortError') {
@@ -1025,11 +1187,28 @@ async function deliverSupportSlackNotification(
 
   const mentionMap = await resolveTicketSlackMentionMap(db, snapshot, runtime.slackMentionMap);
   const url = supportUrl(runtime.adminPublicUrl, snapshot.caseId);
-  const built = buildTicketCreatedSlackPayload(snapshot, {
-    channelId,
-    url,
-    mentionMap,
-  });
+  let built: ReturnType<typeof buildTicketCreatedSlackPayload>;
+  try {
+    built = buildTicketCreatedSlackPayload(snapshot, {
+      channelId,
+      url,
+      mentionMap,
+      now,
+    });
+  } catch (error) {
+    const failure = slackDeliveryFailure(error);
+    await markSupportSlackDeliveryFailed(
+      db,
+      outboxId,
+      claimToken,
+      failure,
+      attempt,
+      now,
+      queue,
+    );
+    console.error(`support ticket Slack notification error: ${failure.code}`);
+    return { sent: false, reason: 'delivery_failed' };
+  }
   if (built.unmappedAssignees.length > 0) {
     await markSupportSlackDeliveryFailed(
       db,
@@ -1249,6 +1428,276 @@ export async function requeueDeadLetterSupportSlackNotifications(
   };
 }
 
+export async function reissueSentSupportSlackNotifications(
+  db: D1Database,
+  runtime: SupportTicketSlackRuntime,
+  input: {
+    sentAfter: Date;
+    sentBefore: Date;
+    expectedCount: number;
+    checkedMessageTs: string[];
+    preserveMessageTs?: string[];
+    previewOnly?: boolean;
+    extraMessageTs?: string[];
+  },
+): Promise<SupportSlackReissueResult> {
+  const result: SupportSlackReissueResult = {
+    selected: 0,
+    previewOnly: input.previewOnly === true,
+    reissued: 0,
+    updatedInPlace: 0,
+    oldMessagesDeleted: 0,
+    extraMessagesDeleted: 0,
+    failures: [],
+  };
+  const token = runtime.slackBotToken?.trim();
+  const channelId = runtime.slackChannelId?.trim();
+  if (!token || !channelId) {
+    result.failures.push({
+      queue: 'extra',
+      outboxId: null,
+      messageTs: null,
+      reason: token ? 'channel_missing' : 'token_missing',
+    });
+    return result;
+  }
+
+  const now = runtime.now ?? new Date();
+  const nowText = toJstString(now);
+  const sentAfter = toJstString(input.sentAfter);
+  const sentBefore = toJstString(input.sentBefore);
+  const selectedRows: Array<{
+    queue: SupportSlackQueue;
+    row: SupportSlackOutboxRow;
+  }> = [];
+  for (const queue of ['ticket_created', 'secondary_event'] as const) {
+    const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
+    const rows = await db
+      .prepare(
+        `SELECT id, case_id, line_account_id, payload, status, attempts,
+                next_attempt_at, claim_token, slack_message_ts, sent_at, updated_at
+         FROM ${config.tableName}
+         WHERE ${config.notificationFilter}
+           AND status = 'sent'
+           AND slack_message_ts IS NOT NULL
+           AND sent_at IS NOT NULL
+           AND sent_at >= ?
+           AND sent_at <= ?
+         ORDER BY sent_at ASC, id ASC
+         LIMIT 100`,
+      )
+      .bind(sentAfter, sentBefore)
+      .all<SupportSlackOutboxRow>();
+    selectedRows.push(...rows.results.map((row) => ({ queue, row })));
+  }
+
+  result.selected = selectedRows.length;
+  if (result.selected !== input.expectedCount) {
+    result.failures.push({
+      queue: 'extra',
+      outboxId: null,
+      messageTs: null,
+      reason: `selection_mismatch_expected_${input.expectedCount}_actual_${result.selected}`,
+    });
+    return result;
+  }
+  const selectedMessageTs = selectedRows
+    .map(({ row }) => row.slack_message_ts)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const checkedMessageTs = Array.from(new Set(input.checkedMessageTs)).sort();
+  if (
+    selectedMessageTs.length !== checkedMessageTs.length
+    || selectedMessageTs.some((messageTs, index) => messageTs !== checkedMessageTs[index])
+  ) {
+    result.failures.push({
+      queue: 'extra',
+      outboxId: null,
+      messageTs: null,
+      reason: 'checked_message_set_mismatch',
+    });
+    return result;
+  }
+  const preserveMessageTs = new Set(input.preserveMessageTs ?? []);
+  if (Array.from(preserveMessageTs).some((messageTs) => !checkedMessageTs.includes(messageTs))) {
+    result.failures.push({
+      queue: 'extra',
+      outboxId: null,
+      messageTs: null,
+      reason: 'preserve_message_set_invalid',
+    });
+    return result;
+  }
+  if (result.previewOnly) return result;
+
+  for (const { queue, row } of selectedRows) {
+    const config = SUPPORT_SLACK_QUEUE_CONFIG[queue];
+    const oldMessageTs = row.slack_message_ts;
+    const snapshot = parseTicketSlackSnapshot(row.payload);
+    if (!snapshot || !oldMessageTs) {
+      result.failures.push({
+        queue,
+        outboxId: row.id,
+        messageTs: oldMessageTs,
+        reason: 'invalid_payload',
+      });
+      continue;
+    }
+
+    const mentionMap = await resolveTicketSlackMentionMap(db, snapshot, runtime.slackMentionMap);
+    let built: ReturnType<typeof buildTicketCreatedSlackPayload>;
+    try {
+      built = buildTicketCreatedSlackPayload({
+        ...snapshot,
+        notificationId: crypto.randomUUID(),
+      }, {
+        channelId,
+        url: supportUrl(runtime.adminPublicUrl, snapshot.caseId),
+        mentionMap,
+        now,
+      });
+    } catch (error) {
+      result.failures.push({
+        queue,
+        outboxId: row.id,
+        messageTs: oldMessageTs,
+        reason: `reissue_${slackDeliveryFailure(error).code}`,
+      });
+      continue;
+    }
+    if (built.unmappedAssignees.length > 0) {
+      result.failures.push({
+        queue,
+        outboxId: row.id,
+        messageTs: oldMessageTs,
+        reason: 'mention_mapping_missing',
+      });
+      continue;
+    }
+
+    if (preserveMessageTs.has(oldMessageTs)) {
+      try {
+        await updateSlackMessage(
+          token,
+          channelId,
+          oldMessageTs,
+          built.payload,
+          runtime.updateSlackMessage,
+        );
+        result.updatedInPlace += 1;
+        try {
+          await addNotificationEvent(
+            db,
+            snapshot.caseId,
+            SUPPORT_SLACK_NOTIFICATION_REISSUED_EVENT,
+            '返信やリアクションを保持したままSlack通知の表示を更新しました',
+            {
+              channel: 'slack',
+              channelId,
+              notificationKind: snapshot.notificationKind ?? 'ticket_created',
+              oldSlackMessageTs: oldMessageTs,
+              newSlackMessageTs: oldMessageTs,
+              preservedInteractions: true,
+            },
+          );
+        } catch (error) {
+          console.error(`support Slack update audit event error: ${error instanceof Error ? error.name : typeof error}`);
+        }
+      } catch (error) {
+        result.failures.push({
+          queue,
+          outboxId: row.id,
+          messageTs: oldMessageTs,
+          reason: `update_${slackDeliveryFailure(error).code}`,
+        });
+      }
+      continue;
+    }
+
+    let newMessageTs: string | null = null;
+    try {
+      const delivered = await sendSlackMessage(token, built.payload, runtime.sendSlackMessage);
+      newMessageTs = delivered.messageTs;
+      if (!newMessageTs) throw new SlackDeliveryError('message_ts_missing', false);
+
+      const updated = await db
+        .prepare(
+          `UPDATE ${config.tableName}
+           SET slack_message_ts = ?, sent_at = ?, updated_at = ?
+           WHERE id = ? AND status = 'sent' AND slack_message_ts = ?`,
+        )
+        .bind(newMessageTs, nowText, nowText, row.id, oldMessageTs)
+        .run();
+      if (Number(updated.meta.changes ?? 0) === 0) {
+        await deleteSlackMessage(token, channelId, newMessageTs, runtime.deleteSlackMessage);
+        result.failures.push({
+          queue,
+          outboxId: row.id,
+          messageTs: oldMessageTs,
+          reason: 'state_conflict',
+        });
+        continue;
+      }
+
+      result.reissued += 1;
+      try {
+        await deleteSlackMessage(token, channelId, oldMessageTs, runtime.deleteSlackMessage);
+        result.oldMessagesDeleted += 1;
+      } catch (error) {
+        result.failures.push({
+          queue,
+          outboxId: row.id,
+          messageTs: oldMessageTs,
+          reason: `old_delete_${slackDeliveryFailure(error).code}`,
+        });
+      }
+
+      try {
+        await addNotificationEvent(
+          db,
+          snapshot.caseId,
+          SUPPORT_SLACK_NOTIFICATION_REISSUED_EVENT,
+          'Slack通知を新しい表示へ差し替えました',
+          {
+            channel: 'slack',
+            channelId,
+            notificationKind: snapshot.notificationKind ?? 'ticket_created',
+            oldSlackMessageTs: oldMessageTs,
+            newSlackMessageTs: newMessageTs,
+          },
+        );
+      } catch (error) {
+        console.error(`support Slack reissue audit event error: ${error instanceof Error ? error.name : typeof error}`);
+      }
+    } catch (error) {
+      result.failures.push({
+        queue,
+        outboxId: row.id,
+        messageTs: oldMessageTs,
+        reason: `reissue_${slackDeliveryFailure(error).code}`,
+      });
+    }
+  }
+
+  const reissueFailures = result.failures.some((failure) => failure.queue !== 'extra');
+  if (reissueFailures) return result;
+
+  for (const messageTs of Array.from(new Set(input.extraMessageTs ?? []))) {
+    try {
+      await deleteSlackMessage(token, channelId, messageTs, runtime.deleteSlackMessage);
+      result.extraMessagesDeleted += 1;
+    } catch (error) {
+      result.failures.push({
+        queue: 'extra',
+        outboxId: null,
+        messageTs,
+        reason: `extra_delete_${slackDeliveryFailure(error).code}`,
+      });
+    }
+  }
+  return result;
+}
+
 export async function sendSupportTicketSlackTestNotification(
   runtime: SupportTicketSlackRuntime,
   mentionStaffName: string,
@@ -1274,11 +1723,17 @@ export async function sendSupportTicketSlackTestNotification(
     contactName: null,
     dueAt: null,
   };
-  const built = buildTicketCreatedSlackPayload(snapshot, {
-    channelId,
-    url: supportUrl(runtime.adminPublicUrl),
-    mentionMap,
-  });
+  let built: ReturnType<typeof buildTicketCreatedSlackPayload>;
+  try {
+    built = buildTicketCreatedSlackPayload(snapshot, {
+      channelId,
+      url: supportUrl(runtime.adminPublicUrl),
+      mentionMap,
+      now: runtime.now,
+    });
+  } catch (error) {
+    return { sent: false, reason: slackDeliveryFailure(error).code };
+  }
   try {
     const delivered = await sendSlackMessage(token, built.payload, runtime.sendSlackMessage);
     return { sent: true, reason: 'sent', messageTs: delivered.messageTs };

@@ -1088,6 +1088,7 @@ describe('support CRM routes', () => {
         db,
         { id: 'owner-1', name: 'Owner', role: 'owner' },
         {
+          ADMIN_PUBLIC_URL: 'https://admin.test',
           SLACK_BOT_TOKEN: 'xoxb-test',
           SUPPORT_TICKET_SLACK_CHANNEL_ID: 'C09SPA06P0S',
           SUPPORT_TICKET_SLACK_MENTION_MAP: JSON.stringify({ '宮本 森一': 'U075LTP888L' }),
@@ -1108,10 +1109,47 @@ describe('support CRM routes', () => {
       expect(payload.channel).toBe('C09SPA06P0S');
       expect(payload.text).toContain('<@U075LTP888L>');
       expect(payload.text).toContain('一次対応: L-Link 動作確認');
-      expect(payload.text).toContain('緊急度: 通常');
+      expect(payload.text).toContain(':large_blue_circle: 通常');
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  test('Slack notification reissue rejects an ambiguous or overly broad time window', async () => {
+    const { db } = makeSupportDb();
+    const app = setupApp(
+      db,
+      { id: 'owner-1', name: 'Owner', role: 'owner' },
+      {
+        ADMIN_PUBLIC_URL: 'https://admin.test',
+        SLACK_BOT_TOKEN: 'xoxb-test',
+        SUPPORT_TICKET_SLACK_CHANNEL_ID: 'C09SPA06P0S',
+      },
+    );
+
+    const missingTimezone = await app.request('/api/support/notifications/slack/reissue-sent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sentAfter: '2026-07-28T00:00:00',
+        sentBefore: '2026-07-28T00:30:00+09:00',
+        expectedCount: 13,
+        previewOnly: true,
+      }),
+    });
+    expect(missingTimezone.status).toBe(400);
+
+    const broadWindow = await app.request('/api/support/notifications/slack/reissue-sent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sentAfter: '2026-07-27T00:00:00+09:00',
+        sentBefore: '2026-07-28T00:30:00+09:00',
+        expectedCount: 13,
+        previewOnly: true,
+      }),
+    });
+    expect(broadWindow.status).toBe(400);
   });
 
   test('owner can inspect ticket Slack queue health without exposing credentials', async () => {

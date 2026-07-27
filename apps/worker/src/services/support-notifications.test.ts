@@ -13,6 +13,7 @@ import {
   processSupportNotificationDigests,
   publicSupportNotificationSettings,
   requeueDeadLetterSupportSlackNotifications,
+  reissueSentSupportSlackNotifications,
   sendSupportTicketSlackTestNotification,
   setSupportNotificationSettings,
   SUPPORT_NOTIFICATION_SETTING_KEY,
@@ -139,6 +140,18 @@ function makeDb(state: {
                 })) as T[],
               };
             }
+            if (sql.includes("status = 'sent'") && sql.includes('sent_at >= ?')) {
+              const [sentAfter, sentBefore] = bound as [string, string];
+              return {
+                results: queueRows.filter((row) => (
+                  row.status === 'sent'
+                  && Boolean(row.slack_message_ts)
+                  && Boolean(row.sent_at)
+                  && row.sent_at! >= sentAfter
+                  && row.sent_at! <= sentBefore
+                )) as T[],
+              };
+            }
             const [nowText, staleBefore, limit] = bound as [string, string, number];
             const rows = queueRows
               .filter((row) => (
@@ -211,6 +224,22 @@ function makeDb(state: {
                 row.status = status;
                 row.last_error_code = errorCode;
                 row.next_attempt_at = nextAttemptAt;
+                row.updated_at = updatedAt;
+              }
+            } else if (sql.includes('SET slack_message_ts = ?, sent_at = ?, updated_at = ?')) {
+              const [messageTs, sentAt, updatedAt, outboxId, oldMessageTs] =
+                bound as [string, string, string, string, string];
+              const row = queueRows.find(
+                (item) => (
+                  item.id === outboxId
+                  && item.status === 'sent'
+                  && item.slack_message_ts === oldMessageTs
+                ),
+              );
+              if (!row) changes = 0;
+              else {
+                row.slack_message_ts = messageTs;
+                row.sent_at = sentAt;
                 row.updated_at = updatedAt;
               }
             } else if (sql.includes("SET status = 'sent'")) {
@@ -446,13 +475,37 @@ describe('support Slack notifications', () => {
     expect(built.payload.channel).toBe('C09SPA06P0S');
     expect(String(built.payload.text)).toContain('<@U06SWBHATLY> <@U09SEGPGT50>');
     expect(String(built.payload.text)).toContain('一次対応: 林 静香');
-    expect(String(built.payload.text)).toContain('緊急度: 大至急');
+    expect(String(built.payload.text)).toContain(':rotating_light: 大至急');
     expect(String(built.payload.text)).toContain('&lt;@U99999999&gt;');
     expect(String(built.payload.text)).toContain('&lt;!channel&gt;');
-    expect(String(built.payload.text)).not.toContain('\n対応内容: <@U99999999>');
     const payloadJson = JSON.stringify(built.payload);
-    expect(payloadJson).toContain('簡易的な対応内容');
-    expect(payloadJson).toContain('チケットを開く');
+    expect(payloadJson).toContain('確認してほしいこと');
+    expect(payloadJson).toContain('今すぐチケットを確認する →');
+    expect(payloadJson).toContain('"style":"primary"');
+    expect(payloadJson).toContain('"color":"#e01e5a"');
+    expect(payloadJson).not.toContain('"fields"');
+    expect(payloadJson).not.toContain('顧客番号');
+    expect(payloadJson).not.toContain('法人名');
+    expect(payloadJson).not.toContain('顧客名');
+  });
+
+  test('ticket-created payload refuses to send without an absolute ticket URL', () => {
+    const mentionMap = parseSupportSlackMentionMap(JSON.stringify({
+      'staff-yoshida': 'U06SWBHATLY',
+    }));
+    expect(() => buildTicketCreatedSlackPayload({
+      caseId: 'case-1',
+      title: '返金確認',
+      priority: 'medium',
+      primaryAssignee: '林 静香',
+      secondaryAssignees: [{ name: '吉田 京平', staffId: 'staff-yoshida' }],
+      customerSummary: '返金状況を確認してください',
+      dueAt: null,
+    }, {
+      channelId: 'C09SPA06P0S',
+      url: '/support?case=case-1',
+      mentionMap,
+    })).toThrow('Slack message delivery failed');
   });
 
   test('ticket-created outbox sends once, stores Slack timestamp, and records an audit event', async () => {
@@ -512,6 +565,148 @@ describe('support Slack notifications', () => {
         event_type: 'slack_ticket_created_sent',
       }),
     ]);
+  });
+
+  test('sent Slack notifications are previewed and then safely replaced before the old message is deleted', async () => {
+    const outbox: TicketSlackOutbox = {
+      id: 'outbox-reissue',
+      case_id: 'case-reissue',
+      line_account_id: 'acc-1',
+      payload: JSON.stringify({
+        caseId: 'case-reissue',
+        title: '返金状況の確認',
+        priority: 'urgent',
+        primaryAssignee: '林 静香',
+        secondaryAssignees: [{ name: '吉田 京平', staffId: 'staff-yoshida' }],
+        customerSummary: '返金処理が完了しているか確認をお願いします',
+        dueAt: '2026-07-28T18:00:00.000+09:00',
+      }),
+      status: 'sent',
+      attempts: 1,
+      next_attempt_at: '2026-07-28T00:00:00.000+09:00',
+      claim_token: null,
+      last_error_code: null,
+      slack_message_ts: '1785166800.111111',
+      sent_at: '2026-07-28T00:40:00.000+09:00',
+      created_at: '2026-07-27T23:00:00.000+09:00',
+      updated_at: '2026-07-28T00:40:00.000+09:00',
+    };
+    const preservedOutbox: TicketSlackOutbox = {
+      ...outbox,
+      id: 'outbox-preserved',
+      case_id: 'case-preserved',
+      payload: JSON.stringify({
+        caseId: 'case-preserved',
+        title: '契約状況の確認',
+        priority: 'high',
+        primaryAssignee: '林 静香',
+        secondaryAssignees: [{ name: '吉田 京平', staffId: 'staff-yoshida' }],
+        customerSummary: '契約状況を確認してください',
+        dueAt: '2026-07-28T18:00:00.000+09:00',
+      }),
+      slack_message_ts: '1785166801.111111',
+      sent_at: '2026-07-28T00:40:01.000+09:00',
+    };
+    const { db, state } = makeDb({ outbox: [outbox, preservedOutbox] });
+    const posted: Array<Record<string, unknown>> = [];
+    const deleted: string[] = [];
+    const updated: string[] = [];
+    const runtime = {
+      adminPublicUrl: 'https://admin.test',
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+      slackMentionMap: JSON.stringify({ 'staff-yoshida': 'U06SWBHATLY' }),
+      now: new Date('2026-07-28T01:00:00.000+09:00'),
+      sendSlackMessage: async (_token: string, payload: Record<string, unknown>) => {
+        posted.push(payload);
+        return { messageTs: '1785168000.222222' };
+      },
+      deleteSlackMessage: async (_token: string, _channelId: string, messageTs: string) => {
+        deleted.push(messageTs);
+      },
+      updateSlackMessage: async (_token: string, _channelId: string, messageTs: string) => {
+        updated.push(messageTs);
+      },
+    };
+    const window = {
+      sentAfter: new Date('2026-07-28T00:35:00.000+09:00'),
+      sentBefore: new Date('2026-07-28T00:45:00.000+09:00'),
+      expectedCount: 2,
+      checkedMessageTs: ['1785166800.111111', '1785166801.111111'],
+      preserveMessageTs: ['1785166801.111111'],
+    };
+
+    await expect(reissueSentSupportSlackNotifications(db, runtime, {
+      ...window,
+      previewOnly: true,
+    })).resolves.toEqual({
+      selected: 2,
+      previewOnly: true,
+      reissued: 0,
+      updatedInPlace: 0,
+      oldMessagesDeleted: 0,
+      extraMessagesDeleted: 0,
+      failures: [],
+    });
+    expect(posted).toHaveLength(0);
+    expect(deleted).toHaveLength(0);
+    expect(updated).toHaveLength(0);
+
+    await expect(reissueSentSupportSlackNotifications(db, runtime, window)).resolves.toEqual({
+      selected: 2,
+      previewOnly: false,
+      reissued: 1,
+      updatedInPlace: 1,
+      oldMessagesDeleted: 1,
+      extraMessagesDeleted: 0,
+      failures: [],
+    });
+    expect(posted).toHaveLength(1);
+    expect(deleted).toEqual(['1785166800.111111']);
+    expect(updated).toEqual(['1785166801.111111']);
+    expect(outbox.slack_message_ts).toBe('1785168000.222222');
+    expect(outbox.sent_at).toBe('2026-07-28T01:00:00.000+09:00');
+    expect(preservedOutbox.slack_message_ts).toBe('1785166801.111111');
+    expect(state.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        case_id: 'case-reissue',
+        event_type: 'slack_notification_reissued',
+      }),
+      expect.objectContaining({
+        case_id: 'case-preserved',
+        event_type: 'slack_notification_reissued',
+      }),
+    ]));
+  });
+
+  test('sent Slack notification replacement stops when the expected count does not match', async () => {
+    const { db } = makeDb();
+    const posted = vi.fn();
+    const deleted = vi.fn();
+    await expect(reissueSentSupportSlackNotifications(db, {
+      adminPublicUrl: 'https://admin.test',
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+      sendSlackMessage: posted,
+      deleteSlackMessage: deleted,
+    }, {
+      sentAfter: new Date('2026-07-28T00:35:00.000+09:00'),
+      sentBefore: new Date('2026-07-28T00:45:00.000+09:00'),
+      expectedCount: 13,
+      checkedMessageTs: [],
+    })).resolves.toEqual({
+      selected: 0,
+      previewOnly: false,
+      reissued: 0,
+      updatedInPlace: 0,
+      oldMessagesDeleted: 0,
+      extraMessagesDeleted: 0,
+      failures: [expect.objectContaining({
+        reason: 'selection_mismatch_expected_13_actual_0',
+      })],
+    });
+    expect(posted).not.toHaveBeenCalled();
+    expect(deleted).not.toHaveBeenCalled();
   });
 
   test('temporary Slack failure remains in the outbox and cron retries it', async () => {

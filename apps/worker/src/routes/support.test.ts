@@ -94,6 +94,19 @@ type SupportInternalMessageRow = {
   created_at: string;
 };
 
+type SupportCaseAttachmentRow = {
+  id: string;
+  case_id: string;
+  line_account_id: string;
+  r2_key: string;
+  file_name: string;
+  content_type: string;
+  size_bytes: number;
+  created_by: string | null;
+  created_by_name: string | null;
+  created_at: string;
+};
+
 type SupportMessageRow = {
   id: string;
   friend_id: string;
@@ -356,6 +369,7 @@ function makeSupportDb(state: {
   manuals?: SupportManualRow[];
   knowledgeImports?: SupportKnowledgeImportRow[];
   followUpReminders?: SupportCaseFollowUpReminderRow[];
+  attachments?: SupportCaseAttachmentRow[];
   staffMembers?: Array<{ id: string; name: string; is_active?: number }>;
 } = {}) {
   const cases = state.cases ?? [];
@@ -367,6 +381,7 @@ function makeSupportDb(state: {
   const manuals = state.manuals ?? [];
   const knowledgeImports = state.knowledgeImports ?? [];
   const followUpReminders = state.followUpReminders ?? [];
+  const attachments = state.attachments ?? [];
   const staffMembers = state.staffMembers ?? [];
   const calls: DbCall[] = [];
 
@@ -553,6 +568,29 @@ function makeSupportDb(state: {
             const [friendId] = bound as [string];
             const friend = friends.find((item) => item.id === friendId);
             return (friend ?? null) as T | null;
+          }
+          if (sql.startsWith('SELECT COUNT(*) AS count FROM support_case_attachments')) {
+            const [caseId, lineAccountId] = bound as [string, string];
+            return {
+              count: attachments.filter(
+                (item) => item.case_id === caseId && item.line_account_id === lineAccountId,
+              ).length,
+            } as T;
+          }
+          if (sql.startsWith('SELECT * FROM support_case_attachments WHERE id = ? AND case_id = ? AND line_account_id = ?')) {
+            const [attachmentId, caseId, lineAccountId] = bound as [string, string, string];
+            return (attachments.find(
+              (item) =>
+                item.id === attachmentId &&
+                item.case_id === caseId &&
+                item.line_account_id === lineAccountId,
+            ) ?? null) as T | null;
+          }
+          if (sql.startsWith('SELECT * FROM support_case_attachments WHERE id = ? AND case_id = ?')) {
+            const [attachmentId, caseId] = bound as [string, string];
+            return (attachments.find(
+              (item) => item.id === attachmentId && item.case_id === caseId,
+            ) ?? null) as T | null;
           }
           if (sql.includes('FROM support_case_followup_reminders') && sql.includes('WHERE case_id = ? AND line_account_id = ?')) {
             const [caseId, lineAccountId] = bound as [string, string];
@@ -810,6 +848,31 @@ function makeSupportDb(state: {
               created_at: createdAt,
               updated_at: updatedAt,
             });
+          } else if (sql.includes('INSERT INTO support_case_attachments')) {
+            const [
+              id,
+              caseId,
+              lineAccountId,
+              storageKey,
+              fileName,
+              contentType,
+              sizeBytes,
+              createdBy,
+              createdByName,
+              createdAt,
+            ] = bound as Array<string | number | null>;
+            attachments.push({
+              id: String(id),
+              case_id: String(caseId),
+              line_account_id: String(lineAccountId),
+              r2_key: String(storageKey),
+              file_name: String(fileName),
+              content_type: String(contentType),
+              size_bytes: Number(sizeBytes),
+              created_by: createdBy === null ? null : String(createdBy),
+              created_by_name: createdByName === null ? null : String(createdByName),
+              created_at: String(createdAt),
+            });
           } else if (sql.includes('INSERT INTO support_case_events')) {
             const [id, caseId, eventType, actorId, actorName, body, metadata, createdAt] = bound as string[];
             events.push({
@@ -1037,7 +1100,21 @@ function makeSupportDb(state: {
     },
   } as unknown as D1Database;
 
-  return { db, calls, state: { cases, escalations, internalMessages, events, friends, manuals, knowledgeImports, followUpReminders } };
+  return {
+    db,
+    calls,
+    state: {
+      cases,
+      escalations,
+      internalMessages,
+      events,
+      friends,
+      manuals,
+      knowledgeImports,
+      followUpReminders,
+      attachments,
+    },
+  };
 }
 
 function setupApp(
@@ -1063,6 +1140,37 @@ function makeThrowingDb(message: string): D1Database {
   } as unknown as D1Database;
 }
 
+function makeFilesKv() {
+  const objects = new Map<string, { data: ArrayBuffer; metadata: unknown }>();
+  const put = vi.fn(async (
+    key: string,
+    value: unknown,
+    options?: { metadata?: unknown },
+  ) => {
+    if (!(value instanceof ArrayBuffer)) throw new Error('expected ArrayBuffer');
+    objects.set(key, {
+      data: value.slice(0),
+      metadata: options?.metadata ?? null,
+    });
+  });
+  const get = vi.fn(async (key: string, type?: unknown) => {
+    const object = objects.get(key);
+    if (!object) return null;
+    if (type === 'arrayBuffer') return object.data.slice(0);
+    return new TextDecoder().decode(object.data);
+  });
+  const deleteObject = vi.fn(async (key: string) => {
+    objects.delete(key);
+  });
+  return {
+    kv: { put, get, delete: deleteObject } as unknown as KVNamespace,
+    objects,
+    put,
+    get,
+    deleteObject,
+  };
+}
+
 function loggedText(spy: ReturnType<typeof vi.spyOn>): string {
   return spy.mock.calls.flat().map(String).join(' ');
 }
@@ -1072,6 +1180,65 @@ beforeEach(() => {
 });
 
 describe('support CRM routes', () => {
+  test('stores and serves ticket attachments from FILES when R2 is unavailable', async () => {
+    const { db, state } = makeSupportDb({ cases: [baseCase()] });
+    const files = makeFilesKv();
+    const app = setupApp(db, undefined, { FILES: files.kv });
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    const upload = await app.request('/api/support/cases/case-1/attachments?lineAccountId=acc-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'image/png',
+        'X-File-Name': encodeURIComponent('確認画像.png'),
+      },
+      body: png.buffer,
+    });
+
+    expect(upload.status).toBe(201);
+    const uploaded = await upload.json() as {
+      success: boolean;
+      data: { id: string; fileName: string; filePath: string };
+    };
+    expect(uploaded.success).toBe(true);
+    expect(uploaded.data.fileName).toBe('確認画像.png');
+    expect(files.put).toHaveBeenCalledTimes(1);
+    expect(state.attachments).toHaveLength(1);
+    expect(files.objects.has(state.attachments[0].r2_key)).toBe(true);
+
+    const download = await app.request(uploaded.data.filePath);
+    expect(download.status).toBe(200);
+    expect(download.headers.get('Content-Type')).toBe('image/png');
+    expect(new Uint8Array(await download.arrayBuffer())).toEqual(png);
+    expect(files.get).toHaveBeenCalledWith(state.attachments[0].r2_key, 'arrayBuffer');
+  });
+
+  test('returns a clear error when no ticket attachment storage is configured', async () => {
+    const { db, state } = makeSupportDb({ cases: [baseCase()] });
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+
+    const res = await setupApp(db).request('/api/support/cases/case-1/attachments?lineAccountId=acc-1', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'image/png',
+        'X-File-Name': encodeURIComponent('確認画像.png'),
+      },
+      body: png.buffer,
+    });
+
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      success: false,
+      error: '画像保存先が設定されていません',
+    });
+    expect(state.attachments).toHaveLength(0);
+  });
+
   test('owner can send the ticket Slack notification test with a resolved mention', async () => {
     const { db } = makeSupportDb();
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({

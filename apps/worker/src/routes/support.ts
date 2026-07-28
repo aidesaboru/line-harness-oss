@@ -620,6 +620,58 @@ function attachmentContentDisposition(filename: string): string {
   return `inline; filename*=UTF-8''${encodeURIComponent(filename).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)}`;
 }
 
+type SupportAttachmentStorage = 'r2' | 'kv';
+
+async function putSupportAttachmentObject(
+  env: Env['Bindings'],
+  key: string,
+  data: ArrayBuffer,
+  contentType: string,
+  filename: string,
+): Promise<SupportAttachmentStorage> {
+  if (env.IMAGES) {
+    await env.IMAGES.put(key, data, {
+      httpMetadata: { contentType },
+      customMetadata: { originalFilename: filename },
+    });
+    return 'r2';
+  }
+  if (env.FILES) {
+    await env.FILES.put(key, data, {
+      metadata: { contentType, originalFilename: filename },
+    });
+    return 'kv';
+  }
+  throw new Error('support_attachment_storage_unavailable');
+}
+
+async function deleteSupportAttachmentObject(
+  env: Env['Bindings'],
+  key: string,
+  storage: SupportAttachmentStorage,
+): Promise<void> {
+  if (storage === 'r2') {
+    await env.IMAGES?.delete(key);
+    return;
+  }
+  await env.FILES?.delete(key);
+}
+
+async function getSupportAttachmentBody(
+  env: Env['Bindings'],
+  key: string,
+): Promise<BodyInit | null> {
+  if (env.IMAGES) {
+    const object = await env.IMAGES.get(key);
+    if (object) return object.body;
+  }
+  if (env.FILES) {
+    const data = await env.FILES.get(key, 'arrayBuffer');
+    if (data) return data;
+  }
+  return null;
+}
+
 function parseCaseAssigneeNames(raw: string | null | undefined, fallback: string | null): string[] {
   if (raw) {
     try {
@@ -2728,6 +2780,9 @@ support.post('/api/support/cases/:id/attachments', async (c) => {
     if (Number.isFinite(declaredSize) && declaredSize > SUPPORT_ATTACHMENT_MAX_BYTES) {
       return c.json({ success: false, error: '画像は1枚10MB以下にしてください' }, 400);
     }
+    if (!c.env.IMAGES && !c.env.FILES) {
+      return c.json({ success: false, error: '画像保存先が設定されていません' }, 503);
+    }
 
     const data = await c.req.arrayBuffer();
     if (data.byteLength === 0) return c.json({ success: false, error: '画像ファイルが空です' }, 400);
@@ -2741,11 +2796,14 @@ support.post('/api/support/cases/:id/attachments', async (c) => {
 
     const attachmentId = crypto.randomUUID();
     const now = jstNow();
-    const r2Key = `support/cases/${safeR2Segment(lineAccountId.value)}/${safeR2Segment(caseId.value)}/${attachmentId}.${attachmentExtension(contentType)}`;
-    await c.env.IMAGES.put(r2Key, data, {
-      httpMetadata: { contentType },
-      customMetadata: { originalFilename: filename.value },
-    });
+    const storageKey = `support/cases/${safeR2Segment(lineAccountId.value)}/${safeR2Segment(caseId.value)}/${attachmentId}.${attachmentExtension(contentType)}`;
+    const storage = await putSupportAttachmentObject(
+      c.env,
+      storageKey,
+      data,
+      contentType,
+      filename.value,
+    );
     try {
       await c.env.DB
         .prepare(
@@ -2758,7 +2816,7 @@ support.post('/api/support/cases/:id/attachments', async (c) => {
           attachmentId,
           caseId.value,
           lineAccountId.value,
-          r2Key,
+          storageKey,
           filename.value,
           contentType,
           data.byteLength,
@@ -2768,7 +2826,7 @@ support.post('/api/support/cases/:id/attachments', async (c) => {
         )
         .run();
     } catch (err) {
-      await c.env.IMAGES.delete(r2Key).catch(() => undefined);
+      await deleteSupportAttachmentObject(c.env, storageKey, storage).catch(() => undefined);
       throw err;
     }
 
@@ -2798,15 +2856,15 @@ support.get('/api/support/cases/:id/attachments/:attachmentId/file', async (c) =
       .bind(attachmentId.value, caseId.value, lineAccountId.value)
       .first<SupportCaseAttachmentRow>();
     if (!attachment) return c.json({ success: false, error: 'attachment not found' }, 404);
-    const object = await c.env.IMAGES.get(attachment.r2_key);
-    if (!object) return c.json({ success: false, error: 'attachment not found' }, 404);
+    const body = await getSupportAttachmentBody(c.env, attachment.r2_key);
+    if (!body) return c.json({ success: false, error: 'attachment not found' }, 404);
     const headers = new Headers({
       'Content-Type': attachment.content_type,
       'Content-Disposition': attachmentContentDisposition(attachment.file_name),
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
     });
-    return new Response(object.body, { headers });
+    return new Response(body, { headers });
   } catch (err) {
     console.error(`GET /api/support/cases/:id/attachments/:attachmentId/file error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: '画像の取得に失敗しました' }, 500);

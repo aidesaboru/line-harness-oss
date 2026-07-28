@@ -640,6 +640,9 @@ export function buildTicketCreatedSlackPayload(
   const label = supportSlackNotificationLabel(snapshot.notificationKind ?? 'ticket_created');
   const title = truncateText(snapshot.title, 120);
   const summary = compactSlackSummary(snapshot.customerSummary);
+  const customerNumber = snapshot.customerNumber || '未登録';
+  const companyName = snapshot.companyName || '未登録';
+  const contactName = snapshot.contactName || '未登録';
   const priority = priorityLabel(snapshot.priority);
   const due = snapshot.dueAt
     ? (formatJstShort(snapshot.dueAt, input.now ?? new Date()) ?? snapshot.dueAt)
@@ -648,6 +651,9 @@ export function buildTicketCreatedSlackPayload(
     mentions.text,
     `${priority} ${label.title}`,
     `【${label.fallbackPrefix}】${slackEscape(title)}`,
+    `顧客番号: ${slackEscape(customerNumber)}`,
+    `法人名: ${slackEscape(companyName)}`,
+    `代表者名: ${slackEscape(contactName)}`,
     `確認内容: ${slackEscape(summary)}`,
     `一次対応: ${slackEscape(snapshot.primaryAssignee)}`,
     `期限: ${slackEscape(due)}`,
@@ -669,7 +675,17 @@ export function buildTicketCreatedSlackPayload(
       text: {
         type: 'mrkdwn',
         text: truncateText(
-          `:ticket: *${slackEscape(title)}*\n\n*確認してほしいこと*\n${slackEscape(summary)}`,
+          [
+            `:ticket: *${slackEscape(title)}*`,
+            '',
+            '*対象顧客*',
+            `顧客番号　${slackEscape(customerNumber)}`,
+            `法人名　${slackEscape(companyName)}`,
+            `代表者名　${slackEscape(contactName)}`,
+            '',
+            '*確認してほしいこと*',
+            slackEscape(summary),
+          ].join('\n'),
           SLACK_SECTION_TEXT_LIMIT,
         ),
       },

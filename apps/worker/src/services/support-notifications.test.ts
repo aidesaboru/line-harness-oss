@@ -475,18 +475,49 @@ describe('support Slack notifications', () => {
     expect(built.payload.channel).toBe('C09SPA06P0S');
     expect(String(built.payload.text)).toContain('<@U06SWBHATLY> <@U09SEGPGT50>');
     expect(String(built.payload.text)).toContain('一次対応: 林 静香');
+    expect(String(built.payload.text)).toContain('顧客番号: 4408');
+    expect(String(built.payload.text)).toContain('法人名: 株式会社テスト');
+    expect(String(built.payload.text)).toContain('代表者名: 山田 太郎');
     expect(String(built.payload.text)).toContain(':rotating_light: 大至急');
     expect(String(built.payload.text)).toContain('&lt;@U99999999&gt;');
     expect(String(built.payload.text)).toContain('&lt;!channel&gt;');
     const payloadJson = JSON.stringify(built.payload);
+    expect(payloadJson).toContain('対象顧客');
+    expect(payloadJson).toContain('顧客番号　4408');
+    expect(payloadJson).toContain('法人名　株式会社テスト');
+    expect(payloadJson).toContain('代表者名　山田 太郎');
     expect(payloadJson).toContain('確認してほしいこと');
     expect(payloadJson).toContain('今すぐチケットを確認する →');
     expect(payloadJson).toContain('"style":"primary"');
     expect(payloadJson).not.toContain('"fields"');
     expect(payloadJson).not.toContain('"attachments"');
-    expect(payloadJson).not.toContain('顧客番号');
-    expect(payloadJson).not.toContain('法人名');
-    expect(payloadJson).not.toContain('顧客名');
+  });
+
+  test('ticket-created payload identifies missing customer fields instead of leaving blanks', () => {
+    const mentionMap = parseSupportSlackMentionMap(JSON.stringify({
+      'staff-yoshida': 'U06SWBHATLY',
+    }));
+    const built = buildTicketCreatedSlackPayload({
+      caseId: 'case-1',
+      title: '返金確認',
+      priority: 'medium',
+      primaryAssignee: '林 静香',
+      secondaryAssignees: [{ name: '吉田 京平', staffId: 'staff-yoshida' }],
+      customerSummary: '返金状況を確認してください',
+      customerNumber: null,
+      companyName: null,
+      contactName: null,
+      dueAt: null,
+    }, {
+      channelId: 'C09SPA06P0S',
+      url: 'https://admin.test/support?case=case-1',
+      mentionMap,
+    });
+
+    const payloadJson = JSON.stringify(built.payload);
+    expect(payloadJson).toContain('顧客番号　未登録');
+    expect(payloadJson).toContain('法人名　未登録');
+    expect(payloadJson).toContain('代表者名　未登録');
   });
 
   test('ticket-created payload refuses to send without an absolute ticket URL', () => {

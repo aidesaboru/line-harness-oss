@@ -1109,6 +1109,9 @@ describe('support CRM routes', () => {
       expect(payload.channel).toBe('C09SPA06P0S');
       expect(payload.text).toContain('<@U075LTP888L>');
       expect(payload.text).toContain('一次対応: L-Link 動作確認');
+      expect(payload.text).toContain('顧客番号: TEST-001');
+      expect(payload.text).toContain('法人名: 株式会社テスト');
+      expect(payload.text).toContain('代表者名: テスト 太郎');
       expect(payload.text).toContain(':large_blue_circle: 通常');
     } finally {
       vi.unstubAllGlobals();

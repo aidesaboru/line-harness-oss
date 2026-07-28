@@ -1722,9 +1722,9 @@ export async function sendSupportTicketSlackTestNotification(
     primaryAssignee: 'L-Link 動作確認',
     secondaryAssignees: [{ name: mentionStaffName, staffId: null }],
     customerSummary: 'チケット発行時のSlack通知設定を確認しています',
-    customerNumber: null,
-    companyName: null,
-    contactName: null,
+    customerNumber: 'TEST-001',
+    companyName: '株式会社テスト',
+    contactName: 'テスト 太郎',
     dueAt: null,
   };
   let built: ReturnType<typeof buildTicketCreatedSlackPayload>;

@@ -202,6 +202,7 @@ type FriendRow = {
   display_name: string | null;
   picture_url?: string | null;
   line_user_id?: string | null;
+  metadata?: string | null;
 };
 
 type DbCall = {
@@ -1466,6 +1467,11 @@ describe('support CRM routes', () => {
         display_name: '山田さん',
         picture_url: null,
         line_user_id: 'U123',
+        metadata: JSON.stringify({
+          customer_number: 'C-001',
+          company_name: '株式会社テスト',
+          contact_name: '山田 太郎',
+        }),
       }],
     });
 
@@ -1492,6 +1498,11 @@ describe('support CRM routes', () => {
       priority: 'high',
     });
     expect(state.cases).toHaveLength(1);
+    expect(state.cases[0]).toMatchObject({
+      customer_number: 'C-001',
+      company_name: '株式会社テスト',
+      contact_name: '山田 太郎',
+    });
     expect(state.events).toEqual([
       expect.objectContaining({
         case_id: state.cases[0].id,
@@ -1510,6 +1521,11 @@ describe('support CRM routes', () => {
         display_name: '山田さん',
         picture_url: null,
         line_user_id: 'U123',
+        metadata: JSON.stringify({
+          customerNumber: 'C-002',
+          companyName: '合同会社通知テスト',
+          contactName: '佐藤 花子',
+        }),
       }],
       staffMembers: [{
         id: 'staff-kajiwara',
@@ -1556,6 +1572,9 @@ describe('support CRM routes', () => {
         },
       ],
       priority: 'medium',
+      customerNumber: 'C-002',
+      companyName: '合同会社通知テスト',
+      contactName: '佐藤 花子',
     });
   });
 

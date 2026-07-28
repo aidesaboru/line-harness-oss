@@ -107,6 +107,41 @@ const SUPPORT_SECONDARY_ASSIGNEE_MAX = 10;
 const SUPPORT_ATTACHMENT_MAX_COUNT = 5;
 const SUPPORT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const SUPPORT_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const SUPPORT_CUSTOMER_NUMBER_METADATA_KEYS = [
+  'customerNumber',
+  'customer_number',
+  'customerNo',
+  'customer_no',
+  'clientNumber',
+  'client_number',
+  '顧客番号',
+] as const;
+const SUPPORT_COMPANY_NAME_METADATA_KEYS = [
+  'companyName',
+  'company_name',
+  'company',
+  'corporationName',
+  'corporation_name',
+  'customerName',
+  'customer_name',
+  'clientName',
+  'client_name',
+  '法人名',
+] as const;
+const SUPPORT_CONTACT_NAME_METADATA_KEYS = [
+  'contactName',
+  'contact_name',
+  'personInCharge',
+  'person_in_charge',
+  'managerName',
+  'manager_name',
+  'representativeName',
+  'representative_name',
+  '顧客名',
+  '連絡者名',
+  '担当者名',
+  '法人代表者名',
+] as const;
 const SUPPORT_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const SUPPORT_SLACK_IMPORT_DEFAULT_LIMIT = 20;
 const SUPPORT_SLACK_IMPORT_MAX_LIMIT = 50;
@@ -422,6 +457,41 @@ function text(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function supportCustomerMetadataValue(
+  metadata: Record<string, unknown>,
+  keys: readonly string[],
+): string | null {
+  for (const key of keys) {
+    const raw = metadata[key];
+    const value = typeof raw === 'string'
+      ? raw.trim()
+      : typeof raw === 'number' || typeof raw === 'boolean'
+        ? String(raw).trim()
+        : '';
+    if (value && value.length <= SUPPORT_SHORT_TEXT_MAX_LENGTH) return value;
+  }
+  return null;
+}
+
+function supportCustomerProfileFromMetadata(raw: string | null | undefined): {
+  customerNumber: string | null;
+  companyName: string | null;
+  contactName: string | null;
+} {
+  let metadata: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(raw || '{}') as unknown;
+    if (isRecord(parsed)) metadata = parsed;
+  } catch {
+    // Invalid legacy metadata must not prevent ticket creation.
+  }
+  return {
+    customerNumber: supportCustomerMetadataValue(metadata, SUPPORT_CUSTOMER_NUMBER_METADATA_KEYS),
+    companyName: supportCustomerMetadataValue(metadata, SUPPORT_COMPANY_NAME_METADATA_KEYS),
+    contactName: supportCustomerMetadataValue(metadata, SUPPORT_CONTACT_NAME_METADATA_KEYS),
+  };
 }
 
 function parseOptionalTextField(raw: unknown, label: string, maxLength = SUPPORT_SHORT_TEXT_MAX_LENGTH): ValueResult<string | null> {
@@ -2224,17 +2294,24 @@ support.post('/api/support/cases', async (c) => {
     const parsedLineAccountId = parseOptionalVisibleId(body.lineAccountId, 'lineAccountId');
     if (!parsedLineAccountId.ok) return c.json({ success: false, error: parsedLineAccountId.error }, 400);
     let lineAccountId: string | undefined | null = parsedLineAccountId.value;
+    let linkedCustomerProfile = supportCustomerProfileFromMetadata(null);
 
     if (friendId) {
       const friend = await c.env.DB
-        .prepare(`SELECT id, line_account_id, display_name FROM friends WHERE id = ?`)
+        .prepare(`SELECT id, line_account_id, display_name, metadata FROM friends WHERE id = ?`)
         .bind(friendId)
-        .first<{ id: string; line_account_id: string | null; display_name: string | null }>();
+        .first<{
+          id: string;
+          line_account_id: string | null;
+          display_name: string | null;
+          metadata: string | null;
+        }>();
       if (!friend) return c.json({ success: false, error: 'friend not found' }, 404);
       if (lineAccountId && friend.line_account_id && lineAccountId !== friend.line_account_id) {
         return c.json({ success: false, error: 'friend does not belong to lineAccountId' }, 400);
       }
       lineAccountId = lineAccountId ?? friend.line_account_id;
+      linkedCustomerProfile = supportCustomerProfileFromMetadata(friend.metadata);
     }
 
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
@@ -2301,6 +2378,9 @@ support.post('/api/support/cases', async (c) => {
     if (!parsedCompanyName.ok) return c.json({ success: false, error: parsedCompanyName.error }, 400);
     const parsedContactName = parseOptionalTextField(body.contactName, 'contactName');
     if (!parsedContactName.ok) return c.json({ success: false, error: parsedContactName.error }, 400);
+    const customerNumber = parsedCustomerNumber.value ?? linkedCustomerProfile.customerNumber;
+    const companyName = parsedCompanyName.value ?? linkedCustomerProfile.companyName;
+    const contactName = parsedContactName.value ?? linkedCustomerProfile.contactName;
     const parsedStoreName = parseOptionalTextField(body.storeName, 'storeName');
     if (!parsedStoreName.ok) return c.json({ success: false, error: parsedStoreName.error }, 400);
     const parsedContractType = parseOptionalTextField(body.contractType, 'contractType');
@@ -2365,9 +2445,9 @@ support.post('/api/support/cases', async (c) => {
             escalationLevel,
             parsedDueAt.value,
             nextCheckAt,
-            parsedCustomerNumber.value,
-            parsedCompanyName.value,
-            parsedContactName.value,
+            customerNumber,
+            companyName,
+            contactName,
             parsedStoreName.value,
             parsedContractType.value,
             customerSummary,
@@ -2460,9 +2540,9 @@ support.post('/api/support/cases', async (c) => {
                   staffId: entry.assigneeStaffId,
                 })),
                 customerSummary: question,
-                customerNumber: parsedCustomerNumber.value ?? null,
-                companyName: parsedCompanyName.value ?? null,
-                contactName: parsedContactName.value ?? null,
+                customerNumber,
+                companyName,
+                contactName,
                 dueAt: parsedDueAt.value ?? null,
               }),
               now,

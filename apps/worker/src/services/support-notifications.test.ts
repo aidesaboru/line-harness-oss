@@ -478,19 +478,21 @@ describe('support Slack notifications', () => {
     expect(String(built.payload.text)).toContain('顧客番号: 4408');
     expect(String(built.payload.text)).toContain('法人名: 株式会社テスト');
     expect(String(built.payload.text)).toContain('代表者名: 山田 太郎');
-    expect(String(built.payload.text)).toContain(':rotating_light: 大至急');
+    expect(String(built.payload.text)).toContain('【大至急】');
     expect(String(built.payload.text)).toContain('&lt;@U99999999&gt;');
     expect(String(built.payload.text)).toContain('&lt;!channel&gt;');
     const payloadJson = JSON.stringify(built.payload);
     expect(payloadJson).toContain('対象顧客');
-    expect(payloadJson).toContain(':id: *顧客番号*\\n`4408`');
-    expect(payloadJson).toContain(':office: *法人名*\\n株式会社テスト');
-    expect(payloadJson).toContain(':bust_in_silhouette: *代表者名*\\n山田 太郎');
+    expect(payloadJson).toContain('*件名*\\n返金確認');
+    expect(payloadJson).toContain('*顧客番号*　`4408`');
+    expect(payloadJson).toContain('*法人名*　株式会社テスト');
+    expect(payloadJson).toContain('*代表者名*　山田 太郎');
     expect(payloadJson).toContain('確認してほしいこと');
     expect(payloadJson).toContain('今すぐチケットを確認する →');
     expect(payloadJson).toContain('"style":"primary"');
     expect(payloadJson).not.toContain('"fields"');
     expect(payloadJson).not.toContain('"attachments"');
+    expect(payloadJson).not.toMatch(/:(?:rotating_light|warning|white_circle|large_blue_circle|ticket|id|office|bust_in_silhouette):/);
   });
 
   test('ticket-created payload identifies missing customer fields instead of leaving blanks', () => {
@@ -515,9 +517,9 @@ describe('support Slack notifications', () => {
     });
 
     const payloadJson = JSON.stringify(built.payload);
-    expect(payloadJson).toContain(':id: *顧客番号*\\n`未登録`');
-    expect(payloadJson).toContain(':office: *法人名*\\n未登録');
-    expect(payloadJson).toContain(':bust_in_silhouette: *代表者名*\\n未登録');
+    expect(payloadJson).toContain('*顧客番号*　`未登録`');
+    expect(payloadJson).toContain('*法人名*　未登録');
+    expect(payloadJson).toContain('*代表者名*　未登録');
   });
 
   test('ticket-created payload refuses to send without an absolute ticket URL', () => {

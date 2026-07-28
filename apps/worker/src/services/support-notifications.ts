@@ -366,6 +366,10 @@ function slackEscape(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function slackInlineCode(value: string): string {
+  return slackEscape(value).replace(/`/g, 'ˋ');
+}
+
 function plainValue(value: unknown, fallback = '未入力'): string {
   return safeText(value) ?? fallback;
 }
@@ -679,9 +683,9 @@ export function buildTicketCreatedSlackPayload(
             `:ticket: *${slackEscape(title)}*`,
             '',
             '*対象顧客*',
-            `顧客番号　${slackEscape(customerNumber)}`,
-            `法人名　${slackEscape(companyName)}`,
-            `代表者名　${slackEscape(contactName)}`,
+            `:id: *顧客番号*\n\`${slackInlineCode(customerNumber)}\``,
+            `:office: *法人名*\n${slackEscape(companyName)}`,
+            `:bust_in_silhouette: *代表者名*\n${slackEscape(contactName)}`,
             '',
             '*確認してほしいこと*',
             slackEscape(summary),

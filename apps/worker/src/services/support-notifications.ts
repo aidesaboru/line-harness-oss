@@ -431,7 +431,7 @@ function buildUrgentSlackPayload(
   const due = row.due_at ? `${formatJstShort(row.due_at, now) ?? row.due_at} まで` : '未設定';
   const assignee = ownerLabel(row);
   const fallback = [
-    `【大至急】${title}`,
+    `:red_circle: 【大至急】${title}`,
     `顧客番号: ${plainValue(row.customer_number)}`,
     `法人名: ${plainValue(row.company_name)}`,
     `顧客名: ${customerName(row)}`,
@@ -517,13 +517,13 @@ function buildUrgentSlackPayload(
 function priorityLabel(priority: string): string {
   switch (priority) {
     case 'urgent':
-      return '【大至急】';
+      return ':red_circle: 【大至急】';
     case 'high':
-      return '【緊急】';
+      return ':large_orange_circle: 【緊急】';
     case 'low':
-      return '【低】';
+      return ':white_circle: 【低】';
     default:
-      return '【通常】';
+      return ':large_blue_circle: 【通常】';
   }
 }
 

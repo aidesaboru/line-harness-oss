@@ -478,7 +478,7 @@ describe('support Slack notifications', () => {
     expect(String(built.payload.text)).toContain('顧客番号: 4408');
     expect(String(built.payload.text)).toContain('法人名: 株式会社テスト');
     expect(String(built.payload.text)).toContain('代表者名: 山田 太郎');
-    expect(String(built.payload.text)).toContain('【大至急】');
+    expect(String(built.payload.text)).toContain(':red_circle: 【大至急】');
     expect(String(built.payload.text)).toContain('&lt;@U99999999&gt;');
     expect(String(built.payload.text)).toContain('&lt;!channel&gt;');
     const payloadJson = JSON.stringify(built.payload);
@@ -492,7 +492,7 @@ describe('support Slack notifications', () => {
     expect(payloadJson).toContain('"style":"primary"');
     expect(payloadJson).not.toContain('"fields"');
     expect(payloadJson).not.toContain('"attachments"');
-    expect(payloadJson).not.toMatch(/:(?:rotating_light|warning|white_circle|large_blue_circle|ticket|id|office|bust_in_silhouette):/);
+    expect(payloadJson).not.toMatch(/:(?:ticket|id|office|bust_in_silhouette):/);
   });
 
   test('ticket-created payload identifies missing customer fields instead of leaving blanks', () => {

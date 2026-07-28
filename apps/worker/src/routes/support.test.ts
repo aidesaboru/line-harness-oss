@@ -1279,7 +1279,7 @@ describe('support CRM routes', () => {
       expect(payload.text).toContain('顧客番号: TEST-001');
       expect(payload.text).toContain('法人名: 株式会社テスト');
       expect(payload.text).toContain('代表者名: テスト 太郎');
-      expect(payload.text).toContain('【通常】');
+      expect(payload.text).toContain(':large_blue_circle: 【通常】');
     } finally {
       vi.unstubAllGlobals();
     }

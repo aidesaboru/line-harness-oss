@@ -1,4 +1,4 @@
-import { describe, expect, test, vi, beforeEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { Hono } from 'hono';
 
 const lineClientMethods = vi.hoisted(() => ({
@@ -141,6 +141,10 @@ beforeEach(() => {
     updated_at: '2026-06-11T17:45:17.000+09:00',
   });
   vi.mocked(jstNow).mockReturnValue('2026-06-11T17:45:17.000+09:00');
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 function createDbMock(inboxRows: Array<Record<string, unknown>> = []) {
@@ -501,6 +505,15 @@ describe('POST /webhook — message intake', () => {
   });
 
   test('restores customer-reply cases when a non-text message arrives', async () => {
+    const files = {
+      put: vi.fn(async () => undefined),
+    };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(new ArrayBuffer(48), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      }),
+    ));
     vi.mocked(verifySignature).mockResolvedValue(true);
     vi.mocked(getLineAccounts).mockResolvedValue([
       {
@@ -576,7 +589,12 @@ describe('POST /webhook — message intake', () => {
         },
         body,
       },
-      { ...baseEnv, DB: db },
+      {
+        ...baseEnv,
+        DB: db,
+        FILES: files,
+        WORKER_URL: 'https://worker.example.com',
+      },
       ctx,
     );
 
@@ -599,6 +617,15 @@ describe('POST /webhook — message intake', () => {
         ]),
       }),
     ]));
+    expect(files.put).toHaveBeenCalledTimes(1);
+    const messageInsert = statements.find((statement) =>
+      statement.sql.includes('INSERT INTO messages_log')
+    );
+    const storedContent = JSON.parse(String(messageInsert?.binds[3]));
+    expect(storedContent.originalContentUrl).toBe(
+      'https://worker.example.com/images/incoming-acc-1-msg-image.jpg',
+    );
+    expect(storedContent.previewImageUrl).toBe(storedContent.originalContentUrl);
   });
 
   test('does not restore support cases for postback events', async () => {

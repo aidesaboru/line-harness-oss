@@ -50,6 +50,9 @@ type TestEnv = {
   Bindings: {
     DB: D1Database;
     LINE_CHANNEL_ACCESS_TOKEN: string;
+    WORKER_URL?: string;
+    IMAGES?: R2Bucket;
+    FILES?: KVNamespace;
     LINE_CAPTURE_ONLY?: string;
     LINE_MANUAL_SEND_ENABLED?: string;
   };
@@ -214,6 +217,7 @@ function makeChatDb(state: {
               friend_id: row.friend_id,
               message_type: row.message_type,
               content: row.content,
+              line_message_id: row.line_message_id ?? null,
               line_account_id: (row as MessageRow & { line_account_id?: string | null }).line_account_id ?? null,
               friend_line_account_id: friend?.line_account_id ?? null,
             } as T;
@@ -1480,6 +1484,65 @@ describe('chat support visibility', () => {
     expect(res.headers.get('Content-Type')).toBe('application/pdf');
     expect(res.headers.get('Content-Disposition')).toContain('invoice.pdf');
     expect(await res.text()).toBe('pdf-bytes');
+  });
+
+  test('opening an incoming image persists it in FILES and heals the stored URL', async () => {
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: ['friend-visible'],
+      messages: [
+        {
+          id: 'msg-image-heal',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'image',
+          content: JSON.stringify({
+            lineMessageId: 'line-image-heal',
+            contentUrl: 'https://worker.example.com/api/chats/messages/msg-image-heal/media',
+          }),
+          line_message_id: 'line-image-heal',
+          created_at: '2026-06-12T09:00:00.000',
+        },
+      ],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    const files = {
+      put: vi.fn(async () => undefined),
+    };
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(new ArrayBuffer(20), {
+        headers: { 'Content-Type': 'image/png' },
+      }),
+    ));
+
+    const res = await setupApp(db, 'staff', {
+      FILES: files as unknown as KVNamespace,
+      WORKER_URL: 'https://worker.example.com',
+    }).request('/api/chats/messages/msg-image-heal/media');
+
+    expect(res.status).toBe(200);
+    expect(files.put).toHaveBeenCalledTimes(1);
+    expect(files.put).toHaveBeenCalledWith(
+      'incoming-acc-1-line-image-heal.png',
+      expect.any(ArrayBuffer),
+      {
+        metadata: {
+          contentType: 'image/png',
+          originalFilename: 'LINE画像',
+        },
+      },
+    );
+    const update = calls.find((call) =>
+      call.method === 'run'
+      && call.sql.includes('UPDATE messages_log')
+      && call.sql.includes('SET content = ?')
+    );
+    expect(update).toBeDefined();
+    const nextContent = JSON.parse(String(update?.binds[0]));
+    expect(nextContent.originalContentUrl).toBe(
+      'https://worker.example.com/images/incoming-acc-1-line-image-heal.png',
+    );
   });
 
   test('staff can open LINE media for individual chats', async () => {

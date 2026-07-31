@@ -260,8 +260,9 @@ async function buildIncomingNonTextContent(params: {
   lineAccountId: string | null;
   workerUrl?: string;
   r2?: R2Bucket;
+  files?: KVNamespace;
 }): Promise<string> {
-  const { msg, logId, lineAccessToken, lineAccountId, workerUrl, r2 } = params;
+  const { msg, logId, lineAccessToken, lineAccountId, workerUrl, r2, files } = params;
 
   if (msg.type === 'sticker') {
     const stickerContent = createStickerMessageContent(msg);
@@ -287,23 +288,11 @@ async function buildIncomingNonTextContent(params: {
   const isMedia = msg.type === 'image' || msg.type === 'file' || msg.type === 'video' || msg.type === 'audio';
   if (!isMedia) return incomingNonTextLabel(msg);
 
-  const external = externalMediaUrl(msg);
-  if (external) {
-    return JSON.stringify({
-      lineMessageId: msg.id,
-      messageId: msg.id,
-      ...external,
-      contentUrl: external.originalContentUrl,
-      fileName: msg.fileName ?? (msg.type === 'image' ? 'LINE画像' : undefined),
-      fileSize: msg.fileSize ?? null,
-      mediaType: msg.type,
-    });
-  }
-
-  if (msg.type === 'image' && r2 && workerUrl) {
+  if (msg.type === 'image' && workerUrl && (r2 || files)) {
     const { fetchAndStoreIncomingImage } = await import('../services/incoming-image.js');
     const refs = await fetchAndStoreIncomingImage({
       r2,
+      files,
       workerUrl,
       channelAccessToken: lineAccessToken,
       accountId: lineAccountId ?? 'unknown',
@@ -318,6 +307,19 @@ async function buildIncomingNonTextContent(params: {
         ...refs,
       });
     }
+  }
+
+  const external = externalMediaUrl(msg);
+  if (external) {
+    return JSON.stringify({
+      lineMessageId: msg.id,
+      messageId: msg.id,
+      ...external,
+      contentUrl: external.originalContentUrl,
+      fileName: msg.fileName ?? (msg.type === 'image' ? 'LINE画像' : undefined),
+      fileSize: msg.fileSize ?? null,
+      mediaType: msg.type,
+    });
   }
 
   const contentUrl = workerMediaUrl(workerUrl, logId);
@@ -413,6 +415,7 @@ async function handleMultiPersonMessage(params: {
   lineAccountId: string | null;
   workerUrl?: string;
   r2?: R2Bucket;
+  files?: KVNamespace;
   durableEventId?: string;
 }): Promise<void> {
   const {
@@ -424,6 +427,7 @@ async function handleMultiPersonMessage(params: {
     lineAccountId,
     workerUrl,
     r2,
+    files,
     durableEventId,
   } = params;
   const conversation = await ensureMultiPersonConversation({
@@ -445,6 +449,7 @@ async function handleMultiPersonMessage(params: {
         lineAccountId,
         workerUrl,
         r2,
+        files,
       });
 
   await insertLineConversationMessage(db, {
@@ -597,6 +602,7 @@ webhook.post('/webhook', async (c) => {
             record.lineAccountId,
             c.env.WORKER_URL || new URL(c.req.url).origin,
             c.env.IMAGES,
+            c.env.FILES,
             record.eventId,
           );
         },
@@ -631,7 +637,17 @@ webhook.post('/webhook', async (c) => {
   const processingPromise = (async () => {
     for (const event of body.events) {
       try {
-        await handleEvent(db, lineClient, event, channelAccessToken, matchedAccountId, c.env.WORKER_URL || new URL(c.req.url).origin, c.env.LIFF_URL, c.env.IMAGES);
+        await handleEvent(
+          db,
+          lineClient,
+          event,
+          channelAccessToken,
+          matchedAccountId,
+          c.env.WORKER_URL || new URL(c.req.url).origin,
+          c.env.LIFF_URL,
+          c.env.IMAGES,
+          c.env.FILES,
+        );
       } catch (err) {
         console.error(`Error handling webhook event: ${webhookErrorKind(err)}`);
       }
@@ -651,6 +667,7 @@ async function handleCaptureOnlyEvent(
   lineAccountId: string | null = null,
   workerUrl?: string,
   r2?: R2Bucket,
+  files?: KVNamespace,
   durableEventId?: string,
 ): Promise<void> {
   if (isUnsendWebhookEvent(event)) {
@@ -679,6 +696,7 @@ async function handleCaptureOnlyEvent(
       lineAccountId,
       workerUrl,
       r2,
+      files,
       durableEventId,
     });
     return;
@@ -774,6 +792,7 @@ async function handleCaptureOnlyEvent(
       lineAccountId,
       workerUrl,
       r2,
+      files,
     });
 
     await db
@@ -802,6 +821,7 @@ export async function processPendingCaptureOnlyWebhookEvents(params: {
   defaultAccessToken: string;
   workerUrl?: string;
   r2?: R2Bucket;
+  files?: KVNamespace;
 }): Promise<{ processed: number; failed: number; skipped: number }> {
   const accountsById = new Map(
     params.accounts
@@ -829,6 +849,7 @@ export async function processPendingCaptureOnlyWebhookEvents(params: {
         record.lineAccountId,
         params.workerUrl,
         params.r2,
+        params.files,
         record.eventId,
       );
     },
@@ -845,6 +866,7 @@ async function handleEvent(
   workerUrl?: string,
   liffUrl?: string,
   r2?: R2Bucket,
+  files?: KVNamespace,
 ): Promise<void> {
   if (isUnsendWebhookEvent(event)) {
     const lineMessageId = eventUnsendMessageId(event);
@@ -872,6 +894,7 @@ async function handleEvent(
       lineAccountId,
       workerUrl,
       r2,
+      files,
     });
     return;
   }
@@ -1164,6 +1187,7 @@ async function handleEvent(
       lineAccountId,
       workerUrl,
       r2,
+      files,
     });
 
     await db

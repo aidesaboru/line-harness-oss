@@ -56,6 +56,11 @@ import {
   type ScheduledChatMessageRow,
 } from '../services/scheduled-chat-messages.js';
 import { syncFollowerPage } from '../services/follower-sync.js';
+import { backfillIncomingImages } from '../services/incoming-image-backfill.js';
+import {
+  mergeIncomingImageRefs,
+  storeIncomingImage,
+} from '../services/incoming-image.js';
 
 const chats = new Hono<Env>();
 
@@ -375,6 +380,7 @@ type ChatMediaMessageRow = {
   conversation_id?: string | null;
   message_type: string;
   content: string;
+  line_message_id: string | null;
   line_account_id: string | null;
   friend_line_account_id: string | null;
 };
@@ -406,7 +412,9 @@ function firstStringValue(record: Record<string, unknown> | null, keys: string[]
 function parseStoredLineMediaPayload(row: ChatMediaMessageRow): StoredLineMediaPayload | null {
   if (!CHAT_MEDIA_MESSAGE_TYPES.has(row.message_type)) return null;
   const parsed = safeJsonRecord(row.content);
-  const lineMessageId = firstStringValue(parsed, ['lineMessageId', 'line_message_id', 'messageId', 'message_id']);
+  const lineMessageId =
+    firstStringValue(parsed, ['lineMessageId', 'line_message_id', 'messageId', 'message_id']) ??
+    row.line_message_id;
   if (!lineMessageId) return null;
   return {
     lineMessageId,
@@ -2027,11 +2035,46 @@ chats.get('/api/chats', async (c) => {
   }
 });
 
+chats.post('/api/chats/media/backfill', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const rawBody = await readJsonBody(c);
+    const body = isRecord(rawBody) ? rawBody : {};
+    const cursor = typeof body.cursor === 'string' && body.cursor.trim()
+      ? body.cursor.trim()
+      : null;
+    if (cursor && cursor.length > 512) {
+      return c.json({ success: false, error: 'cursor is too long' }, 400);
+    }
+    const limit = body.limit === undefined ? undefined : Number(body.limit);
+    if (limit !== undefined && (!Number.isInteger(limit) || limit < 1 || limit > 25)) {
+      return c.json({ success: false, error: 'limit must be an integer between 1 and 25' }, 400);
+    }
+    if (!c.env.IMAGES && !c.env.FILES) {
+      return c.json({ success: false, error: 'Persistent image storage is unavailable' }, 503);
+    }
+
+    const result = await backfillIncomingImages({
+      db: c.env.DB,
+      defaultAccessToken: c.env.LINE_CHANNEL_ACCESS_TOKEN,
+      workerUrl: c.env.WORKER_URL || new URL(c.req.url).origin,
+      r2: c.env.IMAGES,
+      files: c.env.FILES,
+      cursor,
+      limit,
+    });
+    return c.json({ success: true, data: result });
+  } catch (err) {
+    console.error(`POST /api/chats/media/backfill error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '受信画像の復旧処理に失敗しました' }, 500);
+  }
+});
+
 chats.get('/api/chats/messages/:messageId/media', async (c) => {
   try {
     const messageId = parseChatPathId(c.req.param('messageId'));
     if (!messageId.ok) return c.json({ success: false, error: messageId.error }, 400);
 
+    let sourceTable: 'messages_log' | 'line_conversation_messages' = 'messages_log';
     let row = await c.env.DB
       .prepare(
         `SELECT
@@ -2040,6 +2083,7 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
            NULL AS conversation_id,
            ml.message_type,
            ml.content,
+           ml.line_message_id,
            ml.line_account_id,
            f.line_account_id AS friend_line_account_id
          FROM messages_log ml
@@ -2052,6 +2096,7 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
     if (!row) {
       const optionalSchema = await getOptionalChatSchema(c.env.DB);
       if (canReadLineConversations(optionalSchema)) {
+        sourceTable = 'line_conversation_messages';
         row = await c.env.DB
           .prepare(
             `SELECT
@@ -2060,6 +2105,7 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
                message.conversation_id,
                message.message_type,
                message.content,
+               message.line_message_id,
                message.line_account_id,
                conversation.line_account_id AS friend_line_account_id
              FROM line_conversation_messages message
@@ -2101,14 +2147,40 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
       payload.mimeType ||
       fallbackMimeType(row.message_type, payload.fileName);
     const fileName = defaultMediaFileName(row, payload);
+    const data = await lineResponse.arrayBuffer();
+    if (row.message_type === 'image' && (c.env.IMAGES || c.env.FILES)) {
+      const stored = await storeIncomingImage({
+        r2: c.env.IMAGES,
+        files: c.env.FILES,
+        workerUrl: c.env.WORKER_URL || new URL(c.req.url).origin,
+        accountId: accountId ?? 'default',
+        messageId: payload.lineMessageId,
+        data,
+        contentType,
+      });
+      if (stored.ok) {
+        const nextContent = mergeIncomingImageRefs(row.content, payload.lineMessageId, stored.refs);
+        await c.env.DB
+          .prepare(
+            `UPDATE ${sourceTable}
+             SET content = ?
+             WHERE id = ?
+               AND content = ?
+               AND direction = 'incoming'
+               AND message_type = 'image'`,
+          )
+          .bind(nextContent, row.id, row.content)
+          .run();
+      }
+    }
+
     const headers = new Headers();
     headers.set('Content-Type', contentType);
     headers.set('Cache-Control', 'private, max-age=300');
     headers.set('Content-Disposition', `inline; filename*=UTF-8''${encodeRfc5987Value(fileName)}`);
-    const contentLength = lineResponse.headers.get('Content-Length');
-    if (contentLength) headers.set('Content-Length', contentLength);
+    headers.set('Content-Length', String(data.byteLength));
 
-    return new Response(lineResponse.body, { status: 200, headers });
+    return new Response(data, { status: 200, headers });
   } catch (err) {
     console.error(`GET /api/chats/messages/:messageId/media error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);

@@ -1,5 +1,9 @@
 import { describe, test, expect, vi } from 'vitest';
-import { fetchAndStoreIncomingImage } from './incoming-image.js';
+import {
+  fetchAndStoreIncomingImage,
+  fetchAndStoreIncomingImageDetailed,
+  mergeIncomingImageRefs,
+} from './incoming-image.js';
 
 function makeR2Stub() {
   const store = new Map<string, { data: ArrayBuffer; contentType: string }>();
@@ -7,6 +11,20 @@ function makeR2Stub() {
     put: vi.fn(async (key: string, data: ArrayBuffer, opts: { httpMetadata?: { contentType?: string } }) => {
       store.set(key, { data, contentType: opts.httpMetadata?.contentType ?? '' });
       return null;
+    }),
+    _store: store,
+  };
+}
+
+function makeKvStub() {
+  const store = new Map<string, { data: ArrayBuffer; metadata: Record<string, unknown> }>();
+  return {
+    put: vi.fn(async (
+      key: string,
+      data: ArrayBuffer,
+      opts: { metadata?: Record<string, unknown> },
+    ) => {
+      store.set(key, { data, metadata: opts.metadata ?? {} });
     }),
     _store: store,
   };
@@ -47,6 +65,90 @@ describe('fetchAndStoreIncomingImage', () => {
     expect(opts.httpMetadata.contentType).toBe('image/jpeg');
     expect(result?.originalContentUrl).toBe('https://worker.example.com/images/incoming-acc-1-msg-xyz.jpg');
     expect(result?.previewImageUrl).toBe(result?.originalContentUrl);
+  });
+
+  test('R2 がない本番構成では FILES KV に期限なしで保存する', async () => {
+    const files = makeKvStub();
+    const fetchMock = vi.fn(async () =>
+      new Response(new ArrayBuffer(64), {
+        status: 200,
+        headers: { 'Content-Type': 'image/webp' },
+      }),
+    );
+
+    const result = await fetchAndStoreIncomingImage({
+      files: files as unknown as KVNamespace,
+      fetch: fetchMock,
+      workerUrl: 'https://worker.example.com/',
+      channelAccessToken: 'token-abc',
+      accountId: 'acc/1',
+      messageId: 'msg/kv',
+    });
+
+    expect(files.put).toHaveBeenCalledTimes(1);
+    const [key, , options] = files.put.mock.calls[0];
+    expect(key).toBe('incoming-acc_1-msg_kv.webp');
+    expect(options).toEqual({
+      metadata: {
+        contentType: 'image/webp',
+        originalFilename: 'LINE画像',
+      },
+    });
+    expect(options).not.toHaveProperty('expiration');
+    expect(options).not.toHaveProperty('expirationTtl');
+    expect(result?.originalContentUrl).toBe(
+      'https://worker.example.com/images/incoming-acc_1-msg_kv.webp',
+    );
+  });
+
+  test('R2 の書き込み失敗時は FILES KV に退避する', async () => {
+    const r2 = makeR2Stub();
+    const files = makeKvStub();
+    r2.put.mockRejectedValueOnce(new Error('R2 unavailable'));
+    const fetchMock = vi.fn(async () =>
+      new Response(new ArrayBuffer(64), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      }),
+    );
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await fetchAndStoreIncomingImage({
+        r2: r2 as unknown as R2Bucket,
+        files: files as unknown as KVNamespace,
+        fetch: fetchMock,
+        workerUrl: 'https://worker.example.com',
+        channelAccessToken: 'token-abc',
+        accountId: 'acc-1',
+        messageId: 'msg-fallback',
+      });
+
+      expect(files.put).toHaveBeenCalledTimes(1);
+      expect(result?.originalContentUrl).toContain('/images/incoming-acc-1-msg-fallback.png');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('永続ストレージがなければ LINE へ取得に行かない', async () => {
+    const fetchMock = vi.fn();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const result = await fetchAndStoreIncomingImageDetailed({
+        fetch: fetchMock,
+        workerUrl: 'https://worker.example.com',
+        channelAccessToken: 'token-abc',
+        accountId: 'acc-1',
+        messageId: 'msg-no-storage',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'storage_unavailable' });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   test('Content API が非 200 を返したら null で識別子をログに出さない', async () => {
@@ -159,5 +261,29 @@ describe('fetchAndStoreIncomingImage', () => {
 
     const [key] = r2.put.mock.calls[0];
     expect(key).toBe('incoming-a-m-png.png');
+  });
+
+  test('既存の受信メタデータを保ったまま永続 URL を追加する', () => {
+    const merged = mergeIncomingImageRefs(
+      JSON.stringify({
+        contentUrl: 'https://worker.example.com/api/chats/messages/log-1/media',
+        fileName: '請求書.jpg',
+      }),
+      'line-message-1',
+      {
+        originalContentUrl: 'https://worker.example.com/images/incoming-a-line-message-1.jpg',
+        previewImageUrl: 'https://worker.example.com/images/incoming-a-line-message-1.jpg',
+      },
+    );
+
+    expect(JSON.parse(merged)).toEqual({
+      contentUrl: 'https://worker.example.com/api/chats/messages/log-1/media',
+      fileName: '請求書.jpg',
+      lineMessageId: 'line-message-1',
+      messageId: 'line-message-1',
+      mediaType: 'image',
+      originalContentUrl: 'https://worker.example.com/images/incoming-a-line-message-1.jpg',
+      previewImageUrl: 'https://worker.example.com/images/incoming-a-line-message-1.jpg',
+    });
   });
 });

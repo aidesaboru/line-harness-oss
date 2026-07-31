@@ -766,8 +766,9 @@ async function scheduled(
       db: env.DB,
       accounts: dbAccounts,
       defaultAccessToken: env.LINE_CHANNEL_ACCESS_TOKEN,
-      workerUrl: env.WORKER_URL,
+      workerUrl: env.WORKER_URL || env.WORKER_PUBLIC_URL,
       r2: env.IMAGES,
+      files: env.FILES,
     });
     if (result.processed + result.failed > 0) {
       console.log(`[line-webhook-inbox] processed=${result.processed} failed=${result.failed} skipped=${result.skipped}`);

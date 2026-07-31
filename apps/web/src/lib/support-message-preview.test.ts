@@ -20,6 +20,18 @@ describe('support message preview', () => {
     })
   })
 
+  it('uses the ticket-scoped media endpoint when an older image has no stored url', () => {
+    expect(parseSupportMessagePreview(
+      'image',
+      JSON.stringify({ lineMessageId: 'line-image-1' }),
+      'https://worker.example.com/api/chats/messages/msg-image-1/media',
+    )).toEqual({
+      kind: 'image',
+      originalUrl: 'https://worker.example.com/api/chats/messages/msg-image-1/media',
+      previewUrl: 'https://worker.example.com/api/chats/messages/msg-image-1/media',
+    })
+  })
+
   it('shows a safe file card when a file has a downloadable url', () => {
     expect(parseSupportMessagePreview('file', JSON.stringify({
       fileName: '請求書.pdf',

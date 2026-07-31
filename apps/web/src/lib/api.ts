@@ -548,6 +548,7 @@ export type SupportMessage = {
   direction: string
   messageType: string
   content: string
+  mediaPath?: string | null
   source?: string | null
   createdAt: string
 }
@@ -559,6 +560,8 @@ export type SupportCaseDetail = SupportCase & {
   attachments?: SupportCaseAttachment[]
   manuals: SupportManual[]
   canViewLineConversation: boolean
+  canOpenLineChat: boolean
+  lineConversationScope: 'full' | 'ticket_context' | 'none'
   recentMessages: SupportMessage[]
 }
 

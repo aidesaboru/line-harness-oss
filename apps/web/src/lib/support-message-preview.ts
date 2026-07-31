@@ -44,6 +44,7 @@ function isPdfLabel(label: string, url: string | null): boolean {
 export function parseSupportMessagePreview(
   messageType: string | null | undefined,
   content: string | null | undefined,
+  fallbackMediaUrl?: string | null,
 ): SupportMessagePreview {
   const type = messageType || ''
   const body = content ?? ''
@@ -54,7 +55,10 @@ export function parseSupportMessagePreview(
 
   if (type === 'image') {
     const parsed = parseRecord(body)
-    const originalUrl = safeHttpUrl(parsed?.originalContentUrl) ?? safeHttpUrl(parsed?.original_content_url)
+    const originalUrl =
+      safeHttpUrl(parsed?.originalContentUrl) ??
+      safeHttpUrl(parsed?.original_content_url) ??
+      safeHttpUrl(fallbackMediaUrl)
     const previewUrl = safeHttpUrl(parsed?.previewImageUrl) ?? safeHttpUrl(parsed?.preview_image_url) ?? originalUrl
     if (originalUrl && previewUrl) {
       return { kind: 'image', originalUrl, previewUrl }
@@ -74,6 +78,7 @@ export function parseSupportMessagePreview(
       safeHttpUrl(parsed?.contentUrl) ||
       safeHttpUrl(parsed?.content_url) ||
       safeHttpUrl(parsed?.originalContentUrl) ||
+      safeHttpUrl(fallbackMediaUrl) ||
       null
     return { kind: 'file', label, url, isPdf: isPdfLabel(label, url) }
   }

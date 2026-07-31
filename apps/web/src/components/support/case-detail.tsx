@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { api, type SupportCaseAttachment, type SupportCaseDetail, type SupportCaseStatus, type SupportInternalMessage, type SupportMessage } from '@/lib/api'
+import { api, buildApiUrl, type SupportCaseAttachment, type SupportCaseDetail, type SupportCaseStatus, type SupportInternalMessage, type SupportMessage } from '@/lib/api'
 import { messageSourceLabel } from '@/lib/message-source-label'
 import { parseSupportMessagePreview } from '@/lib/support-message-preview'
 import MentionText from '@/components/shared/mention-text'
@@ -347,7 +347,11 @@ function CompletionPanel({
 }
 
 function SupportMessageContent({ message }: { message: SupportMessage }) {
-  const preview = parseSupportMessagePreview(message.messageType, message.content)
+  const preview = parseSupportMessagePreview(
+    message.messageType,
+    message.content,
+    message.mediaPath ? buildApiUrl(message.mediaPath) : null,
+  )
 
   if (preview.kind === 'text') {
     return <p className="whitespace-pre-wrap break-words">{preview.text}</p>
@@ -363,8 +367,8 @@ function SupportMessageContent({ message }: { message: SupportMessage }) {
       >
         <img
           src={preview.previewUrl}
-          alt="LINE画像"
-          className="max-h-48 max-w-full rounded-md border border-black/5 object-contain"
+          alt="LINEで受信した添付画像"
+          className="max-h-56 max-w-full rounded-md border border-black/5 object-contain sm:max-h-72"
           loading="lazy"
         />
       </a>
@@ -785,7 +789,8 @@ export default function CaseDetail({
   const customerLabel = detail.friendName || detail.companyName || detail.contactName || '顧客未紐付け'
   const customerNumberLabel = detail.customerNumber || ticketShortId(detail.id)
   const canViewLineConversation = detail.canViewLineConversation !== false
-  const chatHref = canViewLineConversation && detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
+  const canOpenLineChat = detail.canOpenLineChat !== false
+  const chatHref = canOpenLineChat && detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
   const lockedInputCls = `${inputCls} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:text-gray-500`
   const validationIssues = getCaseFormValidationIssues(caseForm, { hasChat: Boolean(chatHref) })
   const blockingValidationIssues = validationIssues.filter((issue) => issue.blocking)
@@ -1256,7 +1261,11 @@ export default function CaseDetail({
             <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
               <div>
                 <p className="text-sm font-semibold text-slate-900">会話ログ</p>
-                <p className="mt-0.5 text-xs text-slate-500">チケットに紐づくLINE会話</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {detail.lineConversationScope === 'ticket_context'
+                    ? 'チケット作成時点までの直近50件'
+                    : 'チケットに紐づくLINE会話'}
+                </p>
               </div>
               {chatHref && (
                 <Link href={chatHref} className="inline-flex items-center gap-1 text-xs font-medium text-green-700 hover:underline">
@@ -1268,9 +1277,9 @@ export default function CaseDetail({
             {!canViewLineConversation ? (
               <div className="flex min-h-[220px] items-center justify-center bg-slate-50 p-4">
                 <div className="max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-5 text-center shadow-sm">
-                  <p className="text-sm font-semibold text-slate-900">会話ログは権限制限中です</p>
+                  <p className="text-sm font-semibold text-slate-900">会話ログがありません</p>
                   <p className="mt-2 text-xs leading-6 text-slate-500">
-                    二次対応のみの権限では、顧客LINEのトーク履歴を表示しません。問い合わせ内容と二次対応への依頼内容を確認してください。
+                    このチケットにはLINE会話が紐づいていません。
                   </p>
                 </div>
               </div>

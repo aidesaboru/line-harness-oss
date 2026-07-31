@@ -139,6 +139,8 @@ type SupportCaseRow = {
   friend_id: string;
   title: string;
   status: string;
+  escalation_assignee?: string | null;
+  created_at?: string | null;
   updated_by?: string | null;
   updated_at?: string | null;
   forceCustomerReplyUpdateMiss?: boolean;
@@ -220,7 +222,19 @@ function makeChatDb(state: {
               line_message_id: row.line_message_id ?? null,
               line_account_id: (row as MessageRow & { line_account_id?: string | null }).line_account_id ?? null,
               friend_line_account_id: friend?.line_account_id ?? null,
+              created_at: row.created_at,
             } as T;
+          }
+          if (sql.includes('SELECT 1 AS ok') && sql.includes('FROM support_cases sc') && sql.includes('sc.created_at >= ?')) {
+            const [friendId, lineAccountId, messageCreatedAt] = bound as [string, string, string];
+            const assigneeNames = bound.slice(6).filter((value): value is string => typeof value === 'string');
+            const row = supportCases.find((item) => (
+              item.friend_id === friendId
+              && item.line_account_id === lineAccountId
+              && String(item.created_at ?? '') >= messageCreatedAt
+              && assigneeNames.includes(item.escalation_assignee ?? '')
+            ));
+            return (row ? { ok: 1 } : null) as T | null;
           }
           if (sql.startsWith('SELECT 1 AS ok WHERE')) {
             const [friendId] = bound as [string];
@@ -1543,6 +1557,53 @@ describe('chat support visibility', () => {
     expect(nextContent.originalContentUrl).toBe(
       'https://worker.example.com/images/incoming-acc-1-line-image-heal.png',
     );
+  });
+
+  test('secondary staff can open media only from assigned ticket context', async () => {
+    const { db } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: [],
+      supportCases: [{
+        id: 'case-secondary-media',
+        line_account_id: 'acc-1',
+        friend_id: 'friend-visible',
+        title: '返品確認',
+        status: 'waiting_secondary',
+        escalation_assignee: '田島',
+        created_at: '2026-06-12T09:10:00.000',
+      }],
+      messages: [
+        {
+          id: 'msg-before-ticket',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'image',
+          content: JSON.stringify({ lineMessageId: 'line-before-ticket' }),
+          created_at: '2026-06-12T09:00:00.000',
+        },
+        {
+          id: 'msg-after-ticket',
+          friend_id: 'friend-visible',
+          direction: 'incoming',
+          message_type: 'image',
+          content: JSON.stringify({ lineMessageId: 'line-after-ticket' }),
+          created_at: '2026-06-12T09:20:00.000',
+        },
+      ],
+    });
+    dbMocks.getLineAccountById.mockResolvedValue({ channel_access_token: 'account-token' });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new ArrayBuffer(8), {
+      headers: { 'Content-Type': 'image/jpeg' },
+    })));
+
+    const visibleResponse = await setupApp(db, 'secondary')
+      .request('/api/chats/messages/msg-before-ticket/media');
+    const hiddenResponse = await setupApp(db, 'secondary')
+      .request('/api/chats/messages/msg-after-ticket/media');
+
+    expect(visibleResponse.status).toBe(200);
+    expect(hiddenResponse.status).toBe(404);
   });
 
   test('staff can open LINE media for individual chats', async () => {

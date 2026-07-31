@@ -107,6 +107,8 @@ const SUPPORT_SECONDARY_ASSIGNEE_MAX = 10;
 const SUPPORT_ATTACHMENT_MAX_COUNT = 5;
 const SUPPORT_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const SUPPORT_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const SUPPORT_CONVERSATION_MESSAGE_LIMIT = 50;
+const SUPPORT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
 const SUPPORT_CUSTOMER_NUMBER_METADATA_KEYS = [
   'customerNumber',
   'customer_number',
@@ -2794,7 +2796,12 @@ support.get('/api/support/cases/:id', async (c) => {
       ).bind(row.id, lineAccountId.value).all<SupportCaseAttachmentRow>(),
     ]);
 
-    const canViewLineConversation = !isSecondaryOnlySupportStaff(staff);
+    const isSecondaryOnly = isSecondaryOnlySupportStaff(staff);
+    const canViewLineConversation = Boolean(row.friend_id);
+    const canOpenLineChat = Boolean(row.friend_id) && !isSecondaryOnly;
+    const lineConversationScope = row.friend_id
+      ? isSecondaryOnly ? 'ticket_context' : 'full'
+      : 'none';
     const [internalMessageMentionIds, internalMessageEvents] = await Promise.all([
       mentionStaffIdsForMessages(
         c.env.DB,
@@ -2807,13 +2814,16 @@ support.get('/api/support/cases/:id', async (c) => {
         internalMessages.results.map((message) => message.id),
       ),
     ]);
-    const messages = row.friend_id && canViewLineConversation
+    const messages = row.friend_id
       ? await c.env.DB.prepare(
         `SELECT id, direction, message_type, content, source, created_at
          FROM messages_log
-         WHERE friend_id = ? AND (delivery_type IS NULL OR delivery_type != 'test')
-         ORDER BY created_at DESC LIMIT 50`,
-      ).bind(row.friend_id).all<{ id: string; direction: string; message_type: string; content: string; source: string | null; created_at: string }>()
+         WHERE friend_id = ?
+           AND (delivery_type IS NULL OR delivery_type != 'test')
+           ${isSecondaryOnly ? 'AND created_at <= ?' : ''}
+         ORDER BY created_at DESC, id DESC LIMIT ${SUPPORT_CONVERSATION_MESSAGE_LIMIT}`,
+      ).bind(...(isSecondaryOnly ? [row.friend_id, row.created_at] : [row.friend_id]))
+        .all<{ id: string; direction: string; message_type: string; content: string; source: string | null; created_at: string }>()
       : { results: [] as Array<{ id: string; direction: string; message_type: string; content: string; source: string | null; created_at: string }> };
 
     const manualIds = parseManualIds(row.manual_ids);
@@ -2847,11 +2857,16 @@ support.get('/api/support/cases/:id', async (c) => {
         attachments: attachments.results.map(serializeCaseAttachment),
         manuals: manuals.map(serializeManual),
         canViewLineConversation,
+        canOpenLineChat,
+        lineConversationScope,
         recentMessages: [...messages.results].reverse().map((m) => ({
           id: m.id,
           direction: m.direction,
           messageType: m.message_type,
           content: m.content,
+          mediaPath: SUPPORT_MEDIA_MESSAGE_TYPES.has(m.message_type)
+            ? `/api/chats/messages/${encodeURIComponent(m.id)}/media`
+            : null,
           source: m.source,
           createdAt: m.created_at,
         })),

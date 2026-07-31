@@ -84,6 +84,7 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const CHAT_STATUSES = new Set(['unread', 'in_progress', 'resolved', 'long_term']);
 const LINE_CONTENT_API_BASE = 'https://api-data.line.me/v2/bot/message';
 const CHAT_MEDIA_MESSAGE_TYPES = new Set(['image', 'file', 'video', 'audio']);
+const SUPPORT_CONTEXT_MEDIA_MESSAGE_LIMIT = 50;
 const OPTIONAL_CHAT_TABLE_NAMES = [
   'chat_confirmation_events',
   'chat_reminder_completion_events',
@@ -171,6 +172,50 @@ async function ensureChatFriendAccess(c: Context<Env>, friendId: string): Promis
   }
   if (await getFriendById(c.env.DB, friendId)) return null;
   return c.json({ success: false, error: 'Chat not found' }, 404);
+}
+
+async function canAccessSecondarySupportMedia(
+  c: Context<Env>,
+  row: Pick<ChatMediaMessageRow, 'id' | 'friend_id' | 'line_account_id' | 'friend_line_account_id' | 'created_at'>,
+): Promise<boolean> {
+  const staff = currentStaff(c);
+  if (!isSecondaryOnlySupportStaff(staff) || !row.friend_id) return false;
+  const lineAccountId = row.line_account_id || row.friend_line_account_id;
+  if (!lineAccountId) return false;
+
+  const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_media_scope');
+  const match = await c.env.DB
+    .prepare(
+      `SELECT 1 AS ok
+       FROM support_cases sc
+       WHERE sc.friend_id = ?
+         AND sc.line_account_id = ?
+         AND sc.created_at >= ?
+         AND (
+           SELECT COUNT(*)
+           FROM messages_log context_message
+           WHERE context_message.friend_id = sc.friend_id
+             AND (context_message.delivery_type IS NULL OR context_message.delivery_type != 'test')
+             AND context_message.created_at <= sc.created_at
+             AND (
+               context_message.created_at > ?
+               OR (context_message.created_at = ? AND context_message.id > ?)
+             )
+         ) < ${SUPPORT_CONTEXT_MEDIA_MESSAGE_LIMIT}
+         AND ${visibility.sql}
+       LIMIT 1`,
+    )
+    .bind(
+      row.friend_id,
+      lineAccountId,
+      row.created_at,
+      row.created_at,
+      row.created_at,
+      row.id,
+      ...visibility.binds,
+    )
+    .first<{ ok: number }>();
+  return Boolean(match?.ok);
 }
 
 function clampLoadingSeconds(value: number | undefined): number {
@@ -383,6 +428,7 @@ type ChatMediaMessageRow = {
   line_message_id: string | null;
   line_account_id: string | null;
   friend_line_account_id: string | null;
+  created_at: string;
 };
 
 type StoredLineMediaPayload = {
@@ -2085,7 +2131,8 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
            ml.content,
            ml.line_message_id,
            ml.line_account_id,
-           f.line_account_id AS friend_line_account_id
+           f.line_account_id AS friend_line_account_id,
+           ml.created_at
          FROM messages_log ml
          LEFT JOIN friends f ON f.id = ml.friend_id
          WHERE ml.id = ?
@@ -2107,7 +2154,8 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
                message.content,
                message.line_message_id,
                message.line_account_id,
-               conversation.line_account_id AS friend_line_account_id
+               conversation.line_account_id AS friend_line_account_id,
+               message.created_at
              FROM line_conversation_messages message
              INNER JOIN line_conversations conversation ON conversation.id = message.conversation_id
              WHERE message.id = ?
@@ -2121,7 +2169,7 @@ chats.get('/api/chats/messages/:messageId/media', async (c) => {
 
     if (row.friend_id) {
       const denied = await ensureChatFriendAccess(c, row.friend_id);
-      if (denied) return denied;
+      if (denied && !(await canAccessSecondarySupportMedia(c, row))) return denied;
     } else if (isSecondaryOnlySupportStaff(currentStaff(c))) {
       return c.json({ success: false, error: 'Media not found' }, 404);
     }

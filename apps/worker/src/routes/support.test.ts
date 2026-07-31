@@ -758,10 +758,15 @@ function makeSupportDb(state: {
             return { results: rows.map((item) => findEscalation(item.id)!) } as { results: T[] };
           }
           if (sql.includes('FROM messages_log')) {
-            const [friendId] = bound as [string];
+            const [friendId, createdAtUpperBound] = bound as [string, string | undefined];
+            const hasCreatedAtUpperBound = sql.includes('created_at <= ?');
             return {
               results: messages
-                .filter((item) => item.friend_id === friendId && item.delivery_type !== 'test')
+                .filter((item) => (
+                  item.friend_id === friendId
+                  && item.delivery_type !== 'test'
+                  && (!hasCreatedAtUpperBound || item.created_at <= createdAtUpperBound)
+                ))
                 .sort((a, b) => b.created_at.localeCompare(a.created_at)),
             } as { results: T[] };
           }
@@ -2248,7 +2253,7 @@ describe('support CRM routes', () => {
     ]);
   });
 
-  test('secondary-only case detail does not return LINE conversation logs', async () => {
+  test('secondary-only case detail returns only ticket-scoped LINE context and media paths', async () => {
     const { db, calls } = makeSupportDb({
       cases: [
         baseCase({
@@ -2260,7 +2265,19 @@ describe('support CRM routes', () => {
       ],
       friends: [{ id: 'friend-1', line_account_id: 'acc-1', display_name: '顧客A' }],
       messages: [
-        baseMessage({ id: 'msg-secret-1', friend_id: 'friend-1', content: 'LINEで見える本文です' }),
+        baseMessage({
+          id: 'msg-context-image',
+          friend_id: 'friend-1',
+          message_type: 'image',
+          content: JSON.stringify({ lineMessageId: 'line-image-1' }),
+          created_at: '2026-06-12T08:59:00.000',
+        }),
+        baseMessage({
+          id: 'msg-after-ticket',
+          friend_id: 'friend-1',
+          content: 'チケット作成後の別メッセージ',
+          created_at: '2026-06-12T09:01:00.000',
+        }),
       ],
     });
 
@@ -2270,12 +2287,26 @@ describe('support CRM routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       success: boolean;
-      data: { canViewLineConversation: boolean; recentMessages: Array<{ content: string }> };
+      data: {
+        canViewLineConversation: boolean;
+        canOpenLineChat: boolean;
+        lineConversationScope: string;
+        recentMessages: Array<{ id: string; content: string; mediaPath: string | null }>;
+      };
     };
     expect(body.success).toBe(true);
-    expect(body.data.canViewLineConversation).toBe(false);
-    expect(body.data.recentMessages).toEqual([]);
-    expect(calls.some((call) => call.method === 'all' && call.sql.includes('FROM messages_log'))).toBe(false);
+    expect(body.data.canViewLineConversation).toBe(true);
+    expect(body.data.canOpenLineChat).toBe(false);
+    expect(body.data.lineConversationScope).toBe('ticket_context');
+    expect(body.data.recentMessages).toEqual([
+      expect.objectContaining({
+        id: 'msg-context-image',
+        mediaPath: '/api/chats/messages/msg-context-image/media',
+      }),
+    ]);
+    const messageCall = calls.find((call) => call.method === 'all' && call.sql.includes('FROM messages_log'));
+    expect(messageCall?.sql).toContain('created_at <= ?');
+    expect(messageCall?.binds).toEqual(['friend-1', '2026-06-12T09:00:00.000']);
   });
 
   test('staff can post internal chat messages and thread replies on visible cases', async () => {

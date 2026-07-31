@@ -13,8 +13,10 @@ type Candidate = {
 
 function makeDb(candidates: Candidate[]) {
   const updates: Array<{ sql: string; values: unknown[] }> = [];
+  const preparedSql: string[] = [];
   const db = {
     prepare: vi.fn((sql: string) => {
+      preparedSql.push(sql);
       const queryAll = async (values: unknown[] = []) => {
         if (sql.includes('WITH candidates AS')) {
           const cursor = values[0] as string | null;
@@ -45,7 +47,7 @@ function makeDb(candidates: Candidate[]) {
       };
     }),
   };
-  return { db: db as unknown as D1Database, updates };
+  return { db: db as unknown as D1Database, updates, preparedSql };
 }
 
 function makeFiles() {
@@ -79,7 +81,7 @@ describe('backfillIncomingImages', () => {
         cursor_key: '2026-07-20T10:00:00.000+09:00|group|group-old',
       },
     ];
-    const { db, updates } = makeDb(candidates);
+    const { db, updates, preparedSql } = makeDb(candidates);
     const files = makeFiles();
     const fetchMock = vi
       .fn()
@@ -109,6 +111,7 @@ describe('backfillIncomingImages', () => {
         hasMore: false,
       });
       expect(files.put).toHaveBeenCalledTimes(1);
+      expect(preparedSql[0]).toContain("json_extract(content, '$.lineMessageId')");
       expect(updates).toHaveLength(1);
       expect(updates[0].sql).toContain('UPDATE messages_log');
       const updated = JSON.parse(String(updates[0].values[0]));

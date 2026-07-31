@@ -60,35 +60,55 @@ async function loadCandidates(
            'personal' AS scope,
            id,
            content,
-           line_message_id,
+           COALESCE(
+             NULLIF(line_message_id, ''),
+             CASE
+               WHEN json_valid(content) THEN CAST(COALESCE(
+                 json_extract(content, '$.lineMessageId'),
+                 json_extract(content, '$.line_message_id'),
+                 json_extract(content, '$.messageId'),
+                 json_extract(content, '$.message_id')
+               ) AS TEXT)
+               ELSE NULL
+             END
+           ) AS line_message_id,
            line_account_id,
            created_at,
            created_at || '|' || 'personal' || '|' || id AS cursor_key
          FROM messages_log
          WHERE direction = 'incoming'
            AND message_type = 'image'
-           AND line_message_id IS NOT NULL
-           AND line_message_id != ''
            AND content NOT LIKE '%/images/incoming-%'
          UNION ALL
          SELECT
            'group' AS scope,
            id,
            content,
-           line_message_id,
+           COALESCE(
+             NULLIF(line_message_id, ''),
+             CASE
+               WHEN json_valid(content) THEN CAST(COALESCE(
+                 json_extract(content, '$.lineMessageId'),
+                 json_extract(content, '$.line_message_id'),
+                 json_extract(content, '$.messageId'),
+                 json_extract(content, '$.message_id')
+               ) AS TEXT)
+               ELSE NULL
+             END
+           ) AS line_message_id,
            line_account_id,
            created_at,
            created_at || '|' || 'group' || '|' || id AS cursor_key
          FROM line_conversation_messages
          WHERE direction = 'incoming'
            AND message_type = 'image'
-           AND line_message_id IS NOT NULL
-           AND line_message_id != ''
            AND content NOT LIKE '%/images/incoming-%'
        )
        SELECT *
        FROM candidates
-       WHERE (? IS NULL OR cursor_key < ?)
+       WHERE line_message_id IS NOT NULL
+         AND line_message_id != ''
+         AND (? IS NULL OR cursor_key < ?)
        ORDER BY cursor_key DESC
        LIMIT ?`,
     )

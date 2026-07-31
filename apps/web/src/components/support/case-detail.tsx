@@ -786,8 +786,11 @@ export default function CaseDetail({
   const secondaryUnassigned = caseForm.escalationAssignees.length === 0
   const secondaryAssigneeLabel = caseForm.escalationAssignees.join('、') || '未設定'
   const primaryAssigneeLabel = caseForm.primaryAssignee.trim() || '未設定'
-  const customerLabel = detail.friendName || detail.companyName || detail.contactName || '顧客未紐付け'
-  const customerNumberLabel = detail.customerNumber || ticketShortId(detail.id)
+  const customerNumberLabel = detail.customerNumber?.trim() || '未登録'
+  const companyNameLabel = detail.companyName?.trim() || '未登録'
+  const representativeNameLabel = detail.contactName?.trim() || '未登録'
+  const lineDisplayNameLabel = detail.friendName?.trim() || '未登録'
+  const ticketIdLabel = ticketShortId(detail.id)
   const canViewLineConversation = detail.canViewLineConversation !== false
   const canOpenLineChat = detail.canOpenLineChat !== false
   const chatHref = canOpenLineChat && detail.friendId ? `/chats?friend=${encodeURIComponent(detail.friendId)}` : null
@@ -840,8 +843,30 @@ export default function CaseDetail({
               {caseForm.title || detail.title}
               {dirty && <span className="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500 align-middle" title="未保存の変更あり" />}
             </h2>
-            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-500">
-              <span className="truncate">{detail.friendName || detail.companyName || '顧客未紐付け'}</span>
+            <dl
+              className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 sm:grid-cols-[minmax(0,1.5fr)_minmax(7rem,0.6fr)_minmax(0,1fr)]"
+              aria-label="対象顧客"
+            >
+              <div className="col-span-2 min-w-0 sm:col-span-1">
+                <dt className="text-[11px] font-medium text-slate-500">法人名</dt>
+                <dd className={`mt-0.5 break-words text-sm font-semibold ${companyNameLabel === '未登録' ? 'text-slate-400' : 'text-slate-900'}`}>
+                  {companyNameLabel}
+                </dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-[11px] font-medium text-slate-500">顧客番号</dt>
+                <dd className={`mt-0.5 break-words text-sm font-semibold tabular-nums ${customerNumberLabel === '未登録' ? 'text-slate-400' : 'text-slate-900'}`}>
+                  {customerNumberLabel}
+                </dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="text-[11px] font-medium text-slate-500">代表者名</dt>
+                <dd className={`mt-0.5 break-words text-sm font-semibold ${representativeNameLabel === '未登録' ? 'text-slate-400' : 'text-slate-900'}`}>
+                  {representativeNameLabel}
+                </dd>
+              </div>
+            </dl>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-500">
               {chatHref && (
                 <Link
                   href={chatHref}
@@ -992,8 +1017,11 @@ export default function CaseDetail({
                 <p className="mt-0.5 text-xs text-slate-500">このチケットの基本情報を確認できます。</p>
               </div>
               <dl className="grid gap-2">
-                <DetailInfoRow label="顧客" value={customerLabel} />
-                <DetailInfoRow label="顧客番号 / チケットID" value={customerNumberLabel} />
+                <DetailInfoRow label="顧客番号" value={customerNumberLabel} tone={customerNumberLabel === '未登録' ? 'muted' : 'default'} />
+                <DetailInfoRow label="法人名" value={companyNameLabel} tone={companyNameLabel === '未登録' ? 'muted' : 'default'} />
+                <DetailInfoRow label="代表者名" value={representativeNameLabel} tone={representativeNameLabel === '未登録' ? 'muted' : 'default'} />
+                <DetailInfoRow label="LINE表示名" value={lineDisplayNameLabel} tone={lineDisplayNameLabel === '未登録' ? 'muted' : 'default'} />
+                <DetailInfoRow label="チケットID" value={ticketIdLabel} />
                 <DetailInfoRow label="一次対応者" value={primaryAssigneeLabel} tone={primaryUnassigned ? 'muted' : 'default'} />
                 <DetailInfoRow label="二次対応先" value={secondaryAssigneeLabel} tone={secondaryUnassigned ? 'muted' : 'accent'} />
                 <DetailInfoRow label="最終更新" value={formatDateTime(detail.updatedAt)} />

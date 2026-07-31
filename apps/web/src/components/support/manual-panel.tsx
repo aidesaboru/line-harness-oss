@@ -71,12 +71,35 @@ const emptyManualInput: ManualEditorInput = {
 
 const statusMeta: Record<SupportManual['knowledgeStatus'], { label: string; badge: string }> = {
   verified: { label: '確認済み', badge: 'border-green-200 bg-green-50 text-green-700' },
-  ready: { label: '利用候補', badge: 'border-blue-200 bg-blue-50 text-blue-700' },
+  ready: { label: '回答候補（未確認）', badge: 'border-blue-200 bg-blue-50 text-blue-700' },
   needs_review: { label: '要整理', badge: 'border-amber-200 bg-amber-50 text-amber-800' },
   unresolved: { label: '未解決', badge: 'border-red-200 bg-red-50 text-red-700' },
 }
 
-type StatusFilter = 'all' | SupportManual['knowledgeStatus']
+type KnowledgeView = 'use' | 'candidates' | 'review'
+
+const knowledgeStatuses: Record<KnowledgeView, SupportManual['knowledgeStatus'][]> = {
+  use: ['verified'],
+  candidates: ['ready'],
+  review: ['needs_review', 'unresolved'],
+}
+const operationalKnowledgeStatuses: SupportManual['knowledgeStatus'][] = ['verified', 'ready']
+
+function formatKnowledgeDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('ja-JP', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date)
+}
+
+function distinctKnowledgeText(value: string, ...duplicates: string[]): string {
+  const normalized = value.trim()
+  if (!normalized) return ''
+  return duplicates.some((duplicate) => duplicate.trim() === normalized) ? '' : normalized
+}
 
 function manualInputFromManual(manual: SupportManual): ManualEditorInput {
   return {
@@ -96,10 +119,6 @@ function manualInputFromManual(manual: SupportManual): ManualEditorInput {
     knowledgeStatus: manual.knowledgeStatus,
     reviewNote: manual.reviewNote,
   }
-}
-
-function sourceLabel(manual: SupportManual): string {
-  return manual.owner === 'Slack過去ログ' ? 'Slack過去ログ' : manual.owner || '手動作成'
 }
 
 function KnowledgeSection({ title, children, emphasis = false }: { title: string; children: string; emphasis?: boolean }) {
@@ -133,26 +152,38 @@ export default function ManualPanel({
   const [creating, setCreating] = useState(false)
   const [draft, setDraft] = useState<ManualEditorInput>(emptyManualInput)
   const [selectedManualId, setSelectedManualId] = useState<string | null>(null)
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [knowledgeView, setKnowledgeView] = useState<KnowledgeView>('use')
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
+  const currentViewStatuses = useMemo(
+    () => knowledgeView === 'use' && !canManage
+      ? operationalKnowledgeStatuses
+      : knowledgeStatuses[knowledgeView],
+    [canManage, knowledgeView],
+  )
 
   const visibleManuals = useMemo(
-    () => statusFilter === 'all' ? manuals : manuals.filter((manual) => manual.knowledgeStatus === statusFilter),
-    [manuals, statusFilter],
+    () => manuals.filter((manual) => currentViewStatuses.includes(manual.knowledgeStatus)),
+    [currentViewStatuses, manuals],
   )
   const selectedManual = useMemo(
     () => visibleManuals.find((manual) => manual.id === selectedManualId) ?? visibleManuals[0] ?? null,
     [selectedManualId, visibleManuals],
   )
-  const statusCounts = useMemo(() => ({
-    all: manuals.length,
-    verified: manuals.filter((manual) => manual.knowledgeStatus === 'verified').length,
-    ready: manuals.filter((manual) => manual.knowledgeStatus === 'ready').length,
-    needs_review: manuals.filter((manual) => manual.knowledgeStatus === 'needs_review').length,
-    unresolved: manuals.filter((manual) => manual.knowledgeStatus === 'unresolved').length,
-  }), [manuals])
+  const viewCounts = useMemo(() => ({
+    use: manuals.filter((manual) => (
+      canManage ? knowledgeStatuses.use : operationalKnowledgeStatuses
+    ).includes(manual.knowledgeStatus)).length,
+    candidates: manuals.filter((manual) => knowledgeStatuses.candidates.includes(manual.knowledgeStatus)).length,
+    review: manuals.filter((manual) => knowledgeStatuses.review.includes(manual.knowledgeStatus)).length,
+  }), [canManage, manuals])
   const validationIssues = getManualEditorValidationIssues(draft)
   const submitDisabled = saving || validationIssues.some((issue) => issue.blocking)
+
+  useEffect(() => {
+    if (!canManage && knowledgeView !== 'use') {
+      setKnowledgeView('use')
+    }
+  }, [canManage, knowledgeView])
 
   useEffect(() => {
     if (visibleManuals.length === 0) {
@@ -189,7 +220,18 @@ export default function ManualPanel({
     const ok = editing
       ? await onUpdateManual(editing, draft)
       : await onCreateManual(draft)
-    if (ok) closeForm()
+    if (ok) {
+      setKnowledgeView(
+        draft.knowledgeStatus === 'ready'
+          ? 'candidates'
+          : knowledgeStatuses.review.includes(draft.knowledgeStatus)
+            ? 'review'
+            : 'use',
+      )
+      setSelectedManualId(null)
+      setMobileDetailOpen(false)
+      closeForm()
+    }
   }
 
   const selectManual = (manual: SupportManual) => {
@@ -197,30 +239,70 @@ export default function ManualPanel({
     setMobileDetailOpen(true)
   }
 
+  const changeKnowledgeView = (view: KnowledgeView) => {
+    setKnowledgeView(view)
+    setSelectedManualId(null)
+    setMobileDetailOpen(false)
+    closeForm()
+  }
+
   const formOpen = creating || editing !== null
-  const hasFilters = Boolean(search.trim()) || category !== 'all' || statusFilter !== 'all'
-  const filterButtons: Array<{ value: StatusFilter; label: string }> = [
-    { value: 'all', label: 'すべて' },
-    { value: 'verified', label: '確認済み' },
-    { value: 'ready', label: '利用候補' },
-    { value: 'needs_review', label: '要整理' },
-    { value: 'unresolved', label: '未解決' },
-  ]
+  const hasFilters = Boolean(search.trim()) || category !== 'all'
+  const isReviewView = knowledgeView === 'review'
+  const isCandidateView = knowledgeView === 'candidates'
 
   return (
     <section className="overflow-hidden rounded-lg border border-gray-200 bg-white" aria-label="対応ナレッジ">
       <div className="border-b border-gray-200 p-3 sm:p-4">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-gray-950">ナレッジ</h3>
-            <p className="mt-0.5 text-xs text-gray-500">{manuals.length}件</p>
+            <h3 className="text-sm font-semibold text-gray-950">
+              {isReviewView ? '要整理' : isCandidateView ? '確認待ち' : canManage ? '実務で使う' : 'ナレッジを探す'}
+            </h3>
+            <p className="mt-0.5 text-xs text-gray-500">{viewCounts[knowledgeView]}件</p>
           </div>
-          {canManage && (
-            <button type="button" onClick={openCreateForm} disabled={saving} className={btnSecondaryCls}>
-              <PlusIcon className="h-4 w-4" />
-              新規
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {canManage && (
+              <div className="inline-flex rounded-md border border-gray-300 bg-gray-50 p-0.5" aria-label="ナレッジ表示">
+                <button
+                  type="button"
+                  onClick={() => changeKnowledgeView('use')}
+                  aria-pressed={knowledgeView === 'use'}
+                  className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
+                    knowledgeView === 'use' ? 'bg-white text-gray-950 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  実務で使う {viewCounts.use}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => changeKnowledgeView('candidates')}
+                  aria-pressed={isCandidateView}
+                  className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
+                    isCandidateView ? 'bg-white text-gray-950 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  確認待ち {viewCounts.candidates}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => changeKnowledgeView('review')}
+                  aria-pressed={isReviewView}
+                  className={`rounded px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 ${
+                    isReviewView ? 'bg-white text-gray-950 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  要整理 {viewCounts.review}
+                </button>
+              </div>
+            )}
+            {canManage && (
+              <button type="button" onClick={openCreateForm} disabled={saving} className={btnSecondaryCls}>
+                <PlusIcon className="h-4 w-4" />
+                新規
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_220px]">
@@ -250,24 +332,10 @@ export default function ManualPanel({
           </select>
         </div>
 
-        <div className="mt-3 flex gap-1 overflow-x-auto pb-1" aria-label="品質状態">
-          {filterButtons.map((item) => {
-            const active = statusFilter === item.value
-            return (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setStatusFilter(item.value)}
-                className={`shrink-0 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  active
-                    ? 'border-green-600 bg-green-600 text-white'
-                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {item.label} {statusCounts[item.value]}
-              </button>
-            )
-          })}
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-gray-500" aria-label="表示中の状態">
+          {currentViewStatuses.map((status) => (
+            <Pill key={status} className={statusMeta[status].badge}>{statusMeta[status].label}</Pill>
+          ))}
         </div>
       </div>
 
@@ -314,7 +382,7 @@ export default function ManualPanel({
             <Field label="注意点">
               <textarea value={draft.cautions} onChange={(event) => setDraft((current) => ({ ...current, cautions: event.target.value }))} className={`${textareaCls} min-h-[88px]`} />
             </Field>
-            <Field label="品質状態">
+            <Field label="ナレッジ状態">
               <select value={draft.knowledgeStatus} onChange={(event) => setDraft((current) => ({ ...current, knowledgeStatus: event.target.value as SupportManual['knowledgeStatus'] }))} className={selectCls}>
                 {Object.entries(statusMeta).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}
               </select>
@@ -339,18 +407,23 @@ export default function ManualPanel({
         </div>
       )}
 
-      <div className="grid min-h-[560px] lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+      <div className="grid min-h-[560px] lg:grid-cols-[minmax(320px,400px)_minmax(0,1fr)]">
         <div className={`${mobileDetailOpen ? 'hidden lg:block' : 'block'} max-h-[720px] overflow-y-auto border-r-0 border-gray-200 lg:border-r`}>
           {visibleManuals.length === 0 ? (
             <div className="px-4 py-12 text-center">
-              <p className="text-sm font-medium text-gray-700">該当するナレッジはありません</p>
+              <p className="text-sm font-medium text-gray-700">
+                {isReviewView
+                  ? '整理が必要な候補はありません'
+                  : isCandidateView
+                    ? '確認待ちの候補はありません'
+                    : '管理者が確認したナレッジはまだありません'}
+              </p>
               {hasFilters && (
                 <button
                   type="button"
                   onClick={() => {
                     onSearchChange('')
                     onCategoryChange('all')
-                    setStatusFilter('all')
                   }}
                   className="mt-3 rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50"
                 >
@@ -375,12 +448,11 @@ export default function ManualPanel({
                 </div>
                 <p className="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-gray-600">{manual.question || manual.body}</p>
                 {manual.resolution && (
-                  <p className="mt-1.5 line-clamp-2 break-words text-xs leading-5 text-gray-500">結論: {manual.resolution}</p>
+                  <p className="mt-1.5 line-clamp-2 break-words text-xs font-medium leading-5 text-gray-700">結論: {manual.resolution}</p>
                 )}
-                <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-gray-400">
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-gray-400">
                   <span>{categoryLabel[manual.category] || manual.category}</span>
-                  <span>{sourceLabel(manual)}</span>
-                  <span>品質 {manual.qualityScore}</span>
+                  <time dateTime={manual.updatedAt}>更新 {formatKnowledgeDate(manual.updatedAt)}</time>
                 </div>
               </button>
             )
@@ -390,20 +462,17 @@ export default function ManualPanel({
         <div className={`${mobileDetailOpen ? 'block' : 'hidden lg:block'} min-w-0 p-3 sm:p-5`}>
           {selectedManual ? (
             <article>
-              <button type="button" onClick={() => setMobileDetailOpen(false)} className="mb-3 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 lg:hidden">
+              <button type="button" onClick={() => setMobileDetailOpen(false)} className="sticky top-0 z-10 mb-3 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 lg:hidden">
                 一覧へ戻る
               </button>
               <header className="border-b border-gray-200 pb-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Pill className={statusMeta[selectedManual.knowledgeStatus].badge}>{statusMeta[selectedManual.knowledgeStatus].label}</Pill>
                   <Pill className="border-gray-200 bg-gray-50 text-gray-600">{categoryLabel[selectedManual.category] || selectedManual.category}</Pill>
-                  <span className="text-xs text-gray-400">品質 {selectedManual.qualityScore}</span>
                   {selectedManual.useCount > 0 && <span className="text-xs text-gray-400">利用 {selectedManual.useCount}回</span>}
+                  <time dateTime={selectedManual.updatedAt} className="text-xs text-gray-400">更新 {formatKnowledgeDate(selectedManual.updatedAt)}</time>
                 </div>
                 <h4 className="mt-2 break-words text-lg font-semibold leading-7 text-gray-950">{selectedManual.title}</h4>
-                {selectedManual.reviewNote && selectedManual.knowledgeStatus !== 'verified' && (
-                  <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">{selectedManual.reviewNote}</p>
-                )}
                 {selectedManual.needsImprovementCount > 0 && (
                   <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-800">
                     改善報告 {selectedManual.needsImprovementCount}件
@@ -411,15 +480,52 @@ export default function ManualPanel({
                 )}
               </header>
 
+              {selectedManual.knowledgeStatus === 'ready' && (
+                <div className="mt-4 rounded-md border border-blue-200 bg-blue-50 px-3 py-3 text-sm leading-6 text-blue-900" role="note">
+                  <p className="font-semibold">未確認の回答候補です</p>
+                  <p className="mt-1">使う前に 問い合わせ内容と結論が対応しているかを確認してください</p>
+                </div>
+              )}
+
+              {isReviewView && canManage && (
+                <section className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 sm:p-4" aria-labelledby="review-note-title">
+                  <h5 id="review-note-title" className="text-sm font-semibold text-amber-950">確認メモ</h5>
+                  <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-amber-900">
+                    {selectedManual.reviewNote || '確認メモはありません 内容を確認して必要に応じて編集してください'}
+                  </p>
+                  <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                    <button type="button" onClick={() => void onVerify(selectedManual)} disabled={saving} className="inline-flex items-center justify-center gap-1.5 rounded-md bg-green-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-green-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 disabled:opacity-50">
+                      <CheckIcon className="h-4 w-4" />
+                      確認済みにする
+                    </button>
+                    <button type="button" onClick={() => openEditForm(selectedManual)} disabled={saving} className="rounded-md border border-amber-400 bg-white px-4 py-2.5 text-sm font-semibold text-amber-950 hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:opacity-50">
+                      編集
+                    </button>
+                  </div>
+                </section>
+              )}
+
               <KnowledgeSection title="結論" emphasis>{selectedManual.resolution}</KnowledgeSection>
-              <KnowledgeSection title="問い合わせ">{selectedManual.question}</KnowledgeSection>
-              <KnowledgeSection title="対応手順">{selectedManual.procedure}</KnowledgeSection>
               <KnowledgeSection title="適用条件">{selectedManual.applicability}</KnowledgeSection>
-              <KnowledgeSection title="注意点">{selectedManual.cautions}</KnowledgeSection>
+              <KnowledgeSection title="対応手順">
+                {distinctKnowledgeText(selectedManual.procedure, selectedManual.resolution)}
+              </KnowledgeSection>
+              <KnowledgeSection title="注意点">
+                {distinctKnowledgeText(selectedManual.cautions, selectedManual.resolution, selectedManual.procedure)}
+              </KnowledgeSection>
 
               <details className="border-b border-gray-100 py-4">
-                <summary className="cursor-pointer text-sm font-medium text-gray-700">原文・証跡</summary>
-                <p className="mt-3 whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">{selectedManual.sourceBody || selectedManual.body}</p>
+                <summary className="cursor-pointer rounded text-sm font-medium text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500">証跡を確認</summary>
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <h6 className="text-xs font-semibold text-gray-500">問い合わせ</h6>
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-sm leading-6 text-gray-700">{selectedManual.question || '記録なし'}</p>
+                  </div>
+                  <div>
+                    <h6 className="text-xs font-semibold text-gray-500">原文</h6>
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-5 text-gray-500">{selectedManual.sourceBody || selectedManual.body || '記録なし'}</p>
+                  </div>
+                </div>
                 {selectedManual.url && (
                   <a href={selectedManual.url} target="_blank" rel="noopener noreferrer" className="mt-3 inline-block text-sm font-medium text-blue-600 hover:underline">
                     元スレッドを開く
@@ -428,27 +534,35 @@ export default function ManualPanel({
               </details>
 
               <footer className="flex flex-wrap gap-2 pt-4">
-                <button type="button" onClick={() => void onCopy(selectedManual)} disabled={!selectedManual.resolution || saving} className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50">
-                  <CopyIcon className="h-4 w-4" />
-                  回答をコピー
-                </button>
-                <button type="button" onClick={() => void onFeedback(selectedManual, 'helpful')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-                  役に立った
-                </button>
-                <button type="button" onClick={() => void onFeedback(selectedManual, 'needs_improvement')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-                  改善が必要
-                </button>
+                {knowledgeView === 'use' && (
+                  <>
+                    <button type="button" onClick={() => void onCopy(selectedManual)} disabled={!selectedManual.resolution || saving} className="inline-flex items-center gap-1.5 rounded-md bg-green-600 px-3 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50">
+                      <CopyIcon className="h-4 w-4" />
+                      {selectedManual.knowledgeStatus === 'ready' ? '候補の結論をコピー' : '結論をコピー'}
+                    </button>
+                    <button type="button" onClick={() => void onFeedback(selectedManual, 'helpful')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                      役に立った
+                    </button>
+                    <button type="button" onClick={() => void onFeedback(selectedManual, 'needs_improvement')} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                      改善が必要
+                    </button>
+                  </>
+                )}
                 {canManage && (
                   <>
-                    {selectedManual.knowledgeStatus !== 'verified' && (
-                      <button type="button" onClick={() => void onVerify(selectedManual)} disabled={saving} className="inline-flex items-center gap-1.5 rounded-md border border-green-300 px-3 py-2 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50">
-                        <CheckIcon className="h-4 w-4" />
-                        確認済みにする
-                      </button>
+                    {knowledgeView !== 'review' && (
+                      <>
+                        {knowledgeView === 'candidates' && selectedManual.knowledgeStatus !== 'verified' && (
+                          <button type="button" onClick={() => void onVerify(selectedManual)} disabled={saving} className="inline-flex items-center gap-1.5 rounded-md border border-green-300 px-3 py-2 text-sm font-medium text-green-700 hover:bg-green-50 disabled:opacity-50">
+                            <CheckIcon className="h-4 w-4" />
+                            確認済みにする
+                          </button>
+                        )}
+                        <button type="button" onClick={() => openEditForm(selectedManual)} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
+                          編集
+                        </button>
+                      </>
                     )}
-                    <button type="button" onClick={() => openEditForm(selectedManual)} disabled={saving} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50">
-                      編集
-                    </button>
                     <button type="button" onClick={() => void onArchiveManual(selectedManual)} disabled={saving} className="rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50">
                       無効化
                     </button>

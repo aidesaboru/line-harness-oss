@@ -1442,7 +1442,7 @@ export const api = {
         category?: string
         q?: string
         active?: '0' | '1' | 'all'
-        knowledgeStatus?: SupportManual['knowledgeStatus'] | 'all'
+        knowledgeStatus?: SupportManual['knowledgeStatus'] | 'all' | 'operational'
       }) => {
         const query: Record<string, string> = {}
         query.lineAccountId = params.accountId
@@ -1506,6 +1506,22 @@ export const api = {
         fetchApi<ApiResponse<SupportManual>>(`/api/support/manuals/${id}/usage`, {
           method: 'POST',
           body: JSON.stringify({ lineAccountId: accountId, action }),
+        }),
+      recalculateSlackHistory: (data: { lineAccountId: string; offset?: number; limit?: number }) =>
+        fetchApi<ApiResponse<{
+          checked: number
+          offset: number
+          nextOffset: number | null
+          updatedManuals: number
+          qualityCounts: Record<SupportManual['knowledgeStatus'], number>
+        }>>('/api/support/manuals/slack-normalize', {
+          method: 'POST',
+          body: JSON.stringify({
+            lineAccountId: data.lineAccountId,
+            offset: data.offset ?? 0,
+            limit: data.limit ?? 100,
+            resolveProfiles: false,
+          }),
         }),
     },
   },

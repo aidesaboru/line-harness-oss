@@ -24,6 +24,8 @@ import {
 } from '@/lib/auth-session'
 
 const SEARCH_DEBOUNCE_MS = 350
+const SLACK_RECALCULATE_PAGE_LIMIT = 10
+const SLACK_RECALCULATE_MAX_PAGES = 50
 
 function buildKnowledgeBody(input: ManualEditorInput): string {
   if (input.body.trim()) return input.body.trim()
@@ -49,6 +51,7 @@ export default function ManualsPage() {
   const [staffReady, setStaffReady] = useState(false)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [recalculating, setRecalculating] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const accountName = selectedAccount?.displayName || selectedAccount?.name || 'LINEアカウント'
@@ -100,6 +103,7 @@ export default function ManualsPage() {
         category: category === 'all' ? undefined : category,
         q: appliedSearch || undefined,
         active: '1',
+        knowledgeStatus: canManage ? undefined : 'operational',
       })
       if (!res.success) {
         setLoadError(supportApiErrorMessage(res, 'ナレッジの読み込みに失敗しました'))
@@ -111,7 +115,7 @@ export default function ManualsPage() {
     } finally {
       setLoading(false)
     }
-  }, [appliedSearch, category, selectedAccountId, staffReady])
+  }, [appliedSearch, canManage, category, selectedAccountId, staffReady])
 
   useEffect(() => {
     void loadManuals()
@@ -231,13 +235,12 @@ export default function ManualsPage() {
 
   const handleCopy = useCallback(async (manual: SupportManual) => {
     if (!selectedAccountId) return
-    const copyValue = [manual.resolution, manual.procedure].filter(Boolean).join('\n\n')
-    const copied = await copyText(copyValue)
+    const copied = await copyText(manual.resolution)
     if (!copied.ok) {
-      notify('error', '回答をコピーできませんでした')
+      notify('error', '結論をコピーできませんでした')
       return
     }
-    notify('success', '回答をコピーしました')
+    notify('success', '結論をコピーしました')
     try {
       await api.support.manuals.recordUsage(manual.id, selectedAccountId, 'copied')
     } catch {
@@ -264,6 +267,14 @@ export default function ManualsPage() {
 
   const handleVerify = useCallback(async (manual: SupportManual) => {
     if (!selectedAccountId || saving || !canManage) return
+    const ok = await requestConfirm({
+      title: 'この内容を確認済みにします',
+      message: '問い合わせと結論が対応していること、別案件の内容や顧客固有情報が混ざっていないことを確認してください。確認後は実務担当者の利用対象になります。',
+      confirmLabel: '確認済みにする',
+      cancelLabel: '内容を見直す',
+      tone: 'default',
+    })
+    if (!ok) return
     setSaving(true)
     try {
       const res = await api.support.manuals.update(manual.id, {
@@ -281,7 +292,47 @@ export default function ManualsPage() {
     } finally {
       setSaving(false)
     }
-  }, [canManage, loadManuals, notify, saving, selectedAccountId])
+  }, [canManage, loadManuals, notify, requestConfirm, saving, selectedAccountId])
+
+  const handleRecalculateSlackHistory = useCallback(async () => {
+    if (!selectedAccountId || saving || recalculating || !canManage) return
+    const ok = await requestConfirm({
+      title: '過去ログの判定を更新します',
+      message: '保存済みの原文は残したまま、問い合わせと結論の組み合わせ、品質状態、検索キーワードを現在の基準で再判定します。確認済みのナレッジは変更しません。',
+      confirmLabel: '再判定する',
+      cancelLabel: '戻る',
+      tone: 'warning',
+    })
+    if (!ok) return
+
+    setRecalculating(true)
+    let offset = 0
+    let checked = 0
+    let updated = 0
+    try {
+      for (let page = 0; page < SLACK_RECALCULATE_MAX_PAGES; page += 1) {
+        const res = await api.support.manuals.recalculateSlackHistory({
+          lineAccountId: selectedAccountId,
+          offset,
+          limit: SLACK_RECALCULATE_PAGE_LIMIT,
+        })
+        if (!res.success) {
+          notify('error', supportApiErrorMessage(res, '過去ログの再判定に失敗しました'))
+          return
+        }
+        checked += res.data.checked
+        updated += res.data.updatedManuals
+        if (res.data.nextOffset === null) break
+        offset = res.data.nextOffset
+      }
+      notify('success', `${checked}件を確認し ${updated}件の判定を更新しました`)
+      await loadManuals()
+    } catch (err) {
+      notify('error', formatSupportErrorMessage(err, '過去ログの再判定に失敗しました'))
+    } finally {
+      setRecalculating(false)
+    }
+  }, [canManage, loadManuals, notify, recalculating, requestConfirm, saving, selectedAccountId])
 
   if (accountLoading) {
     return <div className="p-6 text-sm text-gray-500">読み込み中...</div>
@@ -293,9 +344,21 @@ export default function ManualsPage() {
         title="ナレッジ"
         description={`${accountName} の問い合わせ事例と解決方法`}
         action={
-          <button type="button" onClick={() => void loadManuals()} disabled={controlsDisabled} className={btnSecondaryCls}>
-            {loading ? '更新中...' : saving ? '保存中...' : '更新'}
-          </button>
+          <div className="flex flex-wrap justify-end gap-2">
+            {canManage && (
+              <button
+                type="button"
+                onClick={() => void handleRecalculateSlackHistory()}
+                disabled={controlsDisabled || recalculating}
+                className={btnSecondaryCls}
+              >
+                {recalculating ? '再判定中...' : '過去ログを再判定'}
+              </button>
+            )}
+            <button type="button" onClick={() => void loadManuals()} disabled={controlsDisabled || recalculating} className={btnSecondaryCls}>
+              {loading ? '更新中...' : saving ? '保存中...' : '更新'}
+            </button>
+          </div>
         }
       />
 
@@ -307,7 +370,7 @@ export default function ManualsPage() {
 
       {!canManage && staffReady && (
         <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          閲覧と検索はできます。追加・編集・無効化はowner/adminに依頼してください。
+          確認済みの回答と回答候補を検索できます。「回答候補（未確認）」は問い合わせと結論を照合してから利用してください。追加・編集はowner/adminに依頼してください。
         </div>
       )}
 

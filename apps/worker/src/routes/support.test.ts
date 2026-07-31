@@ -3215,6 +3215,46 @@ describe('support CRM routes', () => {
     expect(calls.some((call) => call.method === 'run' && call.sql.includes('support_manuals'))).toBe(false);
   });
 
+  test('searches manuals by every space-separated term and ranks useful fields first', async () => {
+    const { db, calls } = makeSupportDb({
+      manuals: [baseManual({ id: 'manual-search', line_account_id: 'acc-1' })],
+    });
+    const app = setupApp(db, { id: 'staff-2', name: '一次担当', role: 'staff' });
+
+    const res = await app.request('/api/support/manuals?lineAccountId=acc-1&q=' + encodeURIComponent('楽天　パスワード'));
+    expect(res.status).toBe(200);
+
+    const search = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_manuals'));
+    expect(search?.sql.match(/knowledge_question LIKE \?/g)).toHaveLength(4);
+    expect(search?.sql).toContain('CASE WHEN title LIKE ?');
+    expect(search?.sql).toContain('knowledge_resolution LIKE ?');
+    expect(search?.binds.filter((value) => value === '%楽天%')).toHaveLength(13);
+    expect(search?.binds.filter((value) => value === '%パスワード%')).toHaveLength(13);
+  });
+
+  test('escapes LIKE wildcards in manual searches', async () => {
+    const { db, calls } = makeSupportDb({});
+    const app = setupApp(db, { id: 'staff-2', name: '一次担当', role: 'staff' });
+
+    const res = await app.request('/api/support/manuals?lineAccountId=acc-1&q=' + encodeURIComponent('100%_完了'));
+    expect(res.status).toBe(200);
+
+    const search = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_manuals'));
+    expect(search?.sql).toContain("ESCAPE '\\'");
+    expect(search?.binds).toContain('%100\\%\\_完了%');
+  });
+
+  test('limits operational knowledge to verified and ready entries', async () => {
+    const { db, calls } = makeSupportDb({});
+    const app = setupApp(db, { id: 'staff-2', name: '一次担当', role: 'staff' });
+
+    const res = await app.request('/api/support/manuals?lineAccountId=acc-1&knowledgeStatus=operational');
+    expect(res.status).toBe(200);
+
+    const search = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_manuals'));
+    expect(search?.sql).toContain("knowledge_status IN ('verified', 'ready')");
+  });
+
   test('requires an account scope for knowledge and records copied answers append-only', async () => {
     const { db, calls, state } = makeSupportDb({
       manuals: [baseManual({ id: 'manual-copy', knowledge_resolution: '確認後に案内してください' })],
@@ -3348,6 +3388,51 @@ describe('support CRM routes', () => {
       title: '更新済み手順',
       body: '更新済みの本文',
       updated_by: 'owner-1',
+    });
+  });
+
+  test('owner can verify only complete knowledge and records the reviewer', async () => {
+    const { db, state } = makeSupportDb({
+      manuals: [
+        baseManual({
+          id: 'manual-complete',
+          line_account_id: 'acc-1',
+          knowledge_question: '楽天の広告案内は対応が必要ですか？',
+          knowledge_resolution: '広告の案内は不要です。',
+          knowledge_status: 'needs_review',
+          knowledge_quality_score: 50,
+          knowledge_review_note: '結論が短いため確認が必要です',
+        }),
+        baseManual({
+          id: 'manual-empty-answer',
+          line_account_id: 'acc-1',
+          knowledge_question: '返品時の案内を確認したいです',
+          knowledge_resolution: '',
+          knowledge_status: 'unresolved',
+        }),
+      ],
+    });
+    const app = setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' });
+
+    const denied = await app.request('/api/support/manuals/manual-empty-answer', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1', knowledgeStatus: 'verified' }),
+    });
+    expect(denied.status).toBe(409);
+    expect(state.manuals.find((item) => item.id === 'manual-empty-answer')?.knowledge_status).toBe('unresolved');
+
+    const verified = await app.request('/api/support/manuals/manual-complete', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1', knowledgeStatus: 'verified' }),
+    });
+    expect(verified.status).toBe(200);
+    expect(state.manuals.find((item) => item.id === 'manual-complete')).toMatchObject({
+      knowledge_status: 'verified',
+      knowledge_quality_score: 100,
+      knowledge_review_note: '',
+      approved_by: 'Owner',
     });
   });
 
@@ -3627,6 +3712,43 @@ describe('support CRM routes', () => {
     expect(state.manuals[0].knowledge_question).toContain('報酬開始時期');
     expect(state.manuals[0].knowledge_resolution).toContain('引き継ぎ月');
     expect(state.manuals[0].knowledge_status).toMatch(/ready|needs_review/);
+  });
+
+  test('normalizes large Slack knowledge pages in bounded D1 batches', async () => {
+    const knowledgeImports = Array.from({ length: 30 }, (_, index) => baseKnowledgeImport({
+      id: `knowledge-${index}`,
+      line_account_id: 'acc-1',
+      status: 'published',
+      manual_id: `manual-${index}`,
+      question: `返品条件を確認したいです ${index}`,
+      answer: '返品は未開封の場合のみ可能です。商品到着後に返金してください。',
+    }));
+    const manuals = knowledgeImports.map((item, index) => baseManual({
+      id: `manual-${index}`,
+      line_account_id: 'acc-1',
+      title: item.title,
+      body: item.body,
+      knowledge_status: 'needs_review',
+    }));
+    const { db } = makeSupportDb({ knowledgeImports, manuals });
+    const originalBatch = db.batch.bind(db);
+    const batchSizes: number[] = [];
+    (db as unknown as { batch: D1Database['batch'] }).batch = async (statements) => {
+      batchSizes.push(statements.length);
+      if (statements.length > 48) throw new Error('D1 batch limit exceeded');
+      return originalBatch(statements);
+    };
+    const app = setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' });
+
+    const res = await app.request('/api/support/manuals/slack-normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1', limit: 30 }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(batchSizes.length).toBeGreaterThan(1);
+    expect(Math.max(...batchSizes)).toBeLessThanOrEqual(48);
   });
 
   test('owner can publish a draft knowledge candidate as a support manual', async () => {

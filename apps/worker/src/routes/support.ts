@@ -922,14 +922,45 @@ function parseKnowledgeImportStatus(raw: unknown): ValueResult<'draft' | 'publis
   return { ok: false, error: 'status is invalid' };
 }
 
-function parseManualKnowledgeStatus(raw: unknown): ValueResult<KnowledgeStatus | 'all'> {
+function parseManualKnowledgeStatus(raw: unknown): ValueResult<KnowledgeStatus | 'all' | 'operational'> {
   if (raw === undefined || raw === null || raw === '') return { ok: true, value: 'all' };
   if (typeof raw !== 'string') return { ok: false, error: 'knowledgeStatus must be a string' };
-  const value = raw.trim() as KnowledgeStatus | 'all';
-  if (value === 'all' || SUPPORT_MANUAL_KNOWLEDGE_STATUSES.has(value as KnowledgeStatus)) {
+  const value = raw.trim() as KnowledgeStatus | 'all' | 'operational';
+  if (value === 'all' || value === 'operational' || SUPPORT_MANUAL_KNOWLEDGE_STATUSES.has(value as KnowledgeStatus)) {
     return { ok: true, value };
   }
   return { ok: false, error: 'knowledgeStatus is invalid' };
+}
+
+function supportManualSearchTerms(value: string | null | undefined): string[] {
+  if (!value) return [];
+  return Array.from(new Set(
+    value
+      .normalize('NFKC')
+      .split(/[\s\u3000]+/u)
+      .map((term) => term.trim())
+      .filter(Boolean),
+  )).slice(0, 6);
+}
+
+function supportManualLikePattern(value: string): string {
+  return `%${value.replace(/[\\%_]/g, '\\$&')}%`;
+}
+
+async function runD1StatementGroups(
+  db: D1Database,
+  groups: D1PreparedStatement[][],
+  maxStatements = 48,
+): Promise<void> {
+  let batch: D1PreparedStatement[] = [];
+  for (const group of groups) {
+    if (batch.length > 0 && batch.length + group.length > maxStatements) {
+      await db.batch(batch);
+      batch = [];
+    }
+    batch.push(...group);
+  }
+  if (batch.length > 0) await db.batch(batch);
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -4467,31 +4498,51 @@ support.get('/api/support/manuals', async (c) => {
     const knowledgeStatus = parseManualKnowledgeStatus(c.req.query('knowledgeStatus'));
     if (!knowledgeStatus.ok) return c.json({ success: false, error: knowledgeStatus.error }, 400);
     const conditions: string[] = [];
-    const binds: unknown[] = [];
+    const whereBinds: unknown[] = [];
 
     conditions.push('(line_account_id = ? OR line_account_id IS NULL)');
-    binds.push(lineAccountId.value);
+    whereBinds.push(lineAccountId.value);
     if (category.value && category.value !== 'all') {
       conditions.push('category = ?');
-      binds.push(category.value);
+      whereBinds.push(category.value);
     }
     if (active.value !== 'all') {
       conditions.push('is_active = ?');
-      binds.push(active.value === '0' ? 0 : 1);
+      whereBinds.push(active.value === '0' ? 0 : 1);
     }
-    if (knowledgeStatus.value !== 'all') {
+    if (knowledgeStatus.value === 'operational') {
+      conditions.push("knowledge_status IN ('verified', 'ready')");
+    } else if (knowledgeStatus.value !== 'all') {
       conditions.push('knowledge_status = ?');
-      binds.push(knowledgeStatus.value);
+      whereBinds.push(knowledgeStatus.value);
     }
-    if (q.value) {
-      const pattern = `%${q.value}%`;
+    const searchTerms = supportManualSearchTerms(q.value);
+    for (const term of searchTerms) {
+      const pattern = supportManualLikePattern(term);
       conditions.push(`(
-        title LIKE ? OR body LIKE ? OR keywords LIKE ? OR
-        knowledge_question LIKE ? OR knowledge_resolution LIKE ? OR
-        knowledge_procedure LIKE ? OR knowledge_applicability LIKE ? OR knowledge_cautions LIKE ?
+        title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\' OR
+        knowledge_question LIKE ? ESCAPE '\\' OR knowledge_resolution LIKE ? ESCAPE '\\' OR
+        knowledge_procedure LIKE ? ESCAPE '\\' OR knowledge_applicability LIKE ? ESCAPE '\\' OR
+        knowledge_cautions LIKE ? ESCAPE '\\'
       )`);
-      binds.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
+      whereBinds.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern);
     }
+
+    const rankBinds: unknown[] = [];
+    const rankExpressions = searchTerms.map((term) => {
+      const pattern = supportManualLikePattern(term);
+      rankBinds.push(pattern, pattern, pattern, pattern, pattern);
+      return `(
+        CASE WHEN title LIKE ? ESCAPE '\\' THEN 12 ELSE 0 END +
+        CASE WHEN keywords LIKE ? ESCAPE '\\' THEN 8 ELSE 0 END +
+        CASE WHEN knowledge_resolution LIKE ? ESCAPE '\\' THEN 7 ELSE 0 END +
+        CASE WHEN knowledge_question LIKE ? ESCAPE '\\' THEN 6 ELSE 0 END +
+        CASE WHEN knowledge_procedure LIKE ? ESCAPE '\\' THEN 2 ELSE 0 END
+      )`;
+    });
+    const relevanceOrder = rankExpressions.length > 0
+      ? `${rankExpressions.join(' + ')} DESC,`
+      : '';
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await c.env.DB
@@ -4499,6 +4550,7 @@ support.get('/api/support/manuals', async (c) => {
         `SELECT * FROM support_manuals
          ${where}
          ORDER BY is_active DESC,
+           ${relevanceOrder}
            CASE knowledge_status
              WHEN 'verified' THEN 0
              WHEN 'ready' THEN 1
@@ -4510,7 +4562,7 @@ support.get('/api/support/manuals', async (c) => {
            title ASC
          LIMIT 500`,
       )
-      .bind(...binds)
+      .bind(...whereBinds, ...rankBinds)
       .all<SupportManualRow>();
     return c.json({ success: true, data: result.results.map(serializeManual) });
   } catch (err) {
@@ -4557,6 +4609,9 @@ support.post('/api/support/manuals', requireRole('owner', 'admin'), async (c) =>
     }
     const knowledgeStatus = parseManualKnowledgeStatus(body.knowledgeStatus);
     if (!knowledgeStatus.ok) return c.json({ success: false, error: knowledgeStatus.error }, 400);
+    if (knowledgeStatus.value === 'operational') {
+      return c.json({ success: false, error: 'knowledgeStatus is invalid' }, 400);
+    }
     const requestedStatus = knowledgeStatus.value === 'all' ? derivedKnowledge.status : knowledgeStatus.value;
     const knowledgeQuestion = knowledgeTextInputs.question || derivedKnowledge.question;
     const knowledgeResolution = knowledgeTextInputs.resolution || derivedKnowledge.resolution;
@@ -4682,8 +4737,17 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
     if ('knowledgeStatus' in body) {
       const parsedStatus = parseManualKnowledgeStatus(body.knowledgeStatus);
       if (!parsedStatus.ok) return c.json({ success: false, error: parsedStatus.error }, 400);
-      if (parsedStatus.value === 'all') return c.json({ success: false, error: 'knowledgeStatus is required' }, 400);
+      if (parsedStatus.value === 'all' || parsedStatus.value === 'operational') {
+        return c.json({ success: false, error: 'knowledgeStatus is required' }, 400);
+      }
       requestedKnowledgeStatus = parsedStatus.value;
+      if (requestedKnowledgeStatus === 'verified') {
+        const question = (manualInputs.question ?? existing.knowledge_question ?? '').trim();
+        const resolution = (manualInputs.resolution ?? existing.knowledge_resolution ?? '').trim();
+        if (!question || !resolution) {
+          return c.json({ success: false, error: '問い合わせと結論を入力してから確認済みにしてください' }, 409);
+        }
+      }
       fields.push(['knowledge_status', requestedKnowledgeStatus]);
     }
     if ('body' in body && !(existing.knowledge_source_body ?? '').trim()) {
@@ -4711,8 +4775,18 @@ support.patch('/api/support/manuals/:id', requireRole('owner', 'admin'), async (
       if (!('reviewNote' in body) && (requestedKnowledgeStatus ?? existing.knowledge_status) !== 'verified') {
         fields.push(['knowledge_review_note', derived.reviewNote]);
       }
-    } else if (requestedKnowledgeStatus === 'verified') {
-      fields.push(['knowledge_quality_score', 100], ['knowledge_review_note', '']);
+    }
+    if (requestedKnowledgeStatus === 'verified') {
+      for (const [column, value] of [
+        ['knowledge_quality_score', 100],
+        ['knowledge_review_note', ''],
+        ['approved_by', staff.name || staff.id],
+        ['revised_at', now.slice(0, 10)],
+      ] as Array<[string, unknown]>) {
+        const fieldIndex = fields.findIndex(([field]) => field === column);
+        if (fieldIndex >= 0) fields[fieldIndex] = [column, value];
+        else fields.push([column, value]);
+      }
     }
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
@@ -4876,10 +4950,10 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         .all<SupportManualRow>();
       for (const manual of manualsResult.results) manualMap.set(manual.id, manual);
     }
-    const writes: D1PreparedStatement[] = [];
+    const writeGroups: D1PreparedStatement[][] = [];
 
     for (const row of rows) {
-      writes.push(await prepareKnowledgeSourceSnapshot(c.env.DB, {
+      const rowWrites: D1PreparedStatement[] = [await prepareKnowledgeSourceSnapshot(c.env.DB, {
         knowledgeImportId: row.id,
         lineAccountId: lineAccountId.value,
         channelId: row.source_channel_id,
@@ -4894,7 +4968,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
         }),
         reconstructed: true,
         capturedAt: now,
-      }));
+      })];
+      writeGroups.push(rowWrites);
       const customerInfo = replaceSlackMentionIds(
         extractKnowledgeBodySection(row.body, ['顧客・案件情報', '顧客情報', '案件情報']),
         replacementNames,
@@ -4936,8 +5011,8 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       ) {
         continue;
       }
-      writes.push(prepareManualRevision(c.env.DB, manual, 'auto_structured', staff, now));
-      writes.push(c.env.DB
+      rowWrites.push(prepareManualRevision(c.env.DB, manual, 'auto_structured', staff, now));
+      rowWrites.push(c.env.DB
         .prepare(
           `UPDATE support_manuals
            SET title = ?,
@@ -4975,7 +5050,7 @@ support.post('/api/support/manuals/slack-normalize', requireRole('owner', 'admin
       updatedManuals += 1;
     }
 
-    if (writes.length > 0) await c.env.DB.batch(writes);
+    await runD1StatementGroups(c.env.DB, writeGroups);
 
     return c.json({
       success: true,

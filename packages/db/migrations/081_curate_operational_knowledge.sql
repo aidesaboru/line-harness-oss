@@ -1,0 +1,117 @@
+-- Keep questionable historical segments for review while removing them from
+-- the staff-facing operational search. No source or segment rows are deleted.
+
+INSERT INTO support_manual_revisions (
+  id, manual_id, line_account_id, change_type, snapshot,
+  actor_id, actor_name, created_at
+)
+SELECT
+  'curation-20260731-' || substr(id, 19),
+  id,
+  line_account_id,
+  'operational_curation',
+  json_object(
+    'title', title,
+    'category', category,
+    'body', body,
+    'url', url,
+    'keywords', keywords,
+    'owner', owner,
+    'approvedBy', approved_by,
+    'revisedAt', revised_at,
+    'isActive', CASE WHEN is_active = 1 THEN json('true') ELSE json('false') END,
+    'question', knowledge_question,
+    'resolution', knowledge_resolution,
+    'procedure', knowledge_procedure,
+    'applicability', knowledge_applicability,
+    'cautions', knowledge_cautions,
+    'sourceBody', knowledge_source_body,
+    'knowledgeStatus', knowledge_status,
+    'qualityScore', knowledge_quality_score,
+    'reviewNote', knowledge_review_note
+  ),
+  'knowledge-curator',
+  'ナレッジ目視確認',
+  strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+FROM support_manuals
+WHERE knowledge_status = 'ready'
+  AND id IN (
+    'knowledge-segment-c4fd0053c5885b22ca4c13b98adbbddb',
+    'knowledge-segment-246f2f0692213cfc06307ed69105d733',
+    'knowledge-segment-f5e09576b7b5deef9eaf2afb4b7af319',
+    'knowledge-segment-554917d12da54f95c76508617b43b90e',
+    'knowledge-segment-43087e961586a5d991f8f789af370213',
+    'knowledge-segment-6ed50f62e5f6d5c06906a01010c9c268',
+    'knowledge-segment-fe9d7bd1bb276db1978f992d37e0c958',
+    'knowledge-segment-76b3cb0bc57c70b78a40b9775a1a22dc',
+    'knowledge-segment-45311110becf30fd8cf3882cbc361259',
+    'knowledge-segment-fc3b10632f1c0dd24be55cb5b40099d3',
+    'knowledge-segment-3616586ad204b3aa637f68a3e122d600',
+    'knowledge-segment-af7342ee22a7475c9eb2823dd8c126f2',
+    'knowledge-segment-29c57b28d483b1023d6877d18abf3a29',
+    'knowledge-segment-fcb2dc05163aa1024a4e074db94438f3',
+    'knowledge-segment-05c78e27944345e0f68890908b7ae080',
+    'knowledge-segment-5427660a62922260905de0c640bf8549',
+    'knowledge-segment-9e027d85843638515f84b7989cb9ceff',
+    'knowledge-segment-3f341010453b058a32ed0cde614e8712',
+    'knowledge-segment-23855f75992372fa0116a3daebd5755a',
+    'knowledge-segment-192a243b54cabc82eaaab265863c7cb0',
+    'knowledge-segment-cf47340745280c5d05bf46427922bcfe',
+    'knowledge-segment-505f81e16e4a1522e9b9ba30dab89e6f',
+    'knowledge-segment-41b35a9d7885189f47f5ee2cf1e3fcbc',
+    'knowledge-segment-68c1a87f271740dd228916df706649be',
+    'knowledge-segment-e4c9e30122aa6bc912be06d7abf73f1b',
+    'knowledge-segment-fce6ebf14ec571e7bfab26145b0a8ad0',
+    'knowledge-segment-a99a0b8c8e2c1b4392d7b3e08fc04eb3',
+    'knowledge-segment-8f0829f90916997c8b428b30098be875',
+    'knowledge-segment-2ec28c95b29eba9428d8d2099cd44803',
+    'knowledge-segment-a5f16878aa62f8a6c7e9f9127398f8a8',
+    'knowledge-segment-7653b1e2ecbe5db3d8bfd3f524cda7e6',
+    'knowledge-segment-9f154fdd80f1454995f3e0be26d02e00',
+    'knowledge-segment-98a720770d415713163158851e9f5a5e',
+    'knowledge-segment-dc61fa7d988b3a19634e6360336fec5e'
+  );
+
+UPDATE support_manuals
+SET knowledge_status = 'needs_review',
+    knowledge_quality_score = MIN(knowledge_quality_score, 45),
+    knowledge_review_note = '目視確認で案件固有または質問と回答の不一致を検出しました',
+    updated_by = 'knowledge-curator',
+    updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')
+WHERE knowledge_status = 'ready'
+  AND id IN (
+    'knowledge-segment-c4fd0053c5885b22ca4c13b98adbbddb',
+    'knowledge-segment-246f2f0692213cfc06307ed69105d733',
+    'knowledge-segment-f5e09576b7b5deef9eaf2afb4b7af319',
+    'knowledge-segment-554917d12da54f95c76508617b43b90e',
+    'knowledge-segment-43087e961586a5d991f8f789af370213',
+    'knowledge-segment-6ed50f62e5f6d5c06906a01010c9c268',
+    'knowledge-segment-fe9d7bd1bb276db1978f992d37e0c958',
+    'knowledge-segment-76b3cb0bc57c70b78a40b9775a1a22dc',
+    'knowledge-segment-45311110becf30fd8cf3882cbc361259',
+    'knowledge-segment-fc3b10632f1c0dd24be55cb5b40099d3',
+    'knowledge-segment-3616586ad204b3aa637f68a3e122d600',
+    'knowledge-segment-af7342ee22a7475c9eb2823dd8c126f2',
+    'knowledge-segment-29c57b28d483b1023d6877d18abf3a29',
+    'knowledge-segment-fcb2dc05163aa1024a4e074db94438f3',
+    'knowledge-segment-05c78e27944345e0f68890908b7ae080',
+    'knowledge-segment-5427660a62922260905de0c640bf8549',
+    'knowledge-segment-9e027d85843638515f84b7989cb9ceff',
+    'knowledge-segment-3f341010453b058a32ed0cde614e8712',
+    'knowledge-segment-23855f75992372fa0116a3daebd5755a',
+    'knowledge-segment-192a243b54cabc82eaaab265863c7cb0',
+    'knowledge-segment-cf47340745280c5d05bf46427922bcfe',
+    'knowledge-segment-505f81e16e4a1522e9b9ba30dab89e6f',
+    'knowledge-segment-41b35a9d7885189f47f5ee2cf1e3fcbc',
+    'knowledge-segment-68c1a87f271740dd228916df706649be',
+    'knowledge-segment-e4c9e30122aa6bc912be06d7abf73f1b',
+    'knowledge-segment-fce6ebf14ec571e7bfab26145b0a8ad0',
+    'knowledge-segment-a99a0b8c8e2c1b4392d7b3e08fc04eb3',
+    'knowledge-segment-8f0829f90916997c8b428b30098be875',
+    'knowledge-segment-2ec28c95b29eba9428d8d2099cd44803',
+    'knowledge-segment-a5f16878aa62f8a6c7e9f9127398f8a8',
+    'knowledge-segment-7653b1e2ecbe5db3d8bfd3f524cda7e6',
+    'knowledge-segment-9f154fdd80f1454995f3e0be26d02e00',
+    'knowledge-segment-98a720770d415713163158851e9f5a5e',
+    'knowledge-segment-dc61fa7d988b3a19634e6360336fec5e'
+  );

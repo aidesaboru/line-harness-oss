@@ -100,7 +100,6 @@ export default function ManualsPage() {
     try {
       const res = await api.support.manuals.list({
         accountId: selectedAccountId,
-        category: category === 'all' ? undefined : category,
         q: appliedSearch || undefined,
         active: '1',
         knowledgeStatus: canManage ? undefined : 'operational',
@@ -115,7 +114,7 @@ export default function ManualsPage() {
     } finally {
       setLoading(false)
     }
-  }, [appliedSearch, canManage, category, selectedAccountId, staffReady])
+  }, [appliedSearch, canManage, selectedAccountId, staffReady])
 
   useEffect(() => {
     void loadManuals()

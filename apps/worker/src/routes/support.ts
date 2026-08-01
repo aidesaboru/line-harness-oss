@@ -4575,7 +4575,7 @@ support.get('/api/support/manuals', async (c) => {
            knowledge_quality_score DESC,
            revised_at DESC,
            title ASC
-         LIMIT 500`,
+         LIMIT 1000`,
       )
       .bind(...whereBinds, ...rankBinds)
       .all<SupportManualRow>();

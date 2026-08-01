@@ -3284,6 +3284,7 @@ describe('support CRM routes', () => {
 
     const search = calls.find((call) => call.method === 'all' && call.sql.includes('FROM support_manuals'));
     expect(search?.sql).toContain("knowledge_status IN ('verified', 'ready')");
+    expect(search?.sql).toContain('LIMIT 1000');
   });
 
   test('requires an account scope for knowledge and records copied answers append-only', async () => {

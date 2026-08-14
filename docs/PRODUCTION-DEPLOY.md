@@ -29,6 +29,8 @@ export PRODUCTION_SMOKE_API_KEY='Secret Managerなどから取得した値'
 
 GitHub Actionsではバックアップ先を`RUNNER_TEMP`配下へ限定し、`GITHUB_WORKSPACE`配下への保存を拒否します。このバックアップを平文のGitHub artifactとしてアップロードしてはいけません。長期保管が必要な場合は、リポジトリ外の暗号化された保管先を別途用意してください。
 
+日次の独立バックアップは[ D1日次暗号化バックアップ ](./D1-BACKUP-RESTORE.md)の手順で実行します。平文SQLはrunnerの一時領域だけで扱い、復元確認に成功した暗号化ファイルだけを保存します。
+
 ## 安全スクリプトの順序
 
 1. Workerをローカルでビルド

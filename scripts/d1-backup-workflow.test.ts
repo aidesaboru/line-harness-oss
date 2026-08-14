@@ -22,7 +22,7 @@ describe('daily encrypted D1 backup workflow safety', () => {
     expect(workflow).not.toContain('contents: write');
   });
 
-  it('exports production in read-only mode and restores only to an ephemeral SQLite file', () => {
+  it('does not restore to production and restores only to an ephemeral SQLite file', () => {
     const exportPosition = position('wrangler d1 export');
     const restorePosition = position('sqlite3 "$restored_db" < "$restored_sql"');
     expect(workflow.slice(exportPosition, position('test -s "$plain_backup"'))).toContain('--remote');

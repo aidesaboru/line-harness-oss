@@ -1,6 +1,8 @@
 # D1日次暗号化バックアップ
 
-本番D1は毎日03:17 JSTにGitHub Actionsから読み取り専用でエクスポートします。SQLはrunnerの一時領域だけに置き、AES-256-GCMで暗号化してから削除します。GitHubへ保存するのは暗号化済みファイルと個人情報を含まない検証結果だけです。
+本番D1は毎日03:17 JSTにGitHub Actionsからレコードを変更せずにエクスポートします。SQLはrunnerの一時領域だけに置き、AES-256-GCMで暗号化してから削除します。GitHubへ保存するのは暗号化済みファイルと個人情報を含まない検証結果だけです。
+
+Cloudflareの正式なD1エクスポートAPIは`D1 Write`権限を要求します。ワークフローが実行する本番操作は件数確認の`SELECT`とエクスポートだけで、`INSERT`、`UPDATE`、`DELETE`、インポート、本番復元は実行しません。エクスポート中はD1への問い合わせが短時間待機する可能性があるため、低利用時間帯に実行します。
 
 ## 毎回行う復元確認
 
@@ -24,7 +26,7 @@ Repository Variablesへ次を設定します。
 
 Repository Secretsへ次を設定します。値をIssue、Slack、コミットへ貼らないでください。
 
-- `CLOUDFLARE_API_TOKEN`: 対象アカウントだけに限定した`D1 Read`権限のトークン
+- `CLOUDFLARE_API_TOKEN`: 対象アカウントだけに限定した`D1 Write`権限のバックアップ専用トークン
 - `D1_BACKUP_ENCRYPTION_KEY`: 32バイトのランダム値をBase64化した暗号鍵
 
 暗号鍵を失うと保存済みバックアップを復号できません。GitHub Secretsとは別の承認済みSecret Managerにも同じ鍵を保管してください。

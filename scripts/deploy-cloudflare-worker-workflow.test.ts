@@ -6,6 +6,12 @@ const workflow = readFileSync(
   resolve('.github/workflows/deploy-cloudflare-worker.yml'),
   'utf8',
 );
+const rootPackage = JSON.parse(readFileSync(resolve('package.json'), 'utf8')) as {
+  devDependencies?: Record<string, string>;
+};
+const workerPackage = JSON.parse(readFileSync(resolve('apps/worker/package.json'), 'utf8')) as {
+  devDependencies?: Record<string, string>;
+};
 
 function position(text: string): number {
   const index = workflow.indexOf(text);
@@ -20,6 +26,13 @@ function positionAfter(text: string, start: number): number {
 }
 
 describe('production Worker deploy workflow safety', () => {
+  it('pins one tested Wrangler version for build and production operations', () => {
+    const rootWrangler = rootPackage.devDependencies?.wrangler;
+    const workerWrangler = workerPackage.devDependencies?.wrangler;
+    expect(rootWrangler).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(workerWrangler).toBe(rootWrangler);
+  });
+
   it('serializes deploys without cancelling an in-flight migration', () => {
     expect(workflow).toMatch(/concurrency:[\s\S]*cancel-in-progress: false/);
   });

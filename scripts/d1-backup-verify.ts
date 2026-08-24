@@ -8,8 +8,30 @@ import { argv, stderr, stdout } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { CORE_TABLES, type CoreTableName } from './production-deploy.js';
 
+// This is the compatibility baseline that already existed before the guarded
+// migrations introduced newer protected tables. New protected tables are
+// counted whenever they exist in the source snapshot, but must not prevent a
+// pre-migration backup from running.
 export const BACKUP_REQUIRED_TABLES = [
-  ...CORE_TABLES,
+  'line_accounts',
+  'friends',
+  'messages_log',
+  'chats',
+  'support_cases',
+  'support_case_events',
+  'support_escalations',
+  'support_internal_messages',
+  'chat_internal_messages',
+  'internal_message_events',
+  'internal_message_bookmark_events',
+  'internal_tasks',
+  'internal_task_events',
+  'support_case_attachments',
+  'chat_confirmation_events',
+  'support_case_followup_reminders',
+  'support_case_followup_reminder_events',
+  'line_conversations',
+  'line_conversation_messages',
   'internal_conversations',
   'internal_conversation_reads',
   'internal_message_mentions',
@@ -24,17 +46,26 @@ type WranglerQuery = {
 
 export type BackupSnapshot = {
   tableNames: string[];
-  protectedCounts: Record<CoreTableName, number>;
+  protectedCounts: Partial<Record<CoreTableName, number>>;
 };
 
-export function buildBackupVerificationSql(): string {
+export function buildBackupTableListSql(): string {
   return [
     'SELECT',
-    "  (SELECT json_group_array(name) FROM (SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name)) AS table_names_json,",
-    ...CORE_TABLES.map((table, index) => (
-      `  (SELECT COUNT(*) FROM "${table}") AS count_${table}${index === CORE_TABLES.length - 1 ? ';' : ','}`
-    )),
+    "  (SELECT json_group_array(name) FROM (SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name)) AS table_names_json;",
   ].join('\n');
+}
+
+export function buildBackupVerificationSql(sourceTableNames: readonly string[]): string {
+  const sourceTables = new Set(sourceTableNames);
+  const protectedTables = CORE_TABLES.filter((table) => sourceTables.has(table));
+  const projections = [
+    "(SELECT json_group_array(name) FROM (SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name)) AS table_names_json",
+    ...protectedTables.map((table) => (
+      `(SELECT COUNT(*) FROM "${table}") AS count_${table}`
+    )),
+  ];
+  return `SELECT\n${projections.map((projection) => `  ${projection}`).join(',\n')};`;
 }
 
 function queryRows(payload: unknown): Array<Record<string, unknown>> {
@@ -54,7 +85,7 @@ function queryRows(payload: unknown): Array<Record<string, unknown>> {
   return rows;
 }
 
-export function parseBackupSnapshot(payload: unknown): BackupSnapshot {
+function parseTableNames(payload: unknown): string[] {
   const rows = queryRows(payload);
   if (rows.length !== 1) throw new Error('バックアップ検証結果が1行ではありません');
   const row = rows[0];
@@ -77,8 +108,19 @@ export function parseBackupSnapshot(payload: unknown): BackupSnapshot {
     throw new Error('バックアップ対象テーブルの一覧に重複があります');
   }
 
+  return [...tableNames].sort();
+}
+
+export function parseBackupSnapshot(payload: unknown): BackupSnapshot {
+  const rows = queryRows(payload);
+  if (rows.length !== 1) throw new Error('バックアップ検証結果が1行ではありません');
+  const row = rows[0];
+  const tableNames = parseTableNames(payload);
+  const sourceTables = new Set(tableNames);
+
   const counts = new Map<CoreTableName, number>();
   for (const table of CORE_TABLES) {
+    if (!sourceTables.has(table)) continue;
     const count = Number(row[`count_${table}`]);
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new Error(`重要テーブル${table}の件数が不正です`);
@@ -87,8 +129,8 @@ export function parseBackupSnapshot(payload: unknown): BackupSnapshot {
   }
 
   return {
-    tableNames: [...tableNames].sort(),
-    protectedCounts: Object.fromEntries(counts) as Record<CoreTableName, number>,
+    tableNames,
+    protectedCounts: Object.fromEntries(counts),
   };
 }
 
@@ -126,9 +168,13 @@ export function validateRestoredBackup(
   if (missingRestored.length > 0) {
     throw new Error(`復元後に不足しているテーブルがあります: ${missingRestored.join(', ')}`);
   }
-  const decreased = CORE_TABLES.flatMap((table) => {
+  const protectedSourceTables = CORE_TABLES.filter((table) => sourceTables.has(table));
+  const decreased = protectedSourceTables.flatMap((table) => {
     const before = source.protectedCounts[table];
     const after = restored.protectedCounts[table];
+    if (before === undefined || after === undefined) {
+      return [`${table}: 件数を確認できません`];
+    }
     return after < before ? [`${table}: ${before} -> ${after}`] : [];
   });
   if (decreased.length > 0) {
@@ -212,22 +258,31 @@ async function verifyFromFiles(options: VerifyCliOptions): Promise<void> {
     encryptedBytes: encryptedStat.size,
     encryptedSha256,
     sourceTableCount: source.tableNames.length,
-    protectedTableCount: CORE_TABLES.length,
+    protectedTableCount: Object.keys(source.protectedCounts).length,
     restoreVerified: true,
   }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
 }
 
 function printHelp(): void {
   stdout.write('Usage:\n');
-  stdout.write('  pnpm tsx scripts/d1-backup-verify.ts sql\n');
+  stdout.write('  pnpm tsx scripts/d1-backup-verify.ts tables-sql\n');
+  stdout.write('  pnpm tsx scripts/d1-backup-verify.ts sql --table-list FILE\n');
   stdout.write('  pnpm tsx scripts/d1-backup-verify.ts verify --source FILE --restored FILE --integrity FILE --foreign-key FILE --encrypted FILE --receipt FILE\n');
 }
 
 async function main(rawArgs: string[]): Promise<void> {
   const [command, ...rest] = rawArgs;
+  if (command === 'tables-sql') {
+    if (rest.length > 0) throw new Error('tables-sqlに追加引数は指定できません');
+    stdout.write(`${buildBackupTableListSql()}\n`);
+    return;
+  }
   if (command === 'sql') {
-    if (rest.length > 0) throw new Error('sqlに追加引数は指定できません');
-    stdout.write(`${buildBackupVerificationSql()}\n`);
+    if (rest.length !== 2 || rest[0] !== '--table-list') {
+      throw new Error('sqlには--table-list FILEが必要です');
+    }
+    const tableListPayload = JSON.parse(await readFile(rest[1], 'utf8')) as unknown;
+    stdout.write(`${buildBackupVerificationSql(parseTableNames(tableListPayload))}\n`);
     return;
   }
   if (command === 'verify') {

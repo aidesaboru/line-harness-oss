@@ -4,6 +4,7 @@ import {
   BACKUP_REQUIRED_TABLES,
   assertForeignKeyCheck,
   assertIntegrityCheck,
+  buildBackupTableListSql,
   buildBackupVerificationSql,
   parseBackupSnapshot,
   validateRestoredBackup,
@@ -18,7 +19,7 @@ function queryPayload(options: {
   return [{
     results: [{
       table_names_json: JSON.stringify(tables),
-      ...Object.fromEntries(CORE_TABLES.map((table, index) => [
+      ...Object.fromEntries(CORE_TABLES.filter((table) => tables.includes(table)).map((table, index) => [
         `count_${table}`,
         index + 10 + offset,
       ])),
@@ -28,12 +29,32 @@ function queryPayload(options: {
 
 describe('D1 backup restore verification', () => {
   it('builds read-only SQL for all protected tables', () => {
-    const sql = buildBackupVerificationSql();
+    const sql = buildBackupVerificationSql(CORE_TABLES);
     expect(sql).toContain('FROM sqlite_master');
     CORE_TABLES.forEach((table) => {
       expect(sql).toContain(`COUNT(*) FROM "${table}") AS count_${table}`);
     });
     expect(sql).not.toMatch(/\b(?:DELETE|UPDATE|DROP|ALTER|INSERT)\b/i);
+  });
+
+  it('builds a table-list query without referencing tables that may not exist yet', () => {
+    const sql = buildBackupTableListSql();
+    expect(sql).toContain('FROM sqlite_master');
+    expect(sql).not.toContain('COUNT(*) FROM');
+    expect(sql).not.toMatch(/\b(?:DELETE|UPDATE|DROP|ALTER|INSERT)\b/i);
+  });
+
+  it('counts only protected tables that exist before pending migrations', () => {
+    const preMigrationTables = [...BACKUP_REQUIRED_TABLES];
+    const sql = buildBackupVerificationSql(preMigrationTables);
+    BACKUP_REQUIRED_TABLES.forEach((table) => {
+      expect(sql).toContain(`COUNT(*) FROM "${table}"`);
+    });
+    expect(sql).not.toContain('COUNT(*) FROM "staff_member_events"');
+
+    const source = parseBackupSnapshot(queryPayload({ tables: preMigrationTables }));
+    const restored = parseBackupSnapshot(queryPayload({ tables: preMigrationTables }));
+    expect(() => validateRestoredBackup(source, restored)).not.toThrow();
   });
 
   it('accepts a complete restore whose protected counts did not decrease', () => {

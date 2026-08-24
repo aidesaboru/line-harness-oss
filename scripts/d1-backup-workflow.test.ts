@@ -67,5 +67,10 @@ describe('daily encrypted D1 backup workflow safety', () => {
     expect(workflow).toContain('without exposing its temporary download URL');
     expect(workflow).toContain('< "$restored_sql" > "$restore_log" 2>&1');
     expect(workflow).toContain('without exposing SQL contents');
+    expect(workflow).toContain('d1-backup-verify.ts tables-sql');
+    expect(workflow).toContain('d1-backup-verify.ts sql --table-list "$source_table_list"');
+    expect(workflow).toContain('> "$source_table_list" 2> "$source_table_list_log"');
+    expect(workflow).toContain('> "$source_snapshot" 2> "$source_snapshot_log"');
+    expect(workflow).toContain('without exposing database details');
   });
 });

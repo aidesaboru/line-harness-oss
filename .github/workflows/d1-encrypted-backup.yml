@@ -85,11 +85,27 @@ jobs:
           }, null, 2) + '\n', { mode: 0o600 });
           NODE
 
-          verification_sql="$(pnpm tsx scripts/d1-backup-verify.ts sql)"
-          source_snapshot="$plain_dir/source-snapshot.json"
-          pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" \
+          table_list_sql="$(pnpm tsx scripts/d1-backup-verify.ts tables-sql)"
+          source_table_list="$plain_dir/source-table-list.json"
+          source_table_list_log="$plain_dir/source-table-list.log"
+          if ! pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" \
             --config "$wrangler_config" --remote --yes --json \
-            --command "$verification_sql" > "$source_snapshot"
+            --command "$table_list_sql" > "$source_table_list" 2> "$source_table_list_log"; then
+            echo 'D1 source table verification failed without exposing database details' >&2
+            exit 1
+          fi
+          rm -f -- "$source_table_list_log"
+
+          verification_sql="$(pnpm tsx scripts/d1-backup-verify.ts sql --table-list "$source_table_list")"
+          source_snapshot="$plain_dir/source-snapshot.json"
+          source_snapshot_log="$plain_dir/source-snapshot.log"
+          if ! pnpm exec wrangler d1 execute "$D1_DATABASE_NAME" \
+            --config "$wrangler_config" --remote --yes --json \
+            --command "$verification_sql" > "$source_snapshot" 2> "$source_snapshot_log"; then
+            echo 'D1 protected row verification failed without exposing database details' >&2
+            exit 1
+          fi
+          rm -f -- "$source_snapshot_log"
 
           plain_backup="$plain_dir/backup.sql"
           encrypted_backup="$artifact_dir/backup.sql.enc"

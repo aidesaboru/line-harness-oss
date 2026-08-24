@@ -39,29 +39,11 @@ export type MigrationPlan = {
   pendingNames: string[];
 };
 
-export const CORE_TABLES = [
-  'line_accounts',
-  'friends',
-  'messages_log',
-  'chats',
-  'support_cases',
-  'support_case_events',
-  'support_escalations',
-  'support_internal_messages',
-  'chat_internal_messages',
-  'internal_message_events',
-  'internal_message_bookmark_events',
-  'internal_tasks',
-  'internal_task_events',
-  'support_case_attachments',
-  'chat_confirmation_events',
-  'support_case_followup_reminders',
-  'support_case_followup_reminder_events',
-  'line_conversations',
-  'line_conversation_messages',
-] as const;
+export const CORE_TABLES = Object.freeze(
+  JSON.parse(readFileSync(join(ROOT_DIR, 'scripts/protected-d1-tables.json'), 'utf8')) as string[],
+) as readonly string[];
 
-export type CoreTableName = typeof CORE_TABLES[number];
+export type CoreTableName = string;
 export type CoreTableCounts = Record<CoreTableName, number>;
 
 export type CoreTableDecrease = {
@@ -782,7 +764,9 @@ export function createProductionDependencies(
       }
     },
     deployWorker: async () => {
-      run('corepack', ['pnpm', '--filter', 'worker', 'deploy:raw']);
+      throw new Error(
+        '直接CLIからのWorker本番反映は無効です。GitHub Actions「Deploy Cloudflare Worker」を使用してください',
+      );
     },
     smokeWorker: async () => authenticatedSmokeTest(config),
     rollbackWorker: async (versionId) => {
@@ -803,14 +787,8 @@ export function createProductionDependencies(
 
 function printHelp(): void {
   stdout.write(`L-Link production Worker deploy\n\n`);
-  stdout.write(`Usage: corepack pnpm deploy:worker\n\n`);
-  stdout.write(`Required secret environment variable:\n`);
-  stdout.write(`  PRODUCTION_SMOKE_API_KEY (or SUPPORT_CRM_OWNER_API_KEY)\n\n`);
-  stdout.write(`Optional:\n`);
-  stdout.write(`  PRODUCTION_WORKER_URL\n`);
-  stdout.write(`  PRODUCTION_D1_BACKUP_DIR\n`);
-  stdout.write(`  PRODUCTION_SMOKE_ATTEMPTS\n`);
-  stdout.write(`  PRODUCTION_SMOKE_DELAY_MS\n`);
+  stdout.write(`Direct CLI deployment is disabled.\n`);
+  stdout.write(`Use the guarded GitHub Actions workflow: Deploy Cloudflare Worker.\n`);
 }
 
 async function main(rawArgs: string[]): Promise<void> {
@@ -821,15 +799,9 @@ async function main(rawArgs: string[]): Promise<void> {
   if (rawArgs.length > 0) {
     throw new Error(`未対応の引数です: ${rawArgs.join(' ')}`);
   }
-  const config = resolveProductionDeployConfig(env, {
-    rootDir: ROOT_DIR,
-    homeDir: homedir(),
-    wranglerConfigPath: DEFAULT_WRANGLER_CONFIG,
-  });
-  const migrations = loadMigrationFiles(DEFAULT_MIGRATIONS_DIR);
-  const dependencies = createProductionDependencies(config, env);
-  await runProductionDeployment(config, migrations, dependencies);
-  stdout.write('本番Workerの安全デプロイが完了しました\n');
+  throw new Error(
+    '直接CLIからの本番反映は無効です。検証済みの単一成果物、暗号化バックアップ、rollbackを使用するGitHub Actions「Deploy Cloudflare Worker」から実行してください',
+  );
 }
 
 const isCliEntry = argv[1]

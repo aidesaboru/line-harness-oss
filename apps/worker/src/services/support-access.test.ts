@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import {
+  supportCaseReadVisibilitySql,
+  supportCaseSharedVisibilitySql,
   supportCaseVisibilitySql,
   supportEscalationVisibilitySql,
   supportFriendVisibilitySql,
   supportStaffAssignmentName,
+  isSecondaryOnlySupportStaff,
   type SupportAccessStaff,
 } from './support-access.js';
 
@@ -29,22 +32,58 @@ describe('support access SQL helpers', () => {
     const scope = supportCaseVisibilitySql(staff, 'case_alias', 'escalation_alias');
 
     expect(scope.sql).toContain('case_alias.created_by = ?');
-    expect(scope.sql).toContain('case_alias.primary_assignee = ?');
+    expect(scope.sql).toContain('case_alias.primary_assignee_staff_id')
+    expect(scope.sql).toContain('case_alias.primary_assignee_staff_id IS NULL')
+    expect(scope.sql).toContain('SELECT COUNT(*) FROM staff_members')
     expect(scope.sql).toContain('FROM support_escalations escalation_alias');
-    expect(scope.binds).toEqual(['staff-1', '田島_%', '田島_%', 'staff-1', '田島_%']);
+    expect(scope.binds).toEqual([
+      'staff-1', 'staff-1', 'staff-1',
+      '田島_%', '田島_%', '田島_%', '田島_%',
+      'staff-1', '田島_%', '田島_%',
+    ]);
+  });
+
+  test('ticket sharing is added only to case read scope', () => {
+    const direct = supportCaseVisibilitySql(staff, 'sc', 'se');
+    const shared = supportCaseSharedVisibilitySql(staff, 'sc', 'se_shared');
+    const read = supportCaseReadVisibilitySql(staff, 'sc', 'se');
+    const friend = supportFriendVisibilitySql(staff, 'f.id');
+
+    expect(direct.sql).not.toContain('staff_ticket_shares');
+    expect(shared.sql).toContain('FROM staff_ticket_shares ticket_share');
+    expect(shared.sql).toContain('ticket_share.removed_at IS NULL');
+    expect(shared.sql).toContain('shared_staff.role = \'staff\'');
+    expect(shared.binds).toEqual(['staff-1', 'staff-1', 'staff-1']);
+    expect(read.sql).toContain('staff_ticket_shares');
+    expect(read.binds).toEqual([
+      'staff-1', 'staff-1', 'staff-1',
+      '田島_%', '田島_%', '田島_%', '田島_%',
+      'staff-1', '田島_%', '田島_%',
+      'staff-1', 'staff-1', 'staff-1',
+    ]);
+    expect(friend.sql).not.toContain('staff_ticket_shares');
   });
 
   test('staff escalation and friend scopes reuse the same case visibility guard', () => {
     const escalationScope = supportEscalationVisibilitySql(staff, 'se', 'sc');
     const friendScope = supportFriendVisibilitySql(staff, 'f.id');
 
-    expect(escalationScope.sql).toContain('se.assignee = ?');
+    expect(escalationScope.sql).toContain('se.assignee_staff_id = ?');
     expect(escalationScope.sql).toContain('FROM support_cases sc');
-    expect(escalationScope.binds).toEqual(['staff-1', '田島_%', 'staff-1', '田島_%', '田島_%', 'staff-1', '田島_%']);
+    expect(escalationScope.binds).toEqual([
+      'staff-1', '田島_%', '田島_%',
+      'staff-1', 'staff-1', 'staff-1',
+      '田島_%', '田島_%', '田島_%', '田島_%',
+      'staff-1', '田島_%', '田島_%',
+    ]);
 
     expect(friendScope.sql).toContain('sc_friend_scope.friend_id = f.id');
     expect(friendScope.sql).toContain('FROM support_cases sc_friend_scope');
-    expect(friendScope.binds).toEqual(['staff-1', '田島_%', '田島_%', 'staff-1', '田島_%']);
+    expect(friendScope.binds).toEqual([
+      'staff-1', 'staff-1', 'staff-1',
+      '田島_%', '田島_%', '田島_%', '田島_%',
+      'staff-1', '田島_%', '田島_%',
+    ]);
   });
 
   test('secondary staff only sees their own secondary assignments and no friends', () => {
@@ -53,17 +92,40 @@ describe('support access SQL helpers', () => {
     const escalationScope = supportEscalationVisibilitySql(secondary, 'se', 'sc');
     const friendScope = supportFriendVisibilitySql(secondary, 'f.id');
 
-    expect(caseScope.sql).toContain('sc.escalation_assignee = ?');
+    expect(caseScope.sql).toContain('sc.escalation_assignee_staff_id');
+    expect(caseScope.sql).toContain('sc.escalation_assignee_staff_id IS NULL');
+    expect(caseScope.sql).toContain('SELECT COUNT(*) FROM staff_members');
     expect(caseScope.sql).toContain('FROM support_escalations se');
     expect(caseScope.sql).not.toContain('sc.created_by = ?');
     expect(caseScope.sql).not.toContain('sc.primary_assignee = ?');
-    expect(caseScope.binds).toEqual(['松山', 'secondary-1', '松山']);
+    expect(caseScope.binds).toEqual(['secondary-1', '松山', '松山', 'secondary-1', '松山', '松山']);
 
-    expect(escalationScope.sql).toContain('se.assignee = ?');
+    expect(escalationScope.sql).toContain('se.assignee_staff_id = ?');
+    expect(escalationScope.sql).toContain('se.assignee_staff_id IS NULL');
     expect(escalationScope.sql).not.toContain('FROM support_cases sc');
-    expect(escalationScope.binds).toEqual(['secondary-1', '松山']);
+    expect(escalationScope.binds).toEqual(['secondary-1', '松山', '松山']);
 
     expect(friendScope).toEqual({ sql: '(0 = 1)', binds: [] });
+  });
+
+  test('secondary responder remains limited to its own secondary assignments', () => {
+    const secondaryResponder: SupportAccessStaff = {
+      id: 'secondary-1',
+      name: '松山',
+      role: 'secondary',
+      secondaryCanRespond: true,
+    };
+
+    const caseScope = supportCaseVisibilitySql(secondaryResponder, 'sc', 'se');
+    expect(caseScope.sql).not.toContain('sc.created_by = ?');
+    expect(caseScope.sql).not.toContain('sc.primary_assignee_staff_id');
+    expect(caseScope.sql).toContain('sc.escalation_assignee_staff_id = ?');
+    expect(caseScope.binds).toEqual(['secondary-1', '松山', '松山', 'secondary-1', '松山', '松山']);
+    expect(isSecondaryOnlySupportStaff(secondaryResponder)).toBe(true);
+    expect(supportFriendVisibilitySql(secondaryResponder, 'f.id')).toEqual({
+      sql: '(0 = 1)',
+      binds: [],
+    });
   });
 
   test('blank staff names do not widen visibility to every assignee', () => {
@@ -88,8 +150,10 @@ describe('support access SQL helpers', () => {
     const escalationScope = supportEscalationVisibilitySql(nameless, 'se', 'sc');
     const friendScope = supportFriendVisibilitySql(nameless, 'f.id');
 
-    expect(caseScope).toEqual({ sql: '(0 = 1)', binds: [] });
-    expect(escalationScope).toEqual({ sql: '(0 = 1)', binds: [] });
+    expect(caseScope.sql).toContain('sc.escalation_assignee_staff_id = ?');
+    expect(caseScope.binds).toEqual(['secondary-1', 'secondary-1']);
+    expect(escalationScope.sql).toContain('se.assignee_staff_id = ?');
+    expect(escalationScope.binds).toEqual(['secondary-1']);
     expect(friendScope).toEqual({ sql: '(0 = 1)', binds: [] });
   });
 });

@@ -42,11 +42,17 @@ export interface SupportRolePermissions {
   canLinkManuals: boolean
 }
 
-export function getSupportRolePermissions(role: SupportStaffRole): SupportRolePermissions {
+export function getSupportRolePermissions(
+  role: SupportStaffRole,
+  secondaryCanRespond = false,
+): SupportRolePermissions {
   const canManageRouting = role === 'owner' || role === 'admin'
-  const canUseSupport = role === 'owner' || role === 'admin' || role === 'staff'
+  const canUseSupport = role === 'owner'
+    || role === 'admin'
+    || role === 'staff'
+    || (role === 'secondary' && secondaryCanRespond)
   return {
-    canCreateCases: canUseSupport,
+    canCreateCases: role !== 'secondary' && canUseSupport,
     canEditCaseRouting: canManageRouting,
     canManageManuals: canManageRouting,
     canEditCaseWork: canUseSupport,
@@ -324,6 +330,7 @@ export const eventTypeLabel: Record<string, string> = {
   internal_chat: '社内チャット',
   internal_thread_reply: '社内スレッド返信',
   customer_reply_sent: '顧客返信送信',
+  slack_ticket_created_deleted: 'Slack通知削除',
   note: 'メモ',
 }
 

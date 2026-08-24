@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buildStaffCreatePayload, staffOperationFailureMessage } from './staff-form'
+import {
+  buildStaffCreatePayload,
+  staffAccessSelection,
+  staffAccessUpdatePayload,
+  staffOperationFailureMessage,
+} from './staff-form'
 
 describe('staff create form', () => {
   it('trims the staff name and email before sending to the API', () => {
@@ -13,6 +18,7 @@ describe('staff create form', () => {
         name: '田島',
         email: 'tajima@example.com',
         role: 'staff',
+        secondaryCanRespond: false,
       },
     })
   })
@@ -21,12 +27,13 @@ describe('staff create form', () => {
     expect(buildStaffCreatePayload({
       name: '管理者',
       email: '   ',
-      role: 'secondary',
+      role: 'secondary_viewer',
     })).toEqual({
       ok: true,
       payload: {
         name: '管理者',
         role: 'secondary',
+        secondaryCanRespond: false,
       },
     })
   })
@@ -40,6 +47,21 @@ describe('staff create form', () => {
       ok: false,
       error: 'スタッフ名を入力してください',
     })
+  })
+})
+
+describe('staff access selection', () => {
+  it('separates secondary viewer and responder without adding a new DB role', () => {
+    expect(staffAccessUpdatePayload('secondary_viewer')).toEqual({
+      role: 'secondary',
+      secondaryCanRespond: false,
+    })
+    expect(staffAccessUpdatePayload('secondary_responder')).toEqual({
+      role: 'secondary',
+      secondaryCanRespond: true,
+    })
+    expect(staffAccessSelection('secondary', true)).toBe('secondary_responder')
+    expect(staffAccessSelection('secondary', false)).toBe('secondary_viewer')
   })
 })
 

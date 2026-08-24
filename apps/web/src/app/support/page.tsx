@@ -11,6 +11,7 @@ import {
   type SupportSummary,
 } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
+import { isWorkspaceSnapshotCurrent, type WorkspaceSnapshot } from '@/lib/workspace-response'
 import {
   cacheStaffSession,
   clearStaffIdentityCache,
@@ -93,6 +94,7 @@ export default function SupportPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [reminderSaving, setReminderSaving] = useState(false)
+  const [slackNotificationDeleting, setSlackNotificationDeleting] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const [statusFilter, setStatusFilter] = useState('all')
@@ -103,6 +105,7 @@ export default function SupportPage() {
   const [appliedSearch, setAppliedSearch] = useState('')
   const [staffName, setStaffName] = useState('')
   const [staffRole, setStaffRole] = useState('')
+  const [secondaryCanRespond, setSecondaryCanRespond] = useState(false)
   const [staffIdentityReady, setStaffIdentityReady] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [createInitialFriendId, setCreateInitialFriendId] = useState<string | null>(null)
@@ -126,7 +129,45 @@ export default function SupportPage() {
   const casesRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
   const detailIdRef = useRef<string | null>(null)
+  const accountScopeRef = useRef<string | null>(selectedAccountId)
+  const currentAccountIdRef = useRef<string | null>(selectedAccountId)
+  currentAccountIdRef.current = selectedAccountId
+  const workspaceVersionRef = useRef(0)
   useEffect(() => { detailIdRef.current = detail?.id ?? null }, [detail?.id])
+
+  const captureWorkspace = useCallback((): WorkspaceSnapshot => ({
+    accountId: selectedAccountId,
+    version: workspaceVersionRef.current,
+  }), [selectedAccountId])
+  const isCurrentWorkspace = useCallback((snapshot: WorkspaceSnapshot) => isWorkspaceSnapshotCurrent(
+    snapshot,
+    { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+  ), [])
+
+  useEffect(() => {
+    if (accountScopeRef.current === selectedAccountId) return
+    accountScopeRef.current = selectedAccountId
+    workspaceVersionRef.current += 1
+    casesRequestRef.current += 1
+    detailRequestRef.current += 1
+    setSummary(null)
+    setCases([])
+    setSelectedCaseId(null)
+    setDetail(null)
+    setCaseForm(emptyCaseForm)
+    setSavedForm(emptyCaseForm)
+    setChats([])
+    setChatOptionsError(null)
+    setLoadError(null)
+    setMobileCaseOpen(false)
+    setCreateOpen(false)
+    setCreateInitialFriendId(null)
+    setLoading(Boolean(selectedAccountId))
+    setDetailLoading(false)
+    setSaving(false)
+    setReminderSaving(false)
+    setSlackNotificationDeleting(false)
+  }, [selectedAccountId])
 
   const visibleChats = useMemo(() => chats.slice(0, 80), [chats])
   const createPanelChats = useMemo(() => {
@@ -169,7 +210,7 @@ export default function SupportPage() {
     staffIdentityReady,
     identityIssue,
   })
-  const controlsDisabled = !staffIdentityReady || identityUnavailable || saving || reminderSaving || loading || detailLoading
+  const controlsDisabled = !staffIdentityReady || identityUnavailable || saving || reminderSaving || slackNotificationDeleting || loading || detailLoading
   const busyMessage = (() => {
     if (!staffIdentityReady) return 'ログイン権限を確認中です。'
     if (saving) return '保存中です。完了までお待ちください。'
@@ -195,10 +236,12 @@ export default function SupportPage() {
     return Array.from(names).sort()
   }, [staffNames, summary])
 
-  const permissions = getSupportRolePermissions(verifiedStaffRole)
+  const permissions = getSupportRolePermissions(verifiedStaffRole, secondaryCanRespond)
   const canCreateCases = permissions.canCreateCases
   const canEditCaseRouting = permissions.canEditCaseRouting
   const canEditCaseWork = permissions.canEditCaseWork
+  const canDeleteSlackNotification = verifiedStaffRole === 'owner' || verifiedStaffRole === 'admin'
+  const canEditSelectedCase = detail?.accessMode !== 'shared_proxy' && detail?.canEditCaseWork !== false
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
@@ -214,6 +257,7 @@ export default function SupportPage() {
         if (!res.success) {
           setStaffName('')
           setStaffRole('')
+          setSecondaryCanRespond(false)
           setStaffIdentityReady(true)
           clearStaffIdentityCache()
           return
@@ -222,6 +266,7 @@ export default function SupportPage() {
         const nextRole = res.data.role || ''
         setStaffName(nextName)
         setStaffRole(nextRole)
+        setSecondaryCanRespond(Boolean(res.data.secondaryCanRespond))
         setStaffIdentityReady(true)
         cacheStaffSession({ name: nextName, role: nextRole })
       })
@@ -229,6 +274,7 @@ export default function SupportPage() {
         if (!active) return
         setStaffName('')
         setStaffRole('')
+        setSecondaryCanRespond(false)
         setStaffIdentityReady(true)
         clearStaffIdentityCache()
       })
@@ -265,13 +311,14 @@ export default function SupportPage() {
   const loadCases = useCallback(async () => {
     if (!supportDataReady || !selectedAccountId) return
     const requestId = ++casesRequestRef.current
+    const requestAccountId = selectedAccountId
     let summaryRes: Awaited<ReturnType<typeof api.support.summary>>
     let casesRes: Awaited<ReturnType<typeof api.support.cases.list>>
     try {
       [summaryRes, casesRes] = await Promise.all([
-        api.support.summary({ accountId: selectedAccountId }),
+        api.support.summary({ accountId: requestAccountId }),
         loadAllSupportCases({
-          accountId: selectedAccountId,
+          accountId: requestAccountId,
           status: statusFilter === 'all' ? undefined : statusFilter,
           queue: queueFilter !== 'all'
               ? queueFilter
@@ -282,10 +329,10 @@ export default function SupportPage() {
         }),
       ])
     } catch (err) {
-      if (requestId !== casesRequestRef.current) return
+      if (requestId !== casesRequestRef.current || accountScopeRef.current !== requestAccountId) return
       throw err
     }
-    if (requestId !== casesRequestRef.current) return
+    if (requestId !== casesRequestRef.current || accountScopeRef.current !== requestAccountId) return
     if (!summaryRes.success) throw new Error(supportApiErrorMessage(summaryRes, 'チケットサマリーの読み込みに失敗しました'))
     if (!casesRes.success) throw new Error(supportApiErrorMessage(casesRes, 'チケット一覧の読み込みに失敗しました'))
     setSummary(summaryRes.data)
@@ -296,7 +343,8 @@ export default function SupportPage() {
 
   const loadDetail = useCallback(async (id: string | null, options: { silent?: boolean } = {}) => {
     const requestId = ++detailRequestRef.current
-    if (!id || !selectedAccountId || !supportDataReady) {
+    const requestAccountId = selectedAccountId
+    if (!id || !requestAccountId || !supportDataReady) {
       setDetail(null)
       setCaseForm(emptyCaseForm)
       setSavedForm(emptyCaseForm)
@@ -309,8 +357,8 @@ export default function SupportPage() {
     }
     if (!options.silent) setDetailLoading(true)
     try {
-      const res = await api.support.cases.get(id, selectedAccountId)
-      if (requestId !== detailRequestRef.current) return
+      const res = await api.support.cases.get(id, requestAccountId)
+      if (requestId !== detailRequestRef.current || accountScopeRef.current !== requestAccountId) return
       if (!res.success) {
         setDetail(null)
         setCaseForm(emptyCaseForm)
@@ -322,10 +370,14 @@ export default function SupportPage() {
       setCaseForm(form)
       setSavedForm(form)
     } catch (err) {
-      if (requestId !== detailRequestRef.current) return
+      if (requestId !== detailRequestRef.current || accountScopeRef.current !== requestAccountId) return
       throw err
     } finally {
-      if (!options.silent && requestId === detailRequestRef.current) setDetailLoading(false)
+      if (
+        !options.silent
+        && requestId === detailRequestRef.current
+        && accountScopeRef.current === requestAccountId
+      ) setDetailLoading(false)
     }
   }, [selectedAccountId, supportDataReady])
 
@@ -485,6 +537,9 @@ export default function SupportPage() {
   /** 保存。保留/完了のサーバ側必須条件は事前にチェックして分かりやすく伝える */
   const persistCase = useCallback(async (form: CaseFormState, eventBody: string): Promise<boolean> => {
     if (!detail || !selectedAccountId || saving) return false
+    const workspace = captureWorkspace()
+    const requestAccountId = selectedAccountId
+    const requestCaseId = detail.id
     const blockers = getBlockingCaseFormValidationIssues(form)
     if (blockers.length > 0) {
       notify('error', blockers.map((issue) => issue.message).join('\n'))
@@ -494,7 +549,7 @@ export default function SupportPage() {
     try {
       const secondaryAssigneesChanged = JSON.stringify([...form.escalationAssignees].sort())
         !== JSON.stringify([...savedForm.escalationAssignees].sort())
-      const res = await api.support.cases.update(detail.id, selectedAccountId, {
+      const res = await api.support.cases.update(requestCaseId, requestAccountId, {
         ...(canEditCaseRouting ? {
           title: form.title,
           category: form.category,
@@ -515,32 +570,47 @@ export default function SupportPage() {
         resolutionNote: form.resolutionNote,
         eventBody,
       })
+      if (!isCurrentWorkspace(workspace)) return false
       if (res.success) {
         if (canEditCaseRouting && secondaryAssigneesChanged && form.status !== 'resolved') {
           const assigneeResult = await api.support.cases.setSecondaryAssignees(
-            detail.id,
-            selectedAccountId,
+            requestCaseId,
+            requestAccountId,
             form.escalationAssignees,
           )
+          if (!isCurrentWorkspace(workspace)) return false
           if (!assigneeResult.success) {
             notify('error', 'チケット本体は保存しましたが 二次対応先の更新に失敗しました')
-            await Promise.all([loadCases(), loadDetail(detail.id)])
+            await Promise.all([loadCases(), loadDetail(requestCaseId)])
             return false
           }
         }
         notify('success', 'チケットを保存しました')
-        await Promise.all([loadCases(), loadDetail(detail.id)])
+        await Promise.all([loadCases(), loadDetail(requestCaseId)])
         return true
       }
       notify('error', supportApiErrorMessage(res, 'チケットの保存に失敗しました'))
       return false
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'チケットの保存に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'チケットの保存に失敗しました'))
+      }
       return false
     } finally {
-      setSaving(false)
+      if (isCurrentWorkspace(workspace)) setSaving(false)
     }
-  }, [detail, selectedAccountId, saving, canEditCaseRouting, notify, loadCases, loadDetail, savedForm.escalationAssignees])
+  }, [
+    canEditCaseRouting,
+    captureWorkspace,
+    detail,
+    isCurrentWorkspace,
+    loadCases,
+    loadDetail,
+    notify,
+    savedForm.escalationAssignees,
+    saving,
+    selectedAccountId,
+  ])
 
   const handleSave = useCallback(() => {
     void persistCase(caseForm, '管理画面からチケット情報を更新しました')
@@ -549,8 +619,49 @@ export default function SupportPage() {
   const handleQuickStatus = useCallback(async (status: SupportCaseStatus, eventBody: string): Promise<boolean> => {
     const nextForm = { ...caseForm, status }
     setCaseForm(nextForm)
+    if (detail?.accessMode === 'shared_proxy') {
+      if (status !== 'resolved' || !detail.canCompleteCase) return false
+      if (!nextForm.resolutionNote.trim()) {
+        notify('error', '代理完了には対応結果メモが必要です')
+        return false
+      }
+      if (!selectedAccountId || saving) return false
+      const workspace = captureWorkspace()
+      const requestAccountId = selectedAccountId
+      const requestCaseId = detail.id
+      setSaving(true)
+      try {
+        const res = await api.support.cases.completeShared(requestCaseId, requestAccountId, nextForm.resolutionNote)
+        if (!isCurrentWorkspace(workspace)) return false
+        if (!res.success) {
+          notify('error', supportApiErrorMessage(res, '代理完了に失敗しました'))
+          return false
+        }
+        notify('success', '共有チケットを代理で完了しました')
+        await Promise.all([loadCases(), loadDetail(requestCaseId)])
+        return true
+      } catch (err) {
+        if (isCurrentWorkspace(workspace)) {
+          notify('error', formatSupportErrorMessage(err, '代理完了に失敗しました'))
+        }
+        return false
+      } finally {
+        if (isCurrentWorkspace(workspace)) setSaving(false)
+      }
+    }
     return persistCase(nextForm, eventBody)
-  }, [caseForm, persistCase])
+  }, [
+    captureWorkspace,
+    caseForm,
+    detail,
+    isCurrentWorkspace,
+    loadCases,
+    loadDetail,
+    notify,
+    persistCase,
+    saving,
+    selectedAccountId,
+  ])
 
   const handleDiscard = useCallback(() => {
     setCaseForm(savedForm)
@@ -558,42 +669,57 @@ export default function SupportPage() {
 
   const handleFollowUpReminderConfigure = useCallback(async (intervalDays: number) => {
     if (!detail || !selectedAccountId || reminderSaving) return
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
     setReminderSaving(true)
     try {
-      const res = await api.support.cases.configureFollowUpReminder(detail.id, selectedAccountId, intervalDays)
+      const res = await api.support.cases.configureFollowUpReminder(requestCaseId, requestAccountId, intervalDays)
+      if (!isCurrentWorkspace(workspace)) return
       if (!res.success) {
         notify('error', supportApiErrorMessage(res, 'リマインドの設定に失敗しました'))
         return
       }
       notify('success', detail.followUpReminder?.status === 'active' ? 'リマインド間隔を更新しました' : 'リマインドを開始しました')
-      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+      await Promise.all([loadCases(), loadDetail(requestCaseId, { silent: true })])
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'リマインドの設定に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'リマインドの設定に失敗しました'))
+      }
     } finally {
-      setReminderSaving(false)
+      if (isCurrentWorkspace(workspace)) setReminderSaving(false)
     }
-  }, [detail, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
+  }, [captureWorkspace, detail, isCurrentWorkspace, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
 
   const handleFollowUpReminderConfirm = useCallback(async () => {
     if (!detail || !selectedAccountId || reminderSaving) return
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
     setReminderSaving(true)
     try {
-      const res = await api.support.cases.confirmFollowUpReminder(detail.id, selectedAccountId)
+      const res = await api.support.cases.confirmFollowUpReminder(requestCaseId, requestAccountId)
+      if (!isCurrentWorkspace(workspace)) return
       if (!res.success) {
         notify('error', supportApiErrorMessage(res, '本人確認に失敗しました'))
         return
       }
       notify('success', detail.status === 'resolved' ? '本人確認を完了しました' : `確認しました 次回は${res.data.intervalDays}日後です`)
-      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+      await Promise.all([loadCases(), loadDetail(requestCaseId, { silent: true })])
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, '本人確認に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, '本人確認に失敗しました'))
+      }
     } finally {
-      setReminderSaving(false)
+      if (isCurrentWorkspace(workspace)) setReminderSaving(false)
     }
-  }, [detail, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
+  }, [captureWorkspace, detail, isCurrentWorkspace, selectedAccountId, reminderSaving, notify, loadCases, loadDetail])
 
   const handleFollowUpReminderDisable = useCallback(async () => {
     if (!detail || !selectedAccountId || reminderSaving) return
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
     const ok = await requestConfirm({
       title: '案件フォローを停止しますか？',
       message: 'これまでの設定と確認履歴は残したまま 今後の通知を停止します',
@@ -601,22 +727,67 @@ export default function SupportPage() {
       cancelLabel: '戻る',
       tone: 'warning',
     })
-    if (!ok) return
+    if (!ok || !isCurrentWorkspace(workspace)) return
     setReminderSaving(true)
     try {
-      const res = await api.support.cases.disableFollowUpReminder(detail.id, selectedAccountId)
+      const res = await api.support.cases.disableFollowUpReminder(requestCaseId, requestAccountId)
+      if (!isCurrentWorkspace(workspace)) return
       if (!res.success) {
         notify('error', supportApiErrorMessage(res, 'リマインドの停止に失敗しました'))
         return
       }
       notify('success', 'リマインドを停止しました')
-      await Promise.all([loadCases(), loadDetail(detail.id, { silent: true })])
+      await Promise.all([loadCases(), loadDetail(requestCaseId, { silent: true })])
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'リマインドの停止に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'リマインドの停止に失敗しました'))
+      }
     } finally {
-      setReminderSaving(false)
+      if (isCurrentWorkspace(workspace)) setReminderSaving(false)
     }
-  }, [detail, selectedAccountId, reminderSaving, requestConfirm, notify, loadCases, loadDetail])
+  }, [captureWorkspace, detail, isCurrentWorkspace, selectedAccountId, reminderSaving, requestConfirm, notify, loadCases, loadDetail])
+
+  const handleDeleteSlackNotification = useCallback(async () => {
+    if (!detail || !selectedAccountId || slackNotificationDeleting || !canDeleteSlackNotification) return
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
+    const ok = await requestConfirm({
+      title: 'Slack通知を削除しますか？',
+      message: 'ecオーナー通達チャンネル上の通知だけを削除します Lリンク内のチケットと対応ログと過去履歴はすべて残ります',
+      confirmLabel: 'Slack通知だけ削除',
+      cancelLabel: '戻る',
+      tone: 'danger',
+    })
+    if (!ok || !isCurrentWorkspace(workspace)) return
+    setSlackNotificationDeleting(true)
+    try {
+      const res = await api.support.cases.deleteSlackNotification(requestCaseId, requestAccountId)
+      if (!isCurrentWorkspace(workspace)) return
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, 'Slack通知の削除に失敗しました'))
+        return
+      }
+      notify('success', res.data.alreadyDeleted ? 'Slack通知は削除済みです' : 'Slack通知だけを削除しました チケットと履歴は残っています')
+      await loadDetail(requestCaseId, { silent: true })
+    } catch (err) {
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'Slack通知の削除に失敗しました'))
+      }
+    } finally {
+      if (isCurrentWorkspace(workspace)) setSlackNotificationDeleting(false)
+    }
+  }, [
+    canDeleteSlackNotification,
+    captureWorkspace,
+    detail,
+    isCurrentWorkspace,
+    loadDetail,
+    notify,
+    requestConfirm,
+    selectedAccountId,
+    slackNotificationDeleting,
+  ])
 
   const clearCreateDeepLink = useCallback(() => {
     if (typeof window === 'undefined') return
@@ -630,6 +801,8 @@ export default function SupportPage() {
 
   const handleCreate = useCallback(async (input: CreateCaseInput, attachments: File[]): Promise<boolean> => {
     if (!selectedAccountId || saving) return false
+    const workspace = captureWorkspace()
+    const requestAccountId = selectedAccountId
     const blockingIssue = getCreateCaseValidationIssues(input).find((issue) => issue.blocking)
     if (blockingIssue) {
       notify('error', blockingIssue.message)
@@ -643,12 +816,12 @@ export default function SupportPage() {
         cancelLabel: '戻る',
         tone: 'warning',
       })
-      if (!ok) return false
+      if (!ok || !isCurrentWorkspace(workspace)) return false
     }
     setSaving(true)
     try {
       const res = await api.support.cases.create({
-        lineAccountId: selectedAccountId,
+        lineAccountId: requestAccountId,
         friendId: input.friendId || null,
         title: input.title,
         category: input.category,
@@ -659,10 +832,12 @@ export default function SupportPage() {
         dueAt: fromInputDateTime(input.dueAt),
         customerSummary: input.customerSummary,
       })
+      if (!isCurrentWorkspace(workspace)) return false
       if (res.success) {
         const attachmentResults = await Promise.allSettled(
-          attachments.map((file) => api.support.cases.uploadAttachment(res.data.id, selectedAccountId, file)),
+          attachments.map((file) => api.support.cases.uploadAttachment(res.data.id, requestAccountId, file)),
         )
+        if (!isCurrentWorkspace(workspace)) return false
         const failedAttachments = attachmentResults.filter((result) => result.status === 'rejected').length
         notify(
           failedAttachments > 0 ? 'error' : 'success',
@@ -679,12 +854,23 @@ export default function SupportPage() {
       notify('error', supportApiErrorMessage(res, 'チケットの作成に失敗しました'))
       return false
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'チケットの作成に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'チケットの作成に失敗しました'))
+      }
       return false
     } finally {
-      setSaving(false)
+      if (isCurrentWorkspace(workspace)) setSaving(false)
     }
-  }, [selectedAccountId, saving, requestConfirm, notify, loadCases, clearCreateDeepLink])
+  }, [
+    captureWorkspace,
+    clearCreateDeepLink,
+    isCurrentWorkspace,
+    loadCases,
+    notify,
+    requestConfirm,
+    saving,
+    selectedAccountId,
+  ])
 
   const handleCopyReplyDraft = useCallback(async () => {
     const result = await copyText(caseForm.customerReplyDraft)
@@ -697,38 +883,48 @@ export default function SupportPage() {
 
   const handleCreateInternalMessage = useCallback(async (body: string, parentId: string | null, mentions: string[]): Promise<boolean> => {
     if (!detail || !selectedAccountId || saving) return false
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
     setSaving(true)
     try {
-      const res = await api.support.cases.addInternalMessage(detail.id, selectedAccountId, {
+      const res = await api.support.cases.addInternalMessage(requestCaseId, requestAccountId, {
         body,
         parentId,
         mentions,
       })
+      if (!isCurrentWorkspace(workspace)) return false
       if (!res.success) {
         notify('error', supportApiErrorMessage(res, '社内チャットの投稿に失敗しました'))
         return false
       }
       notify('success', parentId ? 'スレッドに返信しました' : '社内チャットに投稿しました')
-      await loadDetail(detail.id)
+      await loadDetail(requestCaseId)
       return true
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, '社内チャットの投稿に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, '社内チャットの投稿に失敗しました'))
+      }
       return false
     } finally {
-      setSaving(false)
+      if (isCurrentWorkspace(workspace)) setSaving(false)
     }
-  }, [detail, loadDetail, notify, saving, selectedAccountId])
+  }, [captureWorkspace, detail, isCurrentWorkspace, loadDetail, notify, saving, selectedAccountId])
 
   const handleInternalMessageReaction = useCallback(async (messageId: string, emoji: string): Promise<void> => {
     if (!detail || !selectedAccountId || saving) return
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
     try {
-      const res = await api.support.cases.toggleInternalReaction(detail.id, selectedAccountId, messageId, emoji)
+      const res = await api.support.cases.toggleInternalReaction(requestCaseId, requestAccountId, messageId, emoji)
+      if (!isCurrentWorkspace(workspace)) return
       if (!res.success) {
         notify('error', supportApiErrorMessage(res, 'リアクションの更新に失敗しました'))
         return
       }
       setDetail((prev) => prev
-        ? {
+        && prev.id === requestCaseId ? {
             ...prev,
             internalMessages: prev.internalMessages.map((message) => (
               message.id === res.data.id ? res.data : message
@@ -736,9 +932,11 @@ export default function SupportPage() {
           }
         : prev)
     } catch (err) {
-      notify('error', formatSupportErrorMessage(err, 'リアクションの更新に失敗しました'))
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, 'リアクションの更新に失敗しました'))
+      }
     }
-  }, [detail, notify, saving, selectedAccountId])
+  }, [captureWorkspace, detail, isCurrentWorkspace, notify, saving, selectedAccountId])
 
   const handleOpenChatWithDraft = useCallback(async () => {
     if (!detail?.friendId || !selectedAccountId) return
@@ -863,7 +1061,7 @@ export default function SupportPage() {
     return () => window.removeEventListener('keydown', handler)
   }, [displayCases, selectedCaseId, selectCase, detail, saving, persistCase, caseForm, canEditCaseWork])
 
-  if (accountLoading) {
+  if (accountLoading || accountScopeRef.current !== selectedAccountId) {
     return <div className="p-6 text-sm text-gray-500">読み込み中…</div>
   }
 
@@ -951,7 +1149,7 @@ export default function SupportPage() {
 
       {verifiedStaffRole === 'staff' && (
         <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          staff権限では、自分が作成・担当・エスカレ先になっているチケットと、そのチケットに紐づくチャットだけが表示されます。
+          自分が担当するチケットに加え オーナーが共有設定した一次対応者のチケットも確認できます 共有チケットは代理完了だけ実行できます
         </div>
       )}
 
@@ -1027,8 +1225,11 @@ export default function SupportPage() {
               dirty={dirty}
               saving={saving}
               reminderSaving={reminderSaving}
-              canEditRouting={canEditCaseRouting}
-              canEditCaseWork={canEditCaseWork}
+              slackNotificationDeleting={slackNotificationDeleting}
+              canEditRouting={canEditCaseRouting && canEditSelectedCase}
+              canEditCaseWork={canEditCaseWork && canEditSelectedCase}
+              canCompleteCase={detail?.canCompleteCase ?? canEditCaseWork}
+              canDeleteSlackNotification={canDeleteSlackNotification}
               staffOptions={assigneeSuggestions}
               staffName={verifiedStaffName}
               onFormChange={(patch) => setCaseForm((prev) => ({ ...prev, ...patch }))}
@@ -1040,6 +1241,7 @@ export default function SupportPage() {
               onFollowUpReminderConfigure={handleFollowUpReminderConfigure}
               onFollowUpReminderConfirm={handleFollowUpReminderConfirm}
               onFollowUpReminderDisable={handleFollowUpReminderDisable}
+              onDeleteSlackNotification={handleDeleteSlackNotification}
               onOpenChatWithDraft={() => void handleOpenChatWithDraft()}
               onCopyReplyDraft={() => void handleCopyReplyDraft()}
               emptyState={detailEmptyState}

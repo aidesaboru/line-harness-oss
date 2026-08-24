@@ -6,7 +6,7 @@ import { ProgressModal } from '@/components/update/progress-modal'
 import { fetchApi } from '@/lib/api'
 import { startRollback } from '@/lib/update-client'
 
-const CAN_ROLLBACK = Boolean(process.env.NEXT_PUBLIC_ADMIN_API_KEY)
+const CAN_ROLLBACK = true
 
 interface Row {
   id: string

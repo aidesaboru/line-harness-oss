@@ -38,6 +38,12 @@ type TestEnv = {
 
 type DbCall = { method: 'all' | 'first' | 'run'; sql: string; binds: unknown[] };
 
+const staffSupportVisibilityBinds = [
+  'staff-1', 'staff-1', 'staff-1',
+  '田島', '田島', '田島', '田島',
+  'staff-1', '田島', '田島',
+];
+
 function makeDb(state: {
   visibleFriendIds?: string[];
   conversionEvents?: Array<{
@@ -246,7 +252,7 @@ describe('conversion friend visibility guards', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '田島', '田島', 'staff-1', '田島'] });
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', ...staffSupportVisibilityBinds] });
     expect(dbMocks.trackConversion).toHaveBeenCalledWith(db, {
       conversionPointId: 'point-1',
       friendId: 'friend-visible',
@@ -288,7 +294,7 @@ describe('conversion friend visibility guards', () => {
     expect(body.data).toEqual([{ id: 'event-visible', conversionPointId: 'point-1', friendId: 'friend-visible', userId: null, affiliateCode: null, metadata: null, createdAt: '2026-06-13T10:00:00.000' }]);
     const listCall = db.calls.find((call) => call.sql.includes('FROM conversion_events ce'));
     expect(listCall?.sql).toContain('sc_friend_scope.friend_id = ce.friend_id');
-    expect(listCall?.binds).toEqual(['staff-1', '田島', '田島', 'staff-1', '田島', 10, 5]);
+    expect(listCall?.binds).toEqual([...staffSupportVisibilityBinds, 10, 5]);
   });
 
   test('conversion events clamp invalid limit and fractional offset before SQL bind', async () => {
@@ -337,7 +343,7 @@ describe('conversion friend visibility guards', () => {
       .request('/api/conversions/events?conversionPointId=%20point-1%20&friendId=%20friend-visible%20&affiliateCode=%20aff_2026%20&startDate=%202026-06-01%20&endDate=%202026-06-30T23%3A59%3A59%2B09%3A00%20&limit=10&offset=2');
 
     expect(res.status).toBe(200);
-    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '田島', '田島', 'staff-1', '田島'] });
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', ...staffSupportVisibilityBinds] });
     const listCall = db.calls.find((call) => call.sql.includes('FROM conversion_events ce'));
     expect(listCall?.binds).toEqual([
       'point-1',
@@ -345,11 +351,7 @@ describe('conversion friend visibility guards', () => {
       'aff_2026',
       '2026-06-01',
       '2026-06-30T23:59:59+09:00',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
       10,
       2,
     ]);
@@ -372,7 +374,7 @@ describe('conversion friend visibility guards', () => {
     expect(res.status).toBe(200);
     const reportCall = db.calls.find((call) => call.sql.includes('FROM conversion_points cp'));
     expect(reportCall?.sql).toContain('sc_friend_scope.friend_id = ce.friend_id');
-    expect(reportCall?.binds).toEqual(['2026-06-01', 'staff-1', '田島', '田島', 'staff-1', '田島']);
+    expect(reportCall?.binds).toEqual(['2026-06-01', ...staffSupportVisibilityBinds]);
   });
 
   test('conversion report rejects unsafe date filters before SQL bind', async () => {
@@ -402,11 +404,7 @@ describe('conversion friend visibility guards', () => {
     expect(reportCall?.binds).toEqual([
       '2026-06-01',
       '2026-06-30T23:59:59+09:00',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
     ]);
   });
 
@@ -852,7 +850,7 @@ describe('calendar booking friend visibility guards', () => {
     expect(body.data).toMatchObject([{ id: 'booking-visible', friendId: 'friend-visible' }]);
     const listCall = db.calls.find((call) => call.sql.includes('FROM calendar_bookings cb'));
     expect(listCall?.sql).toContain('sc_friend_scope.friend_id = cb.friend_id');
-    expect(listCall?.binds).toEqual(['conn-1', 'staff-1', '田島', '田島', 'staff-1', '田島']);
+    expect(listCall?.binds).toEqual(['conn-1', ...staffSupportVisibilityBinds]);
   });
 
   test('calendar bookings reject unsafe query values before friend access checks or SQL bind', async () => {
@@ -877,9 +875,9 @@ describe('calendar booking friend visibility guards', () => {
       .request('/api/integrations/google-calendar/bookings?connectionId=%20conn-1%20&friendId=%20friend-visible%20');
 
     expect(res.status).toBe(200);
-    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', 'staff-1', '田島', '田島', 'staff-1', '田島'] });
+    expect(db.calls[0]).toMatchObject({ method: 'first', binds: ['friend-visible', ...staffSupportVisibilityBinds] });
     const listCall = db.calls.find((call) => call.sql.includes('FROM calendar_bookings cb'));
-    expect(listCall?.binds).toEqual(['friend-visible', 'conn-1', 'staff-1', '田島', '田島', 'staff-1', '田島']);
+    expect(listCall?.binds).toEqual(['friend-visible', 'conn-1', ...staffSupportVisibilityBinds]);
   });
 
   test('staff cannot create a calendar booking for a hidden friend', async () => {

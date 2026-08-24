@@ -90,6 +90,7 @@ import {
   isLineManualSendEnabled,
 } from './services/line-capture-only.js';
 import { processDueScheduledChatMessages } from './services/scheduled-chat-messages.js';
+import { monitorInternalChatHealth } from './services/internal-chat-health.js';
 
 function scheduledErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
@@ -152,7 +153,12 @@ export type Env = {
     SUPPORT_TICKET_SLACK_MENTION_MAP?: string;
   };
   Variables: {
-    staff: { id: string; name: string; role: 'owner' | 'admin' | 'staff' | 'secondary' };
+    staff: {
+      id: string;
+      name: string;
+      role: 'owner' | 'admin' | 'staff' | 'secondary';
+      secondaryCanRespond?: boolean;
+    };
   };
 };
 
@@ -361,8 +367,10 @@ app.route('/', updateHistory);
 // derivable from the deployed bundle. /admin/update/* (Task 18) layers
 // ADMIN_API_KEY middleware on subpaths.
 app.route('/admin', adminVersion);
-// Phase 5 Task 18 — self-update endpoints guarded by x-admin-api-key.
-// authMiddleware skips non-/api/ paths so this router owns its own auth gate.
+// Signed-in owner/admin sessions use the API path so cookie auth and CSRF
+// protection apply. Keep the old non-API mount for existing server automation;
+// that path still requires ADMIN_API_KEY inside the router.
+app.route('/api/admin/update', adminUpdate);
 app.route('/admin/update', adminUpdate);
 
 // QR code proxy for desktop landing pages. Keep it tightly bounded because it
@@ -748,6 +756,46 @@ async function scheduled(
   const captureOnly = isLineCaptureOnly(env);
   setLineMutationsDisabled(captureOnly);
 
+  // Cloudflare invokes both matching cron expressions independently. At
+  // every six-hour boundary the 5-minute trigger also matches, so running the
+  // common queue here would process it twice. Keep the six-hour trigger
+  // exclusively for expiry maintenance and let the 5-minute trigger own all
+  // regular polling/delivery work.
+  if (event.cron === '0 */6 * * *') {
+    if (captureOnly) {
+      console.log('[line-capture-only] skipping six-hour expiry jobs');
+      return;
+    }
+    try {
+      const result = await runExpirer(env.DB, {
+        now: new Date(),
+        sender: sendBookingNotification,
+      });
+      console.log(
+        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error(`booking-expirer error: ${scheduledErrorKind(e)}`);
+    }
+    try {
+      const result = await runEventBookingExpirer(env.DB, { now: new Date() });
+      console.log(
+        `[event-booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
+      );
+    } catch (e) {
+      console.error(`event-booking-expirer error: ${scheduledErrorKind(e)}`);
+    }
+    return;
+  }
+
+  await monitorInternalChatHealth({
+    db: env.DB,
+    stateStore: env.FILES,
+    slackBotToken: env.SLACK_BOT_TOKEN,
+    slackChannelId: env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+    adminPublicUrl: env.ADMIN_PUBLIC_URL,
+  });
+
   // Get all active accounts from DB
   const dbAccounts = await getLineAccounts(env.DB);
 
@@ -895,21 +943,6 @@ async function scheduled(
     console.error(`booking-reminders error: ${scheduledErrorKind(e)}`);
   }
 
-  // Booking expirer — runs only on the 6h cron tick.
-  if (event.cron === '0 */6 * * *') {
-    try {
-      const result = await runExpirer(env.DB, {
-        now: new Date(),
-        sender: sendBookingNotification,
-      });
-      console.log(
-        `[booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
-      );
-    } catch (e) {
-      console.error(`booking-expirer error: ${scheduledErrorKind(e)}`);
-    }
-  }
-
   // Event-booking reminders — every 5-minute tick scans due reminders.
   try {
     const result = await processDueEventReminders(env.DB, {
@@ -921,18 +954,6 @@ async function scheduled(
     }
   } catch (e) {
     console.error(`event-booking-reminders error: ${scheduledErrorKind(e)}`);
-  }
-
-  // Event-booking expirer — 6h cron tick.
-  if (event.cron === '0 */6 * * *') {
-    try {
-      const result = await runEventBookingExpirer(env.DB, { now: new Date() });
-      console.log(
-        `[event-booking-expirer] expired=${result.expired} idempotency_purged=${result.idempotencyPurged}`,
-      );
-    } catch (e) {
-      console.error(`event-booking-expirer error: ${scheduledErrorKind(e)}`);
-    }
   }
 
   // Cross-account duplicate detection — disabled.

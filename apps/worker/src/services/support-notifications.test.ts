@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 import {
   buildTicketCreatedSlackPayload,
+  deleteSupportTicketSlackNotification,
   deliverSupportSecondarySlackNotification,
   deliverSupportTicketSlackNotification,
   getSupportNotificationSettings,
@@ -41,8 +42,11 @@ type SupportEvent = {
   id: string;
   case_id: string;
   event_type: string;
+  actor_id?: string | null;
+  actor_name?: string | null;
   body: string;
   metadata: string;
+  created_at?: string;
 };
 type TicketSlackOutbox = {
   id: string;
@@ -68,6 +72,7 @@ function makeDb(state: {
   events?: SupportEvent[];
   outbox?: TicketSlackOutbox[];
   secondaryOutbox?: TicketSlackOutbox[];
+  failEventTypeOnce?: string;
 } = {}) {
   const settings = new Map<string, AccountSetting>(
     Object.entries(state.settings ?? {}).map(([key, value]) => [key, { value }]),
@@ -77,6 +82,7 @@ function makeDb(state: {
   const outbox = state.outbox ?? [];
   const secondaryOutbox = state.secondaryOutbox ?? [];
   const calls: DbCall[] = [];
+  let failEventTypeOnce = state.failEventTypeOnce;
 
   function settingKey(accountId: string, key: string): string {
     return `${accountId}:${key}`;
@@ -99,14 +105,23 @@ function makeDb(state: {
           if (sql.includes('FROM support_case_events')) {
             const [caseId, eventType] = bound as [string, string];
             const row = events.find((event) => event.case_id === caseId && event.event_type === eventType);
-            return (row ? { id: row.id } : null) as T | null;
+            return (row ? { id: row.id, created_at: row.created_at } : null) as T | null;
           }
           if (
             sql.includes('FROM support_slack_notification_outbox')
             || sql.includes('FROM support_secondary_slack_notification_outbox')
           ) {
-            const [outboxId] = bound as [string];
             const rows = sql.includes('support_secondary_slack_notification_outbox') ? secondaryOutbox : outbox;
+            if (sql.includes('WHERE case_id = ?') && sql.includes('line_account_id = ?')) {
+              const [caseId, lineAccountId] = bound as [string, string];
+              return (rows.find((row) => (
+                row.case_id === caseId
+                && row.line_account_id === lineAccountId
+                && row.status === 'sent'
+                && Boolean(row.slack_message_ts)
+              )) ?? null) as T | null;
+            }
+            const [outboxId] = bound as [string];
             return (rows.find((row) => row.id === outboxId) ?? null) as T | null;
           }
           if (sql.includes('FROM support_cases sc') && sql.includes('WHERE sc.id = ?')) {
@@ -177,8 +192,21 @@ function makeDb(state: {
             const [, accountId, key, value] = bound as [string, string, string, string];
             settings.set(settingKey(accountId, key), { value });
           } else if (sql.includes('INSERT INTO support_case_events')) {
-            const [id, caseId, eventType, , , body, metadata] = bound as string[];
-            events.push({ id, case_id: caseId, event_type: eventType, body, metadata });
+            const [id, caseId, eventType, actorId, actorName, body, metadata, createdAt] = bound as string[];
+            if (eventType === failEventTypeOnce) {
+              failEventTypeOnce = undefined;
+              throw new Error('simulated event insert failure');
+            }
+            events.push({
+              id,
+              case_id: caseId,
+              event_type: eventType,
+              actor_id: actorId,
+              actor_name: actorName,
+              body,
+              metadata,
+              created_at: createdAt,
+            });
           } else if (
             sql.includes('UPDATE support_slack_notification_outbox')
             || sql.includes('UPDATE support_secondary_slack_notification_outbox')
@@ -725,6 +753,169 @@ describe('support Slack notifications', () => {
         event_type: 'slack_notification_reissued',
       }),
     ]));
+  });
+
+  test('wrongly issued ticket notification is deleted from Slack while its ticket and outbox history remain', async () => {
+    const outbox: TicketSlackOutbox = {
+      id: 'outbox-delete-1',
+      case_id: 'case-delete-1',
+      line_account_id: 'acc-1',
+      payload: '{}',
+      status: 'sent',
+      attempts: 1,
+      next_attempt_at: '2026-08-11T09:00:00.000+09:00',
+      claim_token: null,
+      last_error_code: null,
+      slack_message_ts: '1786406400.123456',
+      sent_at: '2026-08-11T09:00:00.000+09:00',
+      created_at: '2026-08-11T09:00:00.000+09:00',
+      updated_at: '2026-08-11T09:00:00.000+09:00',
+    };
+    const { db, state } = makeDb({ outbox: [outbox] });
+    const deleted = vi.fn(async () => {
+      expect(state.events.map((event) => event.event_type)).toEqual([
+        'slack_ticket_created_delete_requested',
+      ]);
+    });
+    const runtime = {
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+      deleteSlackMessage: deleted,
+    };
+
+    await expect(deleteSupportTicketSlackNotification(
+      db,
+      outbox.case_id,
+      outbox.line_account_id,
+      { id: 'staff-owner', name: '宮本 森一' },
+      runtime,
+    )).resolves.toEqual({ deleted: true, reason: 'deleted' });
+
+    expect(deleted).toHaveBeenCalledWith('xoxb-test', 'C09SPA06P0S', '1786406400.123456');
+    expect(state.outbox).toEqual([outbox]);
+    expect(outbox).toMatchObject({ status: 'sent', slack_message_ts: '1786406400.123456' });
+    expect(state.events).toEqual([
+      expect.objectContaining({
+        case_id: 'case-delete-1',
+        event_type: 'slack_ticket_created_delete_requested',
+        actor_id: 'staff-owner',
+      }),
+      expect.objectContaining({
+        case_id: 'case-delete-1',
+        event_type: 'slack_ticket_created_deleted',
+        actor_id: 'staff-owner',
+        actor_name: '宮本 森一',
+        body: '誤発行チケットのSlack通知を削除しました',
+      }),
+    ]);
+    expect(JSON.parse(state.events[1].metadata)).toMatchObject({
+      outboxId: 'outbox-delete-1',
+      ticketPreserved: true,
+      historyPreserved: true,
+    });
+
+    await expect(deleteSupportTicketSlackNotification(
+      db,
+      outbox.case_id,
+      outbox.line_account_id,
+      { id: 'staff-owner', name: '宮本 森一' },
+      runtime,
+    )).resolves.toEqual({ deleted: false, reason: 'already_deleted' });
+    expect(deleted).toHaveBeenCalledTimes(1);
+    expect(state.events).toHaveLength(2);
+  });
+
+  test('Slack deletion failure leaves the immutable outbox and appends requested/failed audit events', async () => {
+    const outbox: TicketSlackOutbox = {
+      id: 'outbox-delete-failed',
+      case_id: 'case-delete-failed',
+      line_account_id: 'acc-1',
+      payload: '{}',
+      status: 'sent',
+      attempts: 1,
+      next_attempt_at: '2026-08-11T09:00:00.000+09:00',
+      claim_token: null,
+      last_error_code: null,
+      slack_message_ts: '1786406401.123456',
+      sent_at: '2026-08-11T09:00:01.000+09:00',
+      created_at: '2026-08-11T09:00:00.000+09:00',
+      updated_at: '2026-08-11T09:00:01.000+09:00',
+    };
+    const { db, state } = makeDb({ outbox: [outbox] });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(deleteSupportTicketSlackNotification(
+        db,
+        outbox.case_id,
+        outbox.line_account_id,
+        { id: 'staff-owner', name: '宮本 森一' },
+        {
+          slackBotToken: 'xoxb-test',
+          slackChannelId: 'C09SPA06P0S',
+          deleteSlackMessage: async () => { throw new Error('Slack unavailable'); },
+        },
+      )).resolves.toEqual({ deleted: false, reason: 'delete_failed' });
+    } finally {
+      errorSpy.mockRestore();
+    }
+    expect(state.outbox).toEqual([outbox]);
+    expect(state.events.map((event) => event.event_type)).toEqual([
+      'slack_ticket_created_delete_requested',
+      'slack_ticket_created_delete_failed',
+    ]);
+  });
+
+  test('retries safely when Slack was deleted but the final audit insert failed', async () => {
+    const outbox: TicketSlackOutbox = {
+      id: 'outbox-delete-retry',
+      case_id: 'case-delete-retry',
+      line_account_id: 'acc-1',
+      payload: '{}',
+      status: 'sent',
+      attempts: 1,
+      next_attempt_at: '2026-08-11T09:00:00.000+09:00',
+      claim_token: null,
+      last_error_code: null,
+      slack_message_ts: '1786406402.123456',
+      sent_at: '2026-08-11T09:00:02.000+09:00',
+      created_at: '2026-08-11T09:00:00.000+09:00',
+      updated_at: '2026-08-11T09:00:02.000+09:00',
+    };
+    const { db, state } = makeDb({
+      outbox: [outbox],
+      failEventTypeOnce: 'slack_ticket_created_deleted',
+    });
+    const deleted = vi.fn(async () => undefined);
+    const runtime = {
+      slackBotToken: 'xoxb-test',
+      slackChannelId: 'C09SPA06P0S',
+      deleteSlackMessage: deleted,
+    };
+
+    await expect(deleteSupportTicketSlackNotification(
+      db,
+      outbox.case_id,
+      outbox.line_account_id,
+      { id: 'staff-owner', name: '宮本 森一' },
+      runtime,
+    )).rejects.toThrow('simulated event insert failure');
+    expect(state.events.map((event) => event.event_type)).toEqual([
+      'slack_ticket_created_delete_requested',
+    ]);
+
+    await expect(deleteSupportTicketSlackNotification(
+      db,
+      outbox.case_id,
+      outbox.line_account_id,
+      { id: 'staff-owner', name: '宮本 森一' },
+      runtime,
+    )).resolves.toEqual({ deleted: true, reason: 'deleted' });
+    expect(deleted).toHaveBeenCalledTimes(2);
+    expect(state.events.map((event) => event.event_type)).toEqual([
+      'slack_ticket_created_delete_requested',
+      'slack_ticket_created_delete_requested',
+      'slack_ticket_created_deleted',
+    ]);
   });
 
   test('sent Slack notification replacement stops when the expected count does not match', async () => {

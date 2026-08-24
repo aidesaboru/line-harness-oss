@@ -84,8 +84,17 @@
     "076_support_ticket_slack_outbox.sql",
     "077_line_conversation_status.sql",
     "078_line_conversation_workflow.sql",
-    "079_support_secondary_slack_outbox.sql"
+    "079_support_secondary_slack_outbox.sql",
+    "080_support_knowledge_segments.sql",
+    "081_curate_operational_knowledge.sql",
+    "082_staff_ticket_shares.sql",
+    "083_line_conversation_customer_metadata.sql",
+    "084_staff_permissions_and_audit.sql",
+    "085_internal_task_workflow.sql",
+    "086_support_assignee_staff_ids.sql",
+    "087_line_conversation_customer_events.sql",
+    "088_support_case_routing_mutation.sql"
   ],
-  "migrationCount": 85,
+  "migrationCount": 94,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

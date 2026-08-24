@@ -8,6 +8,14 @@ import { messageTypePreview } from '@/lib/message-type-label'
 import { isStaleChat } from '@/lib/chat-staleness'
 import { createLatestRequestGate, shouldResetForAccountChange } from '@/lib/latest-request'
 import { chatSendFingerprint, createSendAttemptRegistry } from '@/lib/send-attempt'
+import { canApplyWorkspaceEntityResponse } from '@/lib/workspace-response'
+import {
+  customerProfileBasicFieldDefinitions,
+  customerProfileFormFromMetadata,
+  customerProfileFromMetadata,
+  customerProfileMetadataPatch,
+  type CustomerProfileForm,
+} from '@/lib/customer-profile'
 import {
   buildSupportChatRecoveryNotice,
   buildSupportChatSendCasePayload,
@@ -31,6 +39,8 @@ interface Chat {
   friendName: string
   friendPictureUrl: string | null
   conversationType?: 'user' | 'group' | 'room'
+  lineDisplayName?: string | null
+  customerMetadata?: Record<string, unknown>
   operatorId: string | null
   status: 'unread' | 'in_progress' | 'resolved' | 'long_term'
   notes: string | null
@@ -70,6 +80,28 @@ interface ChatMessage {
   incomingSenderName?: string | null
   incomingSenderPictureUrl?: string | null
   createdAt: string
+}
+
+function buildChatTaskHref(chat: ChatDetail, accountId: string): string {
+  const sourceMessage = chat.messages?.find((message) => message.id === chat.latestCustomerMessageId)
+  const messageText = sourceMessage?.messageType === 'text'
+    ? sourceMessage.content.replace(/\s+/g, ' ').trim()
+    : ''
+  const suggestedTitle = messageText
+    ? `${messageText.slice(0, 80)}${messageText.length > 80 ? '…' : ''}`
+    : `${messageTypePreview(sourceMessage?.messageType)}の内容を確認する`
+  const params = new URLSearchParams({
+    create: '1',
+    source: 'chat',
+    sourceId: chat.friendId,
+    messageId: chat.latestCustomerMessageId || '',
+    accountId,
+    title: suggestedTitle,
+  })
+  if (sourceMessage?.messageType === 'text' && sourceMessage.content.trim()) {
+    params.set('description', sourceMessage.content.trim().slice(0, 1500))
+  }
+  return `/tasks?${params.toString()}`
 }
 
 interface ChatDetail extends Chat {
@@ -122,13 +154,79 @@ const statusConfig: Record<Chat['status'], { label: string; className: string }>
   long_term: { label: '中長期対応', className: 'bg-blue-100 text-blue-700' },
 }
 
-function GroupInfoSidebar({ chat }: { chat: ChatDetail }) {
+function GroupInfoSidebar({
+  chat,
+  accountId,
+  workspaceVersion,
+  onCustomerProfileUpdated,
+}: {
+  chat: ChatDetail
+  accountId: string | null
+  workspaceVersion: number
+  onCustomerProfileUpdated: (data: {
+    id: string
+    friendName: string
+    lineDisplayName: string
+    customerMetadata: Record<string, unknown>
+    updatedAt: string
+  }, context: { chatId: string; accountId: string | null; workspaceVersion: number }) => void
+}) {
   const participants = chat.groupParticipants ?? []
+  const profile = customerProfileFromMetadata(chat.customerMetadata)
+  const customerMetadataVersion = JSON.stringify(chat.customerMetadata ?? {})
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [form, setForm] = useState<CustomerProfileForm>(() => customerProfileFormFromMetadata(chat.customerMetadata))
+  const currentContextRef = useRef({ chatId: chat.id, accountId, workspaceVersion })
+  currentContextRef.current = { chatId: chat.id, accountId, workspaceVersion }
+
+  useEffect(() => {
+    setForm(customerProfileFormFromMetadata(chat.customerMetadata))
+    setEditing(false)
+    setSaving(false)
+    setSaveError('')
+  }, [chat.id, customerMetadataVersion])
+
+  const saveCustomerProfile = async () => {
+    if (saving) return
+    const requestContext = { chatId: chat.id, accountId, workspaceVersion }
+    const isCurrentRequest = () => canApplyWorkspaceEntityResponse(
+      { entityId: requestContext.chatId, accountId: requestContext.accountId, version: requestContext.workspaceVersion },
+      {
+        entityId: currentContextRef.current.chatId,
+        accountId: currentContextRef.current.accountId,
+        version: currentContextRef.current.workspaceVersion,
+      },
+      requestContext.chatId,
+    )
+    setSaving(true)
+    setSaveError('')
+    try {
+      const res = await api.chats.updateCustomerProfile(
+        chat.id,
+        customerProfileMetadataPatch(form),
+        chat.updatedAt,
+      )
+      if (!isCurrentRequest()) return
+      if (!res.success) {
+        setSaveError('顧客情報の保存に失敗しました')
+        return
+      }
+      onCustomerProfileUpdated(res.data, requestContext)
+      setEditing(false)
+    } catch {
+      if (isCurrentRequest()) setSaveError('顧客情報の保存に失敗しました')
+    } finally {
+      if (isCurrentRequest()) setSaving(false)
+    }
+  }
+
   return (
     <aside className="flex h-full w-full flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
       <div className="border-b border-gray-200 px-4 py-3">
         <h2 className="text-base font-bold text-gray-900">グループ詳細</h2>
-        <p className="mt-0.5 text-xs text-gray-500">会話と参加メンバーを確認</p>
+        <p className="mt-0.5 text-xs text-gray-500">顧客情報と参加メンバーを確認</p>
       </div>
       <div className="border-b border-gray-100 px-4 py-4">
         <div className="flex items-center gap-3">
@@ -141,6 +239,9 @@ function GroupInfoSidebar({ chat }: { chat: ChatDetail }) {
           )}
           <div className="min-w-0">
             <p className="break-words text-sm font-bold text-gray-900">{chat.friendName}</p>
+            {chat.lineDisplayName && chat.lineDisplayName !== chat.friendName && (
+              <p className="mt-0.5 break-words text-xs text-gray-500">LINE名 {chat.lineDisplayName}</p>
+            )}
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <span className="rounded bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
                 LINEグループ
@@ -153,6 +254,90 @@ function GroupInfoSidebar({ chat }: { chat: ChatDetail }) {
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+        <section className="mb-5 rounded-lg border border-green-100 bg-green-50/40 p-3" aria-label="グループ顧客情報">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">顧客情報</h3>
+              <p className="mt-0.5 text-xs text-gray-500">必須項目 {profile.completionLabel}</p>
+            </div>
+            {!editing && (
+              <button
+                type="button"
+                onClick={() => setEditing(true)}
+                className="shrink-0 rounded-md border border-green-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-50"
+              >
+                編集
+              </button>
+            )}
+          </div>
+
+          {editing ? (
+            <div className="mt-3 space-y-3">
+              {customerProfileBasicFieldDefinitions.map((field) => (
+                <label key={field.key} className="block">
+                  <span className="text-xs font-medium text-gray-700">
+                    {field.label}{field.required ? ' *' : ''}
+                  </span>
+                  {field.key === 'specialNotes' ? (
+                    <textarea
+                      value={form.basic[field.key]}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        basic: { ...current.basic, [field.key]: event.target.value },
+                      }))}
+                      rows={3}
+                      className="mt-1 w-full resize-y rounded-md border border-gray-300 bg-white px-3 py-2 text-sm outline-none focus:border-green-500 focus:ring-2 focus:ring-green-100"
+                    />
+                  ) : (
+                    <input
+                      type={field.key === 'googleFolderUrl' ? 'url' : 'text'}
+                      value={form.basic[field.key]}
+                      onChange={(event) => setForm((current) => ({
+                        ...current,
+                        basic: { ...current.basic, [field.key]: event.target.value },
+                      }))}
+                      className="mt-1 min-h-10 w-full rounded-md border border-gray-300 bg-white px-3 text-sm outline-none focus:border-green-500 focus:ring-2 focus:ring-green-100"
+                    />
+                  )}
+                </label>
+              ))}
+              {saveError && <p className="text-xs font-medium text-red-600" role="alert">{saveError}</p>}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForm(customerProfileFormFromMetadata(chat.customerMetadata))
+                    setEditing(false)
+                    setSaveError('')
+                  }}
+                  disabled={saving}
+                  className="rounded-md border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                >
+                  キャンセル
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void saveCustomerProfile()}
+                  disabled={saving}
+                  className="rounded-md bg-green-600 px-3 py-2 text-xs font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {saving ? '保存中...' : '保存'}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <dl className="mt-3 space-y-2">
+              {profile.basicFields.map((field) => (
+                <div key={field.key} className="rounded-md bg-white px-3 py-2 ring-1 ring-gray-100">
+                  <dt className="text-[11px] font-medium text-gray-500">{field.label}</dt>
+                  <dd className={`mt-0.5 break-words text-sm font-semibold ${field.value ? 'text-gray-800' : 'text-gray-400'}`}>
+                    {field.value || '未登録'}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </section>
         <div className="mb-3 flex items-center justify-between">
           <h3 className="text-sm font-bold text-gray-900">確認できた参加メンバー</h3>
           <span className="text-xs font-semibold text-gray-500">{participants.length}名</span>
@@ -1596,6 +1781,25 @@ export default function ChatsPage() {
   currentAccountIdRef.current = selectedAccountId
   currentChatIdRef.current = selectedChatId
 
+  const captureChatWorkspace = useCallback((chatId: string) => ({
+    entityId: chatId,
+    accountId: selectedAccountId,
+    version: accountWorkspaceVersionRef.current,
+  }), [selectedAccountId])
+  const isCurrentChatWorkspace = useCallback((snapshot: {
+    entityId: string
+    accountId: string | null
+    version: number
+  }) => canApplyWorkspaceEntityResponse(
+    snapshot,
+    {
+      entityId: currentChatIdRef.current,
+      accountId: currentAccountIdRef.current,
+      version: accountWorkspaceVersionRef.current,
+    },
+    snapshot.entityId,
+  ), [])
+
   useEffect(() => {
     try { localStorage.setItem('chat.sortMode', sortMode) } catch { /* ignore */ }
   }, [sortMode])
@@ -1615,9 +1819,10 @@ export default function ChatsPage() {
   }, [])
 
   const sendTypingStatus = useCallback(async (chatId: string, active: boolean) => {
+    const workspace = captureChatWorkspace(chatId)
     try {
       const res = await api.chats.typing(chatId, { active })
-      if (!res.success || !res.data) return
+      if (!isCurrentChatWorkspace(workspace) || !res.success || !res.data) return
       setChatDetail((prev) => (prev && prev.id === chatId) ? {
         ...prev,
         status: res.data.status,
@@ -1630,7 +1835,7 @@ export default function ChatsPage() {
     } catch {
       // 入力中表示は補助機能なので、失敗しても顧客対応は止めない。
     }
-  }, [])
+  }, [captureChatWorkspace, isCurrentChatWorkspace])
 
   const stopTypingStatus = useCallback((chatId?: string | null) => {
     clearTypingStopTimer()
@@ -1694,6 +1899,8 @@ export default function ChatsPage() {
     setMessageContent('')
     setScheduleOpen(false)
     setScheduledAt('')
+    setScheduling(false)
+    setScheduledActionId(null)
     setQuoteTarget(null)
     setSupportDraftContext(null)
     setSupportRecoveryNotice(null)
@@ -1701,6 +1908,12 @@ export default function ChatsPage() {
     setUploadingImage(false)
     setImageUploadError('')
     setMediaPreview(null)
+    setSending(false)
+    sendLockRef.current = false
+    setMarkingAsRead(false)
+    setConfirmingReview(false)
+    setReflectingDeletedMessageId(null)
+    setSavingInternalChat(false)
     setInternalChatOpen(false)
     setCustomerInfoOpen(false)
     setDetailLoading(false)
@@ -2176,8 +2389,10 @@ export default function ChatsPage() {
     } catch (err) {
       if (isCurrentWorkspace()) setImageUploadError(fileUploadErrorMessage(err))
     } finally {
-      if (isCurrentWorkspace()) setUploadingImage(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      if (isCurrentWorkspace()) {
+        setUploadingImage(false)
+        if (fileInputRef.current) fileInputRef.current.value = ''
+      }
     }
   }, [])
 
@@ -2387,9 +2602,11 @@ export default function ChatsPage() {
     } catch (err) {
       if (isCurrentWorkspace()) setError(chatActionFailureMessage(err, sendFailureFallback))
     } finally {
-      if (!sendingIsMultiPersonConversation) stopTypingStatus(sendingChatId)
-      setSending(false)
-      sendLockRef.current = false
+      if (isCurrentWorkspace()) {
+        if (!sendingIsMultiPersonConversation) stopTypingStatus(sendingChatId)
+        setSending(false)
+        sendLockRef.current = false
+      }
     }
   }
 
@@ -2463,34 +2680,42 @@ export default function ChatsPage() {
         setError(chatActionFailureMessage(err, '予約送信を登録できませんでした。もう一度お試しください。'))
       }
     } finally {
-      setScheduling(false)
+      if (isCurrentWorkspace()) setScheduling(false)
     }
   }
 
   const handleCancelScheduled = async (item: ScheduledChatMessage) => {
     if (!selectedChatId || scheduledActionId) return
+    const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     setScheduledActionId(item.id)
     setError('')
     try {
-      await api.chats.cancelScheduled(selectedChatId, item.id)
-      setChatDetail((prev) => prev ? {
+      await api.chats.cancelScheduled(targetChatId, item.id)
+      if (!isCurrentChatWorkspace(workspace)) return
+      setChatDetail((prev) => prev?.id === targetChatId ? {
         ...prev,
         scheduledMessages: (prev.scheduledMessages ?? []).filter((scheduled) => scheduled.id !== item.id),
       } : prev)
     } catch (err) {
-      setError(chatActionFailureMessage(err, '予約送信を取り消せませんでした。もう一度お試しください。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, '予約送信を取り消せませんでした。もう一度お試しください。'))
+      }
     } finally {
-      setScheduledActionId(null)
+      if (isCurrentChatWorkspace(workspace)) setScheduledActionId(null)
     }
   }
 
   const handleRetryScheduled = async (item: ScheduledChatMessage) => {
     if (!selectedChatId || scheduledActionId) return
+    const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     setScheduledActionId(item.id)
     setError('')
     try {
-      await api.chats.retryScheduled(selectedChatId, item.id)
-      setChatDetail((prev) => prev ? {
+      await api.chats.retryScheduled(targetChatId, item.id)
+      if (!isCurrentChatWorkspace(workspace)) return
+      setChatDetail((prev) => prev?.id === targetChatId ? {
         ...prev,
         scheduledMessages: (prev.scheduledMessages ?? []).map((scheduled) => (
           scheduled.id === item.id
@@ -2499,21 +2724,25 @@ export default function ChatsPage() {
         )),
       } : prev)
     } catch (err) {
-      setError(chatActionFailureMessage(err, '予約送信を再試行できませんでした。もう一度お試しください。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, '予約送信を再試行できませんでした。もう一度お試しください。'))
+      }
     } finally {
-      setScheduledActionId(null)
+      if (isCurrentChatWorkspace(workspace)) setScheduledActionId(null)
     }
   }
 
   const handleMarkLatestAsRead = async () => {
     if (!selectedChatId || sending || scheduling || markingAsRead || sendLockRef.current) return
     const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     const latestMessage = chatDetail?.messages?.slice().reverse().find((message) => !message.deletedAt)
     if (latestMessage?.direction !== 'incoming') return
     setMarkingAsRead(true)
     setError('')
     try {
       const result = await api.chats.markRead(targetChatId)
+      if (!isCurrentChatWorkspace(workspace)) return
       if (!result.success) {
         setError('既読化に失敗しました。もう一度お試しください。')
         return
@@ -2551,27 +2780,31 @@ export default function ChatsPage() {
       })
       setError('')
     } catch (err) {
-      setError(chatActionFailureMessage(err, '既読化に失敗しました。もう一度お試しください。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, '既読化に失敗しました。もう一度お試しください。'))
+      }
     } finally {
-      setMarkingAsRead(false)
+      if (isCurrentChatWorkspace(workspace)) setMarkingAsRead(false)
     }
   }
 
   const handleReflectMessageDeleted = async (message: ChatMessage) => {
     if (!selectedChatId || reflectingDeletedMessageId) return
     const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     const isOfficialSideRecord = message.source === 'line_official'
     const confirmed = window.confirm(
       isOfficialSideRecord
         ? 'LINE公式画面で送信取り消し済みの内容を、Lリンク上にも反映します。顧客側のLINEを操作する機能ではありません。続けますか？'
         : 'LINE APIの仕様上、Lリンクから送ったメッセージは顧客側のLINEから取り消せません。Lリンク上の表示だけ非表示にします。続けますか？',
     )
-    if (!confirmed) return
+    if (!confirmed || !isCurrentChatWorkspace(workspace)) return
     const messageId = message.id
     setReflectingDeletedMessageId(messageId)
     setError('')
     try {
       const result = await api.chats.markMessageDeleted(targetChatId, messageId)
+      if (!isCurrentChatWorkspace(workspace)) return
       if (!result.success || !result.data) {
         setError('送信取り消しの反映に失敗しました。もう一度お試しください。')
         return
@@ -2589,34 +2822,63 @@ export default function ChatsPage() {
         )),
       } : prev)
     } catch (err) {
-      setError(chatActionFailureMessage(err, '送信取り消しの反映に失敗しました。もう一度お試しください。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, '送信取り消しの反映に失敗しました。もう一度お試しください。'))
+      }
     } finally {
-      setReflectingDeletedMessageId(null)
+      if (isCurrentChatWorkspace(workspace)) setReflectingDeletedMessageId(null)
     }
   }
 
   const handleStatusUpdate = async (newStatus: Chat['status']) => {
     if (!selectedChatId) return
+    const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     try {
-      const res = await api.chats.update(selectedChatId, { status: newStatus })
+      const res = await api.chats.update(targetChatId, { status: newStatus })
+      if (!isCurrentChatWorkspace(workspace)) return
       if (!res.success) {
         setError(chatFailureMessage('status'))
         return
       }
       setError('')
-      loadChatDetail(selectedChatId)
+      loadChatDetail(targetChatId)
       loadChats()
     } catch {
-      setError(chatFailureMessage('status'))
+      if (isCurrentChatWorkspace(workspace)) setError(chatFailureMessage('status'))
     }
   }
+
+  const handleGroupCustomerProfileUpdated = useCallback((updated: {
+    id: string
+    friendName: string
+    lineDisplayName: string
+    customerMetadata: Record<string, unknown>
+    updatedAt: string
+  }, context: { chatId: string; accountId: string | null; workspaceVersion: number }) => {
+    if (!canApplyWorkspaceEntityResponse(
+      { entityId: context.chatId, accountId: context.accountId, version: context.workspaceVersion },
+      {
+        entityId: chatDetail?.id ?? null,
+        accountId: currentAccountIdRef.current,
+        version: accountWorkspaceVersionRef.current,
+      },
+      updated.id,
+    )) return
+    setChatDetail((current) => current?.id === updated.id ? { ...current, ...updated } : current)
+    setChats((current) => current.map((chat) => (
+      chat.id === updated.id ? { ...chat, ...updated } : chat
+    )))
+  }, [chatDetail?.id])
 
   const handleConfirmReview = async () => {
     if (!selectedChatId || confirmingReview) return
     const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     setConfirmingReview(true)
     try {
       const res = await api.chats.confirm(targetChatId)
+      if (!isCurrentChatWorkspace(workspace)) return
       if (!res.success) {
         setError('確認状態の更新に失敗しました。')
         return
@@ -2635,15 +2897,18 @@ export default function ChatsPage() {
       } : chat))
       setError('')
     } catch (err) {
-      setError(chatActionFailureMessage(err, '確認状態の更新に失敗しました。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, '確認状態の更新に失敗しました。'))
+      }
     } finally {
-      setConfirmingReview(false)
+      if (isCurrentChatWorkspace(workspace)) setConfirmingReview(false)
     }
   }
 
   const handleCreateInternalMessage = async (body: string, parentId: string | null, mentions: string[]): Promise<boolean> => {
     if (!selectedChatId || savingInternalChat) return false
     const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     setSavingInternalChat(true)
     try {
       const res = await api.chats.addInternalMessage(targetChatId, {
@@ -2651,6 +2916,7 @@ export default function ChatsPage() {
         parentId,
         mentions,
       })
+      if (!isCurrentChatWorkspace(workspace)) return false
       if (!res.success || !res.data) {
         setError(chatFailureMessage('internal-chat'))
         return false
@@ -2665,18 +2931,22 @@ export default function ChatsPage() {
       })
       return true
     } catch (err) {
-      setError(chatActionFailureMessage(err, chatFailureMessage('internal-chat')))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, chatFailureMessage('internal-chat')))
+      }
       return false
     } finally {
-      setSavingInternalChat(false)
+      if (isCurrentChatWorkspace(workspace)) setSavingInternalChat(false)
     }
   }
 
   const handleInternalMessageReaction = async (messageId: string, emoji: string): Promise<void> => {
     if (!selectedChatId || savingInternalChat) return
     const targetChatId = selectedChatId
+    const workspace = captureChatWorkspace(targetChatId)
     try {
       const res = await api.chats.toggleInternalReaction(targetChatId, messageId, emoji)
+      if (!isCurrentChatWorkspace(workspace)) return
       if (!res.success || !res.data) {
         setError('リアクションの更新に失敗しました。')
         return
@@ -2692,7 +2962,9 @@ export default function ChatsPage() {
         }
       })
     } catch (err) {
-      setError(chatActionFailureMessage(err, 'リアクションの更新に失敗しました。'))
+      if (isCurrentChatWorkspace(workspace)) {
+        setError(chatActionFailureMessage(err, 'リアクションの更新に失敗しました。'))
+      }
     }
   }
 
@@ -2806,6 +3078,14 @@ export default function ChatsPage() {
       : latestChatMessage?.direction === 'incoming' && latestChatMessage.canMarkAsRead === false
         ? 'このメッセージにはLINEの既読情報がありません'
         : '最後が顧客メッセージの時だけ使えます'
+
+  if (
+    !accountLoading
+    && accountScopeRef.current.hasRestoredInitialAccount
+    && accountScopeRef.current.accountId !== selectedAccountId
+  ) {
+    return <div className="p-6 text-sm text-gray-500">読み込み中…</div>
+  }
 
   return (
     <div>
@@ -3015,9 +3295,18 @@ export default function ChatsPage() {
                               24h超過 {formatElapsed(chat.lastUnansweredAt ?? chat.lastMessageAt)}
                             </div>
                           )}
-                          {supportBadge && (
-                            <div className={`mt-1 inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${supportBadge.className}`} title={chat.activeSupportCase?.title || supportBadge.description}>
-                              <span className="truncate">{supportBadge.label}</span>
+                          {(chat.status === 'long_term' || supportBadge) && (
+                            <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+                              {chat.status === 'long_term' && (
+                                <span className="inline-flex max-w-full items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] font-bold text-blue-700">
+                                  <span className="truncate">{statusConfig.long_term.label}</span>
+                                </span>
+                              )}
+                              {supportBadge && (
+                                <span className={`inline-flex max-w-full items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${supportBadge.className}`} title={chat.activeSupportCase?.title || supportBadge.description}>
+                                  <span className="truncate">{supportBadge.label}</span>
+                                </span>
+                              )}
                             </div>
                           )}
                           <p
@@ -3172,7 +3461,7 @@ export default function ChatsPage() {
                   )}
                   {chatDetail.latestCustomerMessageId && (
                     <Link
-                      href={`/tasks?create=1&source=chat&sourceId=${encodeURIComponent(chatDetail.friendId)}&messageId=${encodeURIComponent(chatDetail.latestCustomerMessageId)}&title=${encodeURIComponent(`${chatDetail.friendName}への対応`)}`}
+                      href={buildChatTaskHref(chatDetail, selectedAccountId || '')}
                       className="inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-semibold text-blue-700 transition-colors hover:bg-blue-100"
                       title="このLINEトークを元に社内タスクを作成"
                     >
@@ -3839,7 +4128,12 @@ export default function ChatsPage() {
                       <XIcon className="h-5 w-5" />
                     </button>
                     {selectedIsMultiPersonConversation ? (
-                      <GroupInfoSidebar chat={chatDetail} />
+                      <GroupInfoSidebar
+                        chat={chatDetail}
+                        accountId={selectedAccountId}
+                        workspaceVersion={accountWorkspaceVersionRef.current}
+                        onCustomerProfileUpdated={handleGroupCustomerProfileUpdated}
+                      />
                     ) : (
                       <FriendInfoSidebar
                         friendId={chatDetail.friendId}
@@ -3864,7 +4158,12 @@ export default function ChatsPage() {
         {(selectedFriendId || selectedChatId) && (
           <div className="hidden w-80 min-w-0 shrink-0 xl:flex">
             {selectedIsMultiPersonConversation && chatDetail ? (
-              <GroupInfoSidebar chat={chatDetail} />
+              <GroupInfoSidebar
+                chat={chatDetail}
+                accountId={selectedAccountId}
+                workspaceVersion={accountWorkspaceVersionRef.current}
+                onCustomerProfileUpdated={handleGroupCustomerProfileUpdated}
+              />
             ) : (
               <FriendInfoSidebar
                 friendId={selectedFriendId || selectedChatId}

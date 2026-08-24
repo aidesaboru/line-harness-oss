@@ -1,4 +1,4 @@
-name: Deploy Cloudflare Admin
+name: Verify Cloudflare Admin
 
 on:
   workflow_dispatch:
@@ -7,47 +7,41 @@ on:
     paths:
       - 'apps/web/**'
       - 'packages/shared/**'
+      - 'packages/update-engine/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-cloudflare-admin.yml'
 
+# Production Pages deployment intentionally lives in the Worker workflow. It
+# builds Admin once, hashes that exact directory, and deploys those same bytes.
+concurrency:
+  group: verify-cloudflare-admin-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
-  deploy:
+  verify:
     if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @line-crm/shared build
-
-      - name: Capture build metadata
+      - run: pnpm --filter @line-crm/shared --filter @line-harness/update-engine build
+      - run: pnpm --filter @line-harness/update-engine test
+      - run: pnpm --filter @line-harness/update-engine typecheck
+      - run: pnpm --filter web test
+      - name: Capture deterministic build metadata
         id: build-meta
-        run: echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
-
-      - name: Build Admin Panel
-        run: pnpm --filter web build
+        run: echo "build_time=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+      - run: pnpm --filter web build
         env:
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ vars.WORKER_URL || secrets.NEXT_PUBLIC_API_URL }}
           APP_BUILD_TIME: ${{ steps.build-meta.outputs.build_time }}
-
-      - name: Deploy to Cloudflare Pages
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
-          PAGES_PROJECT_NAME: ${{ vars.PAGES_PROJECT_NAME || 'your-admin-name' }}
-        run: |
-          test -n "$CLOUDFLARE_API_TOKEN"
-          test -n "$CLOUDFLARE_ACCOUNT_ID"
-          test -n "$NEXT_PUBLIC_API_URL"
-          npx wrangler pages deploy apps/web/out \
-            --project-name="$PAGES_PROJECT_NAME" \
-            --commit-message="deploy ${GITHUB_SHA}"

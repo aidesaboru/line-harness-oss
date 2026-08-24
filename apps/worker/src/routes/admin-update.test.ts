@@ -104,6 +104,19 @@ async function request(path: string, init?: RequestInit) {
   return app.request(path, init, baseEnv, baseCtx);
 }
 
+async function sessionRequest(role: 'owner' | 'admin' | 'staff', path: string, init?: RequestInit) {
+  const app = new Hono<{
+    Variables: { staff: { id: string; name: string; role: typeof role } };
+  }>();
+  app.use('/api/*', async (c, next) => {
+    c.set('staff', { id: 'staff-1', name: 'Session User', role });
+    await next();
+  });
+  const adminUpdate = await loadRoute();
+  app.route('/api/admin/update', adminUpdate);
+  return app.request(path, init, baseEnv, baseCtx);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   // Default happy-path setups; individual tests override as needed.
@@ -142,6 +155,16 @@ describe('POST /admin/update/start', () => {
       method: 'POST',
       headers: { 'x-admin-api-key': 'wrong' },
     });
+    expect(res.status).toBe(401);
+  });
+
+  it('accepts an owner session without putting an admin key in the browser', async () => {
+    const res = await sessionRequest('owner', '/api/admin/update/start', { method: 'POST' });
+    expect(res.status).toBe(202);
+  });
+
+  it('rejects a non-management staff session', async () => {
+    const res = await sessionRequest('staff', '/api/admin/update/start', { method: 'POST' });
     expect(res.status).toBe(401);
   });
 

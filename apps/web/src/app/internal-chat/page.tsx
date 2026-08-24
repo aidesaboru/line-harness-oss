@@ -1,11 +1,19 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import Header from '@/components/layout/header'
 import MentionText from '@/components/shared/mention-text'
 import { useAccount } from '@/contexts/account-context'
 import { api, type InternalChatFeedItem, type InternalTask, type StaffPresenceItem } from '@/lib/api'
+import {
+  describeInternalChatDegradedFeatures,
+  describeInternalChatLoadFailure,
+  type InternalChatDegradedFeature,
+  type InternalChatLoadIssue,
+} from '@/lib/internal-chat-feed-state'
+import { createLatestRequestGate } from '@/lib/latest-request'
+import { isWorkspaceSnapshotCurrent } from '@/lib/workspace-response'
 
 type SourceFilter = 'all' | 'support' | 'chat'
 type AttentionFilter = 'all' | 'unread' | 'mentions'
@@ -330,6 +338,8 @@ export default function InternalChatPage() {
   const [posting, setPosting] = useState(false)
   const [reactingId, setReactingId] = useState<string | null>(null)
   const [error, setError] = useState('')
+  const [feedLoadIssue, setFeedLoadIssue] = useState<InternalChatLoadIssue | null>(null)
+  const [degradedFeatures, setDegradedFeatures] = useState<InternalChatDegradedFeature[]>([])
   const [filter, setFilter] = useState<SourceFilter>('all')
   const [attentionFilter, setAttentionFilter] = useState<AttentionFilter>('all')
   const [selectedContextKey, setSelectedContextKey] = useState<string | null>(null)
@@ -356,6 +366,17 @@ export default function InternalChatPage() {
   const [taskDueAt, setTaskDueAt] = useState('')
   const [taskAssigneeIds, setTaskAssigneeIds] = useState<string[]>([])
   const [savingTask, setSavingTask] = useState(false)
+  const feedRequestGateRef = useRef(createLatestRequestGate())
+  const taskRequestGateRef = useRef(createLatestRequestGate())
+  const accountScopeRef = useRef<string | null>(selectedAccountId)
+  const currentAccountIdRef = useRef<string | null>(selectedAccountId)
+  const renderedAccountIdRef = useRef<string | null>(selectedAccountId)
+  const workspaceVersionRef = useRef(0)
+  currentAccountIdRef.current = selectedAccountId
+  if (renderedAccountIdRef.current !== selectedAccountId) {
+    renderedAccountIdRef.current = selectedAccountId
+    workspaceVersionRef.current += 1
+  }
 
   const loadFeed = useCallback(async (options: {
     silent?: boolean
@@ -363,7 +384,9 @@ export default function InternalChatPage() {
     preserveExisting?: boolean
     before?: string
   } = {}) => {
-    if (!selectedAccountId) return
+    const requestId = feedRequestGateRef.current.start()
+    const requestAccountId = selectedAccountId
+    if (!requestAccountId) return
     const silent = options.silent ?? false
     const append = options.append ?? false
     const preserveExisting = options.preserveExisting ?? false
@@ -372,16 +395,23 @@ export default function InternalChatPage() {
       if (append) setLoadingMore(true)
       else setLoading(true)
       setError('')
+      setFeedLoadIssue(null)
     }
     try {
       const res = await api.appNotifications.internalChatFeed({
-        accountId: selectedAccountId,
+        accountId: requestAccountId,
         limit: INTERNAL_CHAT_PAGE_SIZE,
         before: append ? options.before : undefined,
         search,
       })
+      if (!feedRequestGateRef.current.isLatest(requestId) || accountScopeRef.current !== requestAccountId) return
       if (!res.success) {
-        if (!silent) setError(res.error || '社内チャットの取得に失敗しました')
+        if (!silent) {
+          setFeedLoadIssue(describeInternalChatLoadFailure({
+            online: typeof navigator === 'undefined' || navigator.onLine,
+            apiError: res.error,
+          }))
+        }
         return
       }
       if (append || preserveExisting) {
@@ -393,11 +423,23 @@ export default function InternalChatPage() {
         setNextCursor(res.data.nextCursor)
         setHasMore(res.data.hasMore)
       }
+      setDegradedFeatures(res.data.degradedFeatures ?? [])
+      setFeedLoadIssue(null)
       setError('')
-    } catch {
-      if (!silent) setError('社内チャットの取得に失敗しました')
-    } finally {
+    } catch (loadError) {
+      if (!feedRequestGateRef.current.isLatest(requestId) || accountScopeRef.current !== requestAccountId) return
       if (!silent) {
+        setFeedLoadIssue(describeInternalChatLoadFailure({
+          online: typeof navigator === 'undefined' || navigator.onLine,
+          apiError: loadError instanceof Error ? loadError.message : undefined,
+        }))
+      }
+    } finally {
+      if (
+        !silent
+        && feedRequestGateRef.current.isLatest(requestId)
+        && accountScopeRef.current === requestAccountId
+      ) {
         if (append) setLoadingMore(false)
         else setLoading(false)
       }
@@ -419,13 +461,50 @@ export default function InternalChatPage() {
   }, [])
 
   const loadTasks = useCallback(async () => {
-    if (!selectedAccountId) return
+    const requestId = taskRequestGateRef.current.start()
+    const requestAccountId = selectedAccountId
+    if (!requestAccountId) return
     try {
-      const res = await api.appNotifications.internalTasks({ accountId: selectedAccountId })
-      if (res.success) setTasks(res.data)
+      const res = await api.appNotifications.internalTasks({ accountId: requestAccountId })
+      if (
+        res.success
+        && taskRequestGateRef.current.isLatest(requestId)
+        && accountScopeRef.current === requestAccountId
+      ) setTasks(res.data)
     } catch {
       // Task retrieval is secondary to reading the conversation.
     }
+  }, [selectedAccountId])
+
+  useEffect(() => {
+    if (accountScopeRef.current === selectedAccountId) return
+    accountScopeRef.current = selectedAccountId
+    feedRequestGateRef.current.invalidate()
+    taskRequestGateRef.current.invalidate()
+    setItems([])
+    setTasks([])
+    setSelectedContextKey(null)
+    setMobileConversationOpen(false)
+    setNextCursor(null)
+    setHasMore(false)
+    setDegradedFeatures([])
+    setFeedLoadIssue(null)
+    setError('')
+    setActionMenuId(null)
+    setEditingItem(null)
+    setEditingBody('')
+    setDraft('')
+    setPosting(false)
+    setReactingId(null)
+    setMessageActionId(null)
+    setTaskPanelOpen(false)
+    setTaskItem(null)
+    setTaskTitle('')
+    setTaskDueAt('')
+    setTaskAssigneeIds([])
+    setSavingTask(false)
+    setLoading(Boolean(selectedAccountId))
+    setLoadingMore(false)
   }, [selectedAccountId])
 
   useEffect(() => {
@@ -562,15 +641,21 @@ export default function InternalChatPage() {
 
   const markContextRead = useCallback(async (context: ContextItem): Promise<void> => {
     if (!selectedAccountId) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     const hasUnread = items.some((item) => contextKey(item) === context.key && item.isUnread)
     if (!hasUnread) return
     try {
       const res = await api.appNotifications.markInternalChatRead({
-        accountId: selectedAccountId,
+        accountId: requestAccountId,
         source: context.source,
         sourceId: context.sourceId,
       })
-      if (!res.success) return
+      if (!isCurrentWorkspace() || !res.success) return
       setItems((current) => current.map((item) => (
         contextKey(item) === context.key ? { ...item, isUnread: false } : item
       )))
@@ -581,11 +666,18 @@ export default function InternalChatPage() {
 
   const markAllRead = async () => {
     if (!selectedAccountId) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     try {
       const res = await api.appNotifications.markInternalChatRead({
-        accountId: selectedAccountId,
+        accountId: requestAccountId,
         source: 'all',
       })
+      if (!isCurrentWorkspace()) return
       if (!res.success) {
         setError('既読状態の更新に失敗しました')
         return
@@ -594,18 +686,25 @@ export default function InternalChatPage() {
       if (attentionFilter === 'unread') setAttentionFilter('all')
       setError('')
     } catch {
-      setError('既読状態の更新に失敗しました')
+      if (isCurrentWorkspace()) setError('既読状態の更新に失敗しました')
     }
   }
 
   const handleReaction = async (item: InternalChatFeedItem, emoji: string): Promise<void> => {
     if (!selectedAccountId || reactingId) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     setReactingId(`${item.id}:${emoji}`)
     try {
       const messageId = messageIdFromFeedId(item)
       const res = item.source === 'support'
-        ? await api.support.cases.toggleInternalReaction(item.sourceId, selectedAccountId, messageId, emoji)
+        ? await api.support.cases.toggleInternalReaction(item.sourceId, requestAccountId, messageId, emoji)
         : await api.chats.toggleInternalReaction(item.sourceId, messageId, emoji)
+      if (!isCurrentWorkspace()) return
       if (!res.success || !res.data) {
         setError('リアクションの更新に失敗しました')
         return
@@ -616,9 +715,9 @@ export default function InternalChatPage() {
       )))
       setError('')
     } catch {
-      setError('リアクションの更新に失敗しました')
+      if (isCurrentWorkspace()) setError('リアクションの更新に失敗しました')
     } finally {
-      setReactingId(null)
+      if (isCurrentWorkspace()) setReactingId(null)
     }
   }
 
@@ -648,39 +747,53 @@ export default function InternalChatPage() {
     if (!editingItem || !selectedAccountId || messageActionId) return
     const body = editingBody.trim()
     if (!body) return
-    setMessageActionId(editingItem.id)
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const requestItem = editingItem
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
+    setMessageActionId(requestItem.id)
     try {
       const mentions = mentionsFromBody(body, mentionCandidates)
-      const res = editingItem.source === 'support'
-        ? await api.support.cases.editInternalMessage(editingItem.sourceId, selectedAccountId, messageIdFromFeedId(editingItem), {
+      const res = requestItem.source === 'support'
+        ? await api.support.cases.editInternalMessage(requestItem.sourceId, requestAccountId, messageIdFromFeedId(requestItem), {
           body,
-          baseVersion: editingItem.version ?? 0,
+          baseVersion: requestItem.version ?? 0,
           mentions: mentions.names,
           mentionStaffIds: mentions.staffIds,
         })
-        : await api.chats.editInternalMessage(editingItem.sourceId, messageIdFromFeedId(editingItem), {
+        : await api.chats.editInternalMessage(requestItem.sourceId, messageIdFromFeedId(requestItem), {
           body,
-          baseVersion: editingItem.version ?? 0,
+          baseVersion: requestItem.version ?? 0,
           mentions: mentions.names,
           mentionStaffIds: mentions.staffIds,
         })
+      if (!isCurrentWorkspace()) return
       if (!res.success || !res.data) {
         setError('メッセージの編集に失敗しました')
         return
       }
-      mergeMessageResult(editingItem, res.data)
+      mergeMessageResult(requestItem, res.data)
       setEditingItem(null)
       setEditingBody('')
       setError('')
     } catch {
-      setError('メッセージの編集に失敗しました。再読み込みしてからお試しください')
+      if (isCurrentWorkspace()) setError('メッセージの編集に失敗しました。再読み込みしてからお試しください')
     } finally {
-      setMessageActionId(null)
+      if (isCurrentWorkspace()) setMessageActionId(null)
     }
   }
 
   const deleteMessage = async (item: InternalChatFeedItem) => {
     if (!selectedAccountId || messageActionId) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     setActionMenuId(null)
     if (!window.confirm('このメッセージを削除表示にしますか\n原文と操作履歴は保持されます')) return
     const reason = item.createdBy && item.createdBy !== staffId
@@ -690,7 +803,7 @@ export default function InternalChatPage() {
     setMessageActionId(item.id)
     try {
       const res = item.source === 'support'
-        ? await api.support.cases.softDeleteInternalMessage(item.sourceId, selectedAccountId, messageIdFromFeedId(item), {
+        ? await api.support.cases.softDeleteInternalMessage(item.sourceId, requestAccountId, messageIdFromFeedId(item), {
           baseVersion: item.version ?? 0,
           reason,
         })
@@ -698,6 +811,7 @@ export default function InternalChatPage() {
           baseVersion: item.version ?? 0,
           reason,
         })
+      if (!isCurrentWorkspace()) return
       if (!res.success || !res.data) {
         setError('メッセージの削除に失敗しました')
         return
@@ -705,23 +819,30 @@ export default function InternalChatPage() {
       mergeMessageResult(item, res.data)
       setError('')
     } catch {
-      setError('メッセージの削除に失敗しました。再読み込みしてからお試しください')
+      if (isCurrentWorkspace()) setError('メッセージの削除に失敗しました。再読み込みしてからお試しください')
     } finally {
-      setMessageActionId(null)
+      if (isCurrentWorkspace()) setMessageActionId(null)
     }
   }
 
   const toggleBookmark = async (item: InternalChatFeedItem) => {
     if (!selectedAccountId || messageActionId) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     setActionMenuId(null)
     setMessageActionId(item.id)
     try {
       const res = await api.appNotifications.toggleInternalChatBookmark({
-        accountId: selectedAccountId,
+        accountId: requestAccountId,
         source: item.source,
         sourceId: item.sourceId,
         messageId: messageIdFromFeedId(item),
       })
+      if (!isCurrentWorkspace()) return
       if (!res.success) {
         setError('ブックマークの更新に失敗しました')
         return
@@ -731,9 +852,9 @@ export default function InternalChatPage() {
         : message))
       setError('')
     } catch {
-      setError('ブックマークの更新に失敗しました')
+      if (isCurrentWorkspace()) setError('ブックマークの更新に失敗しました')
     } finally {
-      setMessageActionId(null)
+      if (isCurrentWorkspace()) setMessageActionId(null)
     }
   }
 
@@ -747,42 +868,56 @@ export default function InternalChatPage() {
 
   const createTask = async () => {
     if (!taskItem || !selectedAccountId || savingTask || !taskTitle.trim()) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const requestTaskItem = taskItem
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     setSavingTask(true)
     try {
       const res = await api.appNotifications.createInternalTask({
-        accountId: selectedAccountId,
-        source: taskItem.source,
-        sourceId: taskItem.sourceId,
-        sourceMessageId: messageIdFromFeedId(taskItem),
+        accountId: requestAccountId,
+        source: requestTaskItem.source,
+        sourceId: requestTaskItem.sourceId,
+        sourceMessageId: messageIdFromFeedId(requestTaskItem),
         title: taskTitle.trim(),
-        description: taskItem.body,
+        description: requestTaskItem.body,
         dueAt: taskDueAt || null,
         assigneeStaffIds: taskAssigneeIds,
       })
+      if (!isCurrentWorkspace()) return
       if (!res.success) {
         setError('タスクの作成に失敗しました')
         return
       }
       setTasks((current) => [res.data, ...current])
-      setItems((current) => current.map((message) => message.id === taskItem.id
+      setItems((current) => current.map((message) => message.id === requestTaskItem.id
         ? { ...message, taskCount: (message.taskCount ?? 0) + 1 }
         : message))
       setTaskItem(null)
       setError('')
     } catch {
-      setError('タスクの作成に失敗しました')
+      if (isCurrentWorkspace()) setError('タスクの作成に失敗しました')
     } finally {
-      setSavingTask(false)
+      if (isCurrentWorkspace()) setSavingTask(false)
     }
   }
 
   const toggleTaskStatus = async (task: InternalTask) => {
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     try {
       const res = await api.appNotifications.updateInternalTask(task.id, task.status === 'open' ? 'done' : 'open')
-      if (!res.success) return
+      if (!isCurrentWorkspace() || !res.success) return
       setTasks((current) => current.map((item) => item.id === task.id ? res.data : item))
     } catch {
-      setError('タスクの更新に失敗しました')
+      if (isCurrentWorkspace()) setError('タスクの更新に失敗しました')
     }
   }
 
@@ -790,33 +925,46 @@ export default function InternalChatPage() {
     if (!activeContext || !selectedAccountId || posting) return
     const body = draft.trim()
     if (!body) return
+    const requestAccountId = selectedAccountId
+    const requestWorkspaceVersion = workspaceVersionRef.current
+    const requestContext = activeContext
+    const isCurrentWorkspace = () => isWorkspaceSnapshotCurrent(
+      { accountId: requestAccountId, version: requestWorkspaceVersion },
+      { accountId: currentAccountIdRef.current, version: workspaceVersionRef.current },
+    )
     setPosting(true)
     try {
       const mentions = mentionsFromBody(body, mentionCandidates)
-      const res = activeContext.source === 'support'
-        ? await api.support.cases.addInternalMessage(activeContext.sourceId, selectedAccountId, {
+      const res = requestContext.source === 'support'
+        ? await api.support.cases.addInternalMessage(requestContext.sourceId, requestAccountId, {
           body,
           mentions: mentions.names,
           mentionStaffIds: mentions.staffIds,
         })
-        : await api.chats.addInternalMessage(activeContext.sourceId, {
+        : await api.chats.addInternalMessage(requestContext.sourceId, {
           body,
           mentions: mentions.names,
           mentionStaffIds: mentions.staffIds,
         })
+      if (!isCurrentWorkspace()) return
       if (!res.success) {
         setError('社内チャットの投稿に失敗しました')
         return
       }
       setDraft('')
       await loadFeed({ silent: true, preserveExisting: true })
-      setSelectedContextKey(activeContext.key)
+      if (!isCurrentWorkspace()) return
+      setSelectedContextKey(requestContext.key)
       setError('')
     } catch {
-      setError('社内チャットの投稿に失敗しました')
+      if (isCurrentWorkspace()) setError('社内チャットの投稿に失敗しました')
     } finally {
-      setPosting(false)
+      if (isCurrentWorkspace()) setPosting(false)
     }
+  }
+
+  if (accountScopeRef.current !== selectedAccountId) {
+    return <div className="p-6 text-sm text-gray-500">読み込み中…</div>
   }
 
   return (
@@ -1067,6 +1215,30 @@ export default function InternalChatPage() {
             )}
           </div>
 
+          {feedLoadIssue && items.length > 0 && (
+            <div role="alert" className="flex items-center justify-between gap-3 border-b border-red-100 bg-red-50 px-4 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-red-800">{feedLoadIssue.title}</p>
+                <p className="mt-0.5 text-xs font-medium text-red-700">{feedLoadIssue.detail}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void loadFeed()}
+                disabled={loading}
+                className="shrink-0 rounded-md border border-red-200 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading ? '読み込み中' : '再読み込み'}
+              </button>
+            </div>
+          )}
+
+          {!feedLoadIssue && degradedFeatures.length > 0 && (
+            <div role="status" className="border-b border-amber-100 bg-amber-50 px-4 py-2.5 text-xs font-medium text-amber-800">
+              {describeInternalChatDegradedFeatures(degradedFeatures)}
+              <span className="ml-1 text-amber-700">チャット本文は通常どおり確認できます</span>
+            </div>
+          )}
+
           {error && (
             <div className="border-b border-red-100 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
               {error}
@@ -1085,6 +1257,24 @@ export default function InternalChatPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            ) : feedLoadIssue && items.length === 0 ? (
+              <div role="alert" className="flex min-h-[360px] items-center justify-center rounded-xl border border-red-200 bg-white px-6 text-center">
+                <div className="max-w-md">
+                  <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-red-50 text-xl text-red-700 ring-1 ring-red-100" aria-hidden="true">
+                    !
+                  </div>
+                  <p className="mt-4 text-base font-semibold text-slate-900">{feedLoadIssue.title}</p>
+                  <p className="mt-1 text-sm font-medium leading-6 text-slate-600">{feedLoadIssue.detail}</p>
+                  <button
+                    type="button"
+                    onClick={() => void loadFeed()}
+                    disabled={loading}
+                    className="mt-5 rounded-md bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {loading ? '読み込み中' : '再読み込み'}
+                  </button>
+                </div>
               </div>
             ) : timelineItems.length === 0 ? (
               <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-white text-sm font-medium text-slate-500">

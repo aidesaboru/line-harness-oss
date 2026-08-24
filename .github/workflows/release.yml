@@ -9,8 +9,8 @@ name: Release
 #   2. Run unit tests (scripts/* + per-package).
 #   3. Migration safety check (additive-only policy).
 #   4. Build Worker, Admin, LIFF.
-#   5. Compute SHA256 hashes via inject-version, then rebuild Worker with
-#      _version.ts embedded so /_version reflects the shipping bundle.
+#   5. Prepare stable metadata, compute a canonical Worker SHA256, then rebuild
+#      so /admin/version reflects the exact shipping artifacts.
 #   6. Produce `bundle.tar.gz` via scripts/release/build-bundle.ts.
 #   7. Generate `release-entry.json` (version, hashes, sizes, migrations,
 #      required_secrets, min_from_version).
@@ -44,18 +44,21 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+
+      - name: Build shared workspace packages
+        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 
       - name: Resolve version from tag
         id: version
@@ -72,12 +75,25 @@ jobs:
       - name: Run unit tests (scripts)
         run: pnpm test:scripts
 
-      - name: Build shared workspace packages
-        run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
+      - name: Run database tests and typecheck
+        run: |
+          pnpm --filter @line-crm/db test
+          pnpm --filter @line-crm/db typecheck
+
+      - name: Run update engine tests and typecheck
+        run: |
+          pnpm --filter @line-harness/update-engine test
+          pnpm --filter @line-harness/update-engine typecheck
+
+      - name: Run Web and Worker tests
+        run: |
+          pnpm --filter web test
+          pnpm --filter worker typecheck
+          pnpm --filter worker test
 
       - name: Capture build metadata
         id: build-meta
-        run: echo "build_time=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_OUTPUT"
+        run: echo "build_time=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
 
       - name: Build Admin (Next.js static export)
         # Placeholder URL gets baked into the bundle. End users replace it at
@@ -93,6 +109,19 @@ jobs:
         # silently shipping a stale dist.
         run: pnpm --filter liff build
 
+      - name: Prepare version metadata with a stable Worker hash placeholder
+        id: prepare-version
+        run: |
+          json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
+            --prepare true \
+            --version "${{ steps.version.outputs.version }}" \
+            --admin apps/web/out \
+            --liff apps/liff/dist \
+            --released-at "${{ steps.build-meta.outputs.build_time }}" \
+            --out apps/worker/src/_version.ts)
+          released_at=$(node -e "console.log(JSON.parse(process.argv[1]).releasedAt)" "$json")
+          echo "released_at=${released_at}" >> "$GITHUB_OUTPUT"
+
       - name: Build Worker (first pass — produces dist for hashing)
         run: pnpm --filter worker build
 
@@ -103,9 +132,10 @@ jobs:
           # the plugin emits under dist/<wrangler-name-with-underscores>/.
           json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
             --version "${{ steps.version.outputs.version }}" \
-            --worker apps/worker/dist/line_harness/index.js \
+            --worker apps/worker/dist/ec_owner_line_harness/index.js \
             --admin apps/web/out \
             --liff apps/liff/dist \
+            --released-at "${{ steps.prepare-version.outputs.released_at }}" \
             --out apps/worker/src/_version.ts)
 
           echo "json<<EOF" >> "$GITHUB_OUTPUT"
@@ -126,11 +156,36 @@ jobs:
       - name: Rebuild Worker (with embedded _version.ts)
         run: pnpm --filter worker build
 
+      - name: Verify Worker is a single release module
+        run: |
+          set -euo pipefail
+          test "$(find apps/worker/dist/ec_owner_line_harness -type f -name '*.js' | wc -l | tr -d ' ')" = "1"
+          node -e '
+            const fs = require("node:fs");
+            const source = fs.readFileSync("apps/worker/dist/ec_owner_line_harness/index.js", "utf8");
+            if (/\b(?:from|import)\s*[\x22\x27]\.\//.test(source)) {
+              throw new Error("Worker bundle contains a relative module import");
+            }
+          '
+
+      - name: Verify final artifact hashes
+        run: |
+          json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
+            --version "${{ steps.version.outputs.version }}" \
+            --worker apps/worker/dist/ec_owner_line_harness/index.js \
+            --admin apps/web/out \
+            --liff apps/liff/dist \
+            --released-at "${{ steps.prepare-version.outputs.released_at }}" \
+            --out "$RUNNER_TEMP/final-version.ts")
+          test "$(node -e "console.log(JSON.parse(process.argv[1]).workerHash)" "$json")" = "${{ steps.hashes.outputs.worker_hash }}"
+          test "$(node -e "console.log(JSON.parse(process.argv[1]).adminHash)" "$json")" = "${{ steps.hashes.outputs.admin_hash }}"
+          test "$(node -e "console.log(JSON.parse(process.argv[1]).liffHash)" "$json")" = "${{ steps.hashes.outputs.liff_hash }}"
+
       - name: Build release bundle
         run: |
           mkdir -p dist
           pnpm tsx scripts/release/build-bundle.ts \
-            --worker-js apps/worker/dist/line_harness/index.js \
+            --worker-js apps/worker/dist/ec_owner_line_harness/index.js \
             --admin apps/web/out \
             --liff apps/liff/dist \
             --migrations packages/db/migrations \
@@ -219,7 +274,7 @@ jobs:
           cat release-manifest.json
 
       - name: Publish draft GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           draft: true
           tag_name: ${{ steps.version.outputs.tag }}

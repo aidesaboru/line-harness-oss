@@ -27,9 +27,13 @@ const NOTIFICATION_LIMIT = 12;
 const FOLLOW_UP_NOTIFICATION_LIMIT = 100;
 const INTERNAL_CHAT_FEED_DEFAULT_LIMIT = 50;
 const INTERNAL_CHAT_FEED_MAX_LIMIT = 100;
+// Keep lookup queries below D1's 100 bound-parameter limit, including fixed filters.
+const INTERNAL_CHAT_LOOKUP_ID_BATCH_SIZE = 90;
 const CURSOR_MAX_LENGTH = 64;
 const INTERNAL_CHAT_CURSOR_MAX_LENGTH = 512;
 const INTERNAL_CHAT_SEARCH_MAX_LENGTH = 256;
+const INTERNAL_TASK_DEFAULT_LIMIT = 100;
+const INTERNAL_TASK_MAX_LIMIT = 200;
 const ACCOUNT_ID_MAX_LENGTH = 128;
 const WEB_PUSH_ENDPOINT_MAX_LENGTH = 2048;
 const WEB_PUSH_KEY_MAX_LENGTH = 256;
@@ -154,6 +158,8 @@ type InternalChatCursor = {
   id: string;
 };
 
+type InternalChatDegradedFeature = 'mentions' | 'readStatus' | 'bookmarks' | 'taskCounts';
+
 type InternalTaskRow = {
   id: string;
   line_account_id: string;
@@ -163,6 +169,11 @@ type InternalTaskRow = {
   title: string;
   description: string;
   status: 'open' | 'done';
+  workflow_status: 'todo' | 'in_progress' | 'review' | 'done';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  sort_order: number;
+  version: number;
+  labels: string;
   due_at: string | null;
   created_by: string | null;
   created_by_name: string | null;
@@ -172,6 +183,9 @@ type InternalTaskRow = {
   created_at: string;
   updated_at: string;
   comment_count?: number;
+  source_title?: string | null;
+  customer_name?: string | null;
+  is_group_conversation?: number | null;
 };
 
 type InternalTaskCommentRow = {
@@ -227,8 +241,77 @@ function routeErrorKind(err: unknown): string {
   return typeof err;
 }
 
+async function loadOptionalInternalChatFeature<T>(
+  feature: InternalChatDegradedFeature,
+  dependency: string,
+  loader: () => Promise<T>,
+  fallback: T,
+): Promise<{ feature: InternalChatDegradedFeature; degraded: boolean; value: T }> {
+  try {
+    return { feature, degraded: false, value: await loader() };
+  } catch (err) {
+    console.warn(JSON.stringify({
+      event: 'internal_chat_optional_dependency_failed',
+      feature,
+      dependency,
+      errorKind: routeErrorKind(err),
+    }));
+    return { feature, degraded: true, value: fallback };
+  }
+}
+
 function currentStaff(c: { get: (key: 'staff') => SupportAccessStaff | undefined }): SupportAccessStaff {
   return c.get('staff') ?? { id: 'system', name: 'system', role: 'staff' };
+}
+
+function isReadOnlySecondary(staff: SupportAccessStaff): boolean {
+  return staff.role === 'secondary' && staff.secondaryCanRespond !== true;
+}
+
+function internalTaskWriteGuard(
+  staff: SupportAccessStaff,
+  taskAlias: string,
+): { sql: string; binds: unknown[] } {
+  if (staff.role === 'owner' || staff.role === 'admin') return { sql: '1 = 1', binds: [] };
+  return {
+    sql: `(
+      ${taskAlias}.created_by = ?
+      OR EXISTS (
+        SELECT 1 FROM internal_task_assignees task_write_assignee
+        WHERE task_write_assignee.task_id = ${taskAlias}.id
+          AND task_write_assignee.staff_id = ?
+          AND task_write_assignee.removed_at IS NULL
+      )
+    )`,
+    binds: [staff.id, staff.id],
+  };
+}
+
+function internalTaskCreateGuard(
+  staff: SupportAccessStaff,
+  lineAccountId: string,
+  source: 'support' | 'chat',
+  sourceId: string,
+  sourceMessageId: string,
+): { sql: string; binds: unknown[] } {
+  if (staff.role !== 'secondary') return { sql: '1 = 1', binds: [] };
+  if (source !== 'support') return { sql: '0 = 1', binds: [] };
+  const visibility = supportCaseVisibilitySql(staff, 'sc_task_create_guard', 'se_task_create_guard');
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM support_cases sc_task_create_guard
+      WHERE sc_task_create_guard.id = ?
+        AND sc_task_create_guard.line_account_id = ?
+        AND ${visibility.sql}
+        AND EXISTS (
+          SELECT 1 FROM support_internal_messages sim_task_create_guard
+          WHERE sim_task_create_guard.id = ?
+            AND sim_task_create_guard.case_id = sc_task_create_guard.id
+            AND sim_task_create_guard.line_account_id = sc_task_create_guard.line_account_id
+        )
+    )`,
+    binds: [sourceId, lineAccountId, ...visibility.binds, sourceMessageId],
+  };
 }
 
 function parseCursor(raw: unknown): ValueResult<string | undefined> {
@@ -349,6 +432,26 @@ function parseLimit(raw: unknown): ValueResult<number> {
   };
 }
 
+function parseTaskLimit(raw: unknown): ValueResult<number> {
+  if (raw === undefined || raw === null || raw === '') {
+    return { ok: true, value: INTERNAL_TASK_DEFAULT_LIMIT };
+  }
+  if (typeof raw !== 'string') return { ok: false, error: 'limit must be a string' };
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return { ok: false, error: 'limit is invalid' };
+  return { ok: true, value: Math.min(INTERNAL_TASK_MAX_LIMIT, value) };
+}
+
+function parseTaskOffset(raw: unknown): ValueResult<number> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: 0 };
+  if (typeof raw !== 'string') return { ok: false, error: 'offset must be a string' };
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0 || value > 100_000) {
+    return { ok: false, error: 'offset is invalid' };
+  }
+  return { ok: true, value };
+}
+
 function parseInternalChatCursor(raw: unknown): ValueResult<InternalChatCursor | undefined> {
   if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
   if (typeof raw !== 'string') return { ok: false, error: 'before must be a string' };
@@ -394,10 +497,83 @@ function parseHumanText(raw: unknown, label: string, maxLength: number, required
   return { ok: true, value };
 }
 
+function parseOptionalTimestamp(raw: unknown, label: string): ValueResult<string | undefined> {
+  if (raw === undefined || raw === null || raw === '') return { ok: true, value: undefined };
+  if (typeof raw !== 'string') return { ok: false, error: `${label} must be a string` };
+  const value = raw.trim();
+  if (!value || value.length > 64) return { ok: false, error: `${label} is invalid` };
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (!match) return { ok: false, error: `${label} must be an ISO-8601 timestamp` };
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText = '0', , zone] = match;
+  const [year, month, day, hour, minute, second] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+  ].map(Number);
+  const calendar = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    calendar.getUTCFullYear() !== year
+    || calendar.getUTCMonth() !== month - 1
+    || calendar.getUTCDate() !== day
+    || calendar.getUTCHours() !== hour
+    || calendar.getUTCMinutes() !== minute
+    || calendar.getUTCSeconds() !== second
+  ) {
+    return { ok: false, error: `${label} must be a valid ISO-8601 timestamp` };
+  }
+  if (zone && zone !== 'Z') {
+    const [offsetHour, offsetMinute] = zone.slice(1).split(':').map(Number);
+    if (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)) {
+      return { ok: false, error: `${label} must have a valid timezone offset` };
+    }
+  }
+  // datetime-local values from the Admin UI are explicitly interpreted as JST.
+  const parseTarget = zone ? value : `${value}+09:00`;
+  if (!Number.isFinite(Date.parse(parseTarget))) {
+    return { ok: false, error: `${label} must be a valid ISO-8601 timestamp` };
+  }
+  return { ok: true, value: toJstString(new Date(parseTarget)) };
+}
+
 function parseInternalSource(raw: unknown): ValueResult<'support' | 'chat'> {
   return raw === 'support' || raw === 'chat'
     ? { ok: true, value: raw }
     : { ok: false, error: 'source is invalid' };
+}
+
+type InternalTaskWorkflowStatus = 'todo' | 'in_progress' | 'review' | 'done';
+type InternalTaskPriority = 'low' | 'medium' | 'high' | 'urgent';
+
+function parseTaskWorkflowStatus(raw: unknown): ValueResult<InternalTaskWorkflowStatus> {
+  return raw === 'todo' || raw === 'in_progress' || raw === 'review' || raw === 'done'
+    ? { ok: true, value: raw }
+    : { ok: false, error: 'workflowStatus is invalid' };
+}
+
+function parseTaskPriority(raw: unknown): ValueResult<InternalTaskPriority> {
+  return raw === 'low' || raw === 'medium' || raw === 'high' || raw === 'urgent'
+    ? { ok: true, value: raw }
+    : { ok: false, error: 'priority is invalid' };
+}
+
+function parseTaskLabels(raw: unknown): ValueResult<string[]> {
+  if (!Array.isArray(raw) || raw.length > 20) return { ok: false, error: 'labels is invalid' };
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const label = parseHumanText(item, 'label', 40, true);
+    if (!label.ok) return label;
+    if (label.value && !seen.has(label.value)) {
+      seen.add(label.value);
+      labels.push(label.value);
+    }
+  }
+  return { ok: true, value: labels };
+}
+
+function parseTaskVersion(raw: unknown): ValueResult<number> {
+  if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+    return { ok: false, error: 'version is invalid' };
+  }
+  return { ok: true, value: raw };
 }
 
 function parseStaffIds(raw: unknown): ValueResult<string[]> {
@@ -539,39 +715,54 @@ function parseStoredMentions(raw: string | null | undefined): string[] {
   }
 }
 
+function internalMessageLookupBatches(
+  supportMessageIds: string[],
+  chatMessageIds: string[],
+): Array<{ sourceType: 'support' | 'chat'; messageIds: string[] }> {
+  const batches: Array<{ sourceType: 'support' | 'chat'; messageIds: string[] }> = [];
+  for (const [sourceType, ids] of [
+    ['support', supportMessageIds],
+    ['chat', chatMessageIds],
+  ] as const) {
+    const uniqueIds = [...new Set(ids)];
+    for (let start = 0; start < uniqueIds.length; start += INTERNAL_CHAT_LOOKUP_ID_BATCH_SIZE) {
+      batches.push({
+        sourceType,
+        messageIds: uniqueIds.slice(start, start + INTERNAL_CHAT_LOOKUP_ID_BATCH_SIZE),
+      });
+    }
+  }
+  return batches;
+}
+
 async function loadBookmarkStates(
   db: D1Database,
   staffId: string,
   supportMessageIds: string[],
   chatMessageIds: string[],
 ): Promise<Set<string>> {
-  const scopes: string[] = [];
-  const binds: unknown[] = [staffId];
-  if (supportMessageIds.length > 0) {
-    scopes.push(`(source_type = 'support' AND source_message_id IN (${supportMessageIds.map(() => '?').join(', ')}))`);
-    binds.push(...supportMessageIds);
-  }
-  if (chatMessageIds.length > 0) {
-    scopes.push(`(source_type = 'chat' AND source_message_id IN (${chatMessageIds.map(() => '?').join(', ')}))`);
-    binds.push(...chatMessageIds);
-  }
-  if (scopes.length === 0) return new Set();
-  const rows = await db
+  const batches = internalMessageLookupBatches(supportMessageIds, chatMessageIds);
+  if (batches.length === 0) return new Set();
+  const results = await Promise.all(batches.map(({ sourceType, messageIds }) => db
     .prepare(
       `SELECT source_type, source_message_id, action
        FROM internal_message_bookmark_events
-       WHERE staff_id = ? AND (${scopes.join(' OR ')})
+       WHERE staff_id = ?
+         AND source_type = ?
+         AND source_message_id IN (${messageIds.map(() => '?').join(', ')})
        ORDER BY created_at DESC, id DESC`,
     )
-    .bind(...binds)
-    .all<{ source_type: 'support' | 'chat'; source_message_id: string; action: 'add' | 'remove' }>();
+    .bind(staffId, sourceType, ...messageIds)
+    .all<{ source_type: 'support' | 'chat'; source_message_id: string; action: 'add' | 'remove' }>()));
   const seen = new Set<string>();
   const active = new Set<string>();
-  for (const row of rows.results) {
-    const key = `${row.source_type}:${row.source_message_id}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (row.action === 'add') active.add(key);
+  for (const rows of results) {
+    for (const row of rows.results) {
+      const key = `${row.source_type}:${row.source_message_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (row.action === 'add') active.add(key);
+    }
   }
   return active;
 }
@@ -581,27 +772,23 @@ async function loadMessageTaskCounts(
   supportMessageIds: string[],
   chatMessageIds: string[],
 ): Promise<Map<string, number>> {
-  const scopes: string[] = [];
-  const binds: unknown[] = [];
-  if (supportMessageIds.length > 0) {
-    scopes.push(`(source_type = 'support' AND source_message_id IN (${supportMessageIds.map(() => '?').join(', ')}))`);
-    binds.push(...supportMessageIds);
-  }
-  if (chatMessageIds.length > 0) {
-    scopes.push(`(source_type = 'chat' AND source_message_id IN (${chatMessageIds.map(() => '?').join(', ')}))`);
-    binds.push(...chatMessageIds);
-  }
-  if (scopes.length === 0) return new Map();
-  const rows = await db
+  const batches = internalMessageLookupBatches(supportMessageIds, chatMessageIds);
+  if (batches.length === 0) return new Map();
+  const results = await Promise.all(batches.map(({ sourceType, messageIds }) => db
     .prepare(
       `SELECT source_type, source_message_id, COUNT(*) AS count
        FROM internal_tasks
-       WHERE status = 'open' AND source_message_id IS NOT NULL AND (${scopes.join(' OR ')})
+       WHERE status = 'open'
+         AND source_message_id IS NOT NULL
+         AND source_type = ?
+         AND source_message_id IN (${messageIds.map(() => '?').join(', ')})
        GROUP BY source_type, source_message_id`,
     )
-    .bind(...binds)
-    .all<{ source_type: 'support' | 'chat'; source_message_id: string; count: number }>();
-  return new Map(rows.results.map((row) => [`${row.source_type}:${row.source_message_id}`, row.count]));
+    .bind(sourceType, ...messageIds)
+    .all<{ source_type: 'support' | 'chat'; source_message_id: string; count: number }>()));
+  return new Map(results.flatMap((rows) => (
+    rows.results.map((row) => [`${row.source_type}:${row.source_message_id}`, row.count] as const)
+  )));
 }
 
 async function loadTaskAssignees(
@@ -650,10 +837,87 @@ async function loadTaskComments(
   return result;
 }
 
+const INTERNAL_TASK_SOURCE_PROJECTION = `
+  CASE
+    WHEN it.source_type = 'support' THEN (
+      SELECT sc_source.title
+      FROM support_cases sc_source
+      WHERE sc_source.id = it.source_id
+        AND sc_source.line_account_id = it.line_account_id
+      LIMIT 1
+    )
+    ELSE COALESCE(
+      (
+        SELECT NULLIF(f_source.display_name, '')
+        FROM friends f_source
+        WHERE f_source.id = it.source_id
+          AND f_source.line_account_id = it.line_account_id
+        LIMIT 1
+      ),
+      (
+        SELECT NULLIF(lc_source.display_name, '')
+        FROM line_conversations lc_source
+        WHERE lc_source.id = it.source_id
+          AND lc_source.line_account_id = it.line_account_id
+        LIMIT 1
+      )
+    )
+  END AS source_title,
+  CASE
+    WHEN it.source_type = 'support' THEN (
+      SELECT COALESCE(
+        NULLIF(f_customer.display_name, ''),
+        NULLIF(sc_customer.contact_name, ''),
+        NULLIF(sc_customer.company_name, ''),
+        NULLIF(sc_customer.customer_number, '')
+      )
+      FROM support_cases sc_customer
+      LEFT JOIN friends f_customer ON f_customer.id = sc_customer.friend_id
+      WHERE sc_customer.id = it.source_id
+        AND sc_customer.line_account_id = it.line_account_id
+      LIMIT 1
+    )
+    ELSE COALESCE(
+      (
+        SELECT NULLIF(f_customer.display_name, '')
+        FROM friends f_customer
+        WHERE f_customer.id = it.source_id
+          AND f_customer.line_account_id = it.line_account_id
+        LIMIT 1
+      ),
+      (
+        SELECT CASE
+          WHEN NULLIF(json_extract(lc_customer.customer_metadata, '$.customerNumber'), '') IS NOT NULL
+           AND NULLIF(json_extract(lc_customer.customer_metadata, '$.contactName'), '') IS NOT NULL
+            THEN json_extract(lc_customer.customer_metadata, '$.customerNumber')
+              || '_'
+              || json_extract(lc_customer.customer_metadata, '$.contactName')
+          ELSE COALESCE(
+            NULLIF(json_extract(lc_customer.customer_metadata, '$.companyName'), ''),
+            NULLIF(json_extract(lc_customer.customer_metadata, '$.customerNumber'), ''),
+            NULLIF(json_extract(lc_customer.customer_metadata, '$.contactName'), ''),
+            NULLIF(lc_customer.display_name, '')
+          )
+        END
+        FROM line_conversations lc_customer
+        WHERE lc_customer.id = it.source_id
+          AND lc_customer.line_account_id = it.line_account_id
+        LIMIT 1
+      )
+    )
+  END AS customer_name,
+  CASE WHEN EXISTS (
+    SELECT 1
+    FROM line_conversations lc_group
+    WHERE lc_group.id = it.source_id
+      AND lc_group.line_account_id = it.line_account_id
+  ) THEN 1 ELSE 0 END AS is_group_conversation`;
+
 function serializeInternalTask(
   row: InternalTaskRow,
   assignees: Array<{ staffId: string; staffName: string }> = [],
   comments: InternalTaskCommentRow[] = [],
+  canUpdate = false,
 ) {
   return {
     id: row.id,
@@ -664,6 +928,24 @@ function serializeInternalTask(
     title: row.title,
     description: row.description,
     status: row.status,
+    workflowStatus: row.workflow_status ?? (row.status === 'done' ? 'done' : 'todo'),
+    priority: row.priority ?? 'medium',
+    sortOrder: Number(row.sort_order ?? 0),
+    version: Number(row.version ?? 1),
+    labels: (() => {
+      try {
+        const value: unknown = JSON.parse(row.labels ?? '[]');
+        return Array.isArray(value)
+          ? value.filter((label): label is string => typeof label === 'string').slice(0, 20)
+          : [];
+      } catch {
+        return [];
+      }
+    })(),
+    sourceTitle: row.source_title?.trim() || null,
+    customerName: row.customer_name?.trim() || null,
+    isGroupConversation: row.is_group_conversation === 1,
+    canUpdate,
     dueAt: row.due_at,
     assignees,
     comments: comments.map((comment) => ({
@@ -911,9 +1193,9 @@ async function fetchSecondaryAssigned(
   const conditions = [
     'se.created_at > ?',
     'se.status != ?',
-    `se.assignee = ?`,
+    `(se.assignee_staff_id = ? OR (se.assignee_staff_id IS NULL AND se.assignee = ?))`,
   ];
-  const binds: unknown[] = [after, 'closed', assignmentName];
+  const binds: unknown[] = [after, 'closed', staff.id, assignmentName];
   if (lineAccountId) {
     conditions.push('se.line_account_id = ?');
     binds.push(lineAccountId);
@@ -957,10 +1239,14 @@ async function fetchSecondaryAnswered(
   const conditions = [
     'se.updated_at > ?',
     'se.status = ?',
-    '(sc.primary_assignee = ? OR sc.created_by = ?)',
+    `(
+      sc.primary_assignee_staff_id = ?
+      OR (sc.primary_assignee_staff_id IS NULL AND sc.primary_assignee = ?)
+      OR sc.created_by = ?
+    )`,
     '(se.updated_by IS NULL OR se.updated_by != ?)',
   ];
-  const binds: unknown[] = [after, 'answered', assignmentName, staff.id, staff.id];
+  const binds: unknown[] = [after, 'answered', staff.id, assignmentName, staff.id, staff.id];
   if (lineAccountId) {
     conditions.push('se.line_account_id = ?');
     binds.push(lineAccountId);
@@ -1462,15 +1748,52 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
 
     const supportMessageIds = supportRows.results.map((row) => row.id);
     const chatMessageIds = chatRows.results.map((row) => row.id);
-    const [supportMentionIds, chatMentionIds, readCursors, supportEvents, chatEvents, bookmarks, taskCounts] = await Promise.all([
-      mentionStaffIdsForMessages(c.env.DB, 'support', supportRows.results.map((row) => row.id)),
-      mentionStaffIdsForMessages(c.env.DB, 'chat', chatRows.results.map((row) => row.id)),
-      loadInternalConversationReads(c.env.DB, staff.id, lineAccountId.value),
+    const [supportEvents, chatEvents, supportMentionResult, chatMentionResult, readCursorResult, bookmarkResult, taskCountResult] = await Promise.all([
       latestInternalMessageEvents(c.env.DB, 'support', supportMessageIds),
       latestInternalMessageEvents(c.env.DB, 'chat', chatMessageIds),
-      loadBookmarkStates(c.env.DB, staff.id, supportMessageIds, chatMessageIds),
-      loadMessageTaskCounts(c.env.DB, supportMessageIds, chatMessageIds),
+      loadOptionalInternalChatFeature(
+        'mentions',
+        'support_message_mentions',
+        () => mentionStaffIdsForMessages(c.env.DB, 'support', supportMessageIds),
+        new Map<string, string[]>(),
+      ),
+      loadOptionalInternalChatFeature(
+        'mentions',
+        'chat_message_mentions',
+        () => mentionStaffIdsForMessages(c.env.DB, 'chat', chatMessageIds),
+        new Map<string, string[]>(),
+      ),
+      loadOptionalInternalChatFeature(
+        'readStatus',
+        'internal_conversation_reads',
+        () => loadInternalConversationReads(c.env.DB, staff.id, lineAccountId.value),
+        new Map<string, string>(),
+      ),
+      loadOptionalInternalChatFeature(
+        'bookmarks',
+        'internal_message_bookmark_events',
+        () => loadBookmarkStates(c.env.DB, staff.id, supportMessageIds, chatMessageIds),
+        new Set<string>(),
+      ),
+      loadOptionalInternalChatFeature(
+        'taskCounts',
+        'internal_tasks',
+        () => loadMessageTaskCounts(c.env.DB, supportMessageIds, chatMessageIds),
+        new Map<string, number>(),
+      ),
     ]);
+    const supportMentionIds = supportMentionResult.value;
+    const chatMentionIds = chatMentionResult.value;
+    const readCursors = readCursorResult.value;
+    const bookmarks = bookmarkResult.value;
+    const taskCounts = taskCountResult.value;
+    const degradedFeatures = [...new Set([
+      supportMentionResult,
+      chatMentionResult,
+      readCursorResult,
+      bookmarkResult,
+      taskCountResult,
+    ].filter((result) => result.degraded).map((result) => result.feature))];
 
     const allItems = [
       ...supportRows.results.map((row) => {
@@ -1551,6 +1874,7 @@ appNotifications.get('/api/app-notifications/internal-chat-feed', async (c) => {
         items,
         hasMore,
         nextCursor: hasMore && lastItem ? internalChatCursorValue(lastItem) : null,
+        degradedFeatures,
       },
     });
   } catch (err) {
@@ -1620,6 +1944,10 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
     if (!['all', 'open', 'done'].includes(status)) return c.json({ success: false, error: 'status is invalid' }, 400);
     const scope = params.get('scope') || 'all';
     if (!['all', 'mine'].includes(scope)) return c.json({ success: false, error: 'scope is invalid' }, 400);
+    const limit = parseTaskLimit(params.get('limit'));
+    if (!limit.ok) return c.json({ success: false, error: limit.error }, 400);
+    const offset = parseTaskOffset(params.get('offset'));
+    if (!offset.ok) return c.json({ success: false, error: offset.error }, 400);
     const staff = currentStaff(c);
     const supportVisibility = staff.role === 'secondary'
       ? supportCaseVisibilitySql(staff, 'sc_task_scope', 'se_task_scope')
@@ -1645,7 +1973,7 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
           WHERE sc_task_scope.id = it.source_id
             AND sc_task_scope.line_account_id = it.line_account_id
         )`;
-    const chatScope = chatVisibility.sql
+    const individualChatScope = chatVisibility.sql
       ? `EXISTS (
           SELECT 1 FROM friends f_task_scope
           WHERE f_task_scope.id = it.source_id
@@ -1657,6 +1985,16 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
           WHERE f_task_scope.id = it.source_id
             AND f_task_scope.line_account_id = it.line_account_id
         )`;
+    const groupChatScope = staff.role === 'secondary'
+      ? ''
+      : `EXISTS (
+          SELECT 1 FROM line_conversations lc_task_scope
+          WHERE lc_task_scope.id = it.source_id
+            AND lc_task_scope.line_account_id = it.line_account_id
+        )`;
+    const chatScope = groupChatScope
+      ? `(${individualChatScope} OR ${groupChatScope})`
+      : individualChatScope;
     conditions.push(`(it.created_by = ? OR (it.source_type = 'support' AND ${supportScope}) OR (it.source_type = 'chat' AND ${chatScope}))`);
     binds.push(staff.id, ...supportVisibility.binds, ...chatVisibility.binds);
     if (scope === 'mine') {
@@ -1671,31 +2009,54 @@ appNotifications.get('/api/app-notifications/internal-chat-tasks', async (c) => 
       )`);
       binds.push(staff.id, staff.id);
     }
-    const rows = await c.env.DB
-      .prepare(
+    const where = conditions.join(' AND ');
+    const [rows, totalRow] = await Promise.all([
+      c.env.DB.prepare(
         `SELECT it.*,
+                ${INTERNAL_TASK_SOURCE_PROJECTION},
                 (
                   SELECT COUNT(*)
                   FROM internal_task_comments itc_count
                   WHERE itc_count.task_id = it.id
                 ) AS comment_count
          FROM internal_tasks it
-         WHERE ${conditions.join(' AND ')}
-         ORDER BY CASE it.status WHEN 'open' THEN 0 ELSE 1 END,
+         WHERE ${where}
+         ORDER BY CASE it.workflow_status
+                    WHEN 'todo' THEN 0
+                    WHEN 'in_progress' THEN 1
+                    WHEN 'review' THEN 2
+                    ELSE 3
+                  END,
+                  it.sort_order ASC,
                   CASE WHEN it.due_at IS NULL THEN 1 ELSE 0 END,
                   it.due_at ASC,
                   it.updated_at DESC
-         LIMIT 200`,
+         LIMIT ? OFFSET ?`,
       )
-      .bind(...binds)
-      .all<InternalTaskRow>();
+        .bind(...binds, limit.value, offset.value)
+        .all<InternalTaskRow>(),
+      c.env.DB
+        .prepare(`SELECT COUNT(*) AS count FROM internal_tasks it WHERE ${where}`)
+        .bind(...binds)
+        .first<{ count: number }>(),
+    ]);
     const assignees = await loadTaskAssignees(c.env.DB, rows.results.map((row) => row.id));
     return c.json({
       success: true,
-      data: rows.results.map((row) => serializeInternalTask(
-        row,
-        assignees.get(row.id) ?? [],
-      )),
+      data: rows.results.map((row) => {
+        const taskAssignees = assignees.get(row.id) ?? [];
+        const canUpdate = row.created_by === staff.id
+          || taskAssignees.some((assignee) => assignee.staffId === staff.id)
+          || staff.role === 'owner'
+          || staff.role === 'admin';
+        return serializeInternalTask(row, taskAssignees, [], canUpdate);
+      }),
+      meta: {
+        total: Number(totalRow?.count ?? 0),
+        limit: limit.value,
+        offset: offset.value,
+        hasMore: offset.value + rows.results.length < Number(totalRow?.count ?? 0),
+      },
     });
   } catch (err) {
     console.error(`GET /api/app-notifications/internal-chat-tasks error: ${routeErrorKind(err)}`);
@@ -1720,11 +2081,26 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) =>
     if (!title.ok) return c.json({ success: false, error: title.error }, 400);
     const description = parseHumanText(body.description, 'description', 5000);
     if (!description.ok) return c.json({ success: false, error: description.error }, 400);
-    const dueAt = parseHumanText(body.dueAt, 'dueAt', 64);
+    const dueAt = parseOptionalTimestamp(body.dueAt, 'dueAt');
     if (!dueAt.ok) return c.json({ success: false, error: dueAt.error }, 400);
     const assigneeStaffIds = parseStaffIds(body.assigneeStaffIds);
     if (!assigneeStaffIds.ok) return c.json({ success: false, error: assigneeStaffIds.error }, 400);
+    const workflowStatus = body.workflowStatus === undefined
+      ? { ok: true as const, value: 'todo' as const }
+      : parseTaskWorkflowStatus(body.workflowStatus);
+    if (!workflowStatus.ok) return c.json({ success: false, error: workflowStatus.error }, 400);
+    const priority = body.priority === undefined
+      ? { ok: true as const, value: 'medium' as const }
+      : parseTaskPriority(body.priority);
+    if (!priority.ok) return c.json({ success: false, error: priority.error }, 400);
+    const labels = body.labels === undefined
+      ? { ok: true as const, value: [] as string[] }
+      : parseTaskLabels(body.labels);
+    if (!labels.ok) return c.json({ success: false, error: labels.error }, 400);
     const staff = currentStaff(c);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）ではタスクを作成できません' }, 403);
+    }
     if (!await canAccessInternalSource(
       c.env.DB,
       staff,
@@ -1750,13 +2126,29 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) =>
     }
     const taskId = crypto.randomUUID();
     const now = jstNow();
+    const createGuard = internalTaskCreateGuard(
+      staff,
+      lineAccountId.value,
+      source.value,
+      sourceId.value,
+      sourceMessageId.value,
+    );
+    const createdTaskGuardSql = `EXISTS (
+      SELECT 1 FROM internal_tasks created_task_guard
+      WHERE created_task_guard.id = ?
+        AND created_task_guard.created_by = ?
+        AND created_task_guard.created_at = ?
+    )`;
+    const createdTaskGuardBinds = [taskId, staff.id, now];
     const statements: D1PreparedStatement[] = [
       c.env.DB
         .prepare(
           `INSERT INTO internal_tasks (
             id, line_account_id, source_type, source_id, source_message_id, title,
-            description, status, due_at, created_by, created_by_name, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`,
+            description, status, workflow_status, priority, sort_order, labels,
+            due_at, created_by, created_by_name, created_at, updated_at
+          ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            WHERE ${createGuard.sql}`,
         )
         .bind(
           taskId,
@@ -1766,24 +2158,38 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) =>
           sourceMessageId.value,
           title.value,
           description.value ?? '',
+          workflowStatus.value === 'done' ? 'done' : 'open',
+          workflowStatus.value,
+          priority.value,
+          Date.now(),
+          JSON.stringify(labels.value),
           dueAt.value ?? null,
           staff.id,
           staff.name,
           now,
           now,
+          ...createGuard.binds,
         ),
       c.env.DB
         .prepare(
           `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
-           VALUES (?, ?, 'created', ?, ?, ?, ?)`,
+           SELECT ?, ?, 'created', ?, ?, ?, ?
+           WHERE ${createdTaskGuardSql}`,
         )
         .bind(
           crypto.randomUUID(),
           taskId,
-          JSON.stringify({ source: source.value, sourceMessageId: sourceMessageId.value }),
+          JSON.stringify({
+            source: source.value,
+            sourceMessageId: sourceMessageId.value,
+            workflowStatus: workflowStatus.value,
+            priority: priority.value,
+            labels: labels.value,
+          }),
           staff.id,
           staff.name,
           now,
+          ...createdTaskGuardBinds,
         ),
     ];
     for (const assignee of assigneeRows.results) {
@@ -1791,14 +2197,29 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks', async (c) =>
         c.env.DB
           .prepare(
             `INSERT INTO internal_task_assignees (task_id, staff_id, staff_name, assigned_at)
-             VALUES (?, ?, ?, ?)`,
+             SELECT ?, ?, ?, ?
+             WHERE ${createdTaskGuardSql}`,
           )
-          .bind(taskId, assignee.id, assignee.name, now),
+          .bind(taskId, assignee.id, assignee.name, now, ...createdTaskGuardBinds),
       );
     }
-    await c.env.DB.batch(statements);
-    const created = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId).first<InternalTaskRow>();
-    return c.json({ success: true, data: serializeInternalTask(created!, assigneeRows.results.map((row) => ({ staffId: row.id, staffName: row.name }))) }, 201);
+    const createResults = await c.env.DB.batch(statements);
+    if (createResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
+    }
+    const created = await c.env.DB
+      .prepare(`SELECT it.*, ${INTERNAL_TASK_SOURCE_PROJECTION} FROM internal_tasks it WHERE it.id = ?`)
+      .bind(taskId)
+      .first<InternalTaskRow>();
+    return c.json({
+      success: true,
+      data: serializeInternalTask(
+        created!,
+        assigneeRows.results.map((row) => ({ staffId: row.id, staffName: row.name })),
+        [],
+        true,
+      ),
+    }, 201);
   } catch (err) {
     console.error(`POST /api/app-notifications/internal-chat-tasks error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'タスクの作成に失敗しました' }, 500);
@@ -1811,11 +2232,78 @@ appNotifications.patch('/api/app-notifications/internal-chat-tasks/:taskId', asy
     if (!taskId.ok) return c.json({ success: false, error: taskId.error }, 400);
     const body = await c.req.json<Record<string, unknown>>().catch(() => null);
     if (!body) return c.json({ success: false, error: 'Invalid payload' }, 400);
-    const status = body.status;
-    if (status !== 'open' && status !== 'done') return c.json({ success: false, error: 'status is invalid' }, 400);
-    const task = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId.value).first<InternalTaskRow>();
+    const hasStatus = Object.prototype.hasOwnProperty.call(body, 'status');
+    const hasTitle = Object.prototype.hasOwnProperty.call(body, 'title');
+    const hasDescription = Object.prototype.hasOwnProperty.call(body, 'description');
+    const hasDueAt = Object.prototype.hasOwnProperty.call(body, 'dueAt');
+    const hasAssignees = Object.prototype.hasOwnProperty.call(body, 'assigneeStaffIds');
+    const hasWorkflowStatus = Object.prototype.hasOwnProperty.call(body, 'workflowStatus');
+    const hasPriority = Object.prototype.hasOwnProperty.call(body, 'priority');
+    const hasSortOrder = Object.prototype.hasOwnProperty.call(body, 'sortOrder');
+    const hasLabels = Object.prototype.hasOwnProperty.call(body, 'labels');
+    const hasVersion = Object.prototype.hasOwnProperty.call(body, 'version');
+    if (
+      !hasStatus
+      && !hasTitle
+      && !hasDescription
+      && !hasDueAt
+      && !hasAssignees
+      && !hasWorkflowStatus
+      && !hasPriority
+      && !hasSortOrder
+      && !hasLabels
+    ) {
+      return c.json({ success: false, error: '更新する項目がありません' }, 400);
+    }
+    const status = hasStatus ? body.status : undefined;
+    if (hasStatus && status !== 'open' && status !== 'done') {
+      return c.json({ success: false, error: 'status is invalid' }, 400);
+    }
+    const title = hasTitle ? parseHumanText(body.title, 'title', 200, true) : { ok: true as const, value: undefined };
+    if (!title.ok) return c.json({ success: false, error: title.error }, 400);
+    const description = hasDescription
+      ? parseHumanText(body.description, 'description', 5000)
+      : { ok: true as const, value: undefined };
+    if (!description.ok) return c.json({ success: false, error: description.error }, 400);
+    const dueAt = hasDueAt
+      ? parseOptionalTimestamp(body.dueAt, 'dueAt')
+      : { ok: true as const, value: undefined };
+    if (!dueAt.ok) return c.json({ success: false, error: dueAt.error }, 400);
+    const assigneeStaffIds = hasAssignees
+      ? parseStaffIds(body.assigneeStaffIds)
+      : { ok: true as const, value: [] as string[] };
+    if (!assigneeStaffIds.ok) return c.json({ success: false, error: assigneeStaffIds.error }, 400);
+    const workflowStatus = hasWorkflowStatus
+      ? parseTaskWorkflowStatus(body.workflowStatus)
+      : { ok: true as const, value: undefined };
+    if (!workflowStatus.ok) return c.json({ success: false, error: workflowStatus.error }, 400);
+    const priority = hasPriority
+      ? parseTaskPriority(body.priority)
+      : { ok: true as const, value: undefined };
+    if (!priority.ok) return c.json({ success: false, error: priority.error }, 400);
+    const labels = hasLabels
+      ? parseTaskLabels(body.labels)
+      : { ok: true as const, value: undefined };
+    if (!labels.ok) return c.json({ success: false, error: labels.error }, 400);
+    const sortOrder = hasSortOrder && typeof body.sortOrder === 'number' && Number.isFinite(body.sortOrder)
+      ? { ok: true as const, value: body.sortOrder }
+      : hasSortOrder
+        ? { ok: false as const, error: 'sortOrder is invalid' }
+        : { ok: true as const, value: undefined };
+    if (!sortOrder.ok) return c.json({ success: false, error: sortOrder.error }, 400);
+    const requestedVersion = hasVersion
+      ? parseTaskVersion(body.version)
+      : { ok: true as const, value: undefined };
+    if (!requestedVersion.ok) return c.json({ success: false, error: requestedVersion.error }, 400);
+    const task = await c.env.DB
+      .prepare(`SELECT it.*, ${INTERNAL_TASK_SOURCE_PROJECTION} FROM internal_tasks it WHERE it.id = ?`)
+      .bind(taskId.value)
+      .first<InternalTaskRow>();
     if (!task) return c.json({ success: false, error: 'task not found' }, 404);
     const staff = currentStaff(c);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）ではタスクを更新できません' }, 403);
+    }
     const canAccess = await canAccessInternalSource(c.env.DB, staff, task.line_account_id, task.source_type, task.source_id);
     if (!canAccess && task.created_by !== staff.id) return c.json({ success: false, error: 'task not found' }, 404);
     const isAssignee = await c.env.DB
@@ -1825,41 +2313,199 @@ appNotifications.patch('/api/app-notifications/internal-chat-tasks/:taskId', asy
     if (task.created_by !== staff.id && !isAssignee && staff.role !== 'owner' && staff.role !== 'admin') {
       return c.json({ success: false, error: 'このタスクは更新できません' }, 403);
     }
-    if (task.status === status) {
-      const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
+    const currentAssignees = await loadTaskAssignees(c.env.DB, [task.id]);
+    const currentAssigneeRows = currentAssignees.get(task.id) ?? [];
+    const requestedAssigneeRows = hasAssignees && assigneeStaffIds.value.length > 0
+      ? await c.env.DB
+        .prepare(
+          `SELECT id, name FROM staff_members
+           WHERE is_active = 1 AND id IN (${assigneeStaffIds.value.map(() => '?').join(', ')})`,
+        )
+        .bind(...assigneeStaffIds.value)
+        .all<{ id: string; name: string }>()
+      : { results: [] as Array<{ id: string; name: string }> };
+    if (hasAssignees && requestedAssigneeRows.results.length !== assigneeStaffIds.value.length) {
+      return c.json({ success: false, error: '選択できない担当者が含まれています' }, 400);
+    }
+    const nextWorkflowStatus = workflowStatus.value
+      ?? (hasStatus ? (status === 'done' ? 'done' : 'todo') : task.workflow_status);
+    const nextStatus = nextWorkflowStatus === 'done' ? 'done' : 'open';
+    const nextTitle = hasTitle ? title.value ?? task.title : task.title;
+    const nextDescription = hasDescription ? description.value ?? '' : task.description;
+    const nextDueAt = hasDueAt ? dueAt.value ?? null : task.due_at;
+    const nextPriority = priority.value ?? task.priority;
+    const nextSortOrder = sortOrder.value ?? task.sort_order;
+    const currentLabels = (() => {
+      try {
+        const value: unknown = JSON.parse(task.labels ?? '[]');
+        return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+      } catch {
+        return [];
+      }
+    })();
+    const nextLabels = labels.value ?? currentLabels;
+    const expectedVersion = requestedVersion.value ?? task.version;
+    if (expectedVersion !== task.version) {
+      return c.json({ success: false, error: 'タスクが更新されています 再読み込みしてください' }, 409);
+    }
+    const currentAssigneeIds = currentAssigneeRows.map((assignee) => assignee.staffId).sort();
+    const nextAssigneeIds = hasAssignees
+      ? requestedAssigneeRows.results.map((assignee) => assignee.id).sort()
+      : currentAssigneeIds;
+    const assigneesChanged = hasAssignees
+      && currentAssigneeIds.join('\u0000') !== nextAssigneeIds.join('\u0000');
+    const changedFields = [
+      ...(task.workflow_status !== nextWorkflowStatus ? ['workflowStatus'] : []),
+      ...(task.title !== nextTitle ? ['title'] : []),
+      ...(task.description !== nextDescription ? ['description'] : []),
+      ...(task.due_at !== nextDueAt ? ['dueAt'] : []),
+      ...(task.priority !== nextPriority ? ['priority'] : []),
+      ...(task.sort_order !== nextSortOrder ? ['sortOrder'] : []),
+      ...(currentLabels.join('\u0000') !== nextLabels.join('\u0000') ? ['labels'] : []),
+      ...(assigneesChanged ? ['assignees'] : []),
+    ];
+    if (changedFields.length === 0) {
       return c.json({
         success: true,
-        data: serializeInternalTask(task, assignees.get(task.id) ?? []),
+        data: serializeInternalTask(task, currentAssigneeRows, [], true),
       });
     }
     const now = jstNow();
-    await c.env.DB.batch([
+    const statusChanged = task.workflow_status !== nextWorkflowStatus;
+    const nextVersion = task.version + 1;
+    const mutationId = crypto.randomUUID();
+    const writeGuard = internalTaskWriteGuard(staff, 'internal_tasks');
+    const statements: D1PreparedStatement[] = [
       c.env.DB
         .prepare(
           `UPDATE internal_tasks
-           SET status = ?, completed_by = ?, completed_by_name = ?, completed_at = ?, updated_at = ?
-           WHERE id = ?`,
+           SET title = ?, description = ?, due_at = ?, status = ?, workflow_status = ?,
+               priority = ?, sort_order = ?, labels = ?, version = ?,
+               last_mutation_id = ?,
+               completed_by = ?, completed_by_name = ?, completed_at = ?, updated_at = ?
+           WHERE id = ? AND version = ?
+             AND ${writeGuard.sql}`,
         )
         .bind(
-          status,
-          status === 'done' ? staff.id : null,
-          status === 'done' ? staff.name : null,
-          status === 'done' ? now : null,
+          nextTitle,
+          nextDescription,
+          nextDueAt,
+          nextStatus,
+          nextWorkflowStatus,
+          nextPriority,
+          nextSortOrder,
+          JSON.stringify(nextLabels),
+          nextVersion,
+          mutationId,
+          statusChanged ? (nextStatus === 'done' ? staff.id : null) : task.completed_by,
+          statusChanged ? (nextStatus === 'done' ? staff.name : null) : task.completed_by_name,
+          statusChanged ? (nextStatus === 'done' ? now : null) : task.completed_at,
           now,
           task.id,
+          expectedVersion,
+          ...writeGuard.binds,
         ),
       c.env.DB
         .prepare(
           `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
-           VALUES (?, ?, ?, '{}', ?, ?, ?)`,
+           SELECT ?, ?, ?, ?, ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM internal_tasks WHERE id = ? AND last_mutation_id = ?
+           )`,
         )
-        .bind(crypto.randomUUID(), task.id, status === 'done' ? 'completed' : 'reopened', staff.id, staff.name, now),
-    ]);
-    const updated = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(task.id).first<InternalTaskRow>();
+        .bind(
+          crypto.randomUUID(),
+          task.id,
+          statusChanged
+            ? (nextStatus === 'done' ? 'completed' : task.workflow_status === 'done' ? 'reopened' : 'updated')
+            : 'updated',
+          JSON.stringify({
+            fields: changedFields,
+            version: { before: task.version, after: nextVersion },
+            values: {
+              before: {
+                title: task.title,
+                description: task.description,
+                dueAt: task.due_at,
+                workflowStatus: task.workflow_status,
+                priority: task.priority,
+                labels: currentLabels,
+              },
+              after: {
+                title: nextTitle,
+                description: nextDescription,
+                dueAt: nextDueAt,
+                workflowStatus: nextWorkflowStatus,
+                priority: nextPriority,
+                labels: nextLabels,
+              },
+            },
+            ...(assigneesChanged ? {
+              assigneeStaffIds: {
+                before: currentAssigneeIds,
+                after: nextAssigneeIds,
+              },
+              assigneeChangedAt: now,
+            } : {}),
+          }),
+          staff.id,
+          staff.name,
+          now,
+          task.id,
+          mutationId,
+        ),
+    ];
+    if (assigneesChanged) {
+      for (const currentAssignee of currentAssigneeRows) {
+        if (!nextAssigneeIds.includes(currentAssignee.staffId)) {
+          statements.push(
+            c.env.DB
+              .prepare(
+                `UPDATE internal_task_assignees
+                 SET removed_at = ?
+                 WHERE task_id = ? AND staff_id = ? AND removed_at IS NULL
+                   AND EXISTS (
+                     SELECT 1 FROM internal_tasks WHERE id = ? AND last_mutation_id = ?
+                   )`,
+              )
+              .bind(now, task.id, currentAssignee.staffId, task.id, mutationId),
+          );
+        }
+      }
+      for (const nextAssignee of requestedAssigneeRows.results) {
+        statements.push(
+          c.env.DB
+            .prepare(
+              `INSERT INTO internal_task_assignees (task_id, staff_id, staff_name, assigned_at, removed_at)
+               SELECT ?, ?, ?, ?, NULL
+               WHERE EXISTS (
+                 SELECT 1 FROM internal_tasks WHERE id = ? AND last_mutation_id = ?
+               )
+               ON CONFLICT(task_id, staff_id) DO UPDATE SET
+                 staff_name = excluded.staff_name,
+                 removed_at = NULL`,
+            )
+            .bind(task.id, nextAssignee.id, nextAssignee.name, now, task.id, mutationId),
+        );
+      }
+    }
+    const updateResults = await c.env.DB.batch(statements);
+    if (updateResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: 'タスクが更新されています 再読み込みしてください' }, 409);
+    }
+    const updated = await c.env.DB
+      .prepare(`SELECT it.*, ${INTERNAL_TASK_SOURCE_PROJECTION} FROM internal_tasks it WHERE it.id = ?`)
+      .bind(task.id)
+      .first<InternalTaskRow>();
     const assignees = await loadTaskAssignees(c.env.DB, [task.id]);
+    const updatedAssignees = assignees.get(task.id) ?? [];
+    const canUpdate = updated!.created_by === staff.id
+      || updatedAssignees.some((assignee) => assignee.staffId === staff.id)
+      || staff.role === 'owner'
+      || staff.role === 'admin';
     return c.json({
       success: true,
-      data: serializeInternalTask(updated!, assignees.get(task.id) ?? []),
+      data: serializeInternalTask(updated!, updatedAssignees, [], canUpdate),
     });
   } catch (err) {
     console.error(`PATCH /api/app-notifications/internal-chat-tasks/:taskId error: ${routeErrorKind(err)}`);
@@ -1916,6 +2562,9 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks/:taskId/commen
     const task = await c.env.DB.prepare(`SELECT * FROM internal_tasks WHERE id = ?`).bind(taskId.value).first<InternalTaskRow>();
     if (!task) return c.json({ success: false, error: 'task not found' }, 404);
     const staff = currentStaff(c);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）ではコメントを投稿できません' }, 403);
+    }
     const canAccess = await canAccessInternalSource(
       c.env.DB,
       staff,
@@ -1932,21 +2581,48 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks/:taskId/commen
     }
     const commentId = crypto.randomUUID();
     const now = jstNow();
-    await c.env.DB.batch([
+    const writeGuard = internalTaskWriteGuard(staff, 'comment_task_guard');
+    const commentCreatedGuardSql = `EXISTS (
+      SELECT 1 FROM internal_task_comments created_comment_guard
+      WHERE created_comment_guard.id = ?
+        AND created_comment_guard.task_id = ?
+        AND created_comment_guard.created_by = ?
+        AND created_comment_guard.created_at = ?
+    )`;
+    const commentCreatedGuardBinds = [commentId, task.id, staff.id, now];
+    const commentResults = await c.env.DB.batch([
       c.env.DB
         .prepare(
           `INSERT INTO internal_task_comments (
             id, task_id, body, created_by, created_by_name, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?)`,
+          ) SELECT ?, ?, ?, ?, ?, ?
+            WHERE EXISTS (
+              SELECT 1 FROM internal_tasks comment_task_guard
+              WHERE comment_task_guard.id = ?
+                AND ${writeGuard.sql}
+            )`,
         )
-        .bind(commentId, task.id, commentBody.value, staff.id, staff.name, now),
+        .bind(
+          commentId,
+          task.id,
+          commentBody.value,
+          staff.id,
+          staff.name,
+          now,
+          task.id,
+          ...writeGuard.binds,
+        ),
       c.env.DB
-        .prepare(`UPDATE internal_tasks SET updated_at = ? WHERE id = ?`)
-        .bind(now, task.id),
+        .prepare(
+          `UPDATE internal_tasks SET updated_at = ? WHERE id = ?
+             AND ${commentCreatedGuardSql}`,
+        )
+        .bind(now, task.id, ...commentCreatedGuardBinds),
       c.env.DB
         .prepare(
           `INSERT INTO internal_task_events (id, task_id, action, metadata, actor_id, actor_name, created_at)
-           VALUES (?, ?, 'updated', ?, ?, ?, ?)`,
+           SELECT ?, ?, 'updated', ?, ?, ?, ?
+           WHERE ${commentCreatedGuardSql}`,
         )
         .bind(
           crypto.randomUUID(),
@@ -1955,8 +2631,12 @@ appNotifications.post('/api/app-notifications/internal-chat-tasks/:taskId/commen
           staff.id,
           staff.name,
           now,
+          ...commentCreatedGuardBinds,
         ),
     ]);
+    if (commentResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: 'タスクの担当が更新されました' }, 409);
+    }
     return c.json({
       success: true,
       data: {

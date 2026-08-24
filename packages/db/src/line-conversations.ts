@@ -11,6 +11,7 @@ export interface LineConversation {
   source_id: string;
   display_name: string;
   picture_url: string | null;
+  customer_metadata: string;
   last_message_at: string | null;
   status: LineConversationStatus;
   workflow_status: LineConversationWorkflowStatus | null;

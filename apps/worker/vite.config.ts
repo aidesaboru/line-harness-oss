@@ -8,4 +8,14 @@ import { defineConfig } from "vite";
 // 既存の form / Google Calendar booking 利用者には load されない。
 export default defineConfig({
   plugins: [cloudflare(), react(), tailwindcss()],
+  build: {
+    // Release/self-update ships one ES module. Keep server-side dynamic imports
+    // inside that module so the verified artifact is the complete Worker, not
+    // a loader that references unhashed sibling chunks.
+    rollupOptions: {
+      output: {
+        inlineDynamicImports: true,
+      },
+    },
+  },
 });

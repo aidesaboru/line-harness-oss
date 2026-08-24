@@ -11,6 +11,12 @@ type TestEnv = {
 
 type DbCall = { sql: string; binds: unknown[] };
 
+const staffSupportVisibilityBinds = [
+  'staff-1', 'staff-1', 'staff-1',
+  '田島', '田島', '田島', '田島',
+  'staff-1', '田島', '田島',
+];
+
 function makeDb(options: { visibleFriendIds?: string[] } = {}) {
   const visibleFriendIds = new Set(options.visibleFriendIds ?? []);
   const calls: DbCall[] = [];
@@ -114,11 +120,7 @@ describe('GET /api/conversations support visibility', () => {
     expect(queueCall?.binds).toEqual([
       0,
       'acc-1',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
       10,
       5,
     ]);
@@ -128,11 +130,7 @@ describe('GET /api/conversations support visibility', () => {
     expect(countCall?.binds).toEqual([
       0,
       'acc-1',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
     ]);
   });
 
@@ -165,11 +163,7 @@ describe('GET /api/conversations support visibility', () => {
       1.5,
       12,
       'acc-1',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
       200,
       0,
     ]);
@@ -178,11 +172,7 @@ describe('GET /api/conversations support visibility', () => {
       1.5,
       12,
       'acc-1',
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
     ]);
   });
 
@@ -195,11 +185,7 @@ describe('GET /api/conversations support visibility', () => {
     const queueCall = calls.find((call) => call.sql.includes('latest_msg'));
     expect(queueCall?.binds).toEqual([
       0,
-      'staff-1',
-      '田島',
-      '田島',
-      'staff-1',
-      '田島',
+      ...staffSupportVisibilityBinds,
       50,
       0,
     ]);
@@ -260,7 +246,7 @@ describe('GET /api/conversations support visibility', () => {
       .request('/api/conversations/%20friend-visible%20?before=%202026-06-13T10:00:00.000%2B09:00%20&limit=999');
 
     expect(res.status).toBe(200);
-    expect(calls[0]).toMatchObject({ binds: ['friend-visible', 'staff-1', '田島', '田島', 'staff-1', '田島'] });
+    expect(calls[0]).toMatchObject({ binds: ['friend-visible', ...staffSupportVisibilityBinds] });
     const messageCall = calls.find((call) => call.sql.includes('FROM messages_log WHERE friend_id'));
     expect(messageCall?.binds).toEqual([
       'friend-visible',

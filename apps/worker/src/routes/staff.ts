@@ -21,6 +21,7 @@ const STAFF_NAME_MAX_LENGTH = 128;
 const STAFF_EMAIL_MAX_LENGTH = 254;
 const STAFF_USER_AGENT_MAX_LENGTH = 512;
 const STAFF_ONLINE_WINDOW_MS = 5 * 60_000;
+const STAFF_TICKET_SHARE_MAX = 20;
 const ENV_OWNER_ID = 'env-owner';
 const STAFF_VISIBLE_ASCII_PATTERN = /^[!-~]+$/;
 const STAFF_EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -32,11 +33,13 @@ type StaffCreateInput = {
   name: string;
   email: string | null;
   role: StaffRole;
+  secondaryCanRespond: boolean;
 };
 type StaffUpdateInput = {
   name?: string;
   email?: string | null;
   role?: StaffRole;
+  secondaryCanRespond?: boolean;
   isActive?: boolean;
 };
 type StaffPresenceRow = {
@@ -54,16 +57,18 @@ function maskApiKey(key: string): string {
   return `lh_****${key.slice(-4)}`;
 }
 
-function serializeStaff(row: StaffMember, masked = true) {
+function serializeStaff(row: StaffMember, masked = true, ticketShareStaffIds: string[] = []) {
   return {
     id: row.id,
     name: row.name,
     email: row.email,
     role: row.role,
+    secondaryCanRespond: Boolean(row.secondary_can_respond),
     apiKey: masked ? maskApiKey(row.api_key) : row.api_key,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    ticketShareStaffIds,
   };
 }
 
@@ -168,6 +173,7 @@ function parseStaffCreateInput(body: Record<string, unknown>): ValueResult<Staff
       name: name.value,
       email: email.value ?? null,
       role: role.value,
+      secondaryCanRespond: body.secondaryCanRespond === true,
     },
   };
 }
@@ -195,15 +201,37 @@ function parseStaffUpdateInput(body: Record<string, unknown>): ValueResult<Staff
     if (!isActive.ok) return isActive;
     input.isActive = isActive.value;
   }
+  if (hasOwn(body, 'secondaryCanRespond')) {
+    const secondaryCanRespond = parseOptionalBoolean(body.secondaryCanRespond, 'secondary_can_respond');
+    if (!secondaryCanRespond.ok) return secondaryCanRespond;
+    input.secondaryCanRespond = secondaryCanRespond.value;
+  }
 
   if (Object.keys(input).length === 0) return { ok: false, error: 'invalid_payload' };
   return { ok: true, value: input };
+}
+
+function parseTicketShareStaffIds(raw: unknown): ValueResult<string[]> {
+  if (!Array.isArray(raw) || raw.length > STAFF_TICKET_SHARE_MAX) {
+    return { ok: false, error: 'invalid_ticket_share_staff_ids' };
+  }
+  const parsed: string[] = [];
+  for (const item of raw) {
+    const id = parseStaffId(item);
+    if (!id.ok) return id;
+    parsed.push(id.value);
+  }
+  return { ok: true, value: Array.from(new Set(parsed)) };
 }
 
 function staffRouteErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
   if (err instanceof Error) return err.name || 'error';
   return typeof err;
+}
+
+function isLastActiveOwnerError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'LastActiveOwnerError';
 }
 
 // GET /api/staff/me — any authenticated user (MUST be before /:id)
@@ -219,6 +247,7 @@ staff.get('/api/staff/me', async (c) => {
           id: ENV_OWNER_ID,
           name: ENV_OWNER_DISPLAY_NAME,
           role: 'owner',
+          secondaryCanRespond: true,
           email: null,
         },
       });
@@ -235,6 +264,7 @@ staff.get('/api/staff/me', async (c) => {
         id: member.id,
         name: member.name,
         role: member.role,
+        secondaryCanRespond: Boolean(member.secondary_can_respond),
         email: member.email,
       },
     });
@@ -249,9 +279,117 @@ staff.get('/api/staff', requireRole('owner'), async (c) => {
   try {
     const members = (await getStaffMembers(c.env.DB))
       .filter((member) => !isEnvironmentOwnerId(member.id));
-    return c.json({ success: true, data: members.map((m) => serializeStaff(m, true)) });
+    const shareRows = await c.env.DB
+      .prepare('SELECT staff_a_id, staff_b_id FROM staff_ticket_shares WHERE removed_at IS NULL')
+      .all<{ staff_a_id: string; staff_b_id: string }>();
+    const sharesByStaff = new Map<string, string[]>();
+    for (const row of shareRows.results) {
+      sharesByStaff.set(row.staff_a_id, [...(sharesByStaff.get(row.staff_a_id) ?? []), row.staff_b_id]);
+      sharesByStaff.set(row.staff_b_id, [...(sharesByStaff.get(row.staff_b_id) ?? []), row.staff_a_id]);
+    }
+    return c.json({
+      success: true,
+      data: members.map((member) => serializeStaff(member, true, sharesByStaff.get(member.id) ?? [])),
+    });
   } catch (err) {
     console.error(`GET /api/staff error: ${staffRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// PUT /api/staff/:id/ticket-shares — owner only. Configure mutual primary-support coverage.
+staff.put('/api/staff/:id/ticket-shares', requireRole('owner'), async (c) => {
+  try {
+    const id = parseStaffId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    if (isEnvironmentOwnerId(id.value)) {
+      return c.json({ success: false, error: 'Staff member not found' }, 404);
+    }
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const peerStaffIds = parseTicketShareStaffIds(rawBody.value.peerStaffIds);
+    if (!peerStaffIds.ok) return c.json({ success: false, error: peerStaffIds.error }, 400);
+    if (peerStaffIds.value.includes(id.value)) {
+      return c.json({ success: false, error: '自分自身は共有相手に指定できません' }, 400);
+    }
+
+    const members = await getStaffMembers(c.env.DB);
+    const activePrimaryStaffIds = new Set(
+      members
+        .filter((member) => member.role === 'staff' && Boolean(member.is_active))
+        .map((member) => member.id),
+    );
+    if (!activePrimaryStaffIds.has(id.value)) {
+      return c.json({ success: false, error: '一次対応かつ有効なスタッフだけ設定できます' }, 400);
+    }
+    if (peerStaffIds.value.some((peerId) => !activePrimaryStaffIds.has(peerId))) {
+      return c.json({ success: false, error: '共有相手は一次対応かつ有効なスタッフから選んでください' }, 400);
+    }
+
+    const actor = c.get('staff');
+    const createdBy = isEnvironmentOwnerId(actor.id) ? null : actor.id;
+    const currentRows = await c.env.DB
+      .prepare(
+        `SELECT staff_a_id, staff_b_id
+         FROM staff_ticket_shares
+         WHERE removed_at IS NULL AND (staff_a_id = ? OR staff_b_id = ?)`,
+      )
+      .bind(id.value, id.value)
+      .all<{ staff_a_id: string; staff_b_id: string }>();
+    const currentPeers = new Set(currentRows.results.map((row) => (
+      row.staff_a_id === id.value ? row.staff_b_id : row.staff_a_id
+    )));
+    const desiredPeers = new Set(peerStaffIds.value);
+    const now = jstNow();
+    const statements: D1PreparedStatement[] = [];
+
+    for (const peerId of currentPeers) {
+      if (desiredPeers.has(peerId)) continue;
+      const [staffAId, staffBId] = [id.value, peerId].sort();
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE staff_ticket_shares
+             SET removed_at = ?
+             WHERE staff_a_id = ? AND staff_b_id = ? AND removed_at IS NULL`,
+          )
+          .bind(now, staffAId, staffBId),
+        c.env.DB
+          .prepare(
+            `INSERT INTO staff_ticket_share_events (
+               id, staff_a_id, staff_b_id, action, actor_id, actor_name, created_at
+             ) VALUES (?, ?, ?, 'revoked', ?, ?, ?)`,
+          )
+          .bind(crypto.randomUUID(), staffAId, staffBId, createdBy, actor.name, now),
+      );
+    }
+
+    for (const peerId of desiredPeers) {
+      if (currentPeers.has(peerId)) continue;
+      const [staffAId, staffBId] = [id.value, peerId].sort();
+      statements.push(
+        c.env.DB
+          .prepare(
+            `INSERT INTO staff_ticket_shares (staff_a_id, staff_b_id, created_by, removed_at)
+             VALUES (?, ?, ?, NULL)
+             ON CONFLICT(staff_a_id, staff_b_id) DO UPDATE SET
+               removed_at = NULL,
+               created_by = excluded.created_by`,
+          )
+          .bind(staffAId, staffBId, createdBy),
+        c.env.DB
+          .prepare(
+            `INSERT INTO staff_ticket_share_events (
+               id, staff_a_id, staff_b_id, action, actor_id, actor_name, created_at
+             ) VALUES (?, ?, ?, 'granted', ?, ?, ?)`,
+          )
+          .bind(crypto.randomUUID(), staffAId, staffBId, createdBy, actor.name, now),
+      );
+    }
+    if (statements.length > 0) await c.env.DB.batch(statements);
+    return c.json({ success: true, data: { staffId: id.value, peerStaffIds: peerStaffIds.value } });
+  } catch (err) {
+    console.error(`PUT /api/staff/:id/ticket-shares error: ${staffRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -270,6 +408,7 @@ staff.get('/api/staff/assignee-options', async (c) => {
           id: m.id,
           name: m.name,
           role: m.role,
+          secondaryCanRespond: Boolean(m.secondary_can_respond),
           isActive: Boolean(m.is_active),
         })),
     });
@@ -441,10 +580,21 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
     const body = parseStaffCreateInput(rawBody.value);
     if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
+    const secondaryCanRespond = body.value.role === 'secondary' && body.value.secondaryCanRespond;
+    const actor = c.get('staff');
     const member = await createStaffMember(c.env.DB, {
       name: body.value.name,
       email: body.value.email,
       role: body.value.role,
+      secondary_can_respond: secondaryCanRespond ? 1 : 0,
+    }, {
+      action: 'created',
+      metadata: {
+        role: body.value.role,
+        secondaryCanRespond,
+      },
+      actorId: isEnvironmentOwnerId(actor.id) ? null : actor.id,
+      actorName: actor.name,
     });
 
     // Return full (unmasked) API key one-time
@@ -485,12 +635,49 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       }
     }
 
-    const updated = await updateStaffMember(c.env.DB, id.value, {
+    const updateInput = {
       name: body.value.name,
       email: body.value.email,
       role: body.value.role,
+      secondary_can_respond: body.value.role !== undefined && body.value.role !== 'secondary'
+        ? 0
+        : body.value.secondaryCanRespond !== undefined
+          ? (body.value.secondaryCanRespond ? 1 : 0)
+          : undefined,
       is_active: body.value.isActive !== undefined ? (body.value.isActive ? 1 : 0) : undefined,
-    });
+    };
+    const nextRole = updateInput.role ?? target.role;
+    const nextIsActive = updateInput.is_active ?? target.is_active;
+    const nextSecondaryCanRespond = updateInput.secondary_can_respond ?? target.secondary_can_respond;
+    const actor = c.get('staff');
+    const action = target.is_active !== nextIsActive
+      ? (nextIsActive === 1 ? 'enabled' : 'disabled')
+      : 'updated';
+    let updated: StaffMember | null;
+    try {
+      updated = await updateStaffMember(c.env.DB, id.value, updateInput, {
+        action,
+        metadata: {
+          before: {
+            role: target.role,
+            isActive: Boolean(target.is_active),
+            secondaryCanRespond: Boolean(target.secondary_can_respond),
+          },
+          after: {
+            role: nextRole,
+            isActive: Boolean(nextIsActive),
+            secondaryCanRespond: Boolean(nextSecondaryCanRespond),
+          },
+        },
+        actorId: isEnvironmentOwnerId(actor.id) ? null : actor.id,
+        actorName: actor.name,
+      });
+    } catch (err) {
+      if (isLastActiveOwnerError(err)) {
+        return c.json({ success: false, error: 'オーナー情報が同時に更新されました。再読み込みしてください' }, 409);
+      }
+      throw err;
+    }
 
     if (!updated) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
@@ -503,7 +690,8 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
   }
 });
 
-// DELETE /api/staff/:id — owner only. Cannot delete self. Must keep at least 1 owner.
+// DELETE /api/staff/:id — legacy-compatible endpoint. It only disables the
+// member so task assignments, ticket shares, and audit history remain intact.
 staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
   try {
     const id = parseStaffId(c.req.param('id'));
@@ -529,7 +717,19 @@ staff.delete('/api/staff/:id', requireRole('owner'), async (c) => {
       }
     }
 
-    await deleteStaffMember(c.env.DB, id.value);
+    try {
+      await deleteStaffMember(c.env.DB, id.value, {
+        action: 'disabled',
+        metadata: { reason: 'legacy_delete_endpoint' },
+        actorId: isEnvironmentOwnerId(currentStaff.id) ? null : currentStaff.id,
+        actorName: currentStaff.name,
+      });
+    } catch (err) {
+      if (isLastActiveOwnerError(err)) {
+        return c.json({ success: false, error: 'オーナー情報が同時に更新されました。再読み込みしてください' }, 409);
+      }
+      throw err;
+    }
     return c.json({ success: true, data: null });
   } catch (err) {
     console.error(`DELETE /api/staff/:id error: ${staffRouteErrorKind(err)}`);
@@ -549,7 +749,12 @@ staff.post('/api/staff/:id/regenerate-key', requireRole('owner'), async (c) => {
     if (!exists) {
       return c.json({ success: false, error: 'Staff member not found' }, 404);
     }
-    const newKey = await regenerateStaffApiKey(c.env.DB, id.value);
+    const actor = c.get('staff');
+    const newKey = await regenerateStaffApiKey(c.env.DB, id.value, {
+      action: 'api_key_regenerated',
+      actorId: isEnvironmentOwnerId(actor.id) ? null : actor.id,
+      actorName: actor.name,
+    });
     return c.json({ success: true, data: { apiKey: newKey } });
   } catch (err) {
     console.error(`POST /api/staff/:id/regenerate-key error: ${staffRouteErrorKind(err)}`);

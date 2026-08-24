@@ -142,7 +142,10 @@ function routeEntry(result: ParsedBundle, name: string, buf: Buffer): void {
  *
  * **Algorithm must stay byte-compatible with `inject-version.ts`** in
  * `apps/worker/scripts/`:
- *   - worker → `sha256:` + SHA256 of the raw worker bundle bytes
+ *   - worker → SHA256 after replacing only the `WORKER_HASH` assignment
+ *              with a stable zero value. This avoids a self-referential hash
+ *              without excluding ADMIN_HASH, LIFF_HASH, or unrelated hashes
+ *              from integrity verification.
  *   - admin/liff → `sha256:` + SHA256 of `{key}\0{content}\0` for every entry,
  *                   keys sorted lexicographically (forward-slash separator).
  *
@@ -151,14 +154,20 @@ function routeEntry(result: ParsedBundle, name: string, buf: Buffer): void {
  */
 export function verifyBundleHashes(b: ParsedBundle): BundleHashes {
   return {
-    worker: hashBuffer(b.workerJs),
+    worker: hashWorkerBuffer(b.workerJs),
     admin: hashContentMap(b.adminFiles),
     liff: hashContentMap(b.liffFiles),
   };
 }
 
-function hashBuffer(buf: Buffer): string {
-  return `sha256:${createHash('sha256').update(buf).digest('hex')}`;
+function hashWorkerBuffer(buf: Buffer): string {
+  const canonical = buf
+    .toString('utf8')
+    .replace(
+      /(\b(?:const|let|var)\s+WORKER_HASH\s*=\s*["'])sha256:[0-9a-f]{64}(["'])/g,
+      `$1sha256:${'0'.repeat(64)}$2`,
+    );
+  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
 function hashContentMap(map: Map<string, Buffer>): string {

@@ -74,11 +74,21 @@ function dependencies(options: {
     support_case_events: 7,
     support_escalations: 2,
     support_internal_messages: 3,
+    staff_members: 4,
+    staff_ticket_shares: 2,
+    staff_member_events: 6,
+    staff_ticket_share_events: 5,
     chat_internal_messages: 4,
     internal_message_events: 5,
     internal_message_bookmark_events: 6,
     internal_tasks: 7,
     internal_task_events: 8,
+    internal_task_assignees: 5,
+    internal_task_comments: 6,
+    internal_task_checklist_items: 5,
+    internal_conversation_reads: 4,
+    internal_message_mentions: 3,
+    line_conversation_customer_events: 2,
     support_case_attachments: 9,
     chat_confirmation_events: 10,
     support_case_followup_reminders: 3,
@@ -272,34 +282,48 @@ name = "placeholder-worker"
     };
     expect(rootPackage.scripts['deploy:worker']).toBe('tsx scripts/production-deploy.ts');
     expect(workerPackage.scripts.deploy).toBe('corepack pnpm --dir ../.. deploy:worker');
-    expect(workerPackage.scripts['deploy:raw']).toBe('wrangler deploy --strict');
-    expect(workerPackage.scripts['deploy:raw']).not.toContain('deploy:worker');
+    expect(workerPackage.scripts['deploy:raw']).toBeUndefined();
   });
 });
 
 describe('data preservation helpers', () => {
-  it('covers every table protected by the workflow delete guards', () => {
-    expect(CORE_TABLES).toEqual([
-      'line_accounts',
-      'friends',
-      'messages_log',
-      'chats',
-      'support_cases',
-      'support_case_events',
-      'support_escalations',
-      'support_internal_messages',
-      'chat_internal_messages',
-      'internal_message_events',
-      'internal_message_bookmark_events',
-      'internal_tasks',
-      'internal_task_events',
-      'support_case_attachments',
-      'chat_confirmation_events',
-      'support_case_followup_reminders',
-      'support_case_followup_reminder_events',
-      'line_conversations',
-      'line_conversation_messages',
-    ]);
+  it('uses one canonical list for every durable and append-only table', () => {
+    const canonical = JSON.parse(readFileSync(resolve('scripts/protected-d1-tables.json'), 'utf8')) as string[];
+    const workflow = readFileSync(resolve('.github/workflows/deploy-cloudflare-worker.yml'), 'utf8');
+    expect(CORE_TABLES).toEqual(canonical);
+    expect(workflow).toContain('scripts/protected-d1-tables.json');
+    expect(CORE_TABLES).toEqual(expect.arrayContaining([
+      'account_health_logs',
+      'ad_conversion_logs',
+      'affiliate_clicks',
+      'automation_logs',
+      'bookings',
+      'booking_reminders',
+      'calendar_bookings',
+      'conversion_events',
+      'event_bookings',
+      'event_booking_reminders',
+      'form_submissions',
+      'friend_reminder_deliveries',
+      'line_webhook_inbox',
+      'link_clicks',
+      'notifications',
+      'scheduled_chat_messages',
+      'stripe_events',
+      'update_history',
+      'web_push_deliveries',
+      'chat_reminder_completion_events',
+      'support_slack_notification_outbox',
+      'support_secondary_slack_notification_outbox',
+      'support_manuals',
+      'support_knowledge_imports',
+      'support_knowledge_source_snapshots',
+      'support_manual_revisions',
+      'support_manual_usage_events',
+      'support_knowledge_segments',
+      'internal_conversations',
+      'app_notification_inbox',
+    ]));
   });
 
   it('adds the migration marker to the same D1 import body', () => {
@@ -321,11 +345,21 @@ describe('data preservation helpers', () => {
       support_case_events: 7,
       support_escalations: 2,
       support_internal_messages: 3,
+      staff_members: 4,
+      staff_ticket_shares: 2,
+      staff_member_events: 6,
+      staff_ticket_share_events: 5,
       chat_internal_messages: 4,
       internal_message_events: 5,
       internal_message_bookmark_events: 6,
       internal_tasks: 7,
       internal_task_events: 8,
+      internal_task_assignees: 5,
+      internal_task_comments: 6,
+      internal_task_checklist_items: 5,
+      internal_conversation_reads: 4,
+      internal_message_mentions: 3,
+      line_conversation_customer_events: 2,
       support_case_attachments: 9,
       chat_confirmation_events: 10,
       support_case_followup_reminders: 3,
@@ -395,11 +429,21 @@ describe('runProductionDeployment', () => {
       support_case_events: 7,
       support_escalations: 2,
       support_internal_messages: 3,
+      staff_members: 4,
+      staff_ticket_shares: 2,
+      staff_member_events: 6,
+      staff_ticket_share_events: 5,
       chat_internal_messages: 4,
       internal_message_events: 5,
       internal_message_bookmark_events: 6,
       internal_tasks: 7,
       internal_task_events: 8,
+      internal_task_assignees: 5,
+      internal_task_comments: 6,
+      internal_task_checklist_items: 5,
+      internal_conversation_reads: 4,
+      internal_message_mentions: 3,
+      line_conversation_customer_events: 2,
       support_case_attachments: 9,
       chat_confirmation_events: 10,
       support_case_followup_reminders: 3,

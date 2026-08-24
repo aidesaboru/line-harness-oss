@@ -1,15 +1,17 @@
 export type StaffCreateRole = 'admin' | 'staff' | 'secondary'
+export type StaffAccessSelection = 'admin' | 'staff' | 'secondary_viewer' | 'secondary_responder'
 
 export type StaffCreateFormInput = {
   name: string
   email: string
-  role: StaffCreateRole
+  role: StaffAccessSelection
 }
 
 export type StaffCreatePayload = {
   name: string
   role: StaffCreateRole
   email?: string
+  secondaryCanRespond?: boolean
 }
 
 export type StaffCreateValidationResult =
@@ -40,10 +42,33 @@ export function buildStaffCreatePayload(input: StaffCreateFormInput): StaffCreat
     ok: true,
     payload: {
       name,
-      role: input.role,
+      ...staffAccessUpdatePayload(input.role),
       ...(email ? { email } : {}),
     },
   }
+}
+
+export function staffAccessSelection(
+  role: StaffCreateRole | 'owner',
+  secondaryCanRespond: boolean,
+): StaffAccessSelection | 'owner' {
+  if (role === 'secondary') {
+    return secondaryCanRespond ? 'secondary_responder' : 'secondary_viewer'
+  }
+  return role
+}
+
+export function staffAccessUpdatePayload(selection: StaffAccessSelection): {
+  role: StaffCreateRole
+  secondaryCanRespond: boolean
+} {
+  if (selection === 'secondary_viewer') {
+    return { role: 'secondary', secondaryCanRespond: false }
+  }
+  if (selection === 'secondary_responder') {
+    return { role: 'secondary', secondaryCanRespond: true }
+  }
+  return { role: selection, secondaryCanRespond: false }
 }
 
 export function staffOperationFailureMessage(operation: StaffOperationFailure): string {

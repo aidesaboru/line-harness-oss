@@ -268,6 +268,7 @@ export type InternalChatFeedResponse = {
   items: InternalChatFeedItem[]
   hasMore: boolean
   nextCursor: string | null
+  degradedFeatures?: Array<'mentions' | 'readStatus' | 'bookmarks' | 'taskCounts'>
 }
 
 export type InternalTask = {
@@ -279,6 +280,15 @@ export type InternalTask = {
   title: string
   description: string
   status: 'open' | 'done'
+  workflowStatus?: 'todo' | 'in_progress' | 'review' | 'done'
+  priority?: 'low' | 'medium' | 'high' | 'urgent'
+  sortOrder?: number
+  version?: number
+  labels?: string[]
+  sourceTitle: string | null
+  customerName: string | null
+  isGroupConversation: boolean
+  canUpdate: boolean
   dueAt: string | null
   assignees: Array<{ staffId: string; staffName: string }>
   comments: InternalTaskComment[]
@@ -559,9 +569,17 @@ export type SupportCaseDetail = SupportCase & {
   internalMessages: SupportInternalMessage[]
   attachments?: SupportCaseAttachment[]
   manuals: SupportManual[]
+  accessMode: 'direct' | 'shared_proxy' | 'secondary'
+  canEditCaseWork: boolean
+  canCompleteCase: boolean
   canViewLineConversation: boolean
   canOpenLineChat: boolean
   lineConversationScope: 'full' | 'ticket_context' | 'none'
+  slackTicketNotification?: {
+    status: 'not_sent' | 'sent' | 'deleted'
+    sentAt: string | null
+    deletedAt: string | null
+  }
   recentMessages: SupportMessage[]
 }
 
@@ -1345,6 +1363,26 @@ export const api = {
           method: 'PATCH',
           body: JSON.stringify({ ...data, lineAccountId: accountId }),
         }),
+      completeShared: (id: string, accountId: string, resolutionNote: string) =>
+        fetchApi<ApiResponse<SupportCase>>(`/api/support/cases/${id}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            lineAccountId: accountId,
+            status: 'resolved',
+            resolutionNote,
+            eventBody: '不在担当者に代わりチケットを完了しました',
+          }),
+        }),
+      deleteSlackNotification: (id: string, accountId: string) =>
+        fetchApi<ApiResponse<{
+          deleted: boolean
+          alreadyDeleted: boolean
+          ticketPreserved: true
+          historyPreserved: true
+        }>>(`/api/support/cases/${id}/slack-notification/delete`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId }),
+        }),
       addEvent: (id: string, accountId: string, data: { eventType?: string; body: string; metadata?: Record<string, unknown> }) =>
         fetchApi<ApiResponse<null>>(`/api/support/cases/${id}/events`, {
           method: 'POST',
@@ -1560,6 +1598,17 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify(data),
       }),
+    updateCustomerProfile: (id: string, customerMetadata: Record<string, unknown>, expectedUpdatedAt: string) =>
+      fetchApi<ApiResponse<{
+        id: string
+        friendName: string
+        lineDisplayName: string
+        customerMetadata: Record<string, unknown>
+        updatedAt: string
+      }>>(`/api/chats/${id}/customer-profile`, {
+        method: 'PUT',
+        body: JSON.stringify({ customerMetadata, expectedUpdatedAt }),
+      }),
     typing: (id: string, data: { active: boolean }) =>
       fetchApi<ApiResponse<ChatTypingResponse>>(`/api/chats/${id}/typing`, {
         method: 'POST',
@@ -1688,12 +1737,22 @@ export const api = {
           body: JSON.stringify({ lineAccountId: data.accountId, sourceId: data.sourceId }),
         },
       ),
-    internalTasks: (params: { accountId: string; status?: 'all' | 'open' | 'done'; scope?: 'all' | 'mine' }) =>
-      fetchApi<ApiResponse<InternalTask[]>>(
+    internalTasks: (params: {
+      accountId: string
+      status?: 'all' | 'open' | 'done'
+      scope?: 'all' | 'mine'
+      limit?: number
+      offset?: number
+    }) =>
+      fetchApi<ApiResponse<InternalTask[]> & {
+        meta?: { total: number; limit: number; offset: number; hasMore: boolean }
+      }>(
         `/api/app-notifications/internal-chat-tasks?${new URLSearchParams({
           lineAccountId: params.accountId,
           status: params.status ?? 'all',
           scope: params.scope ?? 'all',
+          limit: String(params.limit ?? 100),
+          offset: String(params.offset ?? 0),
         })}`,
       ),
     createInternalTask: (data: {
@@ -1705,14 +1764,28 @@ export const api = {
       description?: string
       dueAt?: string | null
       assigneeStaffIds?: string[]
+      workflowStatus?: 'todo' | 'in_progress' | 'review' | 'done'
+      priority?: 'low' | 'medium' | 'high' | 'urgent'
+      labels?: string[]
     }) => fetchApi<ApiResponse<InternalTask>>('/api/app-notifications/internal-chat-tasks', {
       method: 'POST',
       body: JSON.stringify({ ...data, lineAccountId: data.accountId }),
     }),
-    updateInternalTask: (taskId: string, status: 'open' | 'done') =>
+    updateInternalTask: (taskId: string, update: 'open' | 'done' | {
+      status?: 'open' | 'done'
+      workflowStatus?: 'todo' | 'in_progress' | 'review' | 'done'
+      priority?: 'low' | 'medium' | 'high' | 'urgent'
+      sortOrder?: number
+      labels?: string[]
+      version?: number
+      title?: string
+      description?: string
+      dueAt?: string | null
+      assigneeStaffIds?: string[]
+    }) =>
       fetchApi<ApiResponse<InternalTask>>(`/api/app-notifications/internal-chat-tasks/${taskId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ status }),
+        body: JSON.stringify(typeof update === 'string' ? { status: update } : update),
       }),
     internalTaskComments: (taskId: string) =>
       fetchApi<ApiResponse<InternalTaskComment[]>>(
@@ -1885,7 +1958,13 @@ export const api = {
     get: (id: string) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`),
     me: () =>
-      fetchApi<ApiResponse<{ id: string; name: string; role: string; email: string | null }>>('/api/staff/me'),
+      fetchApi<ApiResponse<{
+        id: string
+        name: string
+        role: string
+        email: string | null
+        secondaryCanRespond?: boolean
+      }>>('/api/staff/me'),
     presence: () =>
       fetchApi<ApiResponse<StaffPresenceResponse>>('/api/staff/presence'),
     heartbeat: (data?: { sessionStarted?: boolean }) =>
@@ -1893,12 +1972,23 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(data ?? {}),
       }),
-    create: (data: { name: string; email?: string; role: 'admin' | 'staff' | 'secondary' }) =>
+    create: (data: {
+      name: string
+      email?: string
+      role: 'admin' | 'staff' | 'secondary'
+      secondaryCanRespond?: boolean
+    }) =>
       fetchApi<ApiResponse<StaffMember>>('/api/staff', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; email?: string | null; role?: string; isActive?: boolean }) =>
+    update: (id: string, data: {
+      name?: string
+      email?: string | null
+      role?: string
+      secondaryCanRespond?: boolean
+      isActive?: boolean
+    }) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),

@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS line_conversations (
   source_id       TEXT NOT NULL,
   display_name    TEXT NOT NULL,
   picture_url     TEXT,
+  customer_metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(customer_metadata)),
   last_message_at TEXT,
   status          TEXT NOT NULL DEFAULT 'resolved' CHECK (status IN ('unread', 'resolved')),
   workflow_status TEXT CHECK (workflow_status IN ('unread', 'in_progress', 'long_term', 'resolved')),
@@ -226,6 +227,9 @@ ON line_conversations (line_account_id, status, last_message_at);
 
 CREATE INDEX IF NOT EXISTS idx_line_conversations_account_workflow_last_message
 ON line_conversations (line_account_id, workflow_status, last_message_at);
+
+CREATE INDEX IF NOT EXISTS idx_line_conversations_customer_number
+ON line_conversations(json_extract(customer_metadata, '$.customerNumber'));
 
 CREATE TABLE IF NOT EXISTS line_conversation_messages (
   id                 TEXT PRIMARY KEY,
@@ -734,6 +738,7 @@ CREATE TABLE IF NOT EXISTS staff_members (
   name       TEXT NOT NULL,
   email      TEXT,
   role       TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'staff', 'secondary')),
+  secondary_can_respond INTEGER NOT NULL DEFAULT 0 CHECK (secondary_can_respond IN (0, 1)),
   api_key    TEXT UNIQUE NOT NULL,
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
@@ -742,6 +747,70 @@ CREATE TABLE IF NOT EXISTS staff_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_staff_members_api_key ON staff_members(api_key);
 CREATE INDEX IF NOT EXISTS idx_staff_members_role ON staff_members(role);
+
+-- Explicit mutual ticket coverage between primary-support staff
+CREATE TABLE IF NOT EXISTS staff_ticket_shares (
+  staff_a_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  staff_b_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  removed_at TEXT,
+  PRIMARY KEY (staff_a_id, staff_b_id),
+  CHECK (staff_a_id < staff_b_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_ticket_shares_staff_b
+  ON staff_ticket_shares(staff_b_id, staff_a_id);
+
+CREATE INDEX IF NOT EXISTS idx_staff_ticket_shares_active
+  ON staff_ticket_shares(staff_a_id, staff_b_id) WHERE removed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS staff_member_events (
+  id         TEXT PRIMARY KEY,
+  staff_id   TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  action     TEXT NOT NULL CHECK (action IN ('created', 'updated', 'disabled', 'enabled', 'api_key_regenerated')),
+  metadata   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  actor_id   TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_member_events_staff
+  ON staff_member_events(staff_id, created_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS protect_staff_member_events_update
+BEFORE UPDATE ON staff_member_events BEGIN
+  SELECT RAISE(ABORT, 'staff member events cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_staff_member_events_delete
+BEFORE DELETE ON staff_member_events BEGIN
+  SELECT RAISE(ABORT, 'staff member events cannot be deleted');
+END;
+
+CREATE TABLE IF NOT EXISTS staff_ticket_share_events (
+  id         TEXT PRIMARY KEY,
+  staff_a_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  staff_b_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  action     TEXT NOT NULL CHECK (action IN ('granted', 'revoked')),
+  actor_id   TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  CHECK (staff_a_id < staff_b_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_staff_ticket_share_events_pair
+  ON staff_ticket_share_events(staff_a_id, staff_b_id, created_at DESC);
+
+CREATE TRIGGER IF NOT EXISTS protect_staff_ticket_share_events_update
+BEFORE UPDATE ON staff_ticket_share_events BEGIN
+  SELECT RAISE(ABORT, 'staff ticket share events cannot be updated');
+END;
+
+CREATE TRIGGER IF NOT EXISTS protect_staff_ticket_share_events_delete
+BEFORE DELETE ON staff_ticket_share_events BEGIN
+  SELECT RAISE(ABORT, 'staff ticket share events cannot be deleted');
+END;
 
 -- Staff browser presence for showing who currently has L-Link open
 CREATE TABLE IF NOT EXISTS staff_presence (

@@ -4,20 +4,26 @@ import Header from '@/components/layout/header'
 import { useConfirmDialog } from '@/components/support/support-ui'
 import { fetchApi } from '@/lib/api'
 import { copyText } from '@/lib/clipboard'
-import { buildStaffCreatePayload, staffOperationFailureMessage } from '@/lib/staff-form'
+import {
+  buildStaffCreatePayload,
+  staffAccessSelection,
+  staffAccessUpdatePayload,
+  staffOperationFailureMessage,
+  type StaffAccessSelection,
+} from '@/lib/staff-form'
 import type { ApiResponse } from '@line-crm/shared'
 import type { StaffMember } from '@line-crm/shared'
 
 type NewApiKey = { apiKey: string; staffId: string }
-type EditableRole = 'admin' | 'staff' | 'secondary'
-
-const editableRoleOptions: Array<{ value: EditableRole; label: string }> = [
+type TicketShareTarget = { id: string; name: string }
+const editableRoleOptions: Array<{ value: StaffAccessSelection; label: string }> = [
   { value: 'admin', label: '管理者' },
   { value: 'staff', label: '一次対応' },
-  { value: 'secondary', label: '二次対応のみ（閲覧のみ）' },
+  { value: 'secondary_viewer', label: '二次対応（閲覧のみ）' },
+  { value: 'secondary_responder', label: '二次対応' },
 ]
 
-function RoleBadge({ role }: { role: string }) {
+function RoleBadge({ role, secondaryCanRespond = false }: { role: string; secondaryCanRespond?: boolean }) {
   const styles =
     role === 'owner'
       ? 'bg-yellow-100 text-yellow-800'
@@ -27,7 +33,13 @@ function RoleBadge({ role }: { role: string }) {
           ? 'bg-indigo-100 text-indigo-800'
           : 'bg-gray-100 text-gray-600'
   const label =
-    role === 'owner' ? 'オーナー' : role === 'admin' ? '管理者' : role === 'secondary' ? '二次対応のみ（閲覧のみ）' : '一次対応'
+    role === 'owner'
+      ? 'オーナー'
+      : role === 'admin'
+        ? '管理者'
+        : role === 'secondary'
+          ? (secondaryCanRespond ? '二次対応' : '二次対応（閲覧のみ）')
+          : '一次対応'
   return (
     <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${styles}`}>
       {label}
@@ -54,10 +66,13 @@ export default function StaffPage() {
   const [showForm, setShowForm] = useState(false)
   const [formName, setFormName] = useState('')
   const [formEmail, setFormEmail] = useState('')
-  const [formRole, setFormRole] = useState<EditableRole>('staff')
+  const [formRole, setFormRole] = useState<StaffAccessSelection>('staff')
   const [formLoading, setFormLoading] = useState(false)
   const [formError, setFormError] = useState('')
   const [roleSavingId, setRoleSavingId] = useState<string | null>(null)
+  const [ticketShareTarget, setTicketShareTarget] = useState<TicketShareTarget | null>(null)
+  const [ticketShareIds, setTicketShareIds] = useState<string[]>([])
+  const [ticketShareSaving, setTicketShareSaving] = useState(false)
 
   const loadMembers = async () => {
     setLoading(true)
@@ -76,18 +91,25 @@ export default function StaffPage() {
     }
   }
 
-  const handleRoleChange = async (member: StaffMember, nextRole: EditableRole) => {
-    if (member.role === nextRole) return
+  const handleRoleChange = async (member: StaffMember, nextAccess: StaffAccessSelection) => {
+    if (staffAccessSelection(member.role, Boolean(member.secondaryCanRespond)) === nextAccess) return
+    const nextPermissions = staffAccessUpdatePayload(nextAccess)
     setRoleSavingId(member.id)
     setError('')
     const previousMembers = members
     setMembers((current) =>
-      current.map((m) => (m.id === member.id ? { ...m, role: nextRole } : m)),
+      current.map((m) => (m.id === member.id
+        ? {
+            ...m,
+            role: nextPermissions.role,
+            secondaryCanRespond: nextPermissions.secondaryCanRespond,
+          }
+        : m)),
     )
     try {
       const res = await fetchApi<ApiResponse<StaffMember>>(`/api/staff/${member.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ role: nextRole }),
+        body: JSON.stringify(nextPermissions),
       })
       if (!res.success) {
         setMembers(previousMembers)
@@ -95,7 +117,9 @@ export default function StaffPage() {
         return
       }
       setMembers((current) =>
-        current.map((m) => (m.id === member.id ? res.data : m)),
+        current.map((m) => (m.id === member.id
+          ? { ...res.data, ticketShareStaffIds: member.ticketShareStaffIds }
+          : m)),
       )
     } catch {
       setMembers(previousMembers)
@@ -186,24 +210,33 @@ export default function StaffPage() {
     }
   }
 
-  const handleDelete = async (member: StaffMember) => {
-    const confirmed = await requestConfirm({
-      title: 'スタッフを削除しますか？',
-      message: `${member.name} を削除します。この操作は元に戻せません。`,
-      confirmLabel: '削除',
-      tone: 'danger',
-    })
-    if (!confirmed) return
+  const openTicketShareDialog = (member: StaffMember) => {
+    setTicketShareTarget({ id: member.id, name: member.name })
+    setTicketShareIds(member.ticketShareStaffIds ?? [])
+  }
+
+  const saveTicketShares = async () => {
+    if (!ticketShareTarget || ticketShareSaving) return
+    setTicketShareSaving(true)
+    setError('')
     try {
-      const res = await fetchApi<ApiResponse<null>>(`/api/staff/${member.id}`, { method: 'DELETE' })
+      const res = await fetchApi<ApiResponse<{ staffId: string; peerStaffIds: string[] }>>(
+        `/api/staff/${ticketShareTarget.id}/ticket-shares`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ peerStaffIds: ticketShareIds }),
+        },
+      )
       if (!res.success) {
-        setError(staffOperationFailureMessage('delete'))
+        setError('チケット共有の保存に失敗しました')
         return
       }
-      setError('')
+      setTicketShareTarget(null)
       await loadMembers()
     } catch {
-      setError(staffOperationFailureMessage('delete'))
+      setError('チケット共有の保存に失敗しました')
+    } finally {
+      setTicketShareSaving(false)
     }
   }
 
@@ -222,6 +255,54 @@ export default function StaffPage() {
   return (
     <div>
       {confirmDialog}
+      {ticketShareTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="presentation">
+          <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl" role="dialog" aria-modal="true" aria-labelledby="ticket-share-title">
+            <h2 id="ticket-share-title" className="text-base font-semibold text-gray-900">チケット共有を設定</h2>
+            <p className="mt-1 text-sm leading-6 text-gray-600">
+              {ticketShareTarget.name} と選択したスタッフは 相互のチケットを確認し 不在時に代理で完了できます
+            </p>
+            <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
+              {members
+                .filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && member.isActive)
+                .map((member) => (
+                  <label key={member.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 hover:bg-gray-50">
+                    <input
+                      type="checkbox"
+                      checked={ticketShareIds.includes(member.id)}
+                      onChange={(event) => setTicketShareIds((current) => event.target.checked
+                        ? [...current, member.id]
+                        : current.filter((id) => id !== member.id))}
+                      className="h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500"
+                    />
+                    <span className="text-sm font-medium text-gray-800">{member.name}</span>
+                  </label>
+                ))}
+              {members.filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && member.isActive).length === 0 && (
+                <p className="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">共有できる一次対応スタッフがいません</p>
+              )}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTicketShareTarget(null)}
+                disabled={ticketShareSaving}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => void saveTicketShares()}
+                disabled={ticketShareSaving}
+                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {ticketShareSaving ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <Header
         title="スタッフ管理"
         action={
@@ -295,7 +376,7 @@ export default function StaffPage() {
                 <label className="block text-xs font-medium text-gray-700 mb-1">ロール *</label>
                 <select
                   value={formRole}
-                  onChange={(e) => setFormRole(e.target.value as EditableRole)}
+                  onChange={(e) => setFormRole(e.target.value as StaffAccessSelection)}
                   className="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
                 >
                   {editableRoleOptions.map((option) => (
@@ -370,16 +451,25 @@ export default function StaffPage() {
             <tbody className="divide-y divide-gray-100">
               {members.map((member) => (
                 <tr key={member.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{member.name}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <span className="block">{member.name}</span>
+                    {member.role === 'staff' && (member.ticketShareStaffIds?.length ?? 0) > 0 && (
+                      <span className="mt-1 block text-[11px] font-normal text-green-700">
+                        共有中: {member.ticketShareStaffIds?.map((id) => members.find((item) => item.id === id)?.name ?? id).join(' / ')}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
                     {member.role === 'owner' ? (
-                      <RoleBadge role={member.role} />
+                      <RoleBadge role={member.role} secondaryCanRespond={Boolean(member.secondaryCanRespond)} />
                     ) : (
                       <div className="flex items-center gap-2">
                         <select
-                          value={editableRoleOptions.some((option) => option.value === member.role) ? member.role : 'staff'}
-                          onChange={(e) => handleRoleChange(member, e.target.value as EditableRole)}
+                          value={staffAccessSelection(member.role, Boolean(member.secondaryCanRespond)) === 'owner'
+                            ? 'staff'
+                            : staffAccessSelection(member.role, Boolean(member.secondaryCanRespond))}
+                          onChange={(e) => handleRoleChange(member, e.target.value as StaffAccessSelection)}
                           disabled={Boolean(roleSavingId)}
                           className="min-w-[104px] rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm outline-none transition-colors focus:border-green-500 focus:ring-2 focus:ring-green-100 disabled:cursor-wait disabled:bg-gray-50 disabled:text-gray-400"
                           aria-label={`${member.name} の権限`}
@@ -407,6 +497,14 @@ export default function StaffPage() {
                     <div className="flex items-center justify-end gap-2">
                       {member.role !== 'owner' && (
                         <>
+                          {member.role === 'staff' && member.isActive && (
+                            <button
+                              onClick={() => openTicketShareDialog(member)}
+                              className="px-2.5 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50 transition-colors"
+                            >
+                              チケット共有
+                            </button>
+                          )}
                           <button
                             onClick={() => handleToggleActive(member)}
                             className="px-2.5 py-1 text-xs font-medium text-gray-600 bg-white border border-gray-300 rounded hover:bg-gray-50 transition-colors"
@@ -418,12 +516,6 @@ export default function StaffPage() {
                             className="px-2.5 py-1 text-xs font-medium text-blue-600 bg-white border border-blue-200 rounded hover:bg-blue-50 transition-colors"
                           >
                             キー再生成
-                          </button>
-                          <button
-                            onClick={() => handleDelete(member)}
-                            className="px-2.5 py-1 text-xs font-medium text-red-600 bg-white border border-red-200 rounded hover:bg-red-50 transition-colors"
-                          >
-                            削除
                           </button>
                         </>
                       )}

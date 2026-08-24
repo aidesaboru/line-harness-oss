@@ -89,6 +89,7 @@ export type AuthenticatedStaff = {
   id: string;
   name: string;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
+  secondaryCanRespond: boolean;
 };
 
 /**
@@ -104,12 +105,17 @@ export async function authenticateApiToken(
 
   const staff = await getStaffByApiKey(c.env.DB, token);
   if (staff) {
-    return { id: staff.id, name: staff.name, role: staff.role };
+    return {
+      id: staff.id,
+      name: staff.name,
+      role: staff.role,
+      secondaryCanRespond: Boolean(staff.secondary_can_respond),
+    };
   }
 
   // Fallback: env API_KEY acts as owner (current rotation slot)
   if (token === c.env.API_KEY) {
-    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner' };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true };
   }
 
   // Legacy fallback: LEGACY_API_KEY accepted during rotation grace period.
@@ -123,7 +129,7 @@ export async function authenticateApiToken(
     token === c.env.LEGACY_API_KEY
   ) {
     console.log('[auth] accept_via=LEGACY_API_KEY');
-    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner' };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true };
   }
 
   return null;

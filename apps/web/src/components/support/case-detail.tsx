@@ -44,8 +44,11 @@ interface CaseDetailProps {
   dirty: boolean
   saving: boolean
   reminderSaving: boolean
+  slackNotificationDeleting: boolean
   canEditRouting: boolean
   canEditCaseWork: boolean
+  canCompleteCase: boolean
+  canDeleteSlackNotification: boolean
   staffOptions: string[]
   staffName: string
   onFormChange: (patch: Partial<CaseFormState>) => void
@@ -57,6 +60,7 @@ interface CaseDetailProps {
   onFollowUpReminderConfigure: (intervalDays: number) => Promise<void>
   onFollowUpReminderConfirm: () => Promise<void>
   onFollowUpReminderDisable: () => Promise<void>
+  onDeleteSlackNotification: () => Promise<void>
   onOpenChatWithDraft: () => void
   onCopyReplyDraft: () => void
   emptyState?: Pick<SupportEmptyState, 'title' | 'description'>
@@ -736,6 +740,32 @@ function InternalChatPanel({
   )
 }
 
+function InternalChatReadOnly({ messages }: { messages: SupportInternalMessage[] }) {
+  return (
+    <section className="rounded-2xl border border-slate-200 bg-slate-50 shadow-sm" aria-label="社内チャット">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <p className="text-sm font-semibold text-slate-900">社内チャット</p>
+        <p className="mt-0.5 text-xs text-slate-500">引き継ぎ内容を閲覧できます 投稿とリアクションはできません</p>
+      </div>
+      <div className="max-h-[360px] space-y-2 overflow-y-auto p-3">
+        {messages.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-5 text-center text-sm text-slate-500">記録はありません</p>
+        ) : messages.map((message) => (
+          <div key={message.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-xs font-semibold text-slate-800">{message.createdByName || 'スタッフ'}</p>
+              <span className="text-[11px] text-slate-400">{formatDateTime(message.createdAt)}</span>
+            </div>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-700">
+              <MentionText text={message.body} mentions={message.mentions} />
+            </p>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export default function CaseDetail({
   detail,
   detailLoading,
@@ -743,8 +773,11 @@ export default function CaseDetail({
   dirty,
   saving,
   reminderSaving,
-  canEditRouting,
-  canEditCaseWork,
+  slackNotificationDeleting,
+  canEditRouting: requestedCanEditRouting,
+  canEditCaseWork: requestedCanEditCaseWork,
+  canCompleteCase,
+  canDeleteSlackNotification,
   staffOptions,
   staffName,
   onFormChange,
@@ -756,6 +789,7 @@ export default function CaseDetail({
   onFollowUpReminderConfigure,
   onFollowUpReminderConfirm,
   onFollowUpReminderDisable,
+  onDeleteSlackNotification,
   onOpenChatWithDraft,
   onCopyReplyDraft,
   emptyState,
@@ -781,6 +815,9 @@ export default function CaseDetail({
     )
   }
 
+  const isSharedProxy = detail.accessMode === 'shared_proxy'
+  const canEditRouting = !isSharedProxy && requestedCanEditRouting
+  const canEditCaseWork = !isSharedProxy && requestedCanEditCaseWork
   const overdue = isOverdueCase(detail)
   const primaryUnassigned = !caseForm.primaryAssignee.trim()
   const secondaryUnassigned = caseForm.escalationAssignees.length === 0
@@ -923,7 +960,11 @@ export default function CaseDetail({
           </div>
         )}
 
-        {!canEditCaseWork ? (
+        {detail.accessMode === 'shared_proxy' ? (
+          <div className="rounded-md border border-green-200 bg-green-50 px-3 py-2 text-xs font-medium text-green-800">
+            共有担当者のチケットを閲覧しています 内容の変更や顧客LINEの閲覧はできませんが 対応結果メモを残して代理完了できます
+          </div>
+        ) : !canEditCaseWork ? (
           <div className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-800">
             二次対応専用権限では、自分が二次対応先に指定されたチケットを閲覧できます。チケット本体の変更と顧客LINEの会話履歴は制限されています。
           </div>
@@ -1180,7 +1221,7 @@ export default function CaseDetail({
         </div>
 
         {/* クイックアクション */}
-        {canEditCaseWork && (
+        {(canEditCaseWork || canCompleteCase || canDeleteSlackNotification) && (
           completing ? (
             <CompletionPanel
               resolutionNote={caseForm.resolutionNote}
@@ -1191,7 +1232,7 @@ export default function CaseDetail({
             />
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              {(caseForm.status === 'open' || caseForm.status === 'reopened') && (
+              {canEditCaseWork && (caseForm.status === 'open' || caseForm.status === 'reopened') && (
                 <button
                   type="button"
                   onClick={() => void onQuickStatus('in_progress', '対応を開始しました')}
@@ -1201,7 +1242,7 @@ export default function CaseDetail({
                   対応開始
                 </button>
               )}
-              {(caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
+              {canEditCaseWork && (caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
                 <button
                   type="button"
                   onClick={() => void onQuickStatus('in_progress', '二次回答を確認し、一次対応を再開しました')}
@@ -1211,7 +1252,7 @@ export default function CaseDetail({
                   対応中にする
                 </button>
               )}
-              {caseForm.status !== 'resolved' && (
+              {canCompleteCase && caseForm.status !== 'resolved' && (
                 <button
                   type="button"
                   onClick={() => setCompleting(true)}
@@ -1221,7 +1262,7 @@ export default function CaseDetail({
                   完了にする…
                 </button>
               )}
-              {caseForm.status === 'resolved' && (
+              {canEditCaseWork && caseForm.status === 'resolved' && (
                 <button
                   type="button"
                   onClick={() => void onQuickStatus('reopened', 'チケットを再オープンしました')}
@@ -1232,7 +1273,23 @@ export default function CaseDetail({
                   再オープン
                 </button>
               )}
-              {caseForm.customerReplyDraft.trim() && (
+              {canDeleteSlackNotification && detail.slackTicketNotification?.status === 'sent' && (
+                <button
+                  type="button"
+                  onClick={() => void onDeleteSlackNotification()}
+                  disabled={saving || slackNotificationDeleting}
+                  className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-semibold text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  title="Slack上の通知だけを削除し チケットと対応ログは残します"
+                >
+                  {slackNotificationDeleting ? 'Slack通知を削除中…' : 'Slack通知を削除…'}
+                </button>
+              )}
+              {canDeleteSlackNotification && detail.slackTicketNotification?.status === 'deleted' && (
+                <span className="inline-flex items-center rounded-md border border-slate-200 bg-slate-100 px-3 py-1.5 text-sm font-semibold text-slate-600">
+                  Slack通知削除済み
+                </span>
+              )}
+              {canEditCaseWork && caseForm.customerReplyDraft.trim() && (
                 <>
                   {showChatReplyAction && (
                     <button
@@ -1275,14 +1332,18 @@ export default function CaseDetail({
           </div>
         )}
 
-        <InternalChatPanel
-          key={detail.id}
-          messages={detail.internalMessages ?? []}
-          staffOptions={chatStaffOptions}
-          saving={saving}
-          onCreate={onInternalMessageCreate}
-          onReaction={onInternalMessageReaction}
-        />
+        {canEditCaseWork ? (
+          <InternalChatPanel
+            key={detail.id}
+            messages={detail.internalMessages ?? []}
+            staffOptions={chatStaffOptions}
+            saving={saving}
+            onCreate={onInternalMessageCreate}
+            onReaction={onInternalMessageReaction}
+          />
+        ) : (
+          <InternalChatReadOnly messages={detail.internalMessages ?? []} />
+        )}
 
         <div className="grid gap-3 lg:grid-cols-2">
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -1305,9 +1366,13 @@ export default function CaseDetail({
             {!canViewLineConversation ? (
               <div className="flex min-h-[220px] items-center justify-center bg-slate-50 p-4">
                 <div className="max-w-sm rounded-xl border border-slate-200 bg-white px-4 py-5 text-center shadow-sm">
-                  <p className="text-sm font-semibold text-slate-900">会話ログがありません</p>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {detail.accessMode === 'shared_proxy' ? '共有チケットでは会話ログを表示しません' : '会話ログがありません'}
+                  </p>
                   <p className="mt-2 text-xs leading-6 text-slate-500">
-                    このチケットにはLINE会話が紐づいていません。
+                    {detail.accessMode === 'shared_proxy'
+                      ? '顧客LINEの閲覧権限は元の担当者に限定されています'
+                      : 'このチケットにはLINE会話が紐づいていません。'}
                   </p>
                 </div>
               </div>

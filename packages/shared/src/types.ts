@@ -854,16 +854,19 @@ export interface StaffMember {
   name: string;
   email: string | null;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
+  secondaryCanRespond?: boolean;
   apiKey: string;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
+  ticketShareStaffIds?: string[];
 }
 
 export interface StaffProfile {
   id: string;
   name: string;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
+  secondaryCanRespond?: boolean;
   email: string | null;
 }
 

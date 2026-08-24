@@ -37,11 +37,15 @@ type AppendInput = {
   mentionTargets?: MentionStaffTarget[];
   reason?: string | null;
   now: string;
+  authorizationGuard?: {
+    sql: string;
+    binds: unknown[];
+  };
 };
 
 export type AppendInternalMessageEventResult =
   | { ok: true; event: InternalMessageEventRow }
-  | { ok: false; reason: 'conflict' | 'forbidden' | 'deleted' };
+  | { ok: false; reason: 'conflict' | 'forbidden' | 'deleted' | 'authorization_conflict' };
 
 export function parseInternalMessageEventArray(raw: string | null | undefined): string[] {
   if (!raw) return [];
@@ -151,7 +155,8 @@ export async function appendInternalMessageEvent(
         `INSERT INTO internal_message_events (
           id, source_type, source_message_id, version, action, body, mentions,
           mention_staff_ids, reason, actor_id, actor_name, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE ${input.authorizationGuard?.sql ?? '1 = 1'}`,
       )
       .bind(
         event.id,
@@ -166,10 +171,18 @@ export async function appendInternalMessageEvent(
         event.actor_id,
         event.actor_name,
         event.created_at,
+        ...(input.authorizationGuard?.binds ?? []),
       ),
     input.db
-      .prepare(`DELETE FROM internal_message_mentions WHERE source_type = ? AND source_message_id = ?`)
-      .bind(input.source, input.message.id),
+      .prepare(
+        `DELETE FROM internal_message_mentions
+         WHERE source_type = ? AND source_message_id = ?
+           AND EXISTS (
+             SELECT 1 FROM internal_message_events mutation_event
+             WHERE mutation_event.id = ?
+           )`,
+      )
+      .bind(input.source, input.message.id, event.id),
   ];
   if (input.action === 'edit') {
     for (const target of input.mentionTargets ?? []) {
@@ -178,14 +191,19 @@ export async function appendInternalMessageEvent(
           .prepare(
             `INSERT INTO internal_message_mentions (
               source_type, source_message_id, staff_id, staff_name_snapshot, created_at
-            ) VALUES (?, ?, ?, ?, ?)`,
+            ) SELECT ?, ?, ?, ?, ?
+              WHERE EXISTS (
+                SELECT 1 FROM internal_message_events mutation_event
+                WHERE mutation_event.id = ?
+              )`,
           )
-          .bind(input.source, input.message.id, target.id, target.name, input.now),
+          .bind(input.source, input.message.id, target.id, target.name, input.now, event.id),
       );
     }
   }
   try {
-    await input.db.batch(statements);
+    const results = await input.db.batch(statements);
+    if (results[0]?.meta?.changes === 0) return { ok: false, reason: 'authorization_conflict' };
   } catch (err) {
     if (err instanceof Error && /UNIQUE constraint failed/i.test(err.message)) {
       return { ok: false, reason: 'conflict' };

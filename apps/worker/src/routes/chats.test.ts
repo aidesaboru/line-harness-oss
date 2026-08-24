@@ -181,6 +181,7 @@ function makeChatDb(state: {
   lineConversations?: Array<Record<string, unknown>>;
   lineConversationMessages?: LineConversationMessageRow[];
   missingTables?: OptionalChatTableName[];
+  customerProfileUpdateChanges?: number;
 }) {
   const calls: Array<{ method: 'first' | 'all' | 'run'; sql: string; binds: unknown[] }> = [];
   const visible = new Set(state.visibleFriendIds);
@@ -444,7 +445,9 @@ function makeChatDb(state: {
         async run() {
           calls.push({ method: 'run', sql, binds: bound });
           let changes = 1;
-          if (/INSERT(?: OR IGNORE)? INTO messages_log/.test(sql)) {
+          if (sql.includes('UPDATE line_conversations') && sql.includes('customer_metadata = ?')) {
+            changes = state.customerProfileUpdateChanges ?? 1;
+          } else if (/INSERT(?: OR IGNORE)? INTO messages_log/.test(sql)) {
             const [id, friendId] = bound as string[];
             const isExternalOutgoing = sql.includes("'line_official'");
             const hasLineMessageId = sql.includes('line_message_id');
@@ -577,6 +580,9 @@ function makeChatDb(state: {
         },
       };
       return stmt;
+    },
+    async batch(statements: Array<{ run(): Promise<unknown> }>) {
+      return Promise.all(statements.map((statement) => statement.run()));
     },
   } as unknown as D1Database;
 
@@ -725,6 +731,43 @@ describe('chat support visibility', () => {
         activeSupportCase: null,
       }),
     ]));
+  });
+
+  test('chat list identifies and searches LINE groups by registered customer metadata', async () => {
+    const { db, calls } = makeChatDb({
+      rows: [],
+      friends,
+      visibleFriendIds: [],
+      lineConversations: [{
+        id: 'conversation-group-1',
+        source_type: 'group',
+        display_name: 'ECオーナー通達LINEグループ',
+        customer_metadata: JSON.stringify({
+          customerNumber: '2449',
+          companyName: '河原通信',
+          contactName: '河原',
+        }),
+        last_message_at: '2026-08-05T12:00:00.000',
+        status: 'resolved',
+        workflow_status: 'long_term',
+        created_at: '2026-08-05T08:00:00.000',
+        updated_at: '2026-08-05T12:00:00.000',
+      }],
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats?lineAccountId=account-1&q=2449');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { data: Array<Record<string, unknown>> };
+    expect(body.data).toEqual([expect.objectContaining({
+      id: 'conversation-group-1',
+      friendName: '2449_河原',
+      lineDisplayName: 'ECオーナー通達LINEグループ',
+      status: 'long_term',
+      customerMetadata: expect.objectContaining({ companyName: '河原通信' }),
+    })]);
+    const listCall = calls.find((call) => call.sql.includes('FROM line_conversations lc'));
+    expect(listCall?.sql).toContain("json_extract(lc.customer_metadata, '$.customerNumber')");
+    expect(listCall?.sql).toContain("json_extract(lc.customer_metadata, '$.companyName')");
   });
 
   test('chat list keeps individual chats available when optional chat tables are missing', async () => {
@@ -1124,6 +1167,121 @@ describe('chat support visibility', () => {
         'conversation-group-1',
       ],
     }));
+  });
+
+  test('primary staff can register customer metadata for a LINE group without changing its LINE name', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー通達LINEグループ',
+      picture_url: null,
+      customer_metadata: '{}',
+      last_message_at: null,
+      status: 'resolved',
+      workflow_status: 'resolved',
+      created_at: '2026-08-05T08:00:00.000',
+      updated_at: '2026-08-05T08:00:00.000',
+    });
+    const { db, calls } = makeChatDb({ rows, friends, visibleFriendIds: [] });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1/customer-profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedUpdatedAt: '2026-08-05T08:00:00.000',
+        customerMetadata: {
+          customerNumber: '2449',
+          companyName: '河原通信',
+          contactName: '河原',
+          googleFolderUrl: '',
+          closingMonth: '3月',
+          specialNotes: '',
+          operationContracts: [],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      success: true,
+      data: {
+        friendName: '2449_河原',
+        lineDisplayName: 'ECオーナー通達LINEグループ',
+        customerMetadata: { customerNumber: '2449', companyName: '河原通信' },
+      },
+    });
+    const update = calls.find((call) => call.method === 'run' && call.sql.includes('SET customer_metadata = ?'));
+    expect(update?.binds[2]).toBe('conversation-group-1');
+    expect(update?.binds[3]).toBe('2026-08-05T08:00:00.000');
+    expect(JSON.parse(String(update?.binds[0]))).toMatchObject({
+      customerNumber: '2449',
+      companyName: '河原通信',
+      contactName: '河原',
+    });
+    expect(update?.sql).not.toContain('display_name =');
+    const event = calls.find((call) => call.method === 'run' && call.sql.includes('line_conversation_customer_events'));
+    expect(event?.binds).toEqual([
+      expect.any(String),
+      'conversation-group-1',
+      'account-1',
+      'staff-1',
+      '田島',
+      '{}',
+      expect.stringContaining('"customerNumber":"2449"'),
+      '2026-06-12T10:00:00.000',
+      'conversation-group-1',
+      '2026-06-12T10:00:00.000',
+      expect.stringContaining('"customerNumber":"2449"'),
+    ]);
+  });
+
+  test('rejects a concurrent LINE group customer profile overwrite without appending history', async () => {
+    dbMocks.getLineConversationById.mockResolvedValue({
+      id: 'conversation-group-1',
+      line_account_id: 'account-1',
+      source_type: 'group',
+      source_id: 'Cgroup1',
+      display_name: 'ECオーナー通達LINEグループ',
+      picture_url: null,
+      customer_metadata: '{}',
+      last_message_at: null,
+      status: 'resolved',
+      workflow_status: 'resolved',
+      created_at: '2026-08-05T08:00:00.000',
+      updated_at: '2026-08-05T08:00:00.000',
+    });
+    const { db, calls } = makeChatDb({
+      rows,
+      friends,
+      visibleFriendIds: [],
+      customerProfileUpdateChanges: 0,
+    });
+
+    const res = await setupApp(db, 'staff').request('/api/chats/conversation-group-1/customer-profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expectedUpdatedAt: '2026-08-05T08:00:00.000',
+        customerMetadata: { customerNumber: '2449', companyName: '河原通信' },
+      }),
+    });
+
+    expect(res.status).toBe(409);
+    const event = calls.find((call) => call.method === 'run' && call.sql.includes('line_conversation_customer_events'));
+    expect(event?.sql).toContain('profile_mutation_guard');
+  });
+
+  test('secondary-only staff cannot update LINE group customer metadata', async () => {
+    const { db } = makeChatDb({ rows, friends, visibleFriendIds: [] });
+    const res = await setupApp(db, 'secondary').request('/api/chats/conversation-group-1/customer-profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customerMetadata: {} }),
+    });
+    expect(res.status).toBe(403);
+    expect(dbMocks.getLineConversationById).not.toHaveBeenCalled();
   });
 
   test('staff can send a message to a LINE group and records it after LINE accepts it', async () => {

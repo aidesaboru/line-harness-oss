@@ -5,11 +5,16 @@ import type { Env } from '../index.js';
 import { requireRole } from '../middleware/role-guard.js';
 import {
   isSecondaryOnlySupportStaff,
+  supportCaseDirectVisibilitySql,
+  supportCaseReadVisibilitySql,
+  supportCaseSharedVisibilitySql,
   supportCaseVisibilitySql,
+  supportEscalationVisibilitySql,
   supportStaffAssignmentName,
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import {
+  deleteSupportTicketSlackNotification,
   deliverSupportSecondarySlackNotification,
   deliverSupportTicketSlackNotification,
   getSupportTicketSlackNotificationHealth,
@@ -19,6 +24,7 @@ import {
   requeueDeadLetterSupportSlackNotifications,
   reissueSentSupportSlackNotifications,
   sendSupportTicketSlackTestNotification,
+  SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT,
 } from '../services/support-notifications.js';
 import {
   normalizeInternalReactionEmoji,
@@ -81,6 +87,12 @@ const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
   'customerReplyDraft',
   'resolutionNote',
   'manualIds',
+  'eventBody',
+]);
+const SHARED_PROXY_ALLOWED_CASE_UPDATE_KEYS = new Set([
+  'lineAccountId',
+  'status',
+  'resolutionNote',
   'eventBody',
 ]);
 const STAFF_ALLOWED_ESCALATION_UPDATE_KEYS = new Set([
@@ -171,7 +183,9 @@ type SupportCaseRow = {
   priority: string;
   status: string;
   primary_assignee: string | null;
+  primary_assignee_staff_id?: string | null;
   escalation_assignee: string | null;
+  escalation_assignee_staff_id?: string | null;
   escalation_assignees?: string | null;
   last_human_reply_at?: string | null;
   escalation_level: string;
@@ -505,6 +519,44 @@ function parseOptionalTextField(raw: unknown, label: string, maxLength = SUPPORT
   return { ok: true, value };
 }
 
+function parseOptionalOperationalTimestamp(raw: unknown, label: string): ValueResult<string | null> {
+  const parsed = parseOptionalTextField(raw, label, 64);
+  if (!parsed.ok || parsed.value === null) return parsed;
+  const value = parsed.value;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (!match) return { ok: false, error: `${label} must be an ISO-8601 timestamp` };
+
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText = '0', , zone] = match;
+  const [year, month, day, hour, minute, second] = [
+    yearText, monthText, dayText, hourText, minuteText, secondText,
+  ].map(Number);
+  const calendar = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  if (
+    calendar.getUTCFullYear() !== year
+    || calendar.getUTCMonth() !== month - 1
+    || calendar.getUTCDate() !== day
+    || calendar.getUTCHours() !== hour
+    || calendar.getUTCMinutes() !== minute
+    || calendar.getUTCSeconds() !== second
+  ) {
+    return { ok: false, error: `${label} must be a valid ISO-8601 timestamp` };
+  }
+  if (zone && zone !== 'Z') {
+    const [offsetHour, offsetMinute] = zone.slice(1).split(':').map(Number);
+    if (offsetHour > 14 || offsetMinute > 59 || (offsetHour === 14 && offsetMinute !== 0)) {
+      return { ok: false, error: `${label} must have a valid timezone offset` };
+    }
+  }
+  const parseTarget = zone ? value : `${value}${secondText ? '' : ':00'}+09:00`;
+  if (!Number.isFinite(Date.parse(parseTarget))) {
+    return { ok: false, error: `${label} must be a valid ISO-8601 timestamp` };
+  }
+  // D1 deadline queries use lexical comparison, so every newly written
+  // operational timestamp must use one canonical timezone and precision.
+  // Legacy values remain readable; only new/updated values are normalized.
+  return { ok: true, value: toJstString(new Date(parseTarget)) };
+}
+
 function parseRequiredTextField(raw: unknown, label: string, maxLength = SUPPORT_SHORT_TEXT_MAX_LENGTH): ValueResult<string> {
   const parsed = parseOptionalTextField(raw, label, maxLength);
   if (!parsed.ok) return parsed;
@@ -763,10 +815,23 @@ async function activeStaffIdsByName(db: D1Database, names: string[]): Promise<Ma
   if (names.length === 0) return new Map();
   const placeholders = names.map(() => '?').join(',');
   const rows = await db
-    .prepare(`SELECT id, name FROM staff_members WHERE is_active = 1 AND name IN (${placeholders})`)
+    .prepare(
+      `SELECT id, name
+       FROM staff_members
+       WHERE is_active = 1 AND name IN (${placeholders})
+       ORDER BY name ASC, id ASC`,
+    )
     .bind(...names)
     .all<{ id: string; name: string }>();
-  return new Map(rows.results.map((row) => [row.name, row.id]));
+  const idsByName = new Map<string, string[]>();
+  for (const row of rows.results) {
+    idsByName.set(row.name, [...(idsByName.get(row.name) ?? []), row.id]);
+  }
+  return new Map(
+    Array.from(idsByName.entries())
+      .filter(([, ids]) => ids.length === 1)
+      .map(([name, ids]) => [name, ids[0]!]),
+  );
 }
 
 function prepareSecondarySlackOutbox(
@@ -781,6 +846,8 @@ function prepareSecondarySlackOutbox(
     customerSummary?: string;
     dueAt?: string | null;
     now: string;
+    guardSql?: string;
+    guardBinds?: unknown[];
   },
 ): D1PreparedStatement {
   const supportCase = input.supportCase;
@@ -789,7 +856,8 @@ function prepareSecondarySlackOutbox(
       `INSERT INTO support_secondary_slack_notification_outbox (
         id, case_id, line_account_id, source_event_id, notification_type, payload, status,
         attempts, next_attempt_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)`,
+      ) SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?
+        WHERE ${input.guardSql ?? '1 = 1'}`,
     )
     .bind(
       input.id,
@@ -814,6 +882,7 @@ function prepareSecondarySlackOutbox(
       input.now,
       input.now,
       input.now,
+      ...(input.guardBinds ?? []),
     );
 }
 
@@ -1376,6 +1445,30 @@ function currentStaff(c: Context<Env>) {
   return staff ?? { id: 'system', name: 'system', role: 'staff' as const };
 }
 
+function isReadOnlySecondary(staff: SupportAccessStaff): boolean {
+  return staff.role === 'secondary' && staff.secondaryCanRespond !== true;
+}
+
+function secondaryCaseWriteGuard(
+  staff: SupportAccessStaff,
+  caseId: string,
+  lineAccountId: string,
+  caseAlias: string,
+  escalationAlias: string,
+): { sql: string; binds: unknown[] } {
+  if (staff.role !== 'secondary') return { sql: '1 = 1', binds: [] };
+  const visibility = supportCaseDirectVisibilitySql(staff, caseAlias, escalationAlias);
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM support_cases ${caseAlias}
+      WHERE ${caseAlias}.id = ?
+        AND ${caseAlias}.line_account_id = ?
+        AND ${visibility.sql}
+    )`,
+    binds: [caseId, lineAccountId, ...visibility.binds],
+  };
+}
+
 function kickSupportTicketSlackNotification(c: Context<Env>, outboxId: string): void {
   const task = deliverSupportTicketSlackNotification(c.env.DB, outboxId, {
     adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
@@ -1676,11 +1769,17 @@ async function getCaseRow(
   id: string,
   lineAccountId: string,
   staff?: SupportAccessStaff,
+  access: 'direct' | 'read' | 'shared' = 'direct',
 ) {
   const conditions = ['sc.id = ?', 'sc.line_account_id = ?'];
   const binds: unknown[] = [id, lineAccountId];
   if (staff) {
-    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_case_row_scope');
+    const visibility = access === 'read'
+      ? supportCaseReadVisibilitySql(staff, 'sc', 'se_case_row_scope')
+      : access === 'shared'
+        ? supportCaseSharedVisibilitySql(staff, 'sc', 'se_case_row_scope')
+        : supportCaseVisibilitySql(staff, 'sc', 'se_case_row_scope');
+    if (access === 'shared' && !visibility.sql) return null;
     if (visibility.sql) {
       conditions.push(visibility.sql);
       binds.push(...visibility.binds);
@@ -1729,12 +1828,15 @@ function prepareFollowUpReminderEvent(
   metadata: Record<string, unknown>,
   now: string,
   eventId = crypto.randomUUID(),
+  guardSql?: string,
+  guardBinds: unknown[] = [],
 ) {
   return db
     .prepare(
       `INSERT OR IGNORE INTO support_case_followup_reminder_events (
         id, reminder_id, case_id, action, metadata, actor_id, actor_name, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      ${guardSql ? `WHERE ${guardSql}` : ''}`,
     )
     .bind(
       eventId,
@@ -1745,6 +1847,7 @@ function prepareFollowUpReminderEvent(
       staff.id,
       staff.name,
       now,
+      ...guardBinds,
     );
 }
 
@@ -2040,6 +2143,39 @@ function prepareCaseEvent(
     );
 }
 
+function prepareGuardedCaseEvent(
+  db: D1Database,
+  caseId: string,
+  eventType: string,
+  actorId: string | null,
+  actorName: string | null,
+  body: string,
+  metadata: Record<string, unknown>,
+  id: string,
+  createdAt: string,
+  guardSql: string,
+  guardBinds: unknown[],
+) {
+  return db
+    .prepare(
+      `INSERT INTO support_case_events
+       (id, case_id, event_type, actor_id, actor_name, body, metadata, created_at)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE ${guardSql}`,
+    )
+    .bind(
+      id,
+      caseId,
+      eventType,
+      actorId,
+      actorName,
+      body,
+      JSON.stringify(metadata),
+      createdAt,
+      ...guardBinds,
+    );
+}
+
 async function addCaseEvent(
   db: D1Database,
   caseId: string,
@@ -2103,8 +2239,7 @@ support.get('/api/support/summary', async (c) => {
     const now = jstNow();
     const dueSoonAt = toJstString(new Date(Date.now() + 4 * 60 * 60 * 1000));
     const staff = currentStaff(c);
-    const myEscalationName = supportStaffAssignmentName(staff);
-    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_summary_scope');
+    const visibility = supportCaseReadVisibilitySql(staff, 'sc', 'se_summary_scope');
     const caseWhere = ['sc.line_account_id = ?'];
     const caseBinds: unknown[] = [lineAccountId.value];
     if (visibility.sql) {
@@ -2121,13 +2256,13 @@ support.get('/api/support/summary', async (c) => {
           SUM(CASE WHEN sc.status = 'secondary_answered' THEN 1 ELSE 0 END) AS secondary_answered,
           SUM(CASE WHEN sc.status != 'resolved'
             AND (
-              sc.escalation_assignee = ?
+              sc.escalation_assignee_staff_id = ?
               OR EXISTS (
                 SELECT 1
                 FROM support_escalations se
                 WHERE se.case_id = sc.id
                   AND se.status != 'closed'
-                  AND se.assignee = ?
+                  AND se.assignee_staff_id = ?
               )
             )
             THEN 1 ELSE 0 END) AS my_escalations,
@@ -2140,7 +2275,7 @@ support.get('/api/support/summary', async (c) => {
          FROM support_cases sc
          WHERE ${caseWhere.join(' AND ')}`,
       )
-      .bind(myEscalationName, myEscalationName, now, now, dueSoonAt, ...caseBinds)
+      .bind(staff.id, staff.id, now, now, dueSoonAt, ...caseBinds)
       .first<Record<string, number | null>>();
 
     const [byStatus, byCategory, byAssignee] = await Promise.all([
@@ -2213,7 +2348,7 @@ support.get('/api/support/cases', async (c) => {
     const conditions = ['sc.line_account_id = ?'];
     const binds: unknown[] = [lineAccountId.value];
     const staff = currentStaff(c);
-    const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_case_list_scope');
+    const visibility = supportCaseReadVisibilitySql(staff, 'sc', 'se_case_list_scope');
     if (visibility.sql) {
       conditions.push(visibility.sql);
       binds.push(...visibility.binds);
@@ -2245,18 +2380,17 @@ support.get('/api/support/cases', async (c) => {
     }
 
     if (isMyEscalationScope) {
-      const assignmentName = supportStaffAssignmentName(staff);
       conditions.push(`sc.status != 'resolved' AND (
-        sc.escalation_assignee = ?
+        sc.escalation_assignee_staff_id = ?
         OR EXISTS (
           SELECT 1
           FROM support_escalations se
           WHERE se.case_id = sc.id
             AND se.status != 'closed'
-            AND se.assignee = ?
+            AND se.assignee_staff_id = ?
         )
       )`);
-      binds.push(assignmentName, assignmentName);
+      binds.push(staff.id, staff.id);
     }
 
     if (assignee.value) {
@@ -2349,8 +2483,8 @@ support.post('/api/support/cases', async (c) => {
 
     if (!lineAccountId) return c.json({ success: false, error: 'lineAccountId is required' }, 400);
     const staff = currentStaff(c);
-    if (isSecondaryOnlySupportStaff(staff)) {
-      return c.json({ success: false, error: '二次対応専用権限ではチケットを作成できません' }, 403);
+    if (staff.role === 'secondary') {
+      return c.json({ success: false, error: '二次対応権限ではチケットを新規作成できません' }, 403);
     }
 
     const parsedCategory = parseOptionalTextField(body.category, 'category');
@@ -2375,7 +2509,7 @@ support.post('/api/support/cases', async (c) => {
     if (!parsedInternalNote.ok) return c.json({ success: false, error: parsedInternalNote.error }, 400);
     const parsedResolutionNote = parseOptionalTextField(body.resolutionNote, 'resolutionNote', SUPPORT_LONG_TEXT_MAX_LENGTH);
     if (!parsedResolutionNote.ok) return c.json({ success: false, error: parsedResolutionNote.error }, 400);
-    const parsedNextCheckAt = parseOptionalTextField(body.nextCheckAt, 'nextCheckAt');
+    const parsedNextCheckAt = parseOptionalOperationalTimestamp(body.nextCheckAt, 'nextCheckAt');
     if (!parsedNextCheckAt.ok) return c.json({ success: false, error: parsedNextCheckAt.error }, 400);
     const internalNote = parsedInternalNote.value ?? '';
     const resolutionNote = parsedResolutionNote.value ?? '';
@@ -2403,7 +2537,7 @@ support.post('/api/support/cases', async (c) => {
     if (!parsedEscalationAssignees.ok) return c.json({ success: false, error: parsedEscalationAssignees.error }, 400);
     const parsedEscalationLevel = parseOptionalTextField(body.escalationLevel, 'escalationLevel');
     if (!parsedEscalationLevel.ok) return c.json({ success: false, error: parsedEscalationLevel.error }, 400);
-    const parsedDueAt = parseOptionalTextField(body.dueAt, 'dueAt');
+    const parsedDueAt = parseOptionalOperationalTimestamp(body.dueAt, 'dueAt');
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
     const parsedCustomerNumber = parseOptionalTextField(body.customerNumber, 'customerNumber');
     if (!parsedCustomerNumber.ok) return c.json({ success: false, error: parsedCustomerNumber.error }, 400);
@@ -2426,7 +2560,17 @@ support.post('/api/support/cases', async (c) => {
       '新規問い合わせ';
     const escalationAssignees = parsedEscalationAssignees.value;
     const escalationAssignee = escalationAssignees[0] ?? null;
-    const assigneeStaffIds = await activeStaffIdsByName(c.env.DB, escalationAssignees);
+    const assignmentNames = Array.from(new Set([
+      ...(parsedPrimaryAssignee.value ? [parsedPrimaryAssignee.value] : []),
+      ...escalationAssignees,
+    ]));
+    const assigneeStaffIds = await activeStaffIdsByName(c.env.DB, assignmentNames);
+    const primaryAssigneeStaffId = parsedPrimaryAssignee.value
+      ? assigneeStaffIds.get(parsedPrimaryAssignee.value) ?? null
+      : null;
+    if (parsedPrimaryAssignee.value && !primaryAssigneeStaffId) {
+      return c.json({ success: false, error: '一次対応者は重複のない在籍中スタッフから選択してください' }, 400);
+    }
     if (body.escalationAssignees !== undefined) {
       const missing = escalationAssignees.filter((name) => !assigneeStaffIds.has(name));
       if (missing.length > 0) {
@@ -2459,11 +2603,13 @@ support.post('/api/support/cases', async (c) => {
           .prepare(
             `INSERT INTO support_cases (
               id, line_account_id, friend_id, title, category, priority, status,
-              primary_assignee, escalation_assignee, escalation_level, due_at, next_check_at,
+              primary_assignee, primary_assignee_staff_id,
+              escalation_assignee, escalation_assignee_staff_id,
+              escalation_level, due_at, next_check_at,
               customer_number, company_name, contact_name, store_name, contract_type,
               customer_summary, internal_note, customer_reply_draft, resolution_note, manual_ids,
               created_by, updated_by, closed_at, reopened_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             id,
@@ -2474,7 +2620,9 @@ support.post('/api/support/cases', async (c) => {
             priority,
             status,
             parsedPrimaryAssignee.value,
+            primaryAssigneeStaffId,
             escalationAssignee,
+            escalationAssignee ? assigneeStaffIds.get(escalationAssignee) ?? null : null,
             escalationLevel,
             parsedDueAt.value,
             nextCheckAt,
@@ -2759,17 +2907,67 @@ support.post('/api/support/notifications/slack/retry-dead-letters', requireRole(
   }
 });
 
+support.post('/api/support/cases/:id/slack-notification/delete', requireRole('owner', 'admin'), async (c) => {
+  try {
+    const caseId = parseRequiredVisibleId(c.req.param('id'), 'caseId');
+    if (!caseId.ok) return c.json({ success: false, error: caseId.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const lineAccountId = lineAccountIdFrom(c, parsedBody.value);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const staff = currentStaff(c);
+    const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
+    if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+
+    const result = await deleteSupportTicketSlackNotification(
+      c.env.DB,
+      caseId.value,
+      lineAccountId.value,
+      { id: staff.id, name: staff.name },
+      {
+        slackBotToken: c.env.SLACK_BOT_TOKEN,
+        slackChannelId: c.env.SUPPORT_TICKET_SLACK_CHANNEL_ID,
+      },
+    );
+    if (result.reason === 'token_missing' || result.reason === 'channel_missing') {
+      return c.json({ success: false, error: 'Slack notification is not configured' }, 503);
+    }
+    if (result.reason === 'notification_not_found') {
+      return c.json({ success: false, error: '削除できるSlack通知が見つかりません' }, 409);
+    }
+    if (result.reason === 'delete_failed') {
+      return c.json({ success: false, error: 'Slack通知の削除に失敗しました' }, 502);
+    }
+    return c.json({
+      success: true,
+      data: {
+        deleted: result.deleted,
+        alreadyDeleted: result.reason === 'already_deleted',
+        ticketPreserved: true,
+        historyPreserved: true,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/support/cases/:id/slack-notification/delete error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Slack通知の削除に失敗しました' }, 500);
+  }
+});
+
 support.get('/api/support/cases/:id', async (c) => {
   try {
     const id = parseRequiredVisibleId(c.req.param('id'), 'caseId');
     if (!id.ok) return c.json({ success: false, error: id.error }, 400);
     const lineAccountId = lineAccountIdFrom(c);
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
-    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, currentStaff(c));
-    if (!row) return c.json({ success: false, error: 'case not found' }, 404);
-
     const staff = currentStaff(c);
-    const [events, escalations, internalMessages, attachments] = await Promise.all([
+    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff, 'read');
+    if (!row) return c.json({ success: false, error: 'case not found' }, 404);
+    const directlyVisibleRow = staff.role === 'staff'
+      ? await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff)
+      : row;
+    const isSharedProxyAccess = staff.role === 'staff' && !directlyVisibleRow;
+
+    const [events, escalations, internalMessages, attachments, slackTicketNotifications] = await Promise.all([
       c.env.DB.prepare(
         `SELECT * FROM support_case_events WHERE case_id = ? ORDER BY created_at ASC`,
       ).bind(row.id).all<SupportEventRow>(),
@@ -2794,13 +2992,23 @@ support.get('/api/support/cases/:id', async (c) => {
          WHERE case_id = ? AND line_account_id = ?
          ORDER BY created_at ASC`,
       ).bind(row.id, lineAccountId.value).all<SupportCaseAttachmentRow>(),
+      c.env.DB.prepare(
+        `SELECT status, slack_message_ts, sent_at
+         FROM support_slack_notification_outbox
+         WHERE case_id = ? AND line_account_id = ? AND notification_type = 'ticket_created'
+         LIMIT 1`,
+      ).bind(row.id, lineAccountId.value).all<{
+        status: string;
+        slack_message_ts: string | null;
+        sent_at: string | null;
+      }>(),
     ]);
 
     const isSecondaryOnly = isSecondaryOnlySupportStaff(staff);
-    const canViewLineConversation = Boolean(row.friend_id);
-    const canOpenLineChat = Boolean(row.friend_id) && !isSecondaryOnly;
+    const canViewLineConversation = Boolean(row.friend_id) && !isSharedProxyAccess;
+    const canOpenLineChat = Boolean(row.friend_id) && !isSecondaryOnly && !isSharedProxyAccess;
     const lineConversationScope = row.friend_id
-      ? isSecondaryOnly ? 'ticket_context' : 'full'
+      ? isSharedProxyAccess ? 'none' : isSecondaryOnly ? 'ticket_context' : 'full'
       : 'none';
     const [internalMessageMentionIds, internalMessageEvents] = await Promise.all([
       mentionStaffIdsForMessages(
@@ -2814,7 +3022,7 @@ support.get('/api/support/cases/:id', async (c) => {
         internalMessages.results.map((message) => message.id),
       ),
     ]);
-    const messages = row.friend_id
+    const messages = row.friend_id && !isSharedProxyAccess
       ? await c.env.DB.prepare(
         `SELECT id, direction, message_type, content, source, created_at
          FROM messages_log
@@ -2842,6 +3050,23 @@ support.get('/api/support/cases/:id', async (c) => {
       manuals = res.results;
     }
 
+    const deletedSlackNotificationEvent = [...events.results]
+      .reverse()
+      .find((event) => event.event_type === SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT);
+    const slackTicketNotificationRow = slackTicketNotifications.results[0];
+    const deletionAppliesToCurrentSlackNotification = Boolean(
+      deletedSlackNotificationEvent
+      && (
+        !slackTicketNotificationRow?.sent_at
+        || deletedSlackNotificationEvent.created_at >= slackTicketNotificationRow.sent_at
+      ),
+    );
+    const slackTicketNotificationStatus = deletionAppliesToCurrentSlackNotification
+      ? 'deleted'
+      : slackTicketNotificationRow?.status === 'sent' && slackTicketNotificationRow.slack_message_ts
+        ? 'sent'
+        : 'not_sent';
+
     return c.json({
       success: true,
       data: {
@@ -2856,9 +3081,19 @@ support.get('/api/support/cases/:id', async (c) => {
         )),
         attachments: attachments.results.map(serializeCaseAttachment),
         manuals: manuals.map(serializeManual),
+        accessMode: isSharedProxyAccess ? 'shared_proxy' : isSecondaryOnly ? 'secondary' : 'direct',
+        canEditCaseWork: !isSecondaryOnly && !isSharedProxyAccess,
+        canCompleteCase: !isSecondaryOnly,
         canViewLineConversation,
         canOpenLineChat,
         lineConversationScope,
+        slackTicketNotification: {
+          status: slackTicketNotificationStatus,
+          sentAt: slackTicketNotificationRow?.sent_at ?? null,
+          deletedAt: deletionAppliesToCurrentSlackNotification
+            ? deletedSlackNotificationEvent?.created_at ?? null
+            : null,
+        },
         recentMessages: [...messages.results].reverse().map((m) => ({
           id: m.id,
           direction: m.direction,
@@ -3011,7 +3246,7 @@ support.put('/api/support/cases/:id/follow-up-reminder', async (c) => {
     const staff = currentStaff(c);
     const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
-    if (!canManageSupportCaseRouting(staff) && !supportStaffMatchesText(staff, supportCase.primary_assignee)) {
+    if (!canManageSupportCaseRouting(staff) && supportCase.primary_assignee_staff_id !== staff.id) {
       return c.json({ success: false, error: 'リマインドを設定できるのは一次対応者または管理者です' }, 403);
     }
     const primaryAssignee = supportCase.primary_assignee?.trim() ?? '';
@@ -3269,10 +3504,117 @@ support.patch('/api/support/cases/:id', async (c) => {
     const lineAccountId = lineAccountIdFrom(c, body);
     if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
     const staff = currentStaff(c);
-    const existing = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
+    let existing = staff.role === 'staff'
+      ? await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff, 'read')
+      : await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     if (!existing) return c.json({ success: false, error: 'case not found' }, 404);
+    const directlyVisibleRow = staff.role === 'staff'
+      ? await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff)
+      : existing;
+    const isSharedProxyAccess = staff.role === 'staff' && !directlyVisibleRow;
     if (isSecondaryOnlySupportStaff(staff)) {
       return c.json({ success: false, error: '二次対応専用権限ではチケット本体を編集できません' }, 403);
+    }
+
+    if (isSharedProxyAccess) {
+      const forbiddenKeys = Object.keys(body).filter((key) => !SHARED_PROXY_ALLOWED_CASE_UPDATE_KEYS.has(key));
+      if (forbiddenKeys.length > 0) {
+        return c.json({ success: false, error: '共有チケットでは代理完了だけ実行できます' }, 403);
+      }
+      if (body.status !== 'resolved') {
+        return c.json({ success: false, error: '共有チケットでは完了への変更だけ実行できます' }, 403);
+      }
+      const resolutionNote = parseOptionalTextField(
+        body.resolutionNote,
+        'resolutionNote',
+        SUPPORT_LONG_TEXT_MAX_LENGTH,
+      );
+      if (!resolutionNote.ok) return c.json({ success: false, error: resolutionNote.error }, 400);
+      if (!resolutionNote.value?.trim()) {
+        return c.json({ success: false, error: '代理完了には対応結果メモが必要です' }, 400);
+      }
+      const eventBody = parseOptionalTextField(
+        body.eventBody,
+        'eventBody',
+        SUPPORT_LONG_TEXT_MAX_LENGTH,
+      );
+      if (!eventBody.ok) return c.json({ success: false, error: eventBody.error }, 400);
+
+      const now = jstNow();
+      const sharedScope = supportCaseSharedVisibilitySql(staff, 'support_cases', 'se_proxy_guard');
+      const proxyGuardSql = `EXISTS (
+        SELECT 1 FROM support_cases proxy_guard
+        WHERE proxy_guard.id = ? AND proxy_guard.line_account_id = ?
+          AND proxy_guard.status = 'resolved'
+          AND proxy_guard.updated_by = ? AND proxy_guard.updated_at = ?
+      )`;
+      const proxyGuardBinds = [id.value, lineAccountId.value, staff.id, now];
+      const proxyResults = await c.env.DB.batch([
+        c.env.DB
+          .prepare(
+            `UPDATE support_cases
+             SET status = 'resolved', resolution_note = ?, closed_at = ?,
+                 updated_by = ?, updated_at = ?
+             WHERE id = ? AND line_account_id = ?
+               AND status != 'resolved'
+               AND ${sharedScope.sql}`,
+          )
+          .bind(
+            resolutionNote.value,
+            existing.closed_at ?? now,
+            staff.id,
+            now,
+            id.value,
+            lineAccountId.value,
+            ...sharedScope.binds,
+          ),
+        c.env.DB
+          .prepare(
+            `UPDATE support_escalations
+             SET status = 'closed', updated_by = ?, updated_at = ?
+             WHERE case_id = ? AND line_account_id = ?
+               AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+               AND ${proxyGuardSql}`,
+          )
+          .bind(staff.id, now, id.value, lineAccountId.value, ...proxyGuardBinds),
+        prepareGuardedCaseEvent(
+          c.env.DB,
+          id.value,
+          'updated',
+          staff.id,
+          staff.name,
+          eventBody.value ?? '不在担当者に代わりチケットを完了しました',
+          {
+            changed: ['status', 'resolution_note', 'closed_at', 'updated_by', 'updated_at'],
+            fromStatus: existing.status,
+            toStatus: 'resolved',
+            proxyCompletion: true,
+            before: {
+              status: existing.status,
+              resolution_note: existing.resolution_note,
+              closed_at: existing.closed_at,
+              updated_by: existing.updated_by,
+              updated_at: existing.updated_at,
+            },
+            after: {
+              status: 'resolved',
+              resolution_note: resolutionNote.value,
+              closed_at: existing.closed_at ?? now,
+              updated_by: staff.id,
+              updated_at: now,
+            },
+          },
+          crypto.randomUUID(),
+          now,
+          proxyGuardSql,
+          proxyGuardBinds,
+        ),
+      ]);
+      if (proxyResults[0]?.meta.changes === 0) {
+        return c.json({ success: false, error: '共有権限またはチケット状態が更新されました' }, 409);
+      }
+      const updated = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff, 'shared');
+      return c.json({ success: true, data: serializeCase(updated!, staff.id) });
     }
 
     if (!canManageSupportCaseRouting(staff)) {
@@ -3296,8 +3638,6 @@ support.patch('/api/support/cases/:id', async (c) => {
       ['primary_assignee', 'primaryAssignee', SUPPORT_SHORT_TEXT_MAX_LENGTH],
       ['escalation_assignee', 'escalationAssignee', SUPPORT_SHORT_TEXT_MAX_LENGTH],
       ['escalation_level', 'escalationLevel', SUPPORT_SHORT_TEXT_MAX_LENGTH],
-      ['due_at', 'dueAt', SUPPORT_SHORT_TEXT_MAX_LENGTH],
-      ['next_check_at', 'nextCheckAt', SUPPORT_SHORT_TEXT_MAX_LENGTH],
       ['customer_number', 'customerNumber', SUPPORT_SHORT_TEXT_MAX_LENGTH],
       ['company_name', 'companyName', SUPPORT_SHORT_TEXT_MAX_LENGTH],
       ['contact_name', 'contactName', SUPPORT_SHORT_TEXT_MAX_LENGTH],
@@ -3320,6 +3660,36 @@ support.patch('/api/support/cases/:id', async (c) => {
       } else {
         fields.push([column, value ?? '']);
       }
+    }
+
+    for (const [column, key] of [
+      ['due_at', 'dueAt'],
+      ['next_check_at', 'nextCheckAt'],
+    ] as const) {
+      if (!(key in body)) continue;
+      const parsed = parseOptionalOperationalTimestamp(body[key], key);
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      next[column] = parsed.value;
+      fields.push([column, parsed.value]);
+    }
+
+    if ('primaryAssignee' in body) {
+      const name = next.primary_assignee?.trim() ?? '';
+      const ids = name ? await activeStaffIdsByName(c.env.DB, [name]) : new Map<string, string>();
+      next.primary_assignee_staff_id = name ? ids.get(name) ?? null : null;
+      if (name && !next.primary_assignee_staff_id) {
+        return c.json({ success: false, error: '一次対応者は重複のない在籍中スタッフから選択してください' }, 400);
+      }
+      fields.push(['primary_assignee_staff_id', next.primary_assignee_staff_id]);
+    }
+    if ('escalationAssignee' in body) {
+      const name = next.escalation_assignee?.trim() ?? '';
+      const ids = name ? await activeStaffIdsByName(c.env.DB, [name]) : new Map<string, string>();
+      next.escalation_assignee_staff_id = name ? ids.get(name) ?? null : null;
+      if (name && !next.escalation_assignee_staff_id) {
+        return c.json({ success: false, error: '二次対応先は重複のない在籍中スタッフから選択してください' }, 400);
+      }
+      fields.push(['escalation_assignee_staff_id', next.escalation_assignee_staff_id]);
     }
 
     if ('manualIds' in body) {
@@ -3398,11 +3768,41 @@ support.patch('/api/support/cases/:id', async (c) => {
     }
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
+    const changedColumns = Array.from(new Set(fields.map(([column]) => column)));
+    const afterValues = new Map(fields);
+    const existingValues = existing as unknown as Record<string, unknown>;
+    const beforeSnapshot = Object.fromEntries(
+      changedColumns.map((column) => [column, existingValues[column] ?? null]),
+    );
+    const afterSnapshot = Object.fromEntries(
+      changedColumns.map((column) => [column, afterValues.get(column) ?? null]),
+    );
+
     const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
+    const directWriteScope = staff.role === 'staff'
+      ? supportCaseDirectVisibilitySql(staff, 'support_cases', 'se_staff_write_guard')
+      : { sql: '', binds: [] };
+    const mutationMarkerSql = `EXISTS (
+      SELECT 1 FROM support_cases staff_update_marker
+      WHERE staff_update_marker.id = ?
+        AND staff_update_marker.line_account_id = ?
+        AND staff_update_marker.updated_by = ?
+        AND staff_update_marker.updated_at = ?
+    )`;
+    const mutationMarkerBinds = [id.value, lineAccountId.value, staff.id, now];
     const statements = [
       c.env.DB
-        .prepare(`UPDATE support_cases SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value),
+        .prepare(
+          `UPDATE support_cases SET ${setSql}
+           WHERE id = ? AND line_account_id = ?
+           ${directWriteScope.sql ? `AND ${directWriteScope.sql}` : ''}`,
+        )
+        .bind(
+          ...fields.map(([, value]) => value),
+          id.value,
+          lineAccountId.value,
+          ...directWriteScope.binds,
+        ),
     ];
     if (next.status === 'resolved') {
       statements.push(
@@ -3411,9 +3811,10 @@ support.patch('/api/support/cases/:id', async (c) => {
             `UPDATE support_escalations
              SET status = 'closed', updated_by = ?, updated_at = ?
              WHERE case_id = ? AND line_account_id = ?
-               AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')`,
+               AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+               AND ${mutationMarkerSql}`,
           )
-          .bind(staff.id, now, id.value, lineAccountId.value),
+          .bind(staff.id, now, id.value, lineAccountId.value, ...mutationMarkerBinds),
       );
     }
     if (primaryAssigneeChanged && existingFollowUpReminder?.status === 'active' && nextReminderOwnerStaffId) {
@@ -3422,7 +3823,8 @@ support.patch('/api/support/cases/:id', async (c) => {
           .prepare(
             `UPDATE support_case_followup_reminders
              SET owner_staff_id = ?, owner_name = ?, version = version + 1, updated_at = ?
-             WHERE id = ? AND case_id = ? AND line_account_id = ? AND status = 'active'`,
+             WHERE id = ? AND case_id = ? AND line_account_id = ? AND status = 'active'
+               AND ${mutationMarkerSql}`,
           )
           .bind(
             nextReminderOwnerStaffId,
@@ -3431,6 +3833,7 @@ support.patch('/api/support/cases/:id', async (c) => {
             existingFollowUpReminder.id,
             id.value,
             lineAccountId.value,
+            ...mutationMarkerBinds,
           ),
         prepareFollowUpReminderEvent(
           c.env.DB,
@@ -3446,6 +3849,9 @@ support.patch('/api/support/cases/:id', async (c) => {
             ownerName: next.primary_assignee,
           },
           now,
+          crypto.randomUUID(),
+          mutationMarkerSql,
+          mutationMarkerBinds,
         ),
       );
       if (existingFollowUpReminder.owner_staff_id) {
@@ -3455,7 +3861,8 @@ support.patch('/api/support/cases/:id', async (c) => {
               `UPDATE app_notification_inbox
                SET dismissed_at = ?, updated_at = ?
                WHERE recipient_staff_id = ? AND line_account_id = ?
-                 AND notification_key LIKE ?`,
+                 AND notification_key LIKE ?
+                 AND ${mutationMarkerSql}`,
             )
             .bind(
               now,
@@ -3463,12 +3870,13 @@ support.patch('/api/support/cases/:id', async (c) => {
               existingFollowUpReminder.owner_staff_id,
               lineAccountId.value,
               `case_followup:${existingFollowUpReminder.id}:%`,
+              ...mutationMarkerBinds,
             ),
         );
       }
     }
     statements.push(
-      prepareCaseEvent(
+      prepareGuardedCaseEvent(
         c.env.DB,
         id.value,
         'updated',
@@ -3476,15 +3884,22 @@ support.patch('/api/support/cases/:id', async (c) => {
         staff.name,
         text(body.eventBody) ?? '案件を更新しました',
         {
-          changed: fields.map(([column]) => column),
+          changed: changedColumns,
           fromStatus: existing.status,
           toStatus: next.status,
+          before: beforeSnapshot,
+          after: afterSnapshot,
         },
         crypto.randomUUID(),
         now,
+        mutationMarkerSql,
+        mutationMarkerBinds,
       ),
     );
-    await c.env.DB.batch(statements);
+    const mutationResults = await c.env.DB.batch(statements);
+    if (mutationResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '担当または権限が同時に更新されました 最新状態を確認してください' }, 409);
+    }
     if (existing.priority !== 'urgent' && next.priority === 'urgent' && next.status !== 'resolved') {
       c.executionCtx.waitUntil(notifyUrgentSupportCase(c.env.DB, lineAccountId.value, id.value, {
         adminPublicUrl: c.env.ADMIN_PUBLIC_URL,
@@ -3527,55 +3942,27 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
 
     const current = await c.env.DB
       .prepare(
-        `SELECT id, assignee
+        `SELECT id, assignee, status, updated_at
          FROM support_escalations
          WHERE case_id = ? AND line_account_id = ?
            AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')`,
       )
       .bind(caseId.value, lineAccountId.value)
-      .all<{ id: string; assignee: string }>();
+      .all<{ id: string; assignee: string; status: string; updated_at: string }>();
     const selected = new Set(parsedAssignees.value);
     const currentNames = new Set(current.results.map((row) => row.assignee));
     const addedAssignees = parsedAssignees.value.filter((name) => !currentNames.has(name));
     const now = jstNow();
+    const routingMutationId = crypto.randomUUID();
     const routingEventId = crypto.randomUUID();
     const slackOutboxId = addedAssignees.length > 0 ? crypto.randomUUID() : null;
-    const statements: D1PreparedStatement[] = [];
-
-    for (const row of current.results) {
-      if (selected.has(row.assignee)) continue;
-      statements.push(
-        c.env.DB
-          .prepare(`UPDATE support_escalations SET status = 'closed', updated_by = ?, updated_at = ? WHERE id = ?`)
-          .bind(staff.id, now, row.id),
-      );
-    }
-    for (const assignee of parsedAssignees.value) {
-      if (currentNames.has(assignee)) continue;
-      statements.push(
-        c.env.DB
-          .prepare(
-            `INSERT INTO support_escalations (
-              id, case_id, line_account_id, assignee, assignee_staff_id, level, status,
-              question, answer, due_at, answered_at, created_by, updated_by, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
-          )
-          .bind(
-            crypto.randomUUID(),
-            caseId.value,
-            lineAccountId.value,
-            assignee,
-            staffIds.get(assignee) ?? null,
-            supportCase.escalation_level === 'L3' ? 'L3' : 'L2',
-            supportCase.customer_summary.trim() || supportCase.title,
-            supportCase.due_at,
-            staff.id,
-            staff.id,
-            now,
-            now,
-          ),
-      );
-    }
+    const routingMutationGuardSql = `EXISTS (
+      SELECT 1 FROM support_cases routing_mutation_guard
+      WHERE routing_mutation_guard.id = ?
+        AND routing_mutation_guard.line_account_id = ?
+        AND routing_mutation_guard.routing_mutation_id = ?
+    )`;
+    const routingMutationGuardBinds = [caseId.value, lineAccountId.value, routingMutationId];
 
     let nextStatus = supportCase.status;
     if (
@@ -3589,11 +3976,94 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
     ) {
       nextStatus = 'in_progress';
     }
-    statements.push(
+    const statements: D1PreparedStatement[] = [
       c.env.DB
-        .prepare(`UPDATE support_cases SET escalation_assignee = ?, status = ?, updated_by = ?, updated_at = ? WHERE id = ? AND line_account_id = ?`)
-        .bind(parsedAssignees.value[0] ?? null, nextStatus, staff.id, now, caseId.value, lineAccountId.value),
-      prepareCaseEvent(
+        .prepare(
+          `UPDATE support_cases
+           SET escalation_assignee = ?, escalation_assignee_staff_id = ?, status = ?,
+               routing_mutation_id = ?, updated_by = ?, updated_at = ?
+           WHERE id = ? AND line_account_id = ?
+             AND status != 'resolved' AND updated_at = ?`,
+        )
+        .bind(
+          parsedAssignees.value[0] ?? null,
+          parsedAssignees.value[0] ? staffIds.get(parsedAssignees.value[0]) ?? null : null,
+          nextStatus,
+          routingMutationId,
+          staff.id,
+          now,
+          caseId.value,
+          lineAccountId.value,
+          supportCase.updated_at,
+        ),
+    ];
+
+    for (const row of current.results) {
+      if (selected.has(row.assignee)) continue;
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE support_escalations
+             SET status = 'closed', updated_by = ?, updated_at = ?
+             WHERE id = ? AND case_id = ? AND line_account_id = ?
+               AND status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+               AND ${routingMutationGuardSql}`,
+          )
+          .bind(
+            staff.id,
+            now,
+            row.id,
+            caseId.value,
+            lineAccountId.value,
+            ...routingMutationGuardBinds,
+          ),
+      );
+    }
+    for (const assignee of parsedAssignees.value) {
+      if (currentNames.has(assignee)) continue;
+      const assigneeStaffId = staffIds.get(assignee) ?? null;
+      statements.push(
+        c.env.DB
+          .prepare(
+            `INSERT INTO support_escalations (
+              id, case_id, line_account_id, assignee, assignee_staff_id, level, status,
+              question, answer, due_at, answered_at, created_by, updated_by, created_at, updated_at
+            ) SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?
+              WHERE ${routingMutationGuardSql}
+                AND NOT EXISTS (
+                  SELECT 1 FROM support_escalations active_assignee_guard
+                  WHERE active_assignee_guard.case_id = ?
+                    AND active_assignee_guard.line_account_id = ?
+                    AND active_assignee_guard.status IN ('pending', 'needs_info', 'transferred', 'expert_check')
+                    AND (
+                      active_assignee_guard.assignee_staff_id = ?
+                      OR (active_assignee_guard.assignee_staff_id IS NULL AND active_assignee_guard.assignee = ?)
+                    )
+                )`,
+          )
+          .bind(
+            crypto.randomUUID(),
+            caseId.value,
+            lineAccountId.value,
+            assignee,
+            assigneeStaffId,
+            supportCase.escalation_level === 'L3' ? 'L3' : 'L2',
+            supportCase.customer_summary.trim() || supportCase.title,
+            supportCase.due_at,
+            staff.id,
+            staff.id,
+            now,
+            now,
+            ...routingMutationGuardBinds,
+            caseId.value,
+            lineAccountId.value,
+            assigneeStaffId,
+            assignee,
+          ),
+      );
+    }
+    statements.push(
+      prepareGuardedCaseEvent(
         c.env.DB,
         caseId.value,
         'secondary_assignees_updated',
@@ -3608,6 +4078,8 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
         },
         routingEventId,
         now,
+        routingMutationGuardSql,
+        routingMutationGuardBinds,
       ),
     );
     if (slackOutboxId) {
@@ -3623,10 +4095,15 @@ support.put('/api/support/cases/:id/secondary-assignees', async (c) => {
           })),
           primaryAssigneeFallback: staff.name,
           now,
+          guardSql: routingMutationGuardSql,
+          guardBinds: routingMutationGuardBinds,
         }),
       );
     }
-    await c.env.DB.batch(statements);
+    const routingResults = await c.env.DB.batch(statements);
+    if (routingResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応先が同時に更新されました 最新状態を確認してください' }, 409);
+    }
     if (slackOutboxId) kickSupportSecondarySlackNotification(c, slackOutboxId);
     kickWebPushNotifications(c);
     const updated = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
@@ -3652,10 +4129,21 @@ support.post('/api/support/cases/:id/events', async (c) => {
     if (!eventBody.ok) return c.json({ success: false, error: eventBody.error }, 400);
     const metadata = parseOptionalEventMetadata(body.metadata);
     if (!metadata.ok) return c.json({ success: false, error: metadata.error }, 400);
-    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, currentStaff(c));
-    if (!row) return c.json({ success: false, error: 'case not found' }, 404);
     const staff = currentStaff(c);
-    await addCaseEvent(
+    const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
+    if (!row) return c.json({ success: false, error: 'case not found' }, 404);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）では更新できません' }, 403);
+    }
+    const now = jstNow();
+    const writeGuard = secondaryCaseWriteGuard(
+      staff,
+      row.id,
+      lineAccountId.value,
+      'sc_case_event_write_guard',
+      'se_case_event_write_guard',
+    );
+    const eventResult = await prepareGuardedCaseEvent(
       c.env.DB,
       row.id,
       eventType.value ?? 'note',
@@ -3663,7 +4151,14 @@ support.post('/api/support/cases/:id/events', async (c) => {
       staff.name,
       eventBody.value ?? '',
       metadata.value,
-    );
+      crypto.randomUUID(),
+      now,
+      writeGuard.sql,
+      writeGuard.binds,
+    ).run();
+    if (eventResult.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
+    }
     return c.json({ success: true, data: null }, 201);
   } catch (err) {
     console.error(`POST /api/support/cases/:id/events error: ${supportRouteErrorKind(err)}`);
@@ -3683,6 +4178,9 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
     const staff = currentStaff(c);
     const row = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）では投稿できません' }, 403);
+    }
 
     const parsedMessage = parseRequiredTextField(body.body, 'body', SUPPORT_LONG_TEXT_MAX_LENGTH);
     if (!parsedMessage.ok) return c.json({ success: false, error: parsedMessage.error }, 400);
@@ -3717,12 +4215,20 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
 
     const now = jstNow();
     const messageId = crypto.randomUUID();
-    await c.env.DB
+    const writeGuard = secondaryCaseWriteGuard(
+      staff,
+      row.id,
+      lineAccountId.value,
+      'sc_internal_message_write_guard',
+      'se_internal_message_write_guard',
+    );
+    const messageResult = await c.env.DB
       .prepare(
         `INSERT INTO support_internal_messages (
           id, case_id, line_account_id, parent_id, body, mentions,
           created_by, created_by_name, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE ${writeGuard.sql}`,
       )
       .bind(
         messageId,
@@ -3734,8 +4240,12 @@ support.post('/api/support/cases/:id/internal-messages', async (c) => {
         staff.id,
         staff.name,
         now,
+        ...writeGuard.binds,
       )
       .run();
+    if (messageResult.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
+    }
 
     await recordInternalMessageMentions(
       c.env.DB,
@@ -3794,6 +4304,9 @@ support.patch('/api/support/cases/:id/internal-messages/:messageId', async (c) =
     const staff = currentStaff(c);
     const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）では編集できません' }, 403);
+    }
     const message = await c.env.DB
       .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND case_id = ? AND line_account_id = ?`)
       .bind(messageId.value, caseId.value, lineAccountId.value)
@@ -3815,6 +4328,13 @@ support.patch('/api/support/cases/:id/internal-messages/:messageId', async (c) =
       ...mentions.value,
       ...resolvedMentions.targets.map((target) => target.name),
     ]));
+    const writeGuard = secondaryCaseWriteGuard(
+      staff,
+      caseId.value,
+      lineAccountId.value,
+      'sc_internal_message_edit_guard',
+      'se_internal_message_edit_guard',
+    );
     const result = await appendInternalMessageEvent({
       db: c.env.DB,
       source: 'support',
@@ -3826,8 +4346,10 @@ support.patch('/api/support/cases/:id/internal-messages/:messageId', async (c) =
       mentions: mentionNames,
       mentionTargets: resolvedMentions.targets,
       now: jstNow(),
+      authorizationGuard: writeGuard,
     });
     if (!result.ok) {
+      if (result.reason === 'authorization_conflict') return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
       if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
       if (result.reason === 'deleted') return c.json({ success: false, error: '削除済みメッセージは編集できません' }, 400);
       return c.json({ success: false, error: '自分が投稿したメッセージだけ編集できます' }, 403);
@@ -3861,6 +4383,9 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/soft-delete', 
     const staff = currentStaff(c);
     const supportCase = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）では削除できません' }, 403);
+    }
     const message = await c.env.DB
       .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND case_id = ? AND line_account_id = ?`)
       .bind(messageId.value, caseId.value, lineAccountId.value)
@@ -3869,6 +4394,13 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/soft-delete', 
     if (message.created_by !== staff.id && !reason.value) {
       return c.json({ success: false, error: '他のスタッフの投稿を削除する場合は理由を入力してください' }, 400);
     }
+    const writeGuard = secondaryCaseWriteGuard(
+      staff,
+      caseId.value,
+      lineAccountId.value,
+      'sc_internal_message_delete_guard',
+      'se_internal_message_delete_guard',
+    );
     const result = await appendInternalMessageEvent({
       db: c.env.DB,
       source: 'support',
@@ -3878,8 +4410,10 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/soft-delete', 
       action: 'delete',
       reason: reason.value,
       now: jstNow(),
+      authorizationGuard: writeGuard,
     });
     if (!result.ok) {
+      if (result.reason === 'authorization_conflict') return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
       if (result.reason === 'conflict') return c.json({ success: false, error: '別の更新が反映されています。再読み込みしてください' }, 409);
       if (result.reason === 'deleted') return c.json({ success: false, error: 'すでに削除済みです' }, 400);
       return c.json({ success: false, error: 'このメッセージは削除できません' }, 403);
@@ -3911,6 +4445,9 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', as
     const staff = currentStaff(c);
     const supportCase = await getCaseRow(c.env.DB, id.value, lineAccountId.value, staff);
     if (!supportCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (isReadOnlySecondary(staff)) {
+      return c.json({ success: false, error: '二次対応（閲覧のみ）ではリアクションできません' }, 403);
+    }
 
     const message = await c.env.DB
       .prepare(
@@ -3927,10 +4464,25 @@ support.post('/api/support/cases/:id/internal-messages/:messageId/reactions', as
     }
 
     const { reactionsJson } = toggleInternalReaction(message.reactions, emoji.value, staff);
-    await c.env.DB
-      .prepare(`UPDATE support_internal_messages SET reactions = ? WHERE id = ? AND case_id = ? AND line_account_id = ?`)
-      .bind(reactionsJson, messageId.value, id.value, lineAccountId.value)
+    const writeGuard = secondaryCaseWriteGuard(
+      staff,
+      id.value,
+      lineAccountId.value,
+      'sc_internal_message_reaction_guard',
+      'se_internal_message_reaction_guard',
+    );
+    const reactionResult = await c.env.DB
+      .prepare(
+        `UPDATE support_internal_messages
+         SET reactions = ?
+         WHERE id = ? AND case_id = ? AND line_account_id = ?
+           AND ${writeGuard.sql}`,
+      )
+      .bind(reactionsJson, messageId.value, id.value, lineAccountId.value, ...writeGuard.binds)
       .run();
+    if (reactionResult.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当が更新されました' }, 409);
+    }
 
     const updated = await c.env.DB
       .prepare(`SELECT * FROM support_internal_messages WHERE id = ? AND line_account_id = ?`)
@@ -3960,8 +4512,8 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     const staff = currentStaff(c);
     const row = await getCaseRow(c.env.DB, caseId.value, lineAccountId.value, staff);
     if (!row) return c.json({ success: false, error: 'case not found' }, 404);
-    if (isSecondaryOnlySupportStaff(staff)) {
-      return c.json({ success: false, error: '二次対応専用権限ではエスカレーションを新規作成できません' }, 403);
+    if (staff.role === 'secondary') {
+      return c.json({ success: false, error: '二次対応権限ではエスカレーションを新規作成できません' }, 403);
     }
     if (row.status === 'resolved') {
       return c.json({ success: false, error: '完了済み案件は再オープンしてからエスカレーションしてください' }, 400);
@@ -4007,15 +4559,32 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
     const id = crypto.randomUUID();
     const eventId = crypto.randomUUID();
     const slackOutboxId = crypto.randomUUID();
-    const parsedDueAt = canRouteEscalation ? parseOptionalTextField(body.dueAt, 'dueAt') : { ok: true as const, value: null };
+    const parsedDueAt = canRouteEscalation ? parseOptionalOperationalTimestamp(body.dueAt, 'dueAt') : { ok: true as const, value: null };
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
     const dueAt = parsedDueAt.value;
+    const createVisibility = staff.role === 'staff'
+      ? supportCaseDirectVisibilitySql(staff, 'sc_escalation_create_guard', 'se_escalation_create_guard')
+      : null;
+    const createGuardSql = `EXISTS (
+      SELECT 1
+      FROM support_cases sc_escalation_create_guard
+      WHERE sc_escalation_create_guard.id = ?
+        AND sc_escalation_create_guard.line_account_id = ?
+        AND sc_escalation_create_guard.status != 'resolved'
+        ${createVisibility ? `AND ${createVisibility.sql}` : ''}
+    )`;
+    const createGuardBinds = [
+      caseId.value,
+      lineAccountId.value,
+      ...(createVisibility?.binds ?? []),
+    ];
     const escalationInsert = c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
           id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
           due_at, answered_at, created_by, updated_by, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?)`,
+        ) SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?
+          WHERE ${createGuardSql}`,
       )
       .bind(
         id,
@@ -4030,7 +4599,19 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
         staff.id,
         now,
         now,
+        ...createGuardBinds,
       );
+
+    const escalationCreatedGuardSql = `EXISTS (
+      SELECT 1
+      FROM support_escalations escalation_created_guard
+      WHERE escalation_created_guard.id = ?
+        AND escalation_created_guard.case_id = ?
+        AND escalation_created_guard.line_account_id = ?
+        AND escalation_created_guard.created_by = ?
+        AND escalation_created_guard.created_at = ?
+    )`;
+    const escalationCreatedGuardBinds = [id, caseId.value, lineAccountId.value, staff.id, now];
 
     let caseUpdate: D1PreparedStatement;
     if (canRouteEscalation) {
@@ -4039,13 +4620,25 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
           `UPDATE support_cases
            SET status = 'waiting_secondary',
                escalation_assignee = ?,
+               escalation_assignee_staff_id = ?,
                escalation_level = ?,
                due_at = COALESCE(?, due_at),
                updated_by = ?,
                updated_at = ?
-           WHERE id = ? AND line_account_id = ?`,
+           WHERE id = ? AND line_account_id = ?
+             AND ${escalationCreatedGuardSql}`,
         )
-        .bind(assignee, level, dueAt, staff.id, now, caseId.value, lineAccountId.value);
+        .bind(
+          assignee,
+          assigneeStaffId,
+          level,
+          dueAt,
+          staff.id,
+          now,
+          caseId.value,
+          lineAccountId.value,
+          ...escalationCreatedGuardBinds,
+        );
     } else {
       caseUpdate = c.env.DB
         .prepare(
@@ -4053,15 +4646,16 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
            SET status = 'waiting_secondary',
                updated_by = ?,
                updated_at = ?
-           WHERE id = ? AND line_account_id = ?`,
+           WHERE id = ? AND line_account_id = ?
+             AND ${escalationCreatedGuardSql}`,
         )
-        .bind(staff.id, now, caseId.value, lineAccountId.value);
+        .bind(staff.id, now, caseId.value, lineAccountId.value, ...escalationCreatedGuardBinds);
     }
 
-    await c.env.DB.batch([
+    const createResults = await c.env.DB.batch([
       escalationInsert,
       caseUpdate,
-      prepareCaseEvent(
+      prepareGuardedCaseEvent(
         c.env.DB,
         caseId.value,
         'escalated',
@@ -4071,6 +4665,8 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
         { escalationId: id, assignee, assigneeStaffId, level, dueAt },
         eventId,
         now,
+        escalationCreatedGuardSql,
+        escalationCreatedGuardBinds,
       ),
       prepareSecondarySlackOutbox(c.env.DB, {
         id: slackOutboxId,
@@ -4082,8 +4678,13 @@ support.post('/api/support/cases/:id/escalations', async (c) => {
         customerSummary: question,
         dueAt,
         now,
+        guardSql: escalationCreatedGuardSql,
+        guardBinds: escalationCreatedGuardBinds,
       }),
     ]);
+    if (createResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '案件の担当または状態が更新されました' }, 409);
+    }
 
     const escalation = await c.env.DB
       .prepare(`SELECT * FROM support_escalations WHERE id = ? AND line_account_id = ?`)
@@ -4119,20 +4720,17 @@ support.get('/api/support/escalations', async (c) => {
       conditions.push('se.status = ?');
       binds.push(status.value);
     }
-    if (isSecondaryOnlySupportStaff(staff)) {
-      const assignmentName = supportStaffAssignmentName(staff);
-      if (!assignmentName) return c.json({ success: true, data: [] });
-      conditions.push(`se.assignee = ?`);
-      binds.push(assignmentName);
+    if (staff.role === 'secondary') {
+      const visibility = supportEscalationVisibilitySql(staff, 'se', 'sc_scope');
+      conditions.push(visibility.sql);
+      binds.push(...visibility.binds);
     } else if (assignee.value) {
       conditions.push('se.assignee LIKE ?');
       binds.push(`%${assignee.value}%`);
     }
-    if (!isSecondaryOnlySupportStaff(staff) && (scope.value === 'my_escalations' || queue.value === 'my_escalations')) {
-      const assignmentName = supportStaffAssignmentName(staff);
-      if (!assignmentName) return c.json({ success: true, data: [] });
-      conditions.push(`se.assignee = ?`);
-      binds.push(assignmentName);
+    if (staff.role !== 'secondary' && (scope.value === 'my_escalations' || queue.value === 'my_escalations')) {
+      conditions.push(`se.assignee_staff_id = ?`);
+      binds.push(staff.id);
     }
     if (queue.value === 'due') {
       conditions.push(`se.status = 'pending' AND se.due_at IS NOT NULL AND se.due_at <= ?`);
@@ -4178,8 +4776,13 @@ support.patch('/api/support/escalations/:id', async (c) => {
       .first<SupportEscalationRow>();
     if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
     const staffForScope = currentStaff(c);
-    if (isSecondaryOnlySupportStaff(staffForScope) && !supportStaffMatchesText(staffForScope, existing.assignee)) {
-      return c.json({ success: false, error: 'escalation not found' }, 404);
+    if (staffForScope.role === 'secondary') {
+      if (existing.assignee_staff_id !== staffForScope.id) {
+        return c.json({ success: false, error: 'escalation not found' }, 404);
+      }
+      if (staffForScope.secondaryCanRespond !== true) {
+        return c.json({ success: false, error: '二次対応（閲覧のみ）では回答や更新はできません' }, 403);
+      }
     }
     if (TERMINAL_ESCALATION_STATUSES.has(existing.status)) {
       return c.json({
@@ -4200,7 +4803,7 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (!parsedAssignee.ok) return c.json({ success: false, error: parsedAssignee.error }, 400);
     const parsedQuestion = parseOptionalTextField(body.question, 'question', SUPPORT_LONG_TEXT_MAX_LENGTH);
     if (!parsedQuestion.ok) return c.json({ success: false, error: parsedQuestion.error }, 400);
-    const parsedDueAt = parseOptionalTextField(body.dueAt, 'dueAt');
+    const parsedDueAt = parseOptionalOperationalTimestamp(body.dueAt, 'dueAt');
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
     const parsedEventBody = parseOptionalTextField(body.eventBody, 'eventBody', SUPPORT_LONG_TEXT_MAX_LENGTH);
     if (!parsedEventBody.ok) return c.json({ success: false, error: parsedEventBody.error }, 400);
@@ -4276,9 +4879,33 @@ support.patch('/api/support/escalations/:id', async (c) => {
     fields.push(['updated_by', staff.id], ['updated_at', now]);
 
     const setSql = fields.map(([column]) => `${column} = ?`).join(', ');
+    const mutationConditions = ['id = ?', 'line_account_id = ?', 'status = ?', 'updated_at = ?'];
+    const mutationBinds: unknown[] = [
+      id.value,
+      lineAccountId.value,
+      existing.status,
+      existing.updated_at,
+    ];
+    if (staff.role === 'secondary') {
+      mutationConditions.push('assignee_staff_id = ?');
+      mutationBinds.push(staff.id);
+    }
+    const escalationMutationGuardSql = `EXISTS (
+      SELECT 1 FROM support_escalations escalation_guard
+      WHERE escalation_guard.id = ? AND escalation_guard.line_account_id = ?
+        AND escalation_guard.updated_by = ? AND escalation_guard.updated_at = ?
+        ${staff.role === 'secondary' ? 'AND escalation_guard.assignee_staff_id = ?' : ''}
+    )`;
+    const escalationMutationGuardBinds = [
+      id.value,
+      lineAccountId.value,
+      staff.id,
+      now,
+      ...(staff.role === 'secondary' ? [staff.id] : []),
+    ];
     const statements = [
-      c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE id = ? AND line_account_id = ?`)
-        .bind(...fields.map(([, value]) => value), id.value, lineAccountId.value),
+      c.env.DB.prepare(`UPDATE support_escalations SET ${setSql} WHERE ${mutationConditions.join(' AND ')}`)
+        .bind(...fields.map(([, value]) => value), ...mutationBinds),
     ];
 
     if (nextCaseStatus) {
@@ -4303,13 +4930,39 @@ support.patch('/api/support/escalations/:id', async (c) => {
                END,
                updated_by = ?,
                updated_at = ?
-           WHERE id = ? AND line_account_id = ?`,
-        ).bind(nextCaseStatus, staff.id, now, existing.case_id, lineAccountId.value),
+           WHERE id = ? AND line_account_id = ?
+             AND ${escalationMutationGuardSql}`,
+        ).bind(
+          nextCaseStatus,
+          staff.id,
+          now,
+          existing.case_id,
+          lineAccountId.value,
+          ...escalationMutationGuardBinds,
+        ),
+      );
+    }
+    if (assigneeChanged) {
+      statements.push(
+        c.env.DB.prepare(
+          `UPDATE support_cases
+           SET escalation_assignee = ?, escalation_assignee_staff_id = ?, updated_by = ?, updated_at = ?
+           WHERE id = ? AND line_account_id = ?
+             AND ${escalationMutationGuardSql}`,
+        ).bind(
+          nextAssignee,
+          nextAssigneeStaffId,
+          staff.id,
+          now,
+          existing.case_id,
+          lineAccountId.value,
+          ...escalationMutationGuardBinds,
+        ),
       );
     }
 
     statements.push(
-      prepareCaseEvent(
+      prepareGuardedCaseEvent(
         c.env.DB,
         existing.case_id,
         'escalation_updated',
@@ -4326,6 +4979,8 @@ support.patch('/api/support/escalations/:id', async (c) => {
         },
         eventId,
         now,
+        escalationMutationGuardSql,
+        escalationMutationGuardBinds,
       ),
     );
     if (slackOutboxId && linkedCase) {
@@ -4343,7 +4998,10 @@ support.patch('/api/support/escalations/:id', async (c) => {
         }),
       );
     }
-    await c.env.DB.batch(statements);
+    const mutationResults = await c.env.DB.batch(statements);
+    if (mutationResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当または状態が更新されました' }, 409);
+    }
 
     const updated = await c.env.DB
       .prepare(
@@ -4385,8 +5043,13 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
     if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
 
     const staff = currentStaff(c);
-    if (isSecondaryOnlySupportStaff(staff) && !supportStaffMatchesText(staff, existing.assignee)) {
-      return c.json({ success: false, error: 'escalation not found' }, 404);
+    if (staff.role === 'secondary') {
+      if (existing.assignee_staff_id !== staff.id) {
+        return c.json({ success: false, error: 'escalation not found' }, 404);
+      }
+      if (staff.secondaryCanRespond !== true) {
+        return c.json({ success: false, error: '二次対応（閲覧のみ）では再開できません' }, 403);
+      }
     }
     if (!TERMINAL_ESCALATION_STATUSES.has(existing.status)) {
       return c.json({ success: false, error: '未回答の二次対応は再開できません' }, 409);
@@ -4410,12 +5073,34 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
       ? new Map([[existing.assignee, existing.assignee_staff_id]])
       : await activeStaffIdsByName(c.env.DB, [existing.assignee]);
     const assigneeStaffId = assigneeStaffIds.get(existing.assignee) ?? null;
+    const reopenAuthorizationSql = `EXISTS (
+      SELECT 1 FROM support_escalations reopen_source
+      WHERE reopen_source.id = ? AND reopen_source.line_account_id = ?
+        AND reopen_source.status IN ('answered', 'closed')
+        ${staff.role === 'secondary' ? 'AND reopen_source.assignee_staff_id = ?' : ''}
+        AND NOT EXISTS (
+          SELECT 1 FROM support_escalations prior_reopen
+          WHERE prior_reopen.reopened_from_id = reopen_source.id
+            AND prior_reopen.line_account_id = reopen_source.line_account_id
+        )
+    )`;
+    const reopenAuthorizationBinds = [
+      existing.id,
+      lineAccountId.value,
+      ...(staff.role === 'secondary' ? [staff.id] : []),
+    ];
+    const reopenedGuardSql = `EXISTS (
+      SELECT 1 FROM support_escalations reopened_guard
+      WHERE reopened_guard.id = ? AND reopened_guard.reopened_from_id = ?
+    )`;
+    const reopenedGuardBinds = [reopenedId, existing.id];
     const reopenedInsert = c.env.DB
       .prepare(
         `INSERT INTO support_escalations (
           id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
           due_at, answered_at, created_by, updated_by, created_at, updated_at, reopened_from_id
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?)`,
+        ) SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?
+          WHERE ${reopenAuthorizationSql}`,
       )
       .bind(
         reopenedId,
@@ -4431,10 +5116,13 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
         now,
         now,
         existing.id,
+        ...reopenAuthorizationBinds,
       );
 
     const caseFields: Array<[string, unknown]> = [
       ['status', 'waiting_secondary'],
+      ['escalation_assignee', existing.assignee],
+      ['escalation_assignee_staff_id', assigneeStaffId],
       ['updated_by', staff.id],
       ['updated_at', now],
     ];
@@ -4443,14 +5131,21 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
     }
     const caseUpdate = c.env.DB
       .prepare(
-        `UPDATE support_cases SET ${caseFields.map(([column]) => `${column} = ?`).join(', ')} WHERE id = ? AND line_account_id = ?`,
+        `UPDATE support_cases SET ${caseFields.map(([column]) => `${column} = ?`).join(', ')}
+         WHERE id = ? AND line_account_id = ?
+           AND ${reopenedGuardSql}`,
       )
-      .bind(...caseFields.map(([, value]) => value), existing.case_id, lineAccountId.value);
+      .bind(
+        ...caseFields.map(([, value]) => value),
+        existing.case_id,
+        lineAccountId.value,
+        ...reopenedGuardBinds,
+      );
 
-    await c.env.DB.batch([
+    const reopenResults = await c.env.DB.batch([
       reopenedInsert,
       caseUpdate,
-      prepareCaseEvent(
+      prepareGuardedCaseEvent(
         c.env.DB,
         existing.case_id,
         'escalation_reopened',
@@ -4467,6 +5162,8 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
         },
         eventId,
         now,
+        reopenedGuardSql,
+        reopenedGuardBinds,
       ),
       prepareSecondarySlackOutbox(c.env.DB, {
         id: slackOutboxId,
@@ -4478,8 +5175,13 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
         customerSummary: existing.question,
         dueAt: existing.due_at,
         now,
+        guardSql: reopenedGuardSql,
+        guardBinds: reopenedGuardBinds,
       }),
     ]);
+    if (reopenResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '二次対応の担当または状態が更新されました' }, 409);
+    }
 
     const reopened = await c.env.DB
       .prepare(

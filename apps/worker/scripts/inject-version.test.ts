@@ -46,6 +46,56 @@ describe('injectVersion.hashFile', () => {
   });
 });
 
+describe('injectVersion.hashWorkerFile', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('stays stable when only the embedded WORKER_HASH changes', () => {
+    const file = join(dir, 'worker.js');
+    writeFileSync(file, `const WORKER_HASH='sha256:${'1'.repeat(64)}'`);
+    const first = injectVersion.hashWorkerFile(file);
+    writeFileSync(file, `const WORKER_HASH='sha256:${'a'.repeat(64)}'`);
+    expect(injectVersion.hashWorkerFile(file)).toBe(first);
+  });
+
+  it('changes when an embedded ADMIN_HASH changes', () => {
+    const file = join(dir, 'worker.js');
+    writeFileSync(
+      file,
+      `const WORKER_HASH='sha256:${'1'.repeat(64)}';const ADMIN_HASH='sha256:${'2'.repeat(64)}'`,
+    );
+    const first = injectVersion.hashWorkerFile(file);
+    writeFileSync(
+      file,
+      `const WORKER_HASH='sha256:${'a'.repeat(64)}';const ADMIN_HASH='sha256:${'3'.repeat(64)}'`,
+    );
+    expect(injectVersion.hashWorkerFile(file)).not.toBe(first);
+  });
+
+  it('changes when an unrelated SHA256 literal changes', () => {
+    const file = join(dir, 'worker.js');
+    writeFileSync(file, `const WORKER_HASH='sha256:${'1'.repeat(64)}';const proof='sha256:${'2'.repeat(64)}'`);
+    const first = injectVersion.hashWorkerFile(file);
+    writeFileSync(file, `const WORKER_HASH='sha256:${'a'.repeat(64)}';const proof='sha256:${'3'.repeat(64)}'`);
+    expect(injectVersion.hashWorkerFile(file)).not.toBe(first);
+  });
+
+  it('changes when executable code changes', () => {
+    const file = join(dir, 'worker.js');
+    writeFileSync(file, `const WORKER_HASH='sha256:${'1'.repeat(64)}';answer(1)`);
+    const first = injectVersion.hashWorkerFile(file);
+    writeFileSync(file, `const WORKER_HASH='sha256:${'a'.repeat(64)}';answer(2)`);
+    expect(injectVersion.hashWorkerFile(file)).not.toBe(first);
+  });
+});
+
 describe('injectVersion.hashDirectory', () => {
   let dir: string;
 

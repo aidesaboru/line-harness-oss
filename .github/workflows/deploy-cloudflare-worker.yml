@@ -6,11 +6,17 @@ on:
     branches: [main]
     paths:
       - 'apps/worker/**'
+      - 'apps/web/**'
       - 'apps/liff/**'
       - 'packages/db/**'
       - 'packages/shared/**'
       - 'packages/line-sdk/**'
+      - 'packages/update-engine/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-cloudflare-worker.yml'
+      - '.github/workflows/deploy-cloudflare-admin.yml'
 
 # Only one production migration/deploy may run at a time. A queued deploy must
 # wait rather than cancelling a run that may already be changing D1.
@@ -19,24 +25,48 @@ concurrency:
   cancel-in-progress: false
 
 # The GitHub token only needs to read the checked-out repository. The separate
-# CLOUDFLARE_API_TOKEN should be scoped to this account's D1 database and Worker
+# CLOUDFLARE_WORKER_API_TOKEN should be scoped to this account's D1 database and Worker
 # script with edit access; no zone, DNS, Pages, or account-admin access is needed.
 permissions:
   contents: read
 
 jobs:
+  verify:
+    if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
+      - run: pnpm tsx scripts/check-migrations.ts
+      - run: pnpm test:scripts
+      - run: pnpm --filter @line-crm/db test
+      - run: pnpm --filter @line-crm/db typecheck
+      - run: pnpm --filter @line-harness/update-engine test
+      - run: pnpm --filter @line-harness/update-engine typecheck
+      - run: pnpm --filter web test
+      - run: pnpm --filter worker typecheck
+      - run: pnpm --filter worker test
+
   deploy:
+    needs: verify
     if: github.repository != 'Shudesu/line-harness-oss' && vars.LINE_HARNESS_CLOUDFLARE_DEPLOY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       WORKER_NAME: ${{ vars.WORKER_NAME || 'your-worker-name' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
@@ -51,12 +81,90 @@ jobs:
       - name: Build shared packages
         run: pnpm --filter @line-crm/shared --filter @line-crm/line-sdk --filter @line-crm/db --filter @line-harness/update-engine build
 
-      - name: Build Worker and LIFF assets
-        run: pnpm --filter worker build
+      - name: Capture build metadata
+        id: build-meta
+        run: |
+          echo "version=$(node -p "require('./apps/worker/package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "build_time=$(git show -s --format=%cI "$GITHUB_SHA")" >> "$GITHUB_OUTPUT"
+
+      - name: Build Admin artifact for version integrity
+        run: pnpm --filter web build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.WORKER_URL || secrets.NEXT_PUBLIC_API_URL }}
+          APP_BUILD_TIME: ${{ steps.build-meta.outputs.build_time }}
+
+      - name: Build LIFF artifact for version integrity
+        run: pnpm --filter liff build
         env:
           VITE_LIFF_ID: ${{ vars.VITE_LIFF_ID }}
           VITE_BOT_BASIC_ID: ${{ vars.VITE_BOT_BASIC_ID }}
           VITE_CALENDAR_CONNECTION_ID: ${{ vars.VITE_CALENDAR_CONNECTION_ID }}
+
+      - name: Prepare stable runtime version metadata
+        id: prepare-version
+        run: |
+          json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
+            --prepare true \
+            --version "${{ steps.build-meta.outputs.version }}" \
+            --admin apps/web/out \
+            --liff apps/liff/dist \
+            --released-at "${{ steps.build-meta.outputs.build_time }}" \
+            --out apps/worker/src/_version.ts)
+          released_at=$(node -e "console.log(JSON.parse(process.argv[1]).releasedAt)" "$json")
+          echo "released_at=${released_at}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Worker first pass
+        run: pnpm --filter worker build
+
+      - name: Inject canonical shipping hashes
+        id: hashes
+        run: |
+          json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
+            --version "${{ steps.build-meta.outputs.version }}" \
+            --worker apps/worker/dist/ec_owner_line_harness/index.js \
+            --admin apps/web/out \
+            --liff apps/liff/dist \
+            --released-at "${{ steps.prepare-version.outputs.released_at }}" \
+            --out apps/worker/src/_version.ts)
+          echo "worker_hash=$(node -e "console.log(JSON.parse(process.argv[1]).workerHash)" "$json")" >> "$GITHUB_OUTPUT"
+          echo "admin_hash=$(node -e "console.log(JSON.parse(process.argv[1]).adminHash)" "$json")" >> "$GITHUB_OUTPUT"
+          echo "liff_hash=$(node -e "console.log(JSON.parse(process.argv[1]).liffHash)" "$json")" >> "$GITHUB_OUTPUT"
+
+      - name: Build Worker final pass
+        run: pnpm --filter worker build
+
+      - name: Verify Worker is a single deployable module
+        run: |
+          set -euo pipefail
+          test "$(find apps/worker/dist/ec_owner_line_harness -type f -name '*.js' | wc -l | tr -d ' ')" = "1"
+          node -e '
+            const fs = require("node:fs");
+            const source = fs.readFileSync("apps/worker/dist/ec_owner_line_harness/index.js", "utf8");
+            if (/\b(?:from|import)\s*[\x22\x27]\.\//.test(source)) {
+              throw new Error("Worker bundle contains a relative module import");
+            }
+          '
+
+      - name: Verify final Worker hash
+        run: |
+          json=$(pnpm tsx apps/worker/scripts/inject-version.ts \
+            --version "${{ steps.build-meta.outputs.version }}" \
+            --worker apps/worker/dist/ec_owner_line_harness/index.js \
+            --admin apps/web/out \
+            --liff apps/liff/dist \
+            --released-at "${{ steps.prepare-version.outputs.released_at }}" \
+            --out "$RUNNER_TEMP/final-version.ts")
+          test "$(node -e "console.log(JSON.parse(process.argv[1]).workerHash)" "$json")" = "${{ steps.hashes.outputs.worker_hash }}"
+
+      # This manifest is intentionally generated after ADMIN_HASH. It carries
+      # that non-circular artifact identity plus a SHA-256 inventory of every
+      # ordinary static file, which the post-deploy smoke check downloads from
+      # the unique Pages deployment URL and verifies byte-for-byte.
+      - name: Create Pages artifact integrity manifest
+        run: |
+          pnpm tsx scripts/pages-artifact-integrity.ts create \
+            --dir apps/web/out \
+            --admin-hash "${{ steps.hashes.outputs.admin_hash }}"
 
       - name: Patch wrangler config
         env:
@@ -78,7 +186,7 @@ jobs:
             -e "s|\"account_id\":\"[^\"]*\"|\"account_id\":\"${CLOUDFLARE_ACCOUNT_ID}\"|g" \
             -e "s|\"database_name\":\"[^\"]*\"|\"database_name\":\"${D1_DATABASE_NAME}\"|g" \
             -e "s|\"database_id\":\"[^\"]*\"|\"database_id\":\"${D1_DATABASE_ID}\"|g" \
-            dist/line_harness/wrangler.json
+            dist/ec_owner_line_harness/wrangler.json
 
           if [ -n "$ADMIN_ORIGIN" ]; then
             tmp="$(mktemp)"
@@ -86,13 +194,13 @@ jobs:
               .vars.ADMIN_ORIGIN = $o
               | .vars.ADMIN_ALLOW_CROSS_SITE = (if $x == "" then "true" else $x end)
               | (if $w != "" then .vars.WORKER_URL = $w else . end)
-            ' dist/line_harness/wrangler.json > "$tmp"
-            mv "$tmp" dist/line_harness/wrangler.json
+            ' dist/ec_owner_line_harness/wrangler.json > "$tmp"
+            mv "$tmp" dist/ec_owner_line_harness/wrangler.json
           fi
 
       - name: Preflight production credentials
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKER_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
@@ -115,7 +223,7 @@ jobs:
       - name: Capture recovery point and apply pending D1 migrations
         id: migrations
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKER_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           D1_DATABASE_NAME: ${{ secrets.D1_DATABASE_NAME }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
@@ -127,7 +235,7 @@ jobs:
           test -n "$D1_DATABASE_ID"
 
           safety_dir="$GITHUB_WORKSPACE/deploy-safety"
-          wrangler_config="$GITHUB_WORKSPACE/apps/worker/dist/line_harness/wrangler.json"
+          wrangler_config="$GITHUB_WORKSPACE/apps/worker/dist/ec_owner_line_harness/wrangler.json"
           mkdir -p "$safety_dir"
           jq -e --arg name "$D1_DATABASE_NAME" --arg id "$D1_DATABASE_ID" '
             .d1_databases
@@ -155,27 +263,14 @@ jobs:
           bookmark="$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).bookmark" "$safety_dir/d1-time-travel.json")"
           echo "::add-mask::$bookmark"
 
-          protected_tables=(
-            line_accounts
-            friends
-            chats
-            messages_log
-            support_cases
-            support_case_events
-            support_escalations
-            support_internal_messages
-            chat_internal_messages
-            internal_message_events
-            internal_message_bookmark_events
-            internal_tasks
-            internal_task_events
-            support_case_attachments
-            chat_confirmation_events
-            support_case_followup_reminders
-            support_case_followup_reminder_events
-            line_conversations
-            line_conversation_messages
+          mapfile -t protected_tables < <(
+            node -e '
+              const fs = require("node:fs");
+              const tables = JSON.parse(fs.readFileSync("scripts/protected-d1-tables.json", "utf8"));
+              for (const table of tables) console.log(table);
+            '
           )
+          test "${#protected_tables[@]}" -gt 0
 
           capture_protected_counts() {
             local output="$1"
@@ -311,6 +406,126 @@ jobs:
             # destructive migrations if their production marker is ever missing.
             pnpm tsx scripts/check-migrations.ts "${pending_paths[@]}"
 
+            # Export the current production snapshot only to the runner's
+            # private temporary directory, restore it into an isolated SQLite
+            # database, and apply every pending migration there first. Nothing
+            # below can write to production. SQL and SQLite diagnostics stay in
+            # mode-0600 temporary files and are never printed or uploaded.
+            command -v sqlite3 > /dev/null
+            umask 077
+            preflight_dir="$(mktemp -d "$RUNNER_TEMP/d1-migration-preflight-XXXXXX")"
+            preflight_export="$preflight_dir/source.sql"
+            preflight_db="$preflight_dir/source.sqlite3"
+            preflight_log="$preflight_dir/private.log"
+            touch "$preflight_log"
+            chmod 600 "$preflight_log"
+            cleanup_preflight() {
+              rm -f -- "$preflight_export" "$preflight_db" "$preflight_log" \
+                "$preflight_dir/counts-before.json" "$preflight_dir/counts-after.json" \
+                "$preflight_dir/counts-raw.json" "$preflight_dir/migration.sql"
+              rmdir "$preflight_dir" 2>/dev/null || true
+            }
+            trap cleanup_preflight EXIT
+
+            if ! pnpm exec wrangler d1 export "$D1_DATABASE_NAME" \
+              --config "$wrangler_config" --remote --output "$preflight_export" \
+              > "$preflight_log" 2>&1; then
+              echo 'D1 migration preflight export failed without exposing its temporary download URL' >&2
+              exit 1
+            fi
+            if ! sqlite3 "$preflight_db" < "$preflight_export" > "$preflight_log" 2>&1; then
+              echo 'D1 migration preflight restore failed without exposing SQL contents' >&2
+              exit 1
+            fi
+            rm -f -- "$preflight_export"
+
+            capture_local_counts() {
+              local output="$1"
+              local query=""
+              local separator=""
+              for table in "${protected_tables[@]}"; do
+                if [[ ! "$table" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+                  echo 'Protected D1 table name is invalid' >&2
+                  return 1
+                fi
+                local exists
+                if ! exists="$(sqlite3 "$preflight_db" \
+                  "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '$table'" \
+                  2>> "$preflight_log")"; then
+                  echo 'D1 migration preflight table inspection failed' >&2
+                  return 1
+                fi
+                if [ "$exists" = "1" ]; then
+                  query+="${separator}SELECT '$table' AS table_name, COUNT(*) AS row_count FROM \"$table\""
+                  separator=" UNION ALL "
+                fi
+              done
+              if [ -z "$query" ]; then
+                echo 'D1 migration preflight found no protected tables' >&2
+                return 1
+              fi
+              if ! sqlite3 -json "$preflight_db" "$query" \
+                > "$preflight_dir/counts-raw.json" 2>> "$preflight_log"; then
+                echo 'D1 migration preflight count query failed' >&2
+                return 1
+              fi
+              node - "$preflight_dir/counts-raw.json" "$output" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output] = process.argv.slice(2);
+          const rows = JSON.parse(fs.readFileSync(input, 'utf8'));
+          const counts = {};
+          for (const row of rows) {
+            const count = Number(row.row_count);
+            if (typeof row.table_name !== 'string' || !Number.isSafeInteger(count) || count < 0) {
+              throw new Error('Invalid migration preflight row count');
+            }
+            counts[row.table_name] = count;
+          }
+          fs.writeFileSync(output, JSON.stringify(counts, null, 2) + '\n', { mode: 0o600 });
+          NODE
+              rm -f -- "$preflight_dir/counts-raw.json"
+            }
+
+            capture_local_counts "$preflight_dir/counts-before.json"
+            for name in "${pending_migrations[@]}"; do
+              {
+                printf 'BEGIN IMMEDIATE;\n'
+                sed -n '1,$p' "packages/db/migrations/$name"
+                printf '\nINSERT INTO _migrations (name, applied_at) VALUES ('\''%s'\'', datetime('\''now'\''));\n' "$name"
+                printf 'COMMIT;\n'
+              } > "$preflight_dir/migration.sql"
+              if ! sqlite3 "$preflight_db" < "$preflight_dir/migration.sql" \
+                > "$preflight_log" 2>&1; then
+                echo "D1 migration preflight failed for $name without exposing SQL contents" >&2
+                exit 1
+              fi
+              rm -f -- "$preflight_dir/migration.sql"
+            done
+
+            if [ "$(sqlite3 "$preflight_db" 'PRAGMA quick_check' 2>> "$preflight_log")" != "ok" ]; then
+              echo 'D1 migration preflight integrity check failed' >&2
+              exit 1
+            fi
+            if [ -n "$(sqlite3 "$preflight_db" 'PRAGMA foreign_key_check' 2>> "$preflight_log")" ]; then
+              echo 'D1 migration preflight foreign-key check failed' >&2
+              exit 1
+            fi
+            capture_local_counts "$preflight_dir/counts-after.json"
+            node - "$preflight_dir/counts-before.json" "$preflight_dir/counts-after.json" <<'NODE'
+          const fs = require('node:fs');
+          const [beforePath, afterPath] = process.argv.slice(2);
+          const before = JSON.parse(fs.readFileSync(beforePath, 'utf8'));
+          const after = JSON.parse(fs.readFileSync(afterPath, 'utf8'));
+          const losses = Object.entries(before).filter(([table, count]) => (
+            !Number.isSafeInteger(after[table]) || after[table] < count
+          ));
+          if (losses.length > 0) {
+            throw new Error('Protected D1 row count would decrease in migration preflight');
+          }
+          NODE
+            cleanup_preflight
+            trap - EXIT
+
             combined_migration=""
             trap 'if [ -n "${combined_migration:-}" ]; then rm -f "$combined_migration"; fi' EXIT
             for name in "${pending_migrations[@]}"; do
@@ -363,9 +578,51 @@ jobs:
           }
           NODE
 
+      - name: Capture current Pages production deployment
+        id: pages-snapshot
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT_NAME: ${{ vars.PAGES_PROJECT_NAME || 'your-admin-name' }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$PAGES_PROJECT_NAME"
+          test "$PAGES_PROJECT_NAME" != 'your-admin-name'
+          [[ "$PAGES_PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+          safety_dir="$GITHUB_WORKSPACE/deploy-safety"
+          previous_raw="$RUNNER_TEMP/pages-production-before.json"
+          project_api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}"
+          curl --silent --show-error --fail \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            --output "$previous_raw" \
+            "$project_api"
+          node - "$previous_raw" "$safety_dir/previous-pages.json" "$GITHUB_OUTPUT" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output, githubOutput] = process.argv.slice(2);
+          const payload = JSON.parse(fs.readFileSync(input, 'utf8'));
+          const current = payload?.result?.canonical_deployment;
+          if (!current || typeof current.id !== 'string' || current.id.length < 8) {
+            throw new Error('Current production Pages deployment ID was not returned');
+          }
+          if (current.environment !== 'production' || current.latest_stage?.status !== 'success') {
+            throw new Error('Current canonical Pages deployment is not a successful production build');
+          }
+          const url = new URL(current.url);
+          if (url.protocol !== 'https:') throw new Error('Current production Pages URL is invalid');
+          fs.writeFileSync(output, JSON.stringify({
+            deploymentId: current.id,
+            deploymentUrl: url.toString(),
+            capturedAt: new Date().toISOString(),
+          }, null, 2) + '\n');
+          fs.appendFileSync(githubOutput, `previous_pages_id=${current.id}\n`);
+          NODE
+          rm -f -- "$previous_raw"
+
       - name: Upload recovery metadata
         if: ${{ always() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: worker-deploy-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: deploy-safety/
@@ -376,14 +633,14 @@ jobs:
         id: deploy
         continue-on-error: true
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKER_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           test -n "$CLOUDFLARE_API_TOKEN"
           test -n "$CLOUDFLARE_ACCOUNT_ID"
           pnpm exec wrangler deploy \
-            --config apps/worker/dist/line_harness/wrangler.json \
+            --config apps/worker/dist/ec_owner_line_harness/wrangler.json \
             --name "$WORKER_NAME"
 
       - name: Smoke test authenticated chats API
@@ -420,12 +677,179 @@ jobs:
           }
           NODE
 
-      - name: Roll back to previous Worker
-        id: rollback
-        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure') }}
+      # Deploy the exact Admin directory already hashed into this Worker. A
+      # separate workflow must not rebuild Pages from another artifact.
+      - name: Deploy exact hashed Admin artifact to Cloudflare Pages
+        id: pages
+        if: ${{ steps.smoke.outcome == 'success' }}
         continue-on-error: true
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT_NAME: ${{ vars.PAGES_PROJECT_NAME || 'your-admin-name' }}
+          PAGES_PRODUCTION_BRANCH: ${{ vars.PAGES_PRODUCTION_BRANCH || 'main' }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$PAGES_PROJECT_NAME"
+          test "$PAGES_PROJECT_NAME" != 'your-admin-name'
+          [[ "$PAGES_PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+          pnpm exec wrangler pages deploy apps/web/out \
+            --project-name="$PAGES_PROJECT_NAME" \
+            --branch="$PAGES_PRODUCTION_BRANCH" \
+            --commit-hash="$GITHUB_SHA" \
+            --commit-message="deploy ${GITHUB_SHA}"
+
+          deployment_raw="$RUNNER_TEMP/pages-production-after.json"
+          deployment_match="$RUNNER_TEMP/pages-production-match.json"
+          trap 'rm -f -- "$deployment_raw" "$deployment_match"' EXIT
+          project_api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}"
+          matched=false
+          for attempt in $(seq 1 12); do
+            if curl --silent --show-error --fail \
+              --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              --output "$deployment_raw" \
+              "$project_api"; then
+              if node - "$deployment_raw" "$GITHUB_SHA" "$deployment_match" <<'NODE'
+          const fs = require('node:fs');
+          const [input, expectedSha, output] = process.argv.slice(2);
+          const payload = JSON.parse(fs.readFileSync(input, 'utf8'));
+          const deployment = payload?.result?.canonical_deployment;
+          if (
+            deployment?.environment !== 'production'
+            || deployment?.deployment_trigger?.metadata?.commit_hash !== expectedSha
+            || deployment?.latest_stage?.status !== 'success'
+          ) process.exit(1);
+          if (!deployment || typeof deployment.id !== 'string') process.exit(1);
+          const url = new URL(deployment.url);
+          if (url.protocol !== 'https:') process.exit(1);
+          fs.writeFileSync(output, JSON.stringify({ id: deployment.id, url: url.toString() }));
+          NODE
+              then
+                matched=true
+                break
+              fi
+            fi
+            sleep 5
+          done
+          if [ "$matched" != true ]; then
+            echo 'The successful production Pages deployment could not be identified' >&2
+            exit 1
+          fi
+          node - "$deployment_match" "$GITHUB_OUTPUT" <<'NODE'
+          const fs = require('node:fs');
+          const [input, output] = process.argv.slice(2);
+          const deployment = JSON.parse(fs.readFileSync(input, 'utf8'));
+          fs.appendFileSync(output, `deployment_id=${deployment.id}\n`);
+          fs.appendFileSync(output, `deployment_url=${deployment.url}\n`);
+          NODE
+
+      - name: Verify deployed build metadata
+        id: version-smoke
+        if: ${{ steps.pages.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL || secrets.NEXT_PUBLIC_API_URL }}
+          EXPECTED_WORKER_HASH: ${{ steps.hashes.outputs.worker_hash }}
+          EXPECTED_ADMIN_HASH: ${{ steps.hashes.outputs.admin_hash }}
+          EXPECTED_LIFF_HASH: ${{ steps.hashes.outputs.liff_hash }}
+          PAGES_DEPLOYMENT_URL: ${{ steps.pages.outputs.deployment_url }}
+        run: |
+          set -euo pipefail
+          test -n "$PAGES_DEPLOYMENT_URL"
+          response="$RUNNER_TEMP/version-smoke-response.json"
+          trap 'rm -f "$response"' EXIT
+          curl --silent --show-error --fail --location \
+            --retry 5 --retry-all-errors --retry-delay 4 \
+            --connect-timeout 10 --max-time 45 \
+            --output "$response" \
+            "${WORKER_URL%/}/admin/version"
+          node - "$response" "$EXPECTED_WORKER_HASH" "$EXPECTED_ADMIN_HASH" "$EXPECTED_LIFF_HASH" <<'NODE'
+          const fs = require('node:fs');
+          const [path, workerHash, adminHash, liffHash] = process.argv.slice(2);
+          const actual = JSON.parse(fs.readFileSync(path, 'utf8'));
+          if (actual.worker_hash !== workerHash || actual.admin_hash !== adminHash || actual.liff_hash !== liffHash) {
+            throw new Error('Deployed artifact hashes do not match the build');
+          }
+          NODE
+          pnpm tsx scripts/pages-artifact-integrity.ts verify \
+            --dir apps/web/out \
+            --url "$PAGES_DEPLOYMENT_URL" \
+            --admin-hash "$EXPECTED_ADMIN_HASH"
+
+      # The new Worker is intentionally kept in place while Pages is restored:
+      # additive API compatibility means new Worker + old Admin is the safer
+      # short transition. The Worker is restored immediately afterward.
+      - name: Roll back to previous Pages deployment
+        id: rollback-pages
+        if: ${{ always() && (steps.pages.outcome == 'failure' || steps.version-smoke.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PAGES_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PAGES_PROJECT_NAME: ${{ vars.PAGES_PROJECT_NAME || 'your-admin-name' }}
+          PREVIOUS_PAGES_ID: ${{ steps.pages-snapshot.outputs.previous_pages_id }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          test -n "$PAGES_PROJECT_NAME"
+          test -n "$PREVIOUS_PAGES_ID"
+          [[ "$PAGES_PROJECT_NAME" =~ ^[A-Za-z0-9_-]+$ ]]
+          project_api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}"
+          rollback_api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/${PAGES_PROJECT_NAME}/deployments/${PREVIOUS_PAGES_ID}/rollback"
+          current_raw="$RUNNER_TEMP/pages-production-current.json"
+          rollback_raw="$RUNNER_TEMP/pages-rollback-response.json"
+          trap 'rm -f -- "$current_raw" "$rollback_raw"' EXIT
+
+          current_pages_id() {
+            curl --silent --show-error --fail \
+              --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              --output "$current_raw" \
+              "$project_api"
+            node - "$current_raw" <<'NODE'
+          const fs = require('node:fs');
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+          const current = payload?.result?.canonical_deployment;
+          if (!current || current.environment !== 'production' || current.latest_stage?.status !== 'success') {
+            process.exit(1);
+          }
+          process.stdout.write(String(current.id ?? ''));
+          NODE
+          }
+
+          current_id="$(current_pages_id)"
+          if [ "$current_id" != "$PREVIOUS_PAGES_ID" ]; then
+            curl --silent --show-error --fail \
+              --request POST \
+              --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              --output "$rollback_raw" \
+              "$rollback_api"
+          fi
+
+          restored=false
+          for attempt in $(seq 1 12); do
+            if [ "$(current_pages_id)" = "$PREVIOUS_PAGES_ID" ]; then
+              restored=true
+              break
+            fi
+            sleep 5
+          done
+          if [ "$restored" != true ]; then
+            echo 'Previous Pages production deployment was not restored' >&2
+            exit 1
+          fi
+
+      - name: Roll back to previous Worker
+        id: rollback
+        # If Pages could not be restored, keep the new backward-compatible
+        # Worker. Rolling it back would create the less safe old Worker +
+        # new/unknown Admin generation. Manual Pages recovery is then required.
+        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure' || steps.pages.outcome == 'failure' || steps.version-smoke.outcome == 'failure') && ((steps.pages.outcome != 'failure' && steps.version-smoke.outcome != 'failure') || steps.rollback-pages.outcome == 'success') }}
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKER_API_TOKEN || secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           PREVIOUS_VERSION: ${{ steps.migrations.outputs.previous_version }}
         run: |
@@ -467,11 +891,19 @@ jobs:
           rm -f "$verify_raw"
 
       - name: Fail deployment after rollback
-        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure') }}
+        if: ${{ always() && (steps.deploy.outcome == 'failure' || steps.smoke.outcome == 'failure' || steps.pages.outcome == 'failure' || steps.version-smoke.outcome == 'failure') }}
         run: |
+          pages_rollback_required=false
+          if [ "${{ steps.pages.outcome }}" = "failure" ] || [ "${{ steps.version-smoke.outcome }}" = "failure" ]; then
+            pages_rollback_required=true
+          fi
+          if [ "$pages_rollback_required" = true ] && [ "${{ steps.rollback-pages.outcome }}" != "success" ]; then
+            echo "::error::Deployment failed and automatic Pages rollback also failed. The new backward-compatible Worker was kept in place; restore Pages manually before changing Worker traffic."
+            exit 1
+          fi
           if [ "${{ steps.rollback.outcome }}" = "failure" ]; then
             echo "::error::Deployment failed and automatic Worker rollback also failed"
           else
-            echo "::error::Deployment failed and the previous Worker was restored"
+            echo "::error::Deployment failed and the previous Worker and Pages generation were restored"
           fi
           exit 1

@@ -95,7 +95,13 @@ function refHashContentMap(map: Map<string, Buffer>): string {
 }
 
 function refHashBuffer(buf: Buffer): string {
-  return `sha256:${createHash('sha256').update(buf).digest('hex')}`;
+  const canonical = buf
+    .toString('utf8')
+    .replace(
+      /(\b(?:const|let|var)\s+WORKER_HASH\s*=\s*["'])sha256:[0-9a-f]{64}(["'])/g,
+      `$1sha256:${'0'.repeat(64)}$2`,
+    );
+  return `sha256:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -169,7 +175,7 @@ describe('verifyBundleHashes', () => {
     const parsed = await parseBundleStream(createReadStream(fixture.tarball));
     const hashes = verifyBundleHashes(parsed);
 
-    // Worker hash: plain SHA256 of bytes, prefixed sha256:
+    // Worker hash: canonicalized SHA256 of bytes, prefixed sha256:
     expect(hashes.worker).toBe(refHashBuffer(fixture.workerBytes));
 
     // Admin/LIFF: directory-style hash (sorted keys, NUL-delimited)
@@ -184,6 +190,38 @@ describe('verifyBundleHashes', () => {
       return refHashContentMap(m);
     })();
     expect(hashes.admin).toBe(expectedAdmin);
+  });
+
+  it('does not change when only the embedded self hash changes', () => {
+    const base = {
+      workerJs: Buffer.from(`const WORKER_HASH='sha256:${'1'.repeat(64)}';run()`),
+      adminFiles: new Map<string, Buffer>(),
+      liffFiles: new Map<string, Buffer>(),
+      migrations: new Map<string, Buffer>(),
+    };
+    const changed = {
+      ...base,
+      workerJs: Buffer.from(`const WORKER_HASH='sha256:${'a'.repeat(64)}';run()`),
+    };
+    expect(verifyBundleHashes(base).worker).toBe(verifyBundleHashes(changed).worker);
+  });
+
+  it('detects a changed embedded admin hash even when WORKER_HASH changes too', () => {
+    const base = {
+      workerJs: Buffer.from(
+        `const WORKER_HASH='sha256:${'1'.repeat(64)}';const ADMIN_HASH='sha256:${'2'.repeat(64)}';run()`,
+      ),
+      adminFiles: new Map<string, Buffer>(),
+      liffFiles: new Map<string, Buffer>(),
+      migrations: new Map<string, Buffer>(),
+    };
+    const changed = {
+      ...base,
+      workerJs: Buffer.from(
+        `const WORKER_HASH='sha256:${'a'.repeat(64)}';const ADMIN_HASH='sha256:${'3'.repeat(64)}';run()`,
+      ),
+    };
+    expect(verifyBundleHashes(base).worker).not.toBe(verifyBundleHashes(changed).worker);
   });
 });
 

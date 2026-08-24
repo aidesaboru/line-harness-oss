@@ -17,6 +17,12 @@ type FriendRow = {
 
 type DbCall = { method: 'all' | 'first' | 'run'; sql: string; binds: unknown[] };
 
+const staffSupportVisibilityBinds = [
+  'staff-1', 'staff-1', 'staff-1',
+  'Tajima', 'Tajima', 'Tajima', 'Tajima',
+  'staff-1', 'Tajima', 'Tajima',
+];
+
 function makeDb(state: {
   configuredFriendIds?: string[];
   visibleFriendIds?: string[];
@@ -134,7 +140,7 @@ describe('account settings test recipients support visibility', () => {
     const settingCall = db.calls.find((call) => call.sql.includes('FROM account_settings'));
     expect(settingCall?.binds).toEqual(['acc-1']);
     const friendCall = db.calls.find((call) => call.sql.includes('FROM friends f'));
-    expect(friendCall?.binds).toEqual(['friend-visible', 'staff-1', 'Tajima', 'Tajima', 'staff-1', 'Tajima']);
+    expect(friendCall?.binds).toEqual(['friend-visible', ...staffSupportVisibilityBinds]);
   });
 
   test('owner keeps the global test recipient scope', async () => {

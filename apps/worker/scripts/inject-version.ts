@@ -43,6 +43,28 @@ function hashFile(filePath: string): string {
   return `sha256:${digest}`;
 }
 
+const ZERO_SHA256 = `sha256:${'0'.repeat(64)}`;
+const WORKER_HASH_ASSIGNMENT_PATTERN =
+  /(\b(?:const|let|var)\s+WORKER_HASH\s*=\s*["'])sha256:[0-9a-f]{64}(["'])/g;
+
+/**
+ * The Worker exposes its own hash from inside the bundle. Hashing the raw
+ * bytes would therefore be self-referential: writing the hash changes the
+ * bytes that were hashed. Canonicalize only the WORKER_HASH assignment to a
+ * stable zero value before hashing. Other embedded artifact hashes remain
+ * protected by the digest. The update engine uses the exact same rule when it
+ * verifies a downloaded release bundle.
+ */
+function hashWorkerFile(filePath: string): string {
+  const content = readFileSync(filePath, 'utf8');
+  const canonical = content.replace(
+    WORKER_HASH_ASSIGNMENT_PATTERN,
+    `$1${ZERO_SHA256}$2`,
+  );
+  const digest = createHash('sha256').update(canonical, 'utf8').digest('hex');
+  return `sha256:${digest}`;
+}
+
 function walkSorted(root: string): string[] {
   // Recursive lexicographic walk. Returns absolute paths of regular files.
   const out: string[] = [];
@@ -100,6 +122,7 @@ function write(outPath: string, v: VersionData): void {
 
 export const injectVersion = {
   hashFile,
+  hashWorkerFile,
   hashDirectory,
   hashArtifact,
   write,
@@ -114,6 +137,7 @@ interface CliArgs {
   liff?: string;
   out?: string;
   releasedAt?: string;
+  prepare?: string;
 }
 
 function parseArgs(args: string[]): CliArgs {
@@ -148,6 +172,9 @@ function parseArgs(args: string[]): CliArgs {
       case 'releasedAt':
         out.releasedAt = value;
         break;
+      case 'prepare':
+        out.prepare = value;
+        break;
       default:
         stderr.write(`inject-version: unknown flag --${key}\n`);
         exit(2);
@@ -175,13 +202,15 @@ function hashArtifact(label: string, p: string): string {
 function main(rawArgs: string[]): void {
   const args = parseArgs(rawArgs);
   const version = requireArg(args, 'version');
-  const workerPath = requireArg(args, 'worker');
   const adminPath = requireArg(args, 'admin');
   const liffPath = requireArg(args, 'liff');
   const outPath = requireArg(args, 'out');
   const releasedAt = args.releasedAt ?? new Date().toISOString();
 
-  const workerHash = hashArtifact('worker', workerPath);
+  const preparing = args.prepare === 'true';
+  const workerHash = preparing
+    ? ZERO_SHA256
+    : hashWorkerFile(requireArg(args, 'worker'));
   const adminHash = hashArtifact('admin', adminPath);
   const liffHash = hashArtifact('liff', liffPath);
 

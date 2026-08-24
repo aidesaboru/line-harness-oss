@@ -194,6 +194,16 @@ describe('support role permissions', () => {
     expect(permissions.canEditCaseWork).toBe(canEditWork)
     expect(permissions.canLinkManuals).toBe(canEditWork)
   })
+
+  it('allows a secondary responder to work assigned tickets without management access', () => {
+    expect(getSupportRolePermissions('secondary', true)).toEqual({
+      canCreateCases: false,
+      canEditCaseRouting: false,
+      canManageManuals: false,
+      canEditCaseWork: true,
+      canLinkManuals: true,
+    })
+  })
 })
 
 describe('support identity issues', () => {

@@ -73,6 +73,9 @@ const CHAT_CURSOR_MAX_LENGTH = 64;
 const CHAT_FOLLOWER_CURSOR_MAX_LENGTH = 1024;
 const CHAT_SEARCH_MAX_LENGTH = 120;
 const CHAT_NOTES_MAX_LENGTH = 4096;
+const CHAT_CUSTOMER_METADATA_MAX_LENGTH = 16 * 1024;
+const CHAT_CUSTOMER_PROFILE_FIELD_MAX_LENGTH = 2048;
+const CHAT_CUSTOMER_PROFILE_CONTRACT_MAX = 20;
 const CHAT_INTERNAL_MESSAGE_MAX_LENGTH = 5000;
 const CHAT_INTERNAL_MENTION_MAX = 20;
 const CHAT_INTERNAL_MENTION_MAX_LENGTH = 80;
@@ -444,6 +447,73 @@ function safeJsonRecord(raw: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+const LINE_CONVERSATION_CUSTOMER_BASIC_KEYS = [
+  'customerNumber',
+  'companyName',
+  'contactName',
+  'googleFolderUrl',
+  'closingMonth',
+  'specialNotes',
+] as const;
+const LINE_CONVERSATION_CONTRACT_KEYS = [
+  'shopName',
+  'handoverDate',
+  'minimumGuaranteeStartMonth',
+  'closedAt',
+] as const;
+
+function parseCustomerProfileText(raw: unknown, key: string): ValueResult<string> {
+  if (typeof raw !== 'string') return { ok: false, error: `${key} must be a string` };
+  const value = raw.trim();
+  if (value.length > CHAT_CUSTOMER_PROFILE_FIELD_MAX_LENGTH || /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(value)) {
+    return { ok: false, error: `${key} is invalid` };
+  }
+  return { ok: true, value };
+}
+
+function parseLineConversationCustomerMetadata(raw: unknown): ValueResult<Record<string, unknown>> {
+  if (!isRecord(raw)) return { ok: false, error: 'customerMetadata must be an object' };
+  const result: Record<string, unknown> = {};
+  for (const key of LINE_CONVERSATION_CUSTOMER_BASIC_KEYS) {
+    const parsed = parseCustomerProfileText(raw[key] ?? '', key);
+    if (!parsed.ok) return parsed;
+    result[key] = parsed.value;
+  }
+  const rawContracts = raw.operationContracts ?? [];
+  if (!Array.isArray(rawContracts) || rawContracts.length > CHAT_CUSTOMER_PROFILE_CONTRACT_MAX) {
+    return { ok: false, error: 'operationContracts is invalid' };
+  }
+  const operationContracts: Array<Record<string, string>> = [];
+  for (const rawContract of rawContracts) {
+    if (!isRecord(rawContract)) return { ok: false, error: 'operationContracts is invalid' };
+    const contract: Record<string, string> = {};
+    for (const key of LINE_CONVERSATION_CONTRACT_KEYS) {
+      const parsed = parseCustomerProfileText(rawContract[key] ?? '', key);
+      if (!parsed.ok) return parsed;
+      contract[key] = parsed.value;
+    }
+    if (Object.values(contract).some(Boolean)) operationContracts.push(contract);
+  }
+  result.operationContracts = operationContracts;
+  const serialized = JSON.stringify(result);
+  if (serialized.length > CHAT_CUSTOMER_METADATA_MAX_LENGTH) {
+    return { ok: false, error: 'customerMetadata is too large' };
+  }
+  return { ok: true, value: result };
+}
+
+function lineConversationCustomerMetadata(raw: string): Record<string, unknown> {
+  return safeJsonRecord(raw) ?? {};
+}
+
+function lineConversationCustomerName(lineDisplayName: string, metadata: Record<string, unknown>): string {
+  const customerNumber = typeof metadata.customerNumber === 'string' ? metadata.customerNumber.trim() : '';
+  const contactName = typeof metadata.contactName === 'string' ? metadata.contactName.trim() : '';
+  const companyName = typeof metadata.companyName === 'string' ? metadata.companyName.trim() : '';
+  if (customerNumber && contactName) return `${customerNumber}_${contactName}`;
+  return companyName || customerNumber || contactName || lineDisplayName;
 }
 
 function firstStringValue(record: Record<string, unknown> | null, keys: string[]): string | null {
@@ -1984,6 +2054,9 @@ chats.get('/api/chats', async (c) => {
         conversationConditions.push(`(
           lc.display_name LIKE ? ESCAPE '\\'
           OR lc.source_id LIKE ? ESCAPE '\\'
+          OR json_extract(lc.customer_metadata, '$.customerNumber') LIKE ? ESCAPE '\\'
+          OR json_extract(lc.customer_metadata, '$.companyName') LIKE ? ESCAPE '\\'
+          OR json_extract(lc.customer_metadata, '$.contactName') LIKE ? ESCAPE '\\'
           OR EXISTS (
             SELECT 1 FROM line_conversation_messages search_message
             WHERE search_message.conversation_id = lc.id
@@ -1991,7 +2064,7 @@ chats.get('/api/chats', async (c) => {
               AND search_message.content LIKE ? ESCAPE '\\'
           )
         )`);
-        conversationBindings.push(pattern, pattern, pattern);
+        conversationBindings.push(pattern, pattern, pattern, pattern, pattern, pattern);
       }
       const conversationWhere = conversationConditions.length > 0
         ? `WHERE ${conversationConditions.join(' AND ')}`
@@ -2004,6 +2077,7 @@ chats.get('/api/chats', async (c) => {
            lc.status,
            lc.display_name,
            lc.picture_url,
+           lc.customer_metadata,
            lc.last_message_at,
            lc.created_at,
            lc.updated_at,
@@ -2036,11 +2110,16 @@ chats.get('/api/chats', async (c) => {
       const conversationResult = conversationBindings.length > 0
         ? await conversationStatement.bind(...conversationBindings).all<Record<string, unknown>>()
         : await conversationStatement.all<Record<string, unknown>>();
-      const conversationRows = conversationResult.results.map((row) => ({
+      const conversationRows = conversationResult.results.map((row) => {
+        const customerMetadata = lineConversationCustomerMetadata(String(row.customer_metadata ?? '{}'));
+        const lineDisplayName = String(row.display_name || 'グループトーク');
+        return ({
         id: String(row.id),
         friendId: String(row.id),
         conversationType: row.source_type === 'room' ? 'room' as const : 'group' as const,
-        friendName: String(row.display_name || 'グループトーク'),
+        friendName: lineConversationCustomerName(lineDisplayName, customerMetadata),
+        lineDisplayName,
+        customerMetadata,
         friendPictureUrl: row.picture_url || null,
         operatorId: null,
         status: lineConversationWorkflowStatus(row),
@@ -2060,7 +2139,8 @@ chats.get('/api/chats', async (c) => {
         activeSupportCase: null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
-      }));
+        });
+      });
       if (conversationRows.length > 0) {
         data = [...data, ...conversationRows].sort((a, b) =>
           String(b.lastMessageAt ?? b.createdAt ?? '').localeCompare(
@@ -2320,6 +2400,7 @@ chats.get('/api/chats/:id', async (c) => {
       const pageMessages = result.results.slice(0, messageLimit).reverse();
       const oldestMessage = pageMessages[0];
       const latestMessage = pageMessages.at(-1);
+      const customerMetadata = lineConversationCustomerMetadata(lineConversation.customer_metadata);
 
       return c.json({
         success: true,
@@ -2327,7 +2408,9 @@ chats.get('/api/chats/:id', async (c) => {
           id: lineConversation.id,
           friendId: lineConversation.id,
           conversationType: lineConversation.source_type,
-          friendName: lineConversation.display_name,
+          friendName: lineConversationCustomerName(lineConversation.display_name, customerMetadata),
+          lineDisplayName: lineConversation.display_name,
+          customerMetadata,
           friendPictureUrl: lineConversation.picture_url,
           operatorId: null,
           status: lineConversationWorkflowStatus(lineConversation),
@@ -2711,6 +2794,85 @@ chats.post('/api/chats', async (c) => {
   } catch (err) {
     console.error(`POST /api/chats error: ${chatRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+// グループトークの顧客情報を登録・更新する
+chats.put('/api/chats/:id/customer-profile', requireRole('owner', 'admin', 'staff'), async (c) => {
+  try {
+    const id = parseChatPathId(c.req.param('id'));
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const body = await readJsonBody(c);
+    if (!isRecord(body)) return c.json({ success: false, error: 'invalid payload' }, 400);
+    const customerMetadata = parseLineConversationCustomerMetadata(body.customerMetadata);
+    if (!customerMetadata.ok) return c.json({ success: false, error: customerMetadata.error }, 400);
+    const expectedUpdatedAt = parseRequiredString(body.expectedUpdatedAt, 'expectedUpdatedAt', 64);
+    if (!expectedUpdatedAt.ok) return c.json({ success: false, error: expectedUpdatedAt.error }, 400);
+
+    const optionalSchema = await getOptionalChatSchema(c.env.DB);
+    const lineConversation = canReadLineConversations(optionalSchema)
+      ? await getLineConversationById(c.env.DB, id.value)
+      : null;
+    if (!lineConversation) return c.json({ success: false, error: 'Not found' }, 404);
+    if (isSecondaryOnlySupportStaff(currentStaff(c))) {
+      return c.json({ success: false, error: 'Not found' }, 404);
+    }
+    if (lineConversation.updated_at !== expectedUpdatedAt.value) {
+      return c.json({ success: false, error: '顧客情報が更新されています 再読み込みしてください' }, 409);
+    }
+
+    const updatedAt = jstNow();
+    const actor = currentStaff(c);
+    const previousMetadata = lineConversation.customer_metadata || '{}';
+    const nextMetadata = JSON.stringify(customerMetadata.value);
+    const profileMutationGuardSql = `EXISTS (
+      SELECT 1 FROM line_conversations profile_mutation_guard
+      WHERE profile_mutation_guard.id = ?
+        AND profile_mutation_guard.updated_at = ?
+        AND profile_mutation_guard.customer_metadata = ?
+    )`;
+    const profileMutationGuardBinds = [lineConversation.id, updatedAt, nextMetadata];
+    const mutationResults = await c.env.DB.batch([
+      c.env.DB.prepare(
+        `UPDATE line_conversations
+         SET customer_metadata = ?, updated_at = ?
+         WHERE id = ? AND updated_at = ?`,
+      )
+        .bind(nextMetadata, updatedAt, lineConversation.id, expectedUpdatedAt.value),
+      c.env.DB.prepare(
+        `INSERT INTO line_conversation_customer_events (
+           id, conversation_id, line_account_id, event_type, actor_id, actor_name,
+           before_profile, after_profile, created_at
+         ) SELECT ?, ?, ?, 'customer_profile_updated', ?, ?, ?, ?, ?
+           WHERE ${profileMutationGuardSql}`,
+      ).bind(
+        crypto.randomUUID(),
+        lineConversation.id,
+        lineConversation.line_account_id,
+        actor.id,
+        actor.name,
+        previousMetadata,
+        nextMetadata,
+        updatedAt,
+        ...profileMutationGuardBinds,
+      ),
+    ]);
+    if (mutationResults[0]?.meta.changes === 0) {
+      return c.json({ success: false, error: '顧客情報が更新されています 再読み込みしてください' }, 409);
+    }
+    return c.json({
+      success: true,
+      data: {
+        id: lineConversation.id,
+        friendName: lineConversationCustomerName(lineConversation.display_name, customerMetadata.value),
+        lineDisplayName: lineConversation.display_name,
+        customerMetadata: customerMetadata.value,
+        updatedAt,
+      },
+    });
+  } catch (err) {
+    console.error(`PUT /api/chats/:id/customer-profile error: ${chatRouteErrorKind(err)}`);
+    return c.json({ success: false, error: '顧客情報の保存に失敗しました' }, 500);
   }
 });
 

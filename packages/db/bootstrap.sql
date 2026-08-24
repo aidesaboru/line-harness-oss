@@ -583,6 +583,22 @@ CREATE TABLE internal_task_assignees (
   PRIMARY KEY (task_id, staff_id)
 );
 
+CREATE TABLE internal_task_checklist_items (
+  id                TEXT PRIMARY KEY,
+  task_id           TEXT NOT NULL REFERENCES internal_tasks(id) ON DELETE RESTRICT,
+  body              TEXT NOT NULL,
+  is_completed      INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+  sort_order        REAL NOT NULL DEFAULT 0,
+  created_by        TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  created_by_name   TEXT,
+  completed_by      TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  completed_by_name TEXT,
+  completed_at      TEXT,
+  removed_at        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE internal_task_comments (
   id          TEXT PRIMARY KEY,
   task_id     TEXT NOT NULL REFERENCES internal_tasks(id) ON DELETE CASCADE,
@@ -619,7 +635,11 @@ CREATE TABLE internal_tasks (
   completed_at        TEXT,
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, workflow_status TEXT NOT NULL DEFAULT 'todo'
+CHECK (workflow_status IN ('todo', 'in_progress', 'review', 'done')), priority TEXT NOT NULL DEFAULT 'medium'
+CHECK (priority IN ('low', 'medium', 'high', 'urgent')), sort_order REAL NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 1
+CHECK (version >= 1), last_mutation_id TEXT, labels TEXT NOT NULL DEFAULT '[]'
+CHECK (json_valid(labels) AND json_type(labels) = 'array'));
 
 CREATE TABLE line_accounts (
   id                   TEXT PRIMARY KEY,
@@ -634,6 +654,18 @@ CREATE TABLE line_accounts (
   created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , login_channel_id TEXT, login_channel_secret TEXT, liff_id TEXT, token_expires_at TEXT, og_site_name TEXT, og_default_image_url TEXT, og_default_description TEXT);
+
+CREATE TABLE line_conversation_customer_events (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES line_conversations(id) ON DELETE RESTRICT,
+  line_account_id   TEXT,
+  event_type        TEXT NOT NULL CHECK (event_type = 'customer_profile_updated'),
+  actor_id           TEXT,
+  actor_name         TEXT,
+  before_profile     TEXT NOT NULL CHECK (json_valid(before_profile)),
+  after_profile      TEXT NOT NULL CHECK (json_valid(after_profile)),
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
 
 CREATE TABLE line_conversation_messages (
   id                 TEXT PRIMARY KEY,
@@ -667,6 +699,7 @@ CREATE TABLE line_conversations (
   source_id       TEXT NOT NULL,
   display_name    TEXT NOT NULL,
   picture_url     TEXT,
+  customer_metadata TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(customer_metadata)),
   last_message_at TEXT,
   status          TEXT NOT NULL DEFAULT 'resolved' CHECK (status IN ('unread', 'resolved')),
   workflow_status TEXT CHECK (workflow_status IN ('unread', 'in_progress', 'long_term', 'resolved')),
@@ -943,6 +976,16 @@ CREATE TABLE staff (
   FOREIGN KEY (line_account_id) REFERENCES line_accounts(id)
 );
 
+CREATE TABLE staff_member_events (
+  id         TEXT PRIMARY KEY,
+  staff_id   TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  action     TEXT NOT NULL CHECK (action IN ('created', 'updated', 'disabled', 'enabled', 'api_key_regenerated')),
+  metadata   TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
+  actor_id   TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
 CREATE TABLE "staff_members" (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -952,7 +995,8 @@ CREATE TABLE "staff_members" (
   is_active  INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, slack_user_id TEXT);
+, slack_user_id TEXT, secondary_can_respond INTEGER NOT NULL DEFAULT 0
+CHECK (secondary_can_respond IN (0, 1)));
 
 CREATE TABLE staff_menus (
   staff_id                  TEXT NOT NULL,
@@ -986,6 +1030,27 @@ CREATE TABLE staff_shifts (
   updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   UNIQUE (staff_id, work_date),
   FOREIGN KEY (staff_id) REFERENCES staff(id)
+);
+
+CREATE TABLE staff_ticket_share_events (
+  id         TEXT PRIMARY KEY,
+  staff_a_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  staff_b_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  action     TEXT NOT NULL CHECK (action IN ('granted', 'revoked')),
+  actor_id   TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  CHECK (staff_a_id < staff_b_id)
+);
+
+CREATE TABLE staff_ticket_shares (
+  staff_a_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  staff_b_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  removed_at TEXT,
+  PRIMARY KEY (staff_a_id, staff_b_id),
+  CHECK (staff_a_id < staff_b_id)
 );
 
 CREATE TABLE stripe_events (
@@ -1096,7 +1161,7 @@ CREATE TABLE "support_cases" (
   reopened_at           TEXT,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-);
+, primary_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, escalation_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, routing_mutation_id TEXT);
 
 CREATE TABLE support_escalations (
   id                  TEXT PRIMARY KEY,
@@ -1156,6 +1221,17 @@ CREATE TABLE support_knowledge_imports (
   created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   UNIQUE(source_channel_id, source_thread_ts)
+);
+
+CREATE TABLE support_knowledge_segments (
+  id                  TEXT PRIMARY KEY,
+  knowledge_import_id TEXT NOT NULL REFERENCES support_knowledge_imports(id) ON DELETE RESTRICT,
+  manual_id           TEXT NOT NULL UNIQUE REFERENCES support_manuals(id) ON DELETE RESTRICT,
+  segment_key         TEXT NOT NULL,
+  question_block_index INTEGER NOT NULL,
+  answer_block_index   INTEGER NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE(knowledge_import_id, segment_key)
 );
 
 CREATE TABLE support_knowledge_source_snapshots (
@@ -1497,6 +1573,9 @@ CREATE INDEX idx_internal_message_mentions_staff
 CREATE INDEX idx_internal_task_assignees_staff
   ON internal_task_assignees(staff_id, removed_at, assigned_at DESC);
 
+CREATE INDEX idx_internal_task_checklist_items_task
+ON internal_task_checklist_items(task_id, removed_at, sort_order, created_at);
+
 CREATE INDEX idx_internal_task_comments_task
   ON internal_task_comments(task_id, created_at, id);
 
@@ -1509,8 +1588,14 @@ CREATE INDEX idx_internal_tasks_account_status
 CREATE INDEX idx_internal_tasks_source
   ON internal_tasks(source_type, source_id, created_at DESC);
 
+CREATE INDEX idx_internal_tasks_workflow_order
+ON internal_tasks(line_account_id, workflow_status, sort_order, updated_at DESC);
+
 CREATE INDEX idx_line_accounts_display_order
   ON line_accounts (display_order, created_at);
+
+CREATE INDEX idx_line_conversation_customer_events_conversation
+ON line_conversation_customer_events(conversation_id, created_at DESC);
 
 CREATE INDEX idx_line_conversation_messages_conversation_created
 ON line_conversation_messages (conversation_id, created_at, id);
@@ -1533,6 +1618,9 @@ ON line_conversations (line_account_id, status, last_message_at);
 
 CREATE INDEX idx_line_conversations_account_workflow_last_message
 ON line_conversations (line_account_id, workflow_status, last_message_at);
+
+CREATE INDEX idx_line_conversations_customer_number
+ON line_conversations(json_extract(customer_metadata, '$.customerNumber'));
 
 CREATE UNIQUE INDEX idx_line_conversations_source
 ON line_conversations (COALESCE(line_account_id, ''), source_type, source_id);
@@ -1592,6 +1680,9 @@ CREATE INDEX idx_shifts_staff_date ON staff_shifts (staff_id, work_date);
 
 CREATE INDEX idx_staff_account_sort ON staff (line_account_id, sort_order);
 
+CREATE INDEX idx_staff_member_events_staff
+  ON staff_member_events(staff_id, created_at DESC);
+
 CREATE UNIQUE INDEX idx_staff_members_api_key ON staff_members(api_key);
 
 CREATE INDEX idx_staff_members_role ON staff_members(role);
@@ -1602,6 +1693,15 @@ CREATE UNIQUE INDEX idx_staff_members_slack_user_id
 
 CREATE INDEX idx_staff_presence_last_seen
   ON staff_presence(last_seen_at);
+
+CREATE INDEX idx_staff_ticket_share_events_pair
+  ON staff_ticket_share_events(staff_a_id, staff_b_id, created_at DESC);
+
+CREATE INDEX idx_staff_ticket_shares_active
+  ON staff_ticket_shares(staff_a_id, staff_b_id) WHERE removed_at IS NULL;
+
+CREATE INDEX idx_staff_ticket_shares_staff_b
+  ON staff_ticket_shares(staff_b_id, staff_a_id);
 
 CREATE INDEX idx_stripe_events_friend ON stripe_events (friend_id);
 
@@ -1634,8 +1734,14 @@ CREATE INDEX idx_support_cases_assignee
 CREATE INDEX idx_support_cases_due
   ON support_cases(due_at, status);
 
+CREATE INDEX idx_support_cases_escalation_assignee_staff
+ON support_cases(escalation_assignee_staff_id, status, updated_at DESC);
+
 CREATE INDEX idx_support_cases_friend
   ON support_cases(friend_id, updated_at);
+
+CREATE INDEX idx_support_cases_primary_assignee_staff
+ON support_cases(primary_assignee_staff_id, status, updated_at DESC);
 
 CREATE INDEX idx_support_escalations_account_status_due
   ON support_escalations(line_account_id, status, due_at);
@@ -1667,6 +1773,9 @@ CREATE INDEX idx_support_knowledge_imports_account_status
 
 CREATE INDEX idx_support_knowledge_imports_source
   ON support_knowledge_imports(source_channel_id, source_thread_ts);
+
+CREATE INDEX idx_support_knowledge_segments_import
+  ON support_knowledge_segments(knowledge_import_id, question_block_index, answer_block_index);
 
 CREATE INDEX idx_support_knowledge_source_snapshots_import
   ON support_knowledge_source_snapshots(knowledge_import_id, captured_at);
@@ -1714,10 +1823,29 @@ CREATE INDEX idx_web_push_deliveries_subscription
 CREATE INDEX idx_web_push_subscriptions_staff
   ON web_push_subscriptions(staff_id, is_active, last_seen_at);
 
+CREATE TRIGGER legacy_staff_delete_soft_disable
+BEFORE DELETE ON staff_members
+BEGIN
+  UPDATE staff_members SET is_active = 0 WHERE id = OLD.id;
+  SELECT RAISE(IGNORE);
+END;
+
 CREATE TRIGGER prevent_support_knowledge_imports_delete
 BEFORE DELETE ON support_knowledge_imports
 BEGIN
   SELECT RAISE(ABORT, 'support_knowledge_imports cannot be deleted');
+END;
+
+CREATE TRIGGER prevent_support_knowledge_segments_delete
+BEFORE DELETE ON support_knowledge_segments
+BEGIN
+  SELECT RAISE(ABORT, 'support_knowledge_segments are append-only');
+END;
+
+CREATE TRIGGER prevent_support_knowledge_segments_update
+BEFORE UPDATE ON support_knowledge_segments
+BEGIN
+  SELECT RAISE(ABORT, 'support_knowledge_segments are append-only');
 END;
 
 CREATE TRIGGER prevent_support_knowledge_source_snapshots_delete
@@ -1882,6 +2010,26 @@ BEGIN
   SELECT RAISE(ABORT, 'messages_log history is protected');
 END;
 
+CREATE TRIGGER protect_staff_member_events_delete
+BEFORE DELETE ON staff_member_events BEGIN
+  SELECT RAISE(ABORT, 'staff member events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_staff_member_events_update
+BEFORE UPDATE ON staff_member_events BEGIN
+  SELECT RAISE(ABORT, 'staff member events cannot be updated');
+END;
+
+CREATE TRIGGER protect_staff_ticket_share_events_delete
+BEFORE DELETE ON staff_ticket_share_events BEGIN
+  SELECT RAISE(ABORT, 'staff ticket share events cannot be deleted');
+END;
+
+CREATE TRIGGER protect_staff_ticket_share_events_update
+BEFORE UPDATE ON staff_ticket_share_events BEGIN
+  SELECT RAISE(ABORT, 'staff ticket share events cannot be updated');
+END;
+
 CREATE TRIGGER protect_support_case_attachments_delete
 BEFORE DELETE ON support_case_attachments
 BEGIN
@@ -1982,6 +2130,104 @@ BEGIN
   ON CONFLICT(id) DO UPDATE SET
     title = COALESCE(excluded.title, internal_conversations.title),
     updated_at = excluded.updated_at;
+END;
+
+CREATE TRIGGER trg_internal_tasks_legacy_status_sync
+AFTER UPDATE OF status ON internal_tasks
+WHEN NEW.status != OLD.status
+  AND NEW.workflow_status = OLD.workflow_status
+BEGIN
+  UPDATE internal_tasks
+  SET workflow_status = CASE NEW.status WHEN 'done' THEN 'done' ELSE 'todo' END,
+      version = version + 1
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_line_conversation_customer_events_no_delete
+BEFORE DELETE ON line_conversation_customer_events
+BEGIN
+  SELECT RAISE(ABORT, 'line conversation customer events are append-only');
+END;
+
+CREATE TRIGGER trg_line_conversation_customer_events_no_update
+BEFORE UPDATE ON line_conversation_customer_events
+BEGIN
+  SELECT RAISE(ABORT, 'line conversation customer events are append-only');
+END;
+
+CREATE TRIGGER trg_support_cases_legacy_assignee_insert
+AFTER INSERT ON support_cases
+WHEN NEW.primary_assignee_staff_id IS NULL OR NEW.escalation_assignee_staff_id IS NULL
+BEGIN
+  UPDATE support_cases
+  SET primary_assignee_staff_id = CASE
+        WHEN NEW.primary_assignee_staff_id IS NOT NULL THEN NEW.primary_assignee_staff_id
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.primary_assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.primary_assignee)
+        ELSE NULL
+      END,
+      escalation_assignee_staff_id = CASE
+        WHEN NEW.escalation_assignee_staff_id IS NOT NULL THEN NEW.escalation_assignee_staff_id
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.escalation_assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.escalation_assignee)
+        ELSE NULL
+      END
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_support_cases_legacy_escalation_assignee_update
+AFTER UPDATE OF escalation_assignee ON support_cases
+WHEN NEW.escalation_assignee IS NOT OLD.escalation_assignee
+  AND NEW.escalation_assignee_staff_id IS OLD.escalation_assignee_staff_id
+BEGIN
+  UPDATE support_cases
+  SET escalation_assignee_staff_id = CASE
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.escalation_assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.escalation_assignee)
+        ELSE NULL
+      END
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_support_cases_legacy_primary_assignee_update
+AFTER UPDATE OF primary_assignee ON support_cases
+WHEN NEW.primary_assignee IS NOT OLD.primary_assignee
+  AND NEW.primary_assignee_staff_id IS OLD.primary_assignee_staff_id
+BEGIN
+  UPDATE support_cases
+  SET primary_assignee_staff_id = CASE
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.primary_assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.primary_assignee)
+        ELSE NULL
+      END
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_support_escalations_legacy_assignee_insert
+AFTER INSERT ON support_escalations
+WHEN NEW.assignee_staff_id IS NULL
+BEGIN
+  UPDATE support_escalations
+  SET assignee_staff_id = CASE
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.assignee)
+        ELSE NULL
+      END
+  WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_support_escalations_legacy_assignee_update
+AFTER UPDATE OF assignee ON support_escalations
+WHEN NEW.assignee IS NOT OLD.assignee
+  AND NEW.assignee_staff_id IS OLD.assignee_staff_id
+BEGIN
+  UPDATE support_escalations
+  SET assignee_staff_id = CASE
+        WHEN (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = NEW.assignee) = 1
+          THEN (SELECT sm.id FROM staff_members sm WHERE sm.name = NEW.assignee)
+        ELSE NULL
+      END
+  WHERE id = NEW.id;
 END;
 
 CREATE TRIGGER trg_support_internal_messages_conversation_insert

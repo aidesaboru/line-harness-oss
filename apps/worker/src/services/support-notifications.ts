@@ -10,6 +10,9 @@ const SUPPORT_SECONDARY_ASSIGNED_EVENT = 'slack_secondary_assigned_sent';
 const SUPPORT_SECONDARY_REOPENED_EVENT = 'slack_secondary_reopened_sent';
 const SUPPORT_SECONDARY_STATE_CONFLICT_EVENT = 'slack_secondary_state_conflict';
 const SUPPORT_SLACK_NOTIFICATION_REISSUED_EVENT = 'slack_notification_reissued';
+export const SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT = 'slack_ticket_created_deleted';
+export const SUPPORT_TICKET_SLACK_NOTIFICATION_DELETE_REQUESTED_EVENT = 'slack_ticket_created_delete_requested';
+export const SUPPORT_TICKET_SLACK_NOTIFICATION_DELETE_FAILED_EVENT = 'slack_ticket_created_delete_failed';
 
 const DEFAULT_DIGEST_HOURS = [12, 14, 17];
 const DEFAULT_DUE_SOON_HOURS = 4;
@@ -168,6 +171,11 @@ export type SupportTicketSlackHealth = {
   deadLetter: number;
   sent: number;
   lastUpdatedAt: string | null;
+};
+
+export type DeleteSupportTicketSlackNotificationResult = {
+  deleted: boolean;
+  reason: 'deleted' | 'already_deleted' | 'notification_not_found' | 'token_missing' | 'channel_missing' | 'delete_failed';
 };
 
 class SlackDeliveryError extends Error {
@@ -959,6 +967,7 @@ async function addNotificationEvent(
   eventType: string,
   body: string,
   metadata: Record<string, unknown>,
+  actor: { id: string | null; name: string | null } = { id: 'system', name: 'system' },
 ): Promise<void> {
   await db
     .prepare(
@@ -970,13 +979,112 @@ async function addNotificationEvent(
       crypto.randomUUID(),
       caseId,
       eventType,
-      'system',
-      'system',
+      actor.id,
+      actor.name,
       body,
       JSON.stringify(metadata),
       jstNow(),
     )
     .run();
+}
+
+/**
+ * Removes only the Slack post for a wrongly issued ticket.
+ * The ticket, immutable outbox row, and existing support events remain untouched;
+ * a new audit event records who removed the Slack post.
+ */
+export async function deleteSupportTicketSlackNotification(
+  db: D1Database,
+  caseId: string,
+  lineAccountId: string,
+  actor: { id: string | null; name: string | null },
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<DeleteSupportTicketSlackNotificationResult> {
+  const token = runtime.slackBotToken?.trim();
+  const channelId = runtime.slackChannelId?.trim();
+  if (!token) return { deleted: false, reason: 'token_missing' };
+  if (!channelId) return { deleted: false, reason: 'channel_missing' };
+
+  const outbox = await db
+    .prepare(
+      `SELECT id, slack_message_ts, sent_at
+       FROM support_slack_notification_outbox
+       WHERE case_id = ? AND line_account_id = ?
+         AND notification_type = 'ticket_created'
+         AND status = 'sent'
+         AND slack_message_ts IS NOT NULL
+       LIMIT 1`,
+    )
+    .bind(caseId, lineAccountId)
+    .first<{ id: string; slack_message_ts: string | null; sent_at: string | null }>();
+  const messageTs = outbox?.slack_message_ts?.trim();
+  if (!outbox || !messageTs) return { deleted: false, reason: 'notification_not_found' };
+
+  const existingAuditEvent = await db
+    .prepare(
+      `SELECT id, created_at
+       FROM support_case_events
+       WHERE case_id = ? AND event_type = ?
+       ORDER BY created_at DESC
+       LIMIT 1`,
+    )
+    .bind(caseId, SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT)
+    .first<{ id: string; created_at: string }>();
+  if (existingAuditEvent && (!outbox.sent_at || existingAuditEvent.created_at >= outbox.sent_at)) {
+    return { deleted: false, reason: 'already_deleted' };
+  }
+
+  const auditMetadata = {
+    channel: 'slack',
+    channelId,
+    outboxId: outbox.id,
+    slackMessageTs: messageTs,
+    ticketPreserved: true,
+    historyPreserved: true,
+  };
+
+  // Persist intent before the irreversible external action. D1 insert failure
+  // stops here, so Slack is never changed without an audit trail. If the final
+  // event fails, a retry is safe because Slack's message_not_found is treated
+  // as successful deletion.
+  await addNotificationEvent(
+    db,
+    caseId,
+    SUPPORT_TICKET_SLACK_NOTIFICATION_DELETE_REQUESTED_EVENT,
+    'Slack通知の削除を受け付けました',
+    auditMetadata,
+    actor,
+  );
+
+  try {
+    await deleteSlackMessage(token, channelId, messageTs, runtime.deleteSlackMessage);
+  } catch (error) {
+    const failure = slackDeliveryFailure(error);
+    console.error(`support ticket Slack notification delete error: ${failure.code}`);
+    try {
+      await addNotificationEvent(
+        db,
+        caseId,
+        SUPPORT_TICKET_SLACK_NOTIFICATION_DELETE_FAILED_EVENT,
+        'Slack通知の削除に失敗しました',
+        { ...auditMetadata, errorCode: failure.code },
+        actor,
+      );
+    } catch {
+      console.error('support ticket Slack notification delete audit error: database_error');
+    }
+    return { deleted: false, reason: 'delete_failed' };
+  }
+
+  await addNotificationEvent(
+    db,
+    caseId,
+    SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT,
+    '誤発行チケットのSlack通知を削除しました',
+    auditMetadata,
+    actor,
+  );
+  return { deleted: true, reason: 'deleted' };
 }
 
 async function getCaseForNotification(

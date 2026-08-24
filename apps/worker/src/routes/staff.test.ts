@@ -9,6 +9,7 @@ const dbMocks = {
   deleteStaffMember: vi.fn(),
   regenerateStaffApiKey: vi.fn(),
   countActiveStaffByRole: vi.fn(),
+  jstNow: vi.fn(() => '2026-08-24T22:30:00.000+09:00'),
 };
 
 vi.mock('@line-crm/db', () => dbMocks);
@@ -27,17 +28,24 @@ const staffRow = {
   name: '田島',
   email: 'tajima@example.com',
   role: 'staff' as const,
+  secondary_can_respond: 0,
   api_key: 'lh_testapikey',
   is_active: 1,
   created_at: '2026-06-13T10:00:00.000',
   updated_at: '2026-06-13T10:00:00.000',
 };
 
-function setupApp(role: StaffRole = 'owner') {
+function setupApp(role: StaffRole = 'owner', dbOverride?: D1Database) {
   const app = new Hono<TestEnv>();
   app.use('*', async (c, next) => {
     c.set('staff', { id: 'owner-1', name: 'Owner', role });
-    c.env = { DB: {} as D1Database };
+    c.env = dbOverride ? { DB: dbOverride } : {
+      DB: {
+        prepare: vi.fn(() => ({
+          all: vi.fn().mockResolvedValue({ results: [] }),
+        })),
+      } as unknown as D1Database,
+    };
     await next();
   });
   app.route('/', staff);
@@ -83,8 +91,85 @@ describe('staff routes', () => {
     expect(optionsRes.status).toBe(200);
     expect(await optionsRes.json()).toEqual({
       success: true,
-      data: [{ id: 'staff-new', name: '田島', role: 'staff', isActive: true }],
+      data: [{
+        id: 'staff-new',
+        name: '田島',
+        role: 'staff',
+        secondaryCanRespond: false,
+        isActive: true,
+      }],
     });
+  });
+
+  test('owner can configure a mutual ticket share between active primary staff', async () => {
+    dbMocks.getStaffMembers.mockResolvedValue([
+      { ...staffRow, id: 'staff-a', name: '林' },
+      { ...staffRow, id: 'staff-b', name: '小野里' },
+    ]);
+    const calls: Array<{ sql: string; binds: unknown[] }> = [];
+    const batch = vi.fn().mockResolvedValue([]);
+    const db = {
+      prepare(sql: string) {
+        let binds: unknown[] = [];
+        const statement = {
+          bind(...values: unknown[]) {
+            binds = values;
+            calls.push({ sql, binds });
+            return statement;
+          },
+          all: vi.fn().mockResolvedValue({ results: [] }),
+        };
+        return statement;
+      },
+      batch,
+    } as unknown as D1Database;
+
+    const res = await setupApp('owner', db).request('/api/staff/staff-b/ticket-shares', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ peerStaffIds: ['staff-a'] }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      success: true,
+      data: { staffId: 'staff-b', peerStaffIds: ['staff-a'] },
+    });
+    expect(calls).toEqual([
+      expect.objectContaining({
+        sql: expect.stringContaining('SELECT staff_a_id, staff_b_id'),
+        binds: ['staff-b', 'staff-b'],
+      }),
+      expect.objectContaining({
+        sql: expect.stringContaining('INSERT INTO staff_ticket_shares'),
+        binds: ['staff-a', 'staff-b', 'owner-1'],
+      }),
+      expect.objectContaining({
+        sql: expect.stringContaining('INSERT INTO staff_ticket_share_events'),
+      }),
+    ]);
+    expect(batch).toHaveBeenCalledOnce();
+  });
+
+  test('ticket share rejects self assignment and non-primary peers', async () => {
+    dbMocks.getStaffMembers.mockResolvedValue([
+      { ...staffRow, id: 'staff-a', name: '林' },
+      { ...staffRow, id: 'admin-1', name: '管理者', role: 'admin' },
+    ]);
+
+    const selfRes = await setupApp().request('/api/staff/staff-a/ticket-shares', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ peerStaffIds: ['staff-a'] }),
+    });
+    expect(selfRes.status).toBe(400);
+
+    const peerRes = await setupApp().request('/api/staff/staff-a/ticket-shares', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ peerStaffIds: ['admin-1'] }),
+    });
+    expect(peerRes.status).toBe(400);
   });
 
   test('prevents management operations on the reference-only environment owner', async () => {
@@ -211,11 +296,21 @@ describe('staff routes', () => {
     });
 
     expect(res.status).toBe(201);
-    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(expect.anything(), {
-      name: '田島',
-      email: 'tajima@example.com',
-      role: 'staff',
-    });
+    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        name: '田島',
+        email: 'tajima@example.com',
+        role: 'staff',
+        secondary_can_respond: 0,
+      },
+      {
+        action: 'created',
+        metadata: { role: 'staff', secondaryCanRespond: false },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
   });
 
   test('accepts the secondary role when creating and updating members', async () => {
@@ -224,15 +319,30 @@ describe('staff routes', () => {
     const createRes = await setupApp().request('/api/staff', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: '松山', email: '', role: 'secondary' }),
+      body: JSON.stringify({
+        name: '松山',
+        email: '',
+        role: 'secondary',
+        secondaryCanRespond: true,
+      }),
     });
 
     expect(createRes.status).toBe(201);
-    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(expect.anything(), {
-      name: '松山',
-      email: null,
-      role: 'secondary',
-    });
+    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        name: '松山',
+        email: null,
+        role: 'secondary',
+        secondary_can_respond: 1,
+      },
+      {
+        action: 'created',
+        metadata: { role: 'secondary', secondaryCanRespond: true },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
 
     dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
     dbMocks.updateStaffMember.mockResolvedValue({ ...staffRow, id: 'staff-1', role: 'secondary' });
@@ -240,16 +350,30 @@ describe('staff routes', () => {
     const updateRes = await setupApp().request('/api/staff/staff-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'secondary' }),
+      body: JSON.stringify({ role: 'secondary', secondaryCanRespond: true }),
     });
 
     expect(updateRes.status).toBe(200);
-    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(expect.anything(), 'staff-1', {
-      name: undefined,
-      email: undefined,
-      role: 'secondary',
-      is_active: undefined,
-    });
+    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      {
+        name: undefined,
+        email: undefined,
+        role: 'secondary',
+        secondary_can_respond: 1,
+        is_active: undefined,
+      },
+      {
+        action: 'updated',
+        metadata: {
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
+          after: { role: 'secondary', isActive: true, secondaryCanRespond: true },
+        },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
   });
 
   test('rejects blank staff names when updating members', async () => {
@@ -303,12 +427,53 @@ describe('staff routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(expect.anything(), 'staff-1', {
-      name: '一次担当',
-      email: null,
-      role: undefined,
-      is_active: undefined,
+    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      {
+        name: '一次担当',
+        email: null,
+        role: undefined,
+        secondary_can_respond: undefined,
+        is_active: undefined,
+      },
+      {
+        action: 'updated',
+        metadata: {
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
+          after: { role: 'staff', isActive: true, secondaryCanRespond: false },
+        },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
+  });
+
+  test('marks PATCH deactivation as a disabled audit event', async () => {
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    dbMocks.updateStaffMember.mockResolvedValue({ ...staffRow, id: 'staff-1', is_active: 0 });
+
+    const res = await setupApp().request('/api/staff/staff-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isActive: false }),
     });
+
+    expect(res.status).toBe(200);
+    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      expect.objectContaining({ is_active: 0 }),
+      {
+        action: 'disabled',
+        metadata: {
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
+          after: { role: 'staff', isActive: false, secondaryCanRespond: false },
+        },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
   });
 
   test('update failure logs only the error kind', async () => {
@@ -376,11 +541,28 @@ describe('staff routes', () => {
 
     const deleteRes = await setupApp().request('/api/staff/%20staff-1%20', { method: 'DELETE' });
     expect(deleteRes.status).toBe(200);
-    expect(dbMocks.deleteStaffMember).toHaveBeenCalledWith(expect.anything(), 'staff-1');
+    expect(dbMocks.deleteStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      {
+        action: 'disabled',
+        metadata: { reason: 'legacy_delete_endpoint' },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
 
     const regenerateRes = await setupApp().request('/api/staff/%20staff-1%20/regenerate-key', { method: 'POST' });
     expect(regenerateRes.status).toBe(200);
-    expect(dbMocks.regenerateStaffApiKey).toHaveBeenCalledWith(expect.anything(), 'staff-1');
+    expect(dbMocks.regenerateStaffApiKey).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      {
+        action: 'api_key_regenerated',
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
   });
 
   test('regenerate-key failure logs only the error kind', async () => {

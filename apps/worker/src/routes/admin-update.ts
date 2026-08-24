@@ -1,8 +1,10 @@
 /**
  * Self-update HTTP API — Phase 5 Task 18.
  *
- * Mounted at `/admin/update` from `index.ts`. Every endpoint is guarded by an
- * `x-admin-api-key` header check that must equal `c.env.ADMIN_API_KEY`. The
+ * Mounted at both `/api/admin/update` (normal signed-in admin sessions) and
+ * the legacy `/admin/update` path (server-to-server API-key clients). Every
+ * endpoint requires either an owner/admin session or a matching
+ * `x-admin-api-key` header. The
  * sibling `/admin/version` route is intentionally UN-authenticated (the
  * upgrade banner reads it pre-login) — that route lives in `admin-version.ts`
  * and is mounted at `/admin` directly. The per-router middleware here only
@@ -65,6 +67,14 @@ import {
  * onto the global Bindings type.
  */
 type UpdateEnv = {
+  Variables: {
+    staff?: {
+      id: string;
+      name: string;
+      role: 'owner' | 'admin' | 'staff' | 'secondary';
+      secondaryCanRespond?: boolean;
+    };
+  };
   Bindings: {
     DB: D1Database;
     ADMIN_API_KEY: string;
@@ -194,10 +204,15 @@ function rollbackContext(
   };
 }
 
-/** Auth gate — single source of truth for every endpoint in this router. */
+/** Auth gate — browser sessions first, API key only for legacy automation. */
 app.use('/*', async (c, next) => {
+  const staff = c.get('staff');
+  if (staff?.role === 'owner' || staff?.role === 'admin') {
+    await next();
+    return;
+  }
   const key = c.req.header('x-admin-api-key');
-  if (!key || key !== c.env.ADMIN_API_KEY) {
+  if (!key || !c.env.ADMIN_API_KEY || key !== c.env.ADMIN_API_KEY) {
     return c.text('unauthorized', 401);
   }
   await next();

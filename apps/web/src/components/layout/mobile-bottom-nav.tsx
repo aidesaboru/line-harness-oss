@@ -8,6 +8,11 @@ import { canShowSidebarItem } from './sidebar-access'
 
 const mobileItems = [
   {
+    href: '/sales-customers',
+    label: '顧客状況',
+    icon: 'M4 6h16M4 12h16M4 18h10m3-3 3 3m0 0-3 3m3-3H14',
+  },
+  {
     href: '/chats',
     label: '個別',
     icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 0 1-4.255-.949L3 20l1.395-3.72A7.4 7.4 0 0 1 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z',
@@ -31,21 +36,25 @@ const mobileItems = [
 
 export default function MobileBottomNav() {
   const pathname = usePathname()
-  const [staffIdentity, setStaffIdentity] = useState<{ ready: boolean; role: string; name: string }>({
+  const [staffIdentity, setStaffIdentity] = useState<{ ready: boolean; role: string; name: string; salesOnly: boolean }>({
     ready: false,
     role: '',
     name: '',
+    salesOnly: false,
   })
 
   useEffect(() => {
     const identity = readStaffIdentityCache()
-    setStaffIdentity({ ready: true, role: identity.role, name: identity.name })
+    setStaffIdentity({ ready: true, role: identity.role, name: identity.name, salesOnly: identity.salesOnly })
   }, [])
 
   if (!staffIdentity.ready) return null
 
   const visibleItems = mobileItems.filter((item) => (
-    canShowSidebarItem(item.href, staffIdentity.role, { staffName: staffIdentity.name })
+    canShowSidebarItem(item.href, staffIdentity.role, {
+      staffName: staffIdentity.name,
+      salesOnly: staffIdentity.salesOnly,
+    })
   ))
 
   return (

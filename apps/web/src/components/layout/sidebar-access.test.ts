@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canAccessSidebarRoute, canShowSidebarItem } from './sidebar-access'
+import { canAccessSidebarRoute, canShowSidebarItem, defaultSidebarHrefForRole } from './sidebar-access'
 
 describe('sidebar role access', () => {
   it('keeps staff focused on support work only', () => {
@@ -119,5 +119,18 @@ describe('sidebar role access', () => {
     expect(canAccessSidebarRoute('/accounts/account-1', 'admin')).toBe(false)
     expect(canAccessSidebarRoute('/emergency', 'owner')).toBe(true)
     expect(canAccessSidebarRoute('/emergency', 'admin')).toBe(false)
+  })
+
+  it('restricts sales viewers to the customer status surface', () => {
+    const context = { staffName: '営業担当', salesOnly: true }
+    expect(canShowSidebarItem('/sales-customers', 'staff', context)).toBe(true)
+    expect(canShowSidebarItem('/support', 'staff', context)).toBe(false)
+    expect(canShowSidebarItem('/chats', 'staff', context)).toBe(false)
+    expect(canShowSidebarItem('/friends', 'staff', context)).toBe(false)
+    expect(canAccessSidebarRoute('/sales-customers', 'staff', context)).toBe(true)
+    expect(canAccessSidebarRoute('/sales-customers/friend-1', 'staff', context)).toBe(true)
+    expect(canAccessSidebarRoute('/support', 'staff', context)).toBe(false)
+    expect(canAccessSidebarRoute('/', 'staff', context)).toBe(false)
+    expect(defaultSidebarHrefForRole('staff', context)).toBe('/sales-customers')
   })
 })

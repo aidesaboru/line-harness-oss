@@ -93,8 +93,9 @@
     "085_internal_task_workflow.sql",
     "086_support_assignee_staff_ids.sql",
     "087_line_conversation_customer_events.sql",
-    "088_support_case_routing_mutation.sql"
+    "088_support_case_routing_mutation.sql",
+    "089_sales_customer_status.sql"
   ],
-  "migrationCount": 94,
+  "migrationCount": 95,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

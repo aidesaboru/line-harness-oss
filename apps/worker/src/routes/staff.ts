@@ -34,12 +34,14 @@ type StaffCreateInput = {
   email: string | null;
   role: StaffRole;
   secondaryCanRespond: boolean;
+  salesOnly: boolean;
 };
 type StaffUpdateInput = {
   name?: string;
   email?: string | null;
   role?: StaffRole;
   secondaryCanRespond?: boolean;
+  salesOnly?: boolean;
   isActive?: boolean;
 };
 type StaffPresenceRow = {
@@ -64,6 +66,7 @@ function serializeStaff(row: StaffMember, masked = true, ticketShareStaffIds: st
     email: row.email,
     role: row.role,
     secondaryCanRespond: Boolean(row.secondary_can_respond),
+    salesOnly: Boolean(row.sales_only),
     apiKey: masked ? maskApiKey(row.api_key) : row.api_key,
     isActive: Boolean(row.is_active),
     createdAt: row.created_at,
@@ -167,13 +170,21 @@ function parseStaffCreateInput(body: Record<string, unknown>): ValueResult<Staff
   if (!email.ok) return email;
   const role = parseStaffRole(body.role);
   if (!role.ok) return role;
+  const secondaryCanRespond = parseOptionalBoolean(body.secondaryCanRespond, 'secondary_can_respond');
+  if (!secondaryCanRespond.ok) return secondaryCanRespond;
+  const salesOnly = parseOptionalBoolean(body.salesOnly, 'sales_only');
+  if (!salesOnly.ok) return salesOnly;
+  if (salesOnly.value === true && role.value !== 'staff') {
+    return { ok: false, error: 'sales_only requires staff role' };
+  }
   return {
     ok: true,
     value: {
       name: name.value,
       email: email.value ?? null,
       role: role.value,
-      secondaryCanRespond: body.secondaryCanRespond === true,
+      secondaryCanRespond: secondaryCanRespond.value === true,
+      salesOnly: salesOnly.value === true,
     },
   };
 }
@@ -205,6 +216,11 @@ function parseStaffUpdateInput(body: Record<string, unknown>): ValueResult<Staff
     const secondaryCanRespond = parseOptionalBoolean(body.secondaryCanRespond, 'secondary_can_respond');
     if (!secondaryCanRespond.ok) return secondaryCanRespond;
     input.secondaryCanRespond = secondaryCanRespond.value;
+  }
+  if (hasOwn(body, 'salesOnly')) {
+    const salesOnly = parseOptionalBoolean(body.salesOnly, 'sales_only');
+    if (!salesOnly.ok) return salesOnly;
+    input.salesOnly = salesOnly.value;
   }
 
   if (Object.keys(input).length === 0) return { ok: false, error: 'invalid_payload' };
@@ -248,6 +264,7 @@ staff.get('/api/staff/me', async (c) => {
           name: ENV_OWNER_DISPLAY_NAME,
           role: 'owner',
           secondaryCanRespond: true,
+          salesOnly: false,
           email: null,
         },
       });
@@ -265,6 +282,7 @@ staff.get('/api/staff/me', async (c) => {
         name: member.name,
         role: member.role,
         secondaryCanRespond: Boolean(member.secondary_can_respond),
+        salesOnly: Boolean(member.sales_only),
         email: member.email,
       },
     });
@@ -316,7 +334,7 @@ staff.put('/api/staff/:id/ticket-shares', requireRole('owner'), async (c) => {
     const members = await getStaffMembers(c.env.DB);
     const activePrimaryStaffIds = new Set(
       members
-        .filter((member) => member.role === 'staff' && Boolean(member.is_active))
+        .filter((member) => member.role === 'staff' && !Boolean(member.sales_only) && Boolean(member.is_active))
         .map((member) => member.id),
     );
     if (!activePrimaryStaffIds.has(id.value)) {
@@ -403,7 +421,7 @@ staff.get('/api/staff/assignee-options', async (c) => {
     return c.json({
       success: true,
       data: members
-        .filter((m) => Boolean(m.is_active))
+        .filter((m) => Boolean(m.is_active) && !Boolean(m.sales_only))
         .map((m) => ({
           id: m.id,
           name: m.name,
@@ -580,18 +598,21 @@ staff.post('/api/staff', requireRole('owner'), async (c) => {
     const body = parseStaffCreateInput(rawBody.value);
     if (!body.ok) return c.json({ success: false, error: body.error }, 400);
 
-    const secondaryCanRespond = body.value.role === 'secondary' && body.value.secondaryCanRespond;
+    const salesOnly = body.value.role === 'staff' && body.value.salesOnly;
+    const secondaryCanRespond = !salesOnly && body.value.role === 'secondary' && body.value.secondaryCanRespond;
     const actor = c.get('staff');
     const member = await createStaffMember(c.env.DB, {
       name: body.value.name,
       email: body.value.email,
       role: body.value.role,
       secondary_can_respond: secondaryCanRespond ? 1 : 0,
+      sales_only: salesOnly ? 1 : 0,
     }, {
       action: 'created',
       metadata: {
         role: body.value.role,
         secondaryCanRespond,
+        salesOnly,
       },
       actorId: isEnvironmentOwnerId(actor.id) ? null : actor.id,
       actorName: actor.name,
@@ -635,20 +656,33 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
       }
     }
 
+    const nextRole = body.value.role ?? target.role;
+    if (body.value.salesOnly === true && nextRole !== 'staff') {
+      return c.json({ success: false, error: '営業閲覧は一次対応ロールでのみ設定できます' }, 400);
+    }
+    const requestedSalesOnly = nextRole === 'staff' && (
+      body.value.salesOnly !== undefined ? body.value.salesOnly : Boolean(target.sales_only)
+    );
+    const requestedSecondaryCanRespond = nextRole === 'secondary' && !requestedSalesOnly && (
+      body.value.secondaryCanRespond !== undefined
+        ? body.value.secondaryCanRespond
+        : Boolean(target.secondary_can_respond)
+    );
     const updateInput = {
       name: body.value.name,
       email: body.value.email,
       role: body.value.role,
-      secondary_can_respond: body.value.role !== undefined && body.value.role !== 'secondary'
-        ? 0
-        : body.value.secondaryCanRespond !== undefined
-          ? (body.value.secondaryCanRespond ? 1 : 0)
-          : undefined,
+      secondary_can_respond: body.value.role !== undefined || body.value.secondaryCanRespond !== undefined || requestedSalesOnly
+        ? (requestedSecondaryCanRespond ? 1 : 0)
+        : undefined,
+      sales_only: body.value.role !== undefined || body.value.salesOnly !== undefined
+        ? (requestedSalesOnly ? 1 : 0)
+        : undefined,
       is_active: body.value.isActive !== undefined ? (body.value.isActive ? 1 : 0) : undefined,
     };
-    const nextRole = updateInput.role ?? target.role;
     const nextIsActive = updateInput.is_active ?? target.is_active;
     const nextSecondaryCanRespond = updateInput.secondary_can_respond ?? target.secondary_can_respond;
+    const nextSalesOnly = updateInput.sales_only ?? target.sales_only;
     const actor = c.get('staff');
     const action = target.is_active !== nextIsActive
       ? (nextIsActive === 1 ? 'enabled' : 'disabled')
@@ -662,11 +696,13 @@ staff.patch('/api/staff/:id', requireRole('owner'), async (c) => {
             role: target.role,
             isActive: Boolean(target.is_active),
             secondaryCanRespond: Boolean(target.secondary_can_respond),
+            salesOnly: Boolean(target.sales_only),
           },
           after: {
             role: nextRole,
             isActive: Boolean(nextIsActive),
             secondaryCanRespond: Boolean(nextSecondaryCanRespond),
+            salesOnly: Boolean(nextSalesOnly),
           },
         },
         actorId: isEnvironmentOwnerId(actor.id) ? null : actor.id,

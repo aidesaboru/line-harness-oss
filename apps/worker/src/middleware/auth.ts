@@ -90,7 +90,21 @@ export type AuthenticatedStaff = {
   name: string;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
   secondaryCanRespond: boolean;
+  salesOnly: boolean;
 };
+
+const SALES_ONLY_ALLOWED_API_ROUTES = new Set([
+  'GET /api/auth/session',
+  'GET /api/staff/me',
+  'GET /api/sales-customers/accounts',
+  'GET /api/sales-customers',
+  'POST /api/staff/presence/heartbeat',
+]);
+
+function canSalesOnlyAccess(method: string, path: string): boolean {
+  if (SALES_ONLY_ALLOWED_API_ROUTES.has(`${method} ${path}`)) return true;
+  return method === 'GET' && /^\/api\/sales-customers\/(friend|conversation)\/[^/]+$/.test(path);
+}
 
 /**
  * Resolve a token (from a Bearer header or the session cookie) to a staff
@@ -110,12 +124,13 @@ export async function authenticateApiToken(
       name: staff.name,
       role: staff.role,
       secondaryCanRespond: Boolean(staff.secondary_can_respond),
+      salesOnly: Boolean(staff.sales_only),
     };
   }
 
   // Fallback: env API_KEY acts as owner (current rotation slot)
   if (token === c.env.API_KEY) {
-    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true, salesOnly: false };
   }
 
   // Legacy fallback: LEGACY_API_KEY accepted during rotation grace period.
@@ -129,7 +144,7 @@ export async function authenticateApiToken(
     token === c.env.LEGACY_API_KEY
   ) {
     console.log('[auth] accept_via=LEGACY_API_KEY');
-    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true };
+    return { id: 'env-owner', name: ENV_OWNER_DISPLAY_NAME, role: 'owner', secondaryCanRespond: true, salesOnly: false };
   }
 
   return null;
@@ -207,5 +222,8 @@ export async function authMiddleware(c: Context<Env>, next: Next): Promise<Respo
   }
 
   c.set('staff', staff);
+  if (staff.salesOnly && !canSalesOnlyAccess(method, path)) {
+    return c.json({ success: false, error: '営業閲覧アカウントではこの操作を利用できません' }, 403);
+  }
   return next();
 }

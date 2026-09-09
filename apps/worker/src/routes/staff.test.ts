@@ -29,6 +29,7 @@ const staffRow = {
   email: 'tajima@example.com',
   role: 'staff' as const,
   secondary_can_respond: 0,
+  sales_only: 0,
   api_key: 'lh_testapikey',
   is_active: 1,
   created_at: '2026-06-13T10:00:00.000',
@@ -303,10 +304,11 @@ describe('staff routes', () => {
         email: 'tajima@example.com',
         role: 'staff',
         secondary_can_respond: 0,
+        sales_only: 0,
       },
       {
         action: 'created',
-        metadata: { role: 'staff', secondaryCanRespond: false },
+        metadata: { role: 'staff', secondaryCanRespond: false, salesOnly: false },
         actorId: 'owner-1',
         actorName: 'Owner',
       },
@@ -335,10 +337,11 @@ describe('staff routes', () => {
         email: null,
         role: 'secondary',
         secondary_can_respond: 1,
+        sales_only: 0,
       },
       {
         action: 'created',
-        metadata: { role: 'secondary', secondaryCanRespond: true },
+        metadata: { role: 'secondary', secondaryCanRespond: true, salesOnly: false },
         actorId: 'owner-1',
         actorName: 'Owner',
       },
@@ -362,18 +365,115 @@ describe('staff routes', () => {
         email: undefined,
         role: 'secondary',
         secondary_can_respond: 1,
+        sales_only: 0,
         is_active: undefined,
       },
       {
         action: 'updated',
         metadata: {
-          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
-          after: { role: 'secondary', isActive: true, secondaryCanRespond: true },
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: false },
+          after: { role: 'secondary', isActive: true, secondaryCanRespond: true, salesOnly: false },
         },
         actorId: 'owner-1',
         actorName: 'Owner',
       },
     );
+  });
+
+  test('creates and updates sales viewers as restricted staff accounts', async () => {
+    dbMocks.createStaffMember.mockResolvedValue({ ...staffRow, sales_only: 1 });
+
+    const createRes = await setupApp().request('/api/staff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: '営業担当',
+        role: 'staff',
+        salesOnly: true,
+      }),
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(dbMocks.createStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        name: '営業担当',
+        email: null,
+        role: 'staff',
+        secondary_can_respond: 0,
+        sales_only: 1,
+      },
+      {
+        action: 'created',
+        metadata: { role: 'staff', secondaryCanRespond: false, salesOnly: true },
+        actorId: 'owner-1',
+        actorName: 'Owner',
+      },
+    );
+
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    dbMocks.updateStaffMember.mockResolvedValue({ ...staffRow, id: 'staff-1', sales_only: 1 });
+    const updateRes = await setupApp().request('/api/staff/staff-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'staff', salesOnly: true }),
+    });
+
+    expect(updateRes.status).toBe(200);
+    expect(dbMocks.updateStaffMember).toHaveBeenCalledWith(
+      expect.anything(),
+      'staff-1',
+      expect.objectContaining({
+        role: 'staff',
+        secondary_can_respond: 0,
+        sales_only: 1,
+      }),
+      expect.objectContaining({
+        metadata: {
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: false },
+          after: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: true },
+        },
+      }),
+    );
+  });
+
+  test('rejects sales-only permission on non-primary roles', async () => {
+    const createRes = await setupApp().request('/api/staff', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: '営業管理者', role: 'admin', salesOnly: true }),
+    });
+    expect(createRes.status).toBe(400);
+    expect(dbMocks.createStaffMember).not.toHaveBeenCalled();
+
+    dbMocks.getStaffById.mockResolvedValue({ ...staffRow, id: 'staff-1' });
+    const updateRes = await setupApp().request('/api/staff/staff-1', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'admin', salesOnly: true }),
+    });
+    expect(updateRes.status).toBe(400);
+    expect(dbMocks.updateStaffMember).not.toHaveBeenCalled();
+  });
+
+  test('excludes sales viewers from support assignee and ticket-share candidates', async () => {
+    dbMocks.getStaffMembers.mockResolvedValue([
+      { ...staffRow, id: 'staff-a', name: '一次担当' },
+      { ...staffRow, id: 'sales-a', name: '営業担当', sales_only: 1 },
+    ]);
+
+    const optionsRes = await setupApp().request('/api/staff/assignee-options');
+    expect(optionsRes.status).toBe(200);
+    expect(await optionsRes.json()).toMatchObject({
+      data: [{ id: 'staff-a' }],
+    });
+
+    const shareRes = await setupApp().request('/api/staff/staff-a/ticket-shares', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ peerStaffIds: ['sales-a'] }),
+    });
+    expect(shareRes.status).toBe(400);
   });
 
   test('rejects blank staff names when updating members', async () => {
@@ -435,13 +535,14 @@ describe('staff routes', () => {
         email: null,
         role: undefined,
         secondary_can_respond: undefined,
+        sales_only: undefined,
         is_active: undefined,
       },
       {
         action: 'updated',
         metadata: {
-          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
-          after: { role: 'staff', isActive: true, secondaryCanRespond: false },
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: false },
+          after: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: false },
         },
         actorId: 'owner-1',
         actorName: 'Owner',
@@ -467,8 +568,8 @@ describe('staff routes', () => {
       {
         action: 'disabled',
         metadata: {
-          before: { role: 'staff', isActive: true, secondaryCanRespond: false },
-          after: { role: 'staff', isActive: false, secondaryCanRespond: false },
+          before: { role: 'staff', isActive: true, secondaryCanRespond: false, salesOnly: false },
+          after: { role: 'staff', isActive: false, secondaryCanRespond: false, salesOnly: false },
         },
         actorId: 'owner-1',
         actorName: 'Owner',

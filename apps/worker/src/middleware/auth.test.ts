@@ -9,8 +9,13 @@ import type { Env } from '../index.js';
 
 vi.mock('@line-crm/db', () => ({
   getStaffByApiKey: vi.fn(async (_db: unknown, token: string) => {
-    if (token !== 'staff-key') return null;
-    return { id: 'staff-1', name: 'Staff One', role: 'admin' };
+    if (token === 'staff-key') {
+      return { id: 'staff-1', name: 'Staff One', role: 'admin', sales_only: 0 };
+    }
+    if (token === 'sales-key') {
+      return { id: 'sales-1', name: 'Sales One', role: 'staff', sales_only: 1 };
+    }
+    return null;
   }),
 }));
 
@@ -51,6 +56,12 @@ function app() {
   a.delete('/api/forms/:id', (c) => c.json({ success: true, data: { id: c.req.param('id') } }));
   a.post('/api/forms/:id/submit', (c) => c.json({ success: true, data: { id: c.req.param('id') } }, 201));
   a.get('/api/rich-menu-images/:key{.+}', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.get('/api/staff/me', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.post('/api/staff/presence/heartbeat', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.get('/api/sales-customers/accounts', (c) => c.json({ success: true, data: [] }));
+  a.get('/api/sales-customers', (c) => c.json({ success: true, data: [] }));
+  a.get('/api/sales-customers/:subjectKind/:subjectId', (c) => c.json({ success: true, data: c.get('staff') }));
+  a.patch('/api/sales-customers/:subjectKind/:subjectId/status', (c) => c.json({ success: true, data: c.get('staff') }));
   a.get('/api/rich-menu-groups/external/:id/image', requireRole('owner', 'admin'), (c) =>
     c.json({ success: true, data: c.get('staff') }));
   return a;
@@ -161,6 +172,44 @@ describe('protected API access', () => {
       headers: { Cookie: 'lh_admin_session=%; other=%E0%A4%A' },
     }, crossSiteEnv());
     expect(res.status).toBe(401);
+  });
+
+  test('restricts sales-only credentials to the dedicated read surface', async () => {
+    const allowedPaths = [
+      '/api/auth/session',
+      '/api/staff/me',
+      '/api/sales-customers/accounts',
+      '/api/sales-customers?lineAccountId=account-1',
+      '/api/sales-customers/friend/friend-1',
+      '/api/sales-customers/conversation/conversation-1',
+    ];
+    for (const path of allowedPaths) {
+      const response = await app().request(path, {
+        headers: { Authorization: 'Bearer sales-key' },
+      }, crossSiteEnv());
+      expect(response.status, path).toBe(200);
+    }
+
+    const deniedPaths: Array<[string, string]> = [
+      ['GET', '/api/protected'],
+      ['PATCH', '/api/sales-customers/friend/friend-1/status'],
+      ['GET', '/api/sales-customers/friend/friend-1/extra'],
+    ];
+    for (const [method, path] of deniedPaths) {
+      const response = await app().request(path, {
+        method,
+        headers: { Authorization: 'Bearer sales-key' },
+      }, crossSiteEnv());
+      expect(response.status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  test('allows sales-only presence heartbeat without widening other writes', async () => {
+    const response = await app().request('/api/staff/presence/heartbeat', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer sales-key' },
+    }, crossSiteEnv());
+    expect(response.status).toBe(200);
   });
 });
 

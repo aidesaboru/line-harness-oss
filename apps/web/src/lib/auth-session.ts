@@ -2,10 +2,12 @@ export const LEGACY_API_KEY_STORAGE_KEY = 'lh_api_key'
 export const CSRF_STORAGE_KEY = 'lh_csrf'
 export const STAFF_NAME_STORAGE_KEY = 'lh_staff_name'
 export const STAFF_ROLE_STORAGE_KEY = 'lh_staff_role'
+export const STAFF_SALES_ONLY_STORAGE_KEY = 'lh_staff_sales_only'
 
 export type StaffIdentityCache = {
   name: string
   role: string
+  salesOnly: boolean
 }
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
@@ -40,10 +42,11 @@ export function isUsableStaffIdentity(input: {
 }
 
 export function readStaffIdentityCache(storage: StorageLike | null = getBrowserStorage()): StaffIdentityCache {
-  if (!storage) return { name: '', role: '' }
+  if (!storage) return { name: '', role: '', salesOnly: false }
   return {
     name: normalizeStorageValue(storage.getItem(STAFF_NAME_STORAGE_KEY)),
     role: normalizeStorageValue(storage.getItem(STAFF_ROLE_STORAGE_KEY)),
+    salesOnly: storage.getItem(STAFF_SALES_ONLY_STORAGE_KEY) === '1',
   }
 }
 
@@ -52,6 +55,7 @@ export function cacheStaffSession(
     name?: string | null
     role?: string | null
     csrfToken?: string | null
+    salesOnly?: boolean | null
   },
   storage: StorageLike | null = getBrowserStorage(),
 ): void {
@@ -59,6 +63,10 @@ export function cacheStaffSession(
   storage.removeItem(LEGACY_API_KEY_STORAGE_KEY)
   setOrRemove(storage, STAFF_NAME_STORAGE_KEY, input.name)
   setOrRemove(storage, STAFF_ROLE_STORAGE_KEY, input.role)
+  if ('salesOnly' in input) {
+    if (input.salesOnly === true) storage.setItem(STAFF_SALES_ONLY_STORAGE_KEY, '1')
+    else storage.removeItem(STAFF_SALES_ONLY_STORAGE_KEY)
+  }
   if ('csrfToken' in input) setOrRemove(storage, CSRF_STORAGE_KEY, input.csrfToken)
 }
 
@@ -66,6 +74,7 @@ export function clearStaffIdentityCache(storage: StorageLike | null = getBrowser
   if (!storage) return
   storage.removeItem(STAFF_NAME_STORAGE_KEY)
   storage.removeItem(STAFF_ROLE_STORAGE_KEY)
+  storage.removeItem(STAFF_SALES_ONLY_STORAGE_KEY)
 }
 
 export function clearAuthSessionCache(storage: StorageLike | null = getBrowserStorage()): void {

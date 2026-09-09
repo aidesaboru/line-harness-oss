@@ -8,6 +8,7 @@ export interface StaffMember {
   email: string | null;
   role: StaffRole;
   secondary_can_respond: number;
+  sales_only: number;
   api_key: string;
   is_active: number;
   created_at: string;
@@ -19,6 +20,7 @@ export interface CreateStaffInput {
   email?: string | null;
   role: StaffRole;
   secondary_can_respond?: number;
+  sales_only?: number;
 }
 
 export interface UpdateStaffInput {
@@ -26,6 +28,7 @@ export interface UpdateStaffInput {
   email?: string | null;
   role?: StaffRole;
   secondary_can_respond?: number;
+  sales_only?: number;
   is_active?: number;
 }
 
@@ -103,16 +106,16 @@ export async function createStaffMember(
   await db.batch([
     db.prepare(
       `INSERT INTO staff_members (
-         id, name, email, role, secondary_can_respond, api_key, is_active, created_at, updated_at
+         id, name, email, role, secondary_can_respond, sales_only, api_key, is_active, created_at, updated_at
        )
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-    )
-    .bind(
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+    ).bind(
       id,
       input.name,
       input.email ?? null,
       input.role,
       input.role === 'secondary' ? (input.secondary_can_respond ?? 0) : 0,
+      input.role === 'staff' ? (input.sales_only ?? 0) : 0,
       apiKey,
       now,
       now,
@@ -142,6 +145,10 @@ export async function updateStaffMember(
   if (input.secondary_can_respond !== undefined) {
     sets.push('secondary_can_respond = ?');
     values.push(input.secondary_can_respond);
+  }
+  if (input.sales_only !== undefined) {
+    sets.push('sales_only = ?');
+    values.push(input.sales_only);
   }
   if (input.is_active !== undefined) { sets.push('is_active = ?'); values.push(input.is_active); }
 

@@ -855,6 +855,7 @@ export interface StaffMember {
   email: string | null;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
   secondaryCanRespond?: boolean;
+  salesOnly?: boolean;
   apiKey: string;
   isActive: boolean;
   createdAt: string;
@@ -867,6 +868,7 @@ export interface StaffProfile {
   name: string;
   role: 'owner' | 'admin' | 'staff' | 'secondary';
   secondaryCanRespond?: boolean;
+  salesOnly?: boolean;
   email: string | null;
 }
 

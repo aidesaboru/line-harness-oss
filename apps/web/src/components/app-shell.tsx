@@ -9,6 +9,19 @@ import StaffPresenceHeartbeat from './staff-presence-heartbeat'
 import { AccountProvider } from '@/contexts/account-context'
 import MobileBottomNav from './layout/mobile-bottom-nav'
 import PwaRuntime from './pwa/pwa-runtime'
+import { readStaffIdentityCache } from '@/lib/auth-session'
+
+function AppRuntime() {
+  const { salesOnly } = readStaffIdentityCache()
+  return (
+    <>
+      <PwaRuntime />
+      {!salesOnly && <AppNotifier />}
+      <StaffPresenceHeartbeat />
+      {!salesOnly && <UpdateBanner />}
+    </>
+  )
+}
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
@@ -24,13 +37,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <StaffRouteGuard>
         <AccountProvider>
           <div className="flex min-h-[100dvh] flex-col">
-            <PwaRuntime />
-            <AppNotifier />
-            <StaffPresenceHeartbeat />
-            {/* Phase 6: banner above sidebar+header so it pins to the top of the
-                admin shell. Renders nothing while loading; one of latest/fork/
-                upgrade once /admin/version + manifest resolve. */}
-            <UpdateBanner />
+            <AppRuntime />
             <div className="flex flex-1 min-h-0">
               <Sidebar />
               <main className={`min-w-0 flex-1 pb-[calc(64px_+_env(safe-area-inset-bottom))] pt-[calc(64px_+_env(safe-area-inset-top))] lg:pb-0 lg:pt-0 ${isMobileWorkspace ? 'overflow-hidden' : 'overflow-auto'}`}>

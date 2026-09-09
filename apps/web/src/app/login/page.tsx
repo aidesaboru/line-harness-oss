@@ -28,17 +28,23 @@ export default function LoginPage() {
       })
 
       if (res.ok) {
+        let destination = '/'
         try {
           const loginData = await res.json()
+          const salesOnly = loginData.success && loginData.data
+            ? loginData.data.salesOnly === true
+            : false
           cacheStaffSession({
             name: loginData.success && loginData.data ? loginData.data.name : null,
             role: loginData.success && loginData.data ? loginData.data.role : null,
+            salesOnly,
             csrfToken: loginData.csrfToken,
           })
+          if (salesOnly) destination = '/sales-customers'
         } catch {
           // Profile / CSRF caching is best-effort.
         }
-        router.push('/')
+        router.push(destination)
       } else if (res.status === 401) {
         setError('APIキーが正しくありません')
       } else {

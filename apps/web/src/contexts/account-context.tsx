@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import type { ReactNode } from 'react'
 import { api } from '@/lib/api'
+import { readStaffIdentityCache } from '@/lib/auth-session'
 
 const STORAGE_KEY = 'lh_selected_account'
 
@@ -52,7 +53,10 @@ export function AccountProvider({ children }: { children: ReactNode }) {
 
   const refreshAccounts = useCallback(async () => {
     try {
-      const res = await api.lineAccounts.list()
+      const identity = readStaffIdentityCache()
+      const res = identity.salesOnly
+        ? await api.salesCustomers.accounts()
+        : await api.lineAccounts.list()
       if (res.success && res.data.length > 0) {
         const list = res.data as AccountWithStats[]
         setAccounts(list)

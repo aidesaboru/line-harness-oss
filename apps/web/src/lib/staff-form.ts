@@ -1,5 +1,5 @@
 export type StaffCreateRole = 'admin' | 'staff' | 'secondary'
-export type StaffAccessSelection = 'admin' | 'staff' | 'secondary_viewer' | 'secondary_responder'
+export type StaffAccessSelection = 'admin' | 'staff' | 'sales_viewer' | 'secondary_viewer' | 'secondary_responder'
 
 export type StaffCreateFormInput = {
   name: string
@@ -12,6 +12,7 @@ export type StaffCreatePayload = {
   role: StaffCreateRole
   email?: string
   secondaryCanRespond?: boolean
+  salesOnly?: boolean
 }
 
 export type StaffCreateValidationResult =
@@ -51,7 +52,9 @@ export function buildStaffCreatePayload(input: StaffCreateFormInput): StaffCreat
 export function staffAccessSelection(
   role: StaffCreateRole | 'owner',
   secondaryCanRespond: boolean,
+  salesOnly = false,
 ): StaffAccessSelection | 'owner' {
+  if (role === 'staff' && salesOnly) return 'sales_viewer'
   if (role === 'secondary') {
     return secondaryCanRespond ? 'secondary_responder' : 'secondary_viewer'
   }
@@ -61,14 +64,18 @@ export function staffAccessSelection(
 export function staffAccessUpdatePayload(selection: StaffAccessSelection): {
   role: StaffCreateRole
   secondaryCanRespond: boolean
+  salesOnly: boolean
 } {
+  if (selection === 'sales_viewer') {
+    return { role: 'staff', secondaryCanRespond: false, salesOnly: true }
+  }
   if (selection === 'secondary_viewer') {
-    return { role: 'secondary', secondaryCanRespond: false }
+    return { role: 'secondary', secondaryCanRespond: false, salesOnly: false }
   }
   if (selection === 'secondary_responder') {
-    return { role: 'secondary', secondaryCanRespond: true }
+    return { role: 'secondary', secondaryCanRespond: true, salesOnly: false }
   }
-  return { role: selection, secondaryCanRespond: false }
+  return { role: selection, secondaryCanRespond: false, salesOnly: false }
 }
 
 export function staffOperationFailureMessage(operation: StaffOperationFailure): string {

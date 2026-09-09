@@ -84,6 +84,7 @@ import {
 import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 import { updateHistory } from './routes/update-history.js';
+import { salesCustomers } from './routes/sales-customers.js';
 import {
   canUseManualLineSend,
   isLineCaptureOnly,
@@ -158,6 +159,7 @@ export type Env = {
       name: string;
       role: 'owner' | 'admin' | 'staff' | 'secondary';
       secondaryCanRespond?: boolean;
+      salesOnly?: boolean;
     };
   };
 };
@@ -360,6 +362,7 @@ app.route('/', richMenuGroups);
 app.route('/', support);
 app.route('/', appNotifications);
 app.route('/', updateHistory);
+app.route('/', salesCustomers);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version

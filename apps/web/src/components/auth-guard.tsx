@@ -28,6 +28,7 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
         cacheStaffSession({
           name: data.data.name,
           role: data.data.role,
+          salesOnly: data.data.salesOnly === true,
           csrfToken: data.csrfToken,
         })
         if (!cancelled) setChecked(true)

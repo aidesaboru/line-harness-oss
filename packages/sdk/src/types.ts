@@ -481,6 +481,7 @@ export interface StaffMember {
   name: string
   email: string | null
   role: StaffRole
+  salesOnly?: boolean
   /**
    * Masked API key (e.g. `lh_****1234`).
    * The full key is only returned once — on create or regenerate-key responses.
@@ -495,6 +496,7 @@ export interface StaffProfile {
   id: string
   name: string
   role: StaffRole
+  salesOnly?: boolean
   email: string | null
 }
 

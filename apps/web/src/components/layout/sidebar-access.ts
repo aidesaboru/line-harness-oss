@@ -1,6 +1,7 @@
 export type SidebarRole = string | null | undefined
 export type SidebarVisibilityContext = {
   staffName?: string | null
+  salesOnly?: boolean
 }
 
 const TEMPLATE_ENABLED_STAFF_NAMES = new Set([
@@ -9,6 +10,7 @@ const TEMPLATE_ENABLED_STAFF_NAMES = new Set([
 ])
 
 const SUPPORT_WORK_HREFS = new Set([
+  '/sales-customers',
   '/chats',
   '/internal-chat',
   '/tasks',
@@ -72,6 +74,8 @@ function canStaffUseTemplates(context: SidebarVisibilityContext): boolean {
 export function canShowSidebarItem(href: string, role: SidebarRole, context: SidebarVisibilityContext = {}): boolean {
   const normalizedRole = normalizeRole(role)
 
+  if (context.salesOnly === true) return href === '/sales-customers'
+
   if (OPERATION_DISABLED_HREFS.has(href)) {
     return false
   }
@@ -104,6 +108,8 @@ export function canAccessSidebarRoute(
 ): boolean {
   const normalizedRole = normalizeRole(role)
 
+  if (context.salesOnly === true) return matchesPath(pathname, '/sales-customers')
+
   if (Array.from(OPERATION_DISABLED_HREFS).some((href) => matchesPath(pathname, href))) {
     return false
   }
@@ -123,7 +129,11 @@ export function canAccessSidebarRoute(
   return Array.from(STAFF_VISIBLE_HREFS).some((href) => matchesPath(pathname, href))
 }
 
-export function defaultSidebarHrefForRole(role: SidebarRole): string {
+export function defaultSidebarHrefForRole(
+  role: SidebarRole,
+  context: SidebarVisibilityContext = {},
+): string {
+  if (context.salesOnly === true) return '/sales-customers'
   const normalizedRole = normalizeRole(role)
   if (normalizedRole === 'secondary') return '/escalations'
   if (normalizedRole === 'staff') return '/support'

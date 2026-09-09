@@ -6,7 +6,7 @@ type Role = 'owner' | 'admin' | 'staff' | 'secondary';
 export function requireRole(...allowed: Role[]) {
   return async (c: Context<Env>, next: Next): Promise<Response | void> => {
     const staff = c.get('staff');
-    if (!staff || !allowed.includes(staff.role)) {
+    if (!staff || staff.salesOnly === true || !allowed.includes(staff.role)) {
       const label = allowed.join('/');
       return c.json(
         { success: false, error: `この操作には${label}権限が必要です` },

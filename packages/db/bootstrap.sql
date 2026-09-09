@@ -900,6 +900,51 @@ CREATE TABLE rich_menu_pages (
   UNIQUE (group_id, order_index)
 );
 
+CREATE TABLE sales_customer_status_events (
+  id                TEXT PRIMARY KEY,
+  status_id         TEXT NOT NULL REFERENCES sales_customer_statuses(id) ON DELETE RESTRICT,
+  from_status       TEXT NOT NULL CHECK (from_status IN (
+                      'unreviewed',
+                      'normal',
+                      'attention',
+                      'complaint',
+                      'exit_pending',
+                      'exited'
+                    )),
+  to_status         TEXT NOT NULL CHECK (to_status IN (
+                      'normal',
+                      'attention',
+                      'complaint',
+                      'exit_pending',
+                      'exited'
+                    )),
+  summary           TEXT NOT NULL CHECK (length(trim(summary)) BETWEEN 1 AND 1000),
+  actor_id          TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  actor_name        TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
+);
+
+CREATE TABLE sales_customer_statuses (
+  id                TEXT PRIMARY KEY,
+  friend_id         TEXT REFERENCES friends(id) ON DELETE RESTRICT,
+  conversation_id   TEXT REFERENCES line_conversations(id) ON DELETE RESTRICT,
+  status            TEXT NOT NULL CHECK (status IN (
+                      'normal',
+                      'attention',
+                      'complaint',
+                      'exit_pending',
+                      'exited'
+                    )),
+  summary           TEXT NOT NULL CHECK (length(trim(summary)) BETWEEN 1 AND 1000),
+  version           INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+  mutation_id       TEXT NOT NULL,
+  updated_by        TEXT REFERENCES staff_members(id) ON DELETE SET NULL,
+  updated_by_name   TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  CHECK ((friend_id IS NOT NULL) != (conversation_id IS NOT NULL))
+);
+
 CREATE TABLE scenario_steps (
   id              TEXT PRIMARY KEY,
   scenario_id     TEXT NOT NULL REFERENCES scenarios (id) ON DELETE CASCADE,
@@ -996,7 +1041,8 @@ CREATE TABLE "staff_members" (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , slack_user_id TEXT, secondary_can_respond INTEGER NOT NULL DEFAULT 0
-CHECK (secondary_can_respond IN (0, 1)));
+CHECK (secondary_can_respond IN (0, 1)), sales_only INTEGER NOT NULL DEFAULT 0
+CHECK (sales_only IN (0, 1)));
 
 CREATE TABLE staff_menus (
   staff_id                  TEXT NOT NULL,
@@ -1668,6 +1714,23 @@ CREATE INDEX idx_rich_menu_groups_account ON rich_menu_groups(account_id, status
 
 CREATE INDEX idx_rich_menu_pages_group    ON rich_menu_pages(group_id, order_index);
 
+CREATE UNIQUE INDEX idx_sales_customer_status_conversation
+ON sales_customer_statuses(conversation_id)
+WHERE conversation_id IS NOT NULL;
+
+CREATE INDEX idx_sales_customer_status_events_status
+ON sales_customer_status_events(status_id, created_at DESC);
+
+CREATE UNIQUE INDEX idx_sales_customer_status_friend
+ON sales_customer_statuses(friend_id)
+WHERE friend_id IS NOT NULL;
+
+CREATE UNIQUE INDEX idx_sales_customer_status_mutation
+ON sales_customer_statuses(mutation_id);
+
+CREATE INDEX idx_sales_customer_status_priority
+ON sales_customer_statuses(status, updated_at DESC);
+
 CREATE INDEX idx_scenario_steps_scenario_id ON scenario_steps (scenario_id);
 
 CREATE INDEX idx_scheduled_chat_messages_chat
@@ -2008,6 +2071,24 @@ CREATE TRIGGER protect_messages_log_delete
 BEFORE DELETE ON messages_log
 BEGIN
   SELECT RAISE(ABORT, 'messages_log history is protected');
+END;
+
+CREATE TRIGGER protect_sales_customer_status_events_delete
+BEFORE DELETE ON sales_customer_status_events
+BEGIN
+  SELECT RAISE(ABORT, 'sales customer status events are append-only');
+END;
+
+CREATE TRIGGER protect_sales_customer_status_events_update
+BEFORE UPDATE ON sales_customer_status_events
+BEGIN
+  SELECT RAISE(ABORT, 'sales customer status events are append-only');
+END;
+
+CREATE TRIGGER protect_sales_customer_statuses_delete
+BEFORE DELETE ON sales_customer_statuses
+BEGIN
+  SELECT RAISE(ABORT, 'sales customer status history is protected');
 END;
 
 CREATE TRIGGER protect_staff_member_events_delete

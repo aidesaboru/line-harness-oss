@@ -717,6 +717,70 @@ export type FriendListItem = FriendWithTags & Partial<{
   handled: boolean
 }>
 
+export type SalesCustomerStatus =
+  | 'unreviewed'
+  | 'normal'
+  | 'attention'
+  | 'complaint'
+  | 'exit_pending'
+  | 'exited'
+
+export type SalesCustomerStoredStatus = Exclude<SalesCustomerStatus, 'unreviewed'>
+export type SalesCustomerSubjectKind = 'friend' | 'conversation'
+
+export type SalesCustomer = {
+  subjectKind: SalesCustomerSubjectKind
+  subjectId: string
+  sourceKind: 'user' | 'group' | 'room'
+  lineAccountId: string | null
+  lineAccountName: string | null
+  lineDisplayName: string | null
+  customerNumber: string | null
+  companyName: string | null
+  contactName: string | null
+  storeNames: string[]
+  status: SalesCustomerStatus
+  summary: string
+  version: number
+  updatedByName: string | null
+  updatedAt: string | null
+  createdAt: string
+}
+
+export type SalesCustomerStatusEvent = {
+  id: string
+  fromStatus: SalesCustomerStatus
+  toStatus: SalesCustomerStoredStatus
+  summary: string
+  actorName: string | null
+  createdAt: string
+}
+
+export type SalesCustomerDetail = SalesCustomer & {
+  history: SalesCustomerStatusEvent[]
+  canEditStatus: boolean
+}
+
+export type SalesCustomerAccount = {
+  id: string
+  name: string
+  displayName: string
+  isActive: boolean
+  country: string | null
+  role: string | null
+  displayOrder: number
+}
+
+export type SalesCustomerListResponse = {
+  items: SalesCustomer[]
+  total: number
+  limit: number
+  offset: number
+  hasNextPage: boolean
+  counts: Record<SalesCustomerStatus, number>
+  canEditStatus: boolean
+}
+
 export const api = {
   friends: {
     list: (params?: FriendListParams) => {
@@ -766,6 +830,43 @@ export const api = {
     richMenu: (id: string) =>
       fetchApi<ApiResponse<{ id: string | null; name: string | null; isDefault: boolean }>>(
         `/api/friends/${id}/rich-menu`,
+      ),
+  },
+  salesCustomers: {
+    accounts: () =>
+      fetchApi<ApiResponse<SalesCustomerAccount[]>>('/api/sales-customers/accounts'),
+    list: (params: {
+      lineAccountId: string
+      q?: string
+      status?: SalesCustomerStatus | 'action_required'
+      limit?: number
+      offset?: number
+    }) => {
+      const query = new URLSearchParams({ lineAccountId: params.lineAccountId })
+      if (params.q) query.set('q', params.q)
+      if (params.status) query.set('status', params.status)
+      if (params.limit) query.set('limit', String(params.limit))
+      if (params.offset) query.set('offset', String(params.offset))
+      return fetchApi<ApiResponse<SalesCustomerListResponse>>(
+        `/api/sales-customers?${query.toString()}`,
+      )
+    },
+    get: (subjectKind: SalesCustomerSubjectKind, subjectId: string) =>
+      fetchApi<ApiResponse<SalesCustomerDetail>>(
+        `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}`,
+      ),
+    updateStatus: (
+      subjectKind: SalesCustomerSubjectKind,
+      subjectId: string,
+      data: {
+        status: SalesCustomerStoredStatus
+        summary: string
+        expectedVersion: number
+      },
+    ) =>
+      fetchApi<ApiResponse<SalesCustomer>>(
+        `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}/status`,
+        { method: 'PATCH', body: JSON.stringify(data) },
       ),
   },
   tags: {
@@ -1972,6 +2073,7 @@ export const api = {
         role: string
         email: string | null
         secondaryCanRespond?: boolean
+        salesOnly?: boolean
       }>>('/api/staff/me'),
     presence: () =>
       fetchApi<ApiResponse<StaffPresenceResponse>>('/api/staff/presence'),
@@ -1985,6 +2087,7 @@ export const api = {
       email?: string
       role: 'admin' | 'staff' | 'secondary'
       secondaryCanRespond?: boolean
+      salesOnly?: boolean
     }) =>
       fetchApi<ApiResponse<StaffMember>>('/api/staff', {
         method: 'POST',
@@ -1995,6 +2098,7 @@ export const api = {
       email?: string | null
       role?: string
       secondaryCanRespond?: boolean
+      salesOnly?: boolean
       isActive?: boolean
     }) =>
       fetchApi<ApiResponse<StaffMember>>(`/api/staff/${id}`, {

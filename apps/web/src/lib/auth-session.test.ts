@@ -4,6 +4,7 @@ import {
   LEGACY_API_KEY_STORAGE_KEY,
   STAFF_NAME_STORAGE_KEY,
   STAFF_ROLE_STORAGE_KEY,
+  STAFF_SALES_ONLY_STORAGE_KEY,
   cacheStaffSession,
   clearAuthSessionCache,
   clearStaffIdentityCache,
@@ -37,11 +38,12 @@ describe('auth session cache', () => {
     cacheStaffSession({
       name: '  田島  ',
       role: ' staff ',
+      salesOnly: true,
       csrfToken: ' csrf-token ',
     }, storage)
 
     expect(storage.getItem(LEGACY_API_KEY_STORAGE_KEY)).toBeNull()
-    expect(readStaffIdentityCache(storage)).toEqual({ name: '田島', role: 'staff' })
+    expect(readStaffIdentityCache(storage)).toEqual({ name: '田島', role: 'staff', salesOnly: true })
     expect(getCsrfToken(storage)).toBe('csrf-token')
   })
 
@@ -52,18 +54,19 @@ describe('auth session cache', () => {
 
     cacheStaffSession({ name: ' ', role: null }, storage)
 
-    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '' })
+    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '', salesOnly: false })
   })
 
   it('clears only staff identity when requested', () => {
     const storage = new MemoryStorage()
     storage.setItem(STAFF_NAME_STORAGE_KEY, '田島')
     storage.setItem(STAFF_ROLE_STORAGE_KEY, 'staff')
+    storage.setItem(STAFF_SALES_ONLY_STORAGE_KEY, '1')
     storage.setItem(CSRF_STORAGE_KEY, 'csrf-token')
 
     clearStaffIdentityCache(storage)
 
-    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '' })
+    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '', salesOnly: false })
     expect(getCsrfToken(storage)).toBe('csrf-token')
   })
 
@@ -72,12 +75,13 @@ describe('auth session cache', () => {
     storage.setItem(LEGACY_API_KEY_STORAGE_KEY, 'old-key')
     storage.setItem(STAFF_NAME_STORAGE_KEY, '田島')
     storage.setItem(STAFF_ROLE_STORAGE_KEY, 'staff')
+    storage.setItem(STAFF_SALES_ONLY_STORAGE_KEY, '1')
     storage.setItem(CSRF_STORAGE_KEY, 'csrf-token')
 
     clearAuthSessionCache(storage)
 
     expect(storage.getItem(LEGACY_API_KEY_STORAGE_KEY)).toBeNull()
-    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '' })
+    expect(readStaffIdentityCache(storage)).toEqual({ name: '', role: '', salesOnly: false })
     expect(getCsrfToken(storage)).toBe('')
   })
 

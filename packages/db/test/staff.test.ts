@@ -68,6 +68,7 @@ describe('staff member mutation audit atomicity and owner safety', () => {
         email TEXT,
         role TEXT NOT NULL,
         secondary_can_respond INTEGER NOT NULL DEFAULT 0,
+        sales_only INTEGER NOT NULL DEFAULT 0,
         api_key TEXT UNIQUE NOT NULL,
         is_active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
@@ -82,9 +83,9 @@ describe('staff member mutation audit atomicity and owner safety', () => {
         actor_name TEXT
       );
       INSERT INTO staff_members (
-        id, name, email, role, secondary_can_respond, api_key, is_active, created_at, updated_at
+        id, name, email, role, secondary_can_respond, sales_only, api_key, is_active, created_at, updated_at
       ) VALUES (
-        'staff-1', '変更前', 'before@example.com', 'staff', 0, 'lh_original', 1,
+        'staff-1', '変更前', 'before@example.com', 'staff', 0, 0, 'lh_original', 1,
         '2026-08-24T10:00:00.000+09:00', '2026-08-24T10:00:00.000+09:00'
       );
       CREATE TRIGGER reject_staff_member_event
@@ -170,11 +171,11 @@ describe('staff member mutation audit atomicity and owner safety', () => {
     sqlite.exec(`
       DROP TRIGGER reject_staff_member_event;
       INSERT INTO staff_members (
-        id, name, email, role, secondary_can_respond, api_key, is_active, created_at, updated_at
+        id, name, email, role, secondary_can_respond, sales_only, api_key, is_active, created_at, updated_at
       ) VALUES
-        ('owner-a', 'Owner A', NULL, 'owner', 0, 'lh_owner_a', 1,
+        ('owner-a', 'Owner A', NULL, 'owner', 0, 0, 'lh_owner_a', 1,
          '2026-08-24T10:00:00.000+09:00', '2026-08-24T10:00:00.000+09:00'),
-        ('owner-b', 'Owner B', NULL, 'owner', 0, 'lh_owner_b', 1,
+        ('owner-b', 'Owner B', NULL, 'owner', 0, 0, 'lh_owner_b', 1,
          '2026-08-24T10:00:00.000+09:00', '2026-08-24T10:00:00.000+09:00');
     `);
 

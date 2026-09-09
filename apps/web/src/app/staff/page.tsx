@@ -19,11 +19,12 @@ type TicketShareTarget = { id: string; name: string }
 const editableRoleOptions: Array<{ value: StaffAccessSelection; label: string }> = [
   { value: 'admin', label: '管理者' },
   { value: 'staff', label: '一次対応' },
+  { value: 'sales_viewer', label: '営業閲覧（顧客状況のみ）' },
   { value: 'secondary_viewer', label: '二次対応（閲覧のみ）' },
   { value: 'secondary_responder', label: '二次対応' },
 ]
 
-function RoleBadge({ role, secondaryCanRespond = false }: { role: string; secondaryCanRespond?: boolean }) {
+function RoleBadge({ role, secondaryCanRespond = false, salesOnly = false }: { role: string; secondaryCanRespond?: boolean; salesOnly?: boolean }) {
   const styles =
     role === 'owner'
       ? 'bg-yellow-100 text-yellow-800'
@@ -32,8 +33,9 @@ function RoleBadge({ role, secondaryCanRespond = false }: { role: string; second
         : role === 'secondary'
           ? 'bg-indigo-100 text-indigo-800'
           : 'bg-gray-100 text-gray-600'
-  const label =
-    role === 'owner'
+  const label = salesOnly
+    ? '営業閲覧'
+    : role === 'owner'
       ? 'オーナー'
       : role === 'admin'
         ? '管理者'
@@ -92,7 +94,7 @@ export default function StaffPage() {
   }
 
   const handleRoleChange = async (member: StaffMember, nextAccess: StaffAccessSelection) => {
-    if (staffAccessSelection(member.role, Boolean(member.secondaryCanRespond)) === nextAccess) return
+    if (staffAccessSelection(member.role, Boolean(member.secondaryCanRespond), Boolean(member.salesOnly)) === nextAccess) return
     const nextPermissions = staffAccessUpdatePayload(nextAccess)
     setRoleSavingId(member.id)
     setError('')
@@ -103,6 +105,7 @@ export default function StaffPage() {
             ...m,
             role: nextPermissions.role,
             secondaryCanRespond: nextPermissions.secondaryCanRespond,
+            salesOnly: nextPermissions.salesOnly,
           }
         : m)),
     )
@@ -264,7 +267,7 @@ export default function StaffPage() {
             </p>
             <div className="mt-4 max-h-64 space-y-2 overflow-y-auto">
               {members
-                .filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && member.isActive)
+                .filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && !member.salesOnly && member.isActive)
                 .map((member) => (
                   <label key={member.id} className="flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border border-gray-200 px-3 py-2 hover:bg-gray-50">
                     <input
@@ -278,7 +281,7 @@ export default function StaffPage() {
                     <span className="text-sm font-medium text-gray-800">{member.name}</span>
                   </label>
                 ))}
-              {members.filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && member.isActive).length === 0 && (
+              {members.filter((member) => member.id !== ticketShareTarget.id && member.role === 'staff' && !member.salesOnly && member.isActive).length === 0 && (
                 <p className="rounded-lg bg-gray-50 px-3 py-4 text-sm text-gray-500">共有できる一次対応スタッフがいません</p>
               )}
             </div>
@@ -462,13 +465,13 @@ export default function StaffPage() {
                   <td className="px-4 py-3 text-gray-500 hidden sm:table-cell">{member.email ?? '—'}</td>
                   <td className="px-4 py-3">
                     {member.role === 'owner' ? (
-                      <RoleBadge role={member.role} secondaryCanRespond={Boolean(member.secondaryCanRespond)} />
+                      <RoleBadge role={member.role} secondaryCanRespond={Boolean(member.secondaryCanRespond)} salesOnly={Boolean(member.salesOnly)} />
                     ) : (
                       <div className="flex items-center gap-2">
                         <select
-                          value={staffAccessSelection(member.role, Boolean(member.secondaryCanRespond)) === 'owner'
+                          value={staffAccessSelection(member.role, Boolean(member.secondaryCanRespond), Boolean(member.salesOnly)) === 'owner'
                             ? 'staff'
-                            : staffAccessSelection(member.role, Boolean(member.secondaryCanRespond))}
+                            : staffAccessSelection(member.role, Boolean(member.secondaryCanRespond), Boolean(member.salesOnly))}
                           onChange={(e) => handleRoleChange(member, e.target.value as StaffAccessSelection)}
                           disabled={Boolean(roleSavingId)}
                           className="min-w-[104px] rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm outline-none transition-colors focus:border-green-500 focus:ring-2 focus:ring-green-100 disabled:cursor-wait disabled:bg-gray-50 disabled:text-gray-400"
@@ -497,7 +500,7 @@ export default function StaffPage() {
                     <div className="flex items-center justify-end gap-2">
                       {member.role !== 'owner' && (
                         <>
-                          {member.role === 'staff' && member.isActive && (
+                          {member.role === 'staff' && !member.salesOnly && member.isActive && (
                             <button
                               onClick={() => openTicketShareDialog(member)}
                               className="px-2.5 py-1 text-xs font-medium text-green-700 bg-white border border-green-200 rounded hover:bg-green-50 transition-colors"

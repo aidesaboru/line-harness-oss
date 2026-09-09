@@ -19,6 +19,7 @@ describe('staff create form', () => {
         email: 'tajima@example.com',
         role: 'staff',
         secondaryCanRespond: false,
+        salesOnly: false,
       },
     })
   })
@@ -34,6 +35,7 @@ describe('staff create form', () => {
         name: '管理者',
         role: 'secondary',
         secondaryCanRespond: false,
+        salesOnly: false,
       },
     })
   })
@@ -55,13 +57,25 @@ describe('staff access selection', () => {
     expect(staffAccessUpdatePayload('secondary_viewer')).toEqual({
       role: 'secondary',
       secondaryCanRespond: false,
+      salesOnly: false,
     })
     expect(staffAccessUpdatePayload('secondary_responder')).toEqual({
       role: 'secondary',
       secondaryCanRespond: true,
+      salesOnly: false,
     })
     expect(staffAccessSelection('secondary', true)).toBe('secondary_responder')
     expect(staffAccessSelection('secondary', false)).toBe('secondary_viewer')
+  })
+
+  it('maps the sales viewer to a restricted staff permission flag', () => {
+    expect(staffAccessUpdatePayload('sales_viewer')).toEqual({
+      role: 'staff',
+      secondaryCanRespond: false,
+      salesOnly: true,
+    })
+    expect(staffAccessSelection('staff', false, true)).toBe('sales_viewer')
+    expect(staffAccessSelection('staff', false, false)).toBe('staff')
   })
 })
 

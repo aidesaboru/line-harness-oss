@@ -18,7 +18,8 @@ const appBuildTime = process.env.APP_BUILD_TIME || ''
 const appBuildDate = appBuildTime ? appBuildTime.replace('T', ' ').replace(/\.\d{3}Z$/, 'Z') : ''
 const envOwnerDisplayName = '宮本 森一'
 
-function staffRoleLabel(role: string | null): string {
+function staffRoleLabel(role: string | null, salesOnly = false): string {
+  if (salesOnly) return '営業閲覧'
   if (role === 'owner') return 'オーナー'
   if (role === 'admin') return '管理者'
   if (role === 'secondary') return '二次対応のみ'
@@ -31,6 +32,7 @@ const menuSections = [
   {
     label: null, // セクションラベルなし（よく使う機能）
     items: [
+      { href: '/sales-customers', label: '顧客状況', icon: 'M4 6h16M4 12h16M4 18h10m3-3 3 3m0 0-3 3m3-3H14' },
       { href: '/chats', label: '個別チャット', icon: 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z' },
       { href: '/internal-chat', label: '社内チャット', icon: 'M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-5l-4 4v-4H7a2 2 0 01-2-2v-1m12-7V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l4-4h4a2 2 0 002-2V8z' },
       { href: '/tasks', label: 'タスク管理', icon: 'M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11' },
@@ -189,11 +191,13 @@ export default function Sidebar() {
   const [isOpen, setIsOpen] = useState(false)
   const [staffName, setStaffName] = useState<string | null>(null)
   const [staffRole, setStaffRole] = useState<string | null>(null)
+  const [salesOnly, setSalesOnly] = useState(false)
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
     setStaffName(cached.name || null)
     setStaffRole(cached.role || null)
+    setSalesOnly(cached.salesOnly)
   }, [])
 
   useEffect(() => { setIsOpen(false) }, [pathname])
@@ -207,7 +211,7 @@ export default function Sidebar() {
   const visibleMenuSections = menuSections
     .map((section) => ({
       ...section,
-      items: section.items.filter((item) => canShowSidebarItem(item.href, staffRole, { staffName })),
+      items: section.items.filter((item) => canShowSidebarItem(item.href, staffRole, { staffName, salesOnly })),
     }))
     .filter((section) => section.items.length > 0)
 
@@ -269,7 +273,7 @@ export default function Sidebar() {
               staffRole === 'secondary' ? 'bg-indigo-100 text-indigo-800' :
               'bg-gray-100 text-gray-600'
             }`}>
-              {staffRoleLabel(staffRole)}
+              {staffRoleLabel(staffRole, salesOnly)}
             </span>
           </div>
         )}

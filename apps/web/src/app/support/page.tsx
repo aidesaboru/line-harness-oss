@@ -663,6 +663,44 @@ export default function SupportPage() {
     selectedAccountId,
   ])
 
+  const handleEscalationResubmit = useCallback(async (
+    escalationId: string,
+    additionalInfo: string,
+  ): Promise<boolean> => {
+    if (!detail || !selectedAccountId || saving) return false
+    if (dirtyRef.current) {
+      notify('error', '先にチケットの未保存変更を保存または破棄してください')
+      return false
+    }
+    const value = additionalInfo.trim()
+    if (!value) {
+      notify('error', '追加情報・修正内容を入力してください')
+      return false
+    }
+    const workspace = captureWorkspace()
+    const requestCaseId = detail.id
+    const requestAccountId = selectedAccountId
+    setSaving(true)
+    try {
+      const res = await api.support.escalations.resubmit(escalationId, requestAccountId, value)
+      if (!isCurrentWorkspace(workspace)) return false
+      if (!res.success) {
+        notify('error', supportApiErrorMessage(res, '二次対応への再提出に失敗しました'))
+        return false
+      }
+      notify('success', '追加情報を付けて二次対応へ再提出しました')
+      await Promise.all([loadCases(), loadDetail(requestCaseId)])
+      return true
+    } catch (err) {
+      if (isCurrentWorkspace(workspace)) {
+        notify('error', formatSupportErrorMessage(err, '二次対応への再提出に失敗しました'))
+      }
+      return false
+    } finally {
+      if (isCurrentWorkspace(workspace)) setSaving(false)
+    }
+  }, [captureWorkspace, detail, isCurrentWorkspace, loadCases, loadDetail, notify, saving, selectedAccountId])
+
   const handleDiscard = useCallback(() => {
     setCaseForm(savedForm)
   }, [savedForm])
@@ -1236,6 +1274,7 @@ export default function SupportPage() {
               onSave={handleSave}
               onDiscard={handleDiscard}
               onQuickStatus={handleQuickStatus}
+              onEscalationResubmit={handleEscalationResubmit}
               onInternalMessageCreate={handleCreateInternalMessage}
               onInternalMessageReaction={handleInternalMessageReaction}
               onFollowUpReminderConfigure={handleFollowUpReminderConfigure}

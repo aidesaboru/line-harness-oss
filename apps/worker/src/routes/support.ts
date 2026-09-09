@@ -74,6 +74,7 @@ const CASE_STATUSES = new Set([
 const PRIORITIES = new Set(['low', 'medium', 'high', 'urgent']);
 const ESCALATION_STATUSES = new Set(['pending', 'answered', 'needs_info', 'transferred', 'expert_check', 'closed']);
 const TERMINAL_ESCALATION_STATUSES = new Set(['answered', 'closed']);
+const IMMUTABLE_ESCALATION_STATUSES = new Set(['answered', 'needs_info', 'closed']);
 const ESCALATION_LEVELS = new Set(['L2', 'L3']);
 const SUPPORT_KNOWLEDGE_IMPORT_STATUSES = new Set(['draft', 'published', 'dismissed']);
 const SUPPORT_MANUAL_KNOWLEDGE_STATUSES = new Set<KnowledgeStatus>(['verified', 'ready', 'needs_review', 'unresolved']);
@@ -1507,6 +1508,12 @@ function canManageSupportCaseRouting(staff: SupportAccessStaff): boolean {
   return staff.role === 'owner' || staff.role === 'admin';
 }
 
+function canResubmitReturnedEscalation(staff: SupportAccessStaff, supportCase: SupportCaseRow): boolean {
+  if (canManageSupportCaseRouting(staff)) return true;
+  if (staff.role !== 'staff') return false;
+  return supportCase.created_by === staff.id || supportCase.primary_assignee_staff_id === staff.id;
+}
+
 function supportStaffMatchesText(staff: SupportAccessStaff, text: string | null | undefined): boolean {
   const name = staff.name.trim();
   return Boolean(name && (text ?? '').trim() === name);
@@ -2251,7 +2258,8 @@ support.get('/api/support/summary', async (c) => {
         `SELECT
           COUNT(*) AS total,
           SUM(CASE WHEN sc.status != 'resolved' THEN 1 ELSE 0 END) AS open,
-          SUM(CASE WHEN sc.status IN ('open', 'in_progress', 'waiting_primary', 'on_hold', 'reopened') THEN 1 ELSE 0 END) AS primary_action,
+          SUM(CASE WHEN sc.status IN ('open', 'in_progress', 'on_hold', 'reopened') THEN 1 ELSE 0 END) AS primary_action,
+          SUM(CASE WHEN sc.status = 'waiting_primary' THEN 1 ELSE 0 END) AS waiting_primary,
           SUM(CASE WHEN sc.status IN ('escalated', 'waiting_secondary') THEN 1 ELSE 0 END) AS escalated,
           SUM(CASE WHEN sc.status = 'secondary_answered' THEN 1 ELSE 0 END) AS secondary_answered,
           SUM(CASE WHEN sc.status != 'resolved'
@@ -2306,6 +2314,7 @@ support.get('/api/support/summary', async (c) => {
           total: totals?.total ?? 0,
           open: totals?.open ?? 0,
           primaryAction: totals?.primary_action ?? 0,
+          waitingPrimary: totals?.waiting_primary ?? 0,
           escalated: totals?.escalated ?? 0,
           secondaryAnswered: totals?.secondary_answered ?? 0,
           myEscalations: totals?.my_escalations ?? 0,
@@ -2367,7 +2376,9 @@ support.get('/api/support/cases', async (c) => {
     } else if (queue.value === 'secondary_answered') {
       conditions.push(`sc.status = 'secondary_answered'`);
     } else if (queue.value === 'primary_action') {
-      conditions.push(`sc.status IN ('open', 'in_progress', 'waiting_primary', 'on_hold', 'reopened')`);
+      conditions.push(`sc.status IN ('open', 'in_progress', 'on_hold', 'reopened')`);
+    } else if (queue.value === 'waiting_primary') {
+      conditions.push(`sc.status = 'waiting_primary'`);
     } else if (queue.value === 'overdue') {
       conditions.push(`sc.due_at IS NOT NULL AND sc.due_at < ? AND sc.status != 'resolved'`);
       binds.push(jstNow());
@@ -3083,6 +3094,7 @@ support.get('/api/support/cases/:id', async (c) => {
         manuals: manuals.map(serializeManual),
         accessMode: isSharedProxyAccess ? 'shared_proxy' : isSecondaryOnly ? 'secondary' : 'direct',
         canEditCaseWork: !isSecondaryOnly && !isSharedProxyAccess,
+        canResubmitEscalation: !isSharedProxyAccess && canResubmitReturnedEscalation(staff, row),
         canCompleteCase: !isSecondaryOnly,
         canViewLineConversation,
         canOpenLineChat,
@@ -4784,10 +4796,12 @@ support.patch('/api/support/escalations/:id', async (c) => {
         return c.json({ success: false, error: '二次対応（閲覧のみ）では回答や更新はできません' }, 403);
       }
     }
-    if (TERMINAL_ESCALATION_STATUSES.has(existing.status)) {
+    if (IMMUTABLE_ESCALATION_STATUSES.has(existing.status)) {
       return c.json({
         success: false,
-        error: '回答済み・クローズ済みの二次対応は編集できません。変更が必要な場合は再開してください',
+        error: existing.status === 'needs_info'
+          ? '差し戻し済みの二次対応は編集できません。一次対応者の追加情報を付けて再提出してください'
+          : '回答済み・クローズ済みの二次対応は編集できません。変更が必要な場合は再開してください',
       }, 409);
     }
 
@@ -4812,8 +4826,13 @@ support.patch('/api/support/escalations/:id', async (c) => {
     if (!ESCALATION_STATUSES.has(status)) return c.json({ success: false, error: 'invalid status' }, 400);
     if (!ESCALATION_LEVELS.has(level)) return c.json({ success: false, error: 'invalid level' }, 400);
     const nextAnswer = 'answer' in body ? (parsedAnswer.value ?? '') : existing.answer;
-    if (status === 'answered' && !nextAnswer.trim()) {
-      return c.json({ success: false, error: '回答済みにする場合は回答要点が必要です' }, 400);
+    if ((status === 'answered' || status === 'needs_info') && !nextAnswer.trim()) {
+      return c.json({
+        success: false,
+        error: status === 'needs_info'
+          ? '差し戻す場合は、一次対応者が修正できるように差し戻し理由が必要です'
+          : '回答済みにする場合は回答要点が必要です',
+      }, 400);
     }
     if (!canManageSupportCaseRouting(staffForScope)) {
       const forbiddenKeys = Object.keys(body).filter((key) => !STAFF_ALLOWED_ESCALATION_UPDATE_KEYS.has(key));
@@ -5018,6 +5037,258 @@ support.patch('/api/support/escalations/:id', async (c) => {
     return c.json({ success: true, data: serializeEscalation(updated!) });
   } catch (err) {
     console.error(`PATCH /api/support/escalations/:id error: ${supportRouteErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
+support.post('/api/support/escalations/:id/resubmit', async (c) => {
+  try {
+    const id = parseRequiredVisibleId(c.req.param('id'), 'escalationId');
+    if (!id.ok) return c.json({ success: false, error: id.error }, 400);
+    const parsedBody = await readJsonRecord(c);
+    if (!parsedBody.ok) return c.json({ success: false, error: parsedBody.error }, 400);
+    const body = parsedBody.value;
+    const unexpectedKeys = Object.keys(body).filter(
+      (key) => key !== 'lineAccountId' && key !== 'additionalInfo',
+    );
+    if (unexpectedKeys.length > 0) {
+      return c.json({ success: false, error: `再提出時には変更できない項目です: ${unexpectedKeys.join(', ')}` }, 400);
+    }
+    const lineAccountId = lineAccountIdFrom(c, body);
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const additionalInfo = parseRequiredTextField(
+      body.additionalInfo,
+      'additionalInfo',
+      SUPPORT_LONG_TEXT_MAX_LENGTH,
+    );
+    if (!additionalInfo.ok) {
+      return c.json({
+        success: false,
+        error: additionalInfo.error === 'additionalInfo is required'
+          ? '二次対応へ再提出する追加情報・修正内容が必要です'
+          : additionalInfo.error,
+      }, 400);
+    }
+
+    const existing = await c.env.DB
+      .prepare(`SELECT se.* FROM support_escalations se WHERE se.id = ? AND se.line_account_id = ?`)
+      .bind(id.value, lineAccountId.value)
+      .first<SupportEscalationRow>();
+    if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
+    if (existing.status !== 'needs_info') {
+      return c.json({ success: false, error: '差し戻し済みの二次対応だけ再提出できます' }, 409);
+    }
+
+    const staff = currentStaff(c);
+    const linkedCase = await getCaseRow(c.env.DB, existing.case_id, lineAccountId.value, staff, 'read');
+    if (!linkedCase) return c.json({ success: false, error: 'case not found' }, 404);
+    if (!canResubmitReturnedEscalation(staff, linkedCase)) {
+      return c.json({ success: false, error: '再提出できるのは一次対応者・作成者・管理者だけです' }, 403);
+    }
+    if (linkedCase.status === 'resolved') {
+      return c.json({ success: false, error: '完了済み案件は再オープンしてから再提出してください' }, 409);
+    }
+
+    const returnReason = existing.answer.trim() || '（差し戻し理由の記録なし）';
+    const question = [
+      '【元の確認内容】',
+      existing.question,
+      '【差し戻し理由】',
+      returnReason,
+      '【一次対応者の追加情報・修正内容】',
+      additionalInfo.value,
+    ].join('\n\n');
+    if (question.length > SUPPORT_LONG_TEXT_MAX_LENGTH) {
+      return c.json({
+        success: false,
+        error: '元の確認内容と追加情報の合計が長すぎます。追加情報を短くしてください',
+      }, 400);
+    }
+
+    const existingReopen = await c.env.DB
+      .prepare(`SELECT id FROM support_escalations WHERE reopened_from_id = ? AND line_account_id = ? LIMIT 1`)
+      .bind(existing.id, lineAccountId.value)
+      .first<{ id: string }>();
+    if (existingReopen) {
+      return c.json({ success: false, error: 'この差し戻しはすでに再提出されています' }, 409);
+    }
+
+    const now = jstNow();
+    const resubmittedId = crypto.randomUUID();
+    const eventId = crypto.randomUUID();
+    const slackOutboxId = crypto.randomUUID();
+    const assigneeStaffIds = existing.assignee_staff_id
+      ? new Map([[existing.assignee, existing.assignee_staff_id]])
+      : await activeStaffIdsByName(c.env.DB, [existing.assignee]);
+    const assigneeStaffId = assigneeStaffIds.get(existing.assignee) ?? null;
+    const caseAuthorizationSql = canManageSupportCaseRouting(staff)
+      ? ''
+      : 'AND (resubmit_case.created_by = ? OR resubmit_case.primary_assignee_staff_id = ?)';
+    const caseAuthorizationBinds = canManageSupportCaseRouting(staff) ? [] : [staff.id, staff.id];
+    const sourceGuardSql = `EXISTS (
+      SELECT 1
+      FROM support_escalations resubmit_source
+      INNER JOIN support_cases resubmit_case
+        ON resubmit_case.id = resubmit_source.case_id
+       AND resubmit_case.line_account_id = resubmit_source.line_account_id
+      WHERE resubmit_source.id = ?
+        AND resubmit_source.line_account_id = ?
+        AND resubmit_source.status = 'needs_info'
+        AND resubmit_source.updated_at = ?
+        AND resubmit_case.status != 'resolved'
+        ${caseAuthorizationSql}
+        AND NOT EXISTS (
+          SELECT 1 FROM support_escalations prior_resubmission
+          WHERE prior_resubmission.reopened_from_id = resubmit_source.id
+            AND prior_resubmission.line_account_id = resubmit_source.line_account_id
+        )
+    )`;
+    const sourceGuardBinds = [
+      existing.id,
+      lineAccountId.value,
+      existing.updated_at,
+      ...caseAuthorizationBinds,
+    ];
+    const resubmittedGuardSql = `EXISTS (
+      SELECT 1 FROM support_escalations resubmitted_guard
+      WHERE resubmitted_guard.id = ? AND resubmitted_guard.reopened_from_id = ?
+    )`;
+    const resubmittedGuardBinds = [resubmittedId, existing.id];
+
+    const resubmittedInsert = c.env.DB
+      .prepare(
+        `INSERT INTO support_escalations (
+          id, case_id, line_account_id, assignee, assignee_staff_id, level, status, question, answer,
+          due_at, answered_at, created_by, updated_by, created_at, updated_at, reopened_from_id
+        ) SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, '', ?, NULL, ?, ?, ?, ?, ?
+          WHERE ${sourceGuardSql}`,
+      )
+      .bind(
+        resubmittedId,
+        existing.case_id,
+        existing.line_account_id,
+        existing.assignee,
+        assigneeStaffId,
+        existing.level,
+        question,
+        existing.due_at,
+        staff.id,
+        staff.id,
+        now,
+        now,
+        existing.id,
+        ...sourceGuardBinds,
+      );
+    const sourceClose = c.env.DB
+      .prepare(
+        `UPDATE support_escalations SET status = 'closed', answered_at = ?, updated_by = ?, updated_at = ?
+         WHERE id = ? AND line_account_id = ? AND status = 'needs_info' AND updated_at = ?
+           AND ${resubmittedGuardSql}`,
+      )
+      .bind(
+        now,
+        staff.id,
+        now,
+        existing.id,
+        lineAccountId.value,
+        existing.updated_at,
+        ...resubmittedGuardBinds,
+      );
+    const caseUpdate = c.env.DB
+      .prepare(
+        `UPDATE support_cases
+         SET status = CASE
+               WHEN EXISTS (
+                 SELECT 1 FROM support_escalations se
+                 WHERE se.case_id = support_cases.id AND se.status = 'needs_info'
+               ) THEN 'waiting_primary'
+               WHEN EXISTS (
+                 SELECT 1 FROM support_escalations se
+                 WHERE se.case_id = support_cases.id
+                   AND se.status IN ('pending', 'transferred', 'expert_check')
+               ) THEN 'waiting_secondary'
+               WHEN EXISTS (
+                 SELECT 1 FROM support_escalations se
+                 WHERE se.case_id = support_cases.id AND se.status = 'answered'
+               ) THEN 'secondary_answered'
+               ELSE ?
+             END,
+             escalation_assignee = ?,
+             escalation_assignee_staff_id = ?,
+             updated_by = ?,
+             updated_at = ?
+         WHERE id = ? AND line_account_id = ?
+           AND ${resubmittedGuardSql}`,
+      )
+      .bind(
+        'in_progress',
+        existing.assignee,
+        assigneeStaffId,
+        staff.id,
+        now,
+        existing.case_id,
+        lineAccountId.value,
+        ...resubmittedGuardBinds,
+      );
+
+    const results = await c.env.DB.batch([
+      resubmittedInsert,
+      sourceClose,
+      caseUpdate,
+      prepareGuardedCaseEvent(
+        c.env.DB,
+        existing.case_id,
+        'escalation_resubmitted',
+        staff.id,
+        staff.name,
+        '差し戻しに追加情報を付けて二次対応へ再提出しました',
+        {
+          previousEscalationId: existing.id,
+          resubmittedEscalationId: resubmittedId,
+          assigneeStaffId,
+          previousCaseStatus: linkedCase.status,
+        },
+        eventId,
+        now,
+        resubmittedGuardSql,
+        resubmittedGuardBinds,
+      ),
+      prepareSecondarySlackOutbox(c.env.DB, {
+        id: slackOutboxId,
+        sourceEventId: eventId,
+        notificationType: 'secondary_reopened',
+        supportCase: linkedCase,
+        secondaryAssignees: [{ name: existing.assignee, staffId: assigneeStaffId }],
+        primaryAssigneeFallback: staff.name,
+        customerSummary: question,
+        dueAt: existing.due_at,
+        now,
+        guardSql: resubmittedGuardSql,
+        guardBinds: resubmittedGuardBinds,
+      }),
+    ]);
+    if (results[0]?.meta.changes === 0 || results[1]?.meta.changes === 0) {
+      return c.json({ success: false, error: '差し戻し状態が更新されました。最新状態を確認してください' }, 409);
+    }
+
+    const resubmitted = await c.env.DB
+      .prepare(
+        `SELECT se.*, sc.title AS case_title, f.display_name AS friend_name
+         FROM support_escalations se
+         LEFT JOIN support_cases sc ON sc.id = se.case_id
+         LEFT JOIN friends f ON f.id = sc.friend_id
+         WHERE se.id = ? AND se.line_account_id = ?`,
+      )
+      .bind(resubmittedId, lineAccountId.value)
+      .first<SupportEscalationRow>();
+    kickSupportSecondarySlackNotification(c, slackOutboxId);
+    kickWebPushNotifications(c);
+    return c.json({ success: true, data: serializeEscalation(resubmitted!) }, 201);
+  } catch (err) {
+    if (supportRouteErrorCode(err) === 'unique_constraint') {
+      return c.json({ success: false, error: 'この差し戻しはすでに再提出されています' }, 409);
+    }
+    console.error(`POST /api/support/escalations/:id/resubmit error: ${supportRouteErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

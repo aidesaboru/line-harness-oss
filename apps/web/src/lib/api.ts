@@ -216,6 +216,7 @@ export type AppNotificationKind =
   | 'case_followup_reminder'
   | 'secondary_assigned'
   | 'secondary_answered'
+  | 'secondary_needs_info'
   | 'support_mention'
   | 'chat_mention'
 
@@ -571,6 +572,7 @@ export type SupportCaseDetail = SupportCase & {
   manuals: SupportManual[]
   accessMode: 'direct' | 'shared_proxy' | 'secondary'
   canEditCaseWork: boolean
+  canResubmitEscalation: boolean
   canCompleteCase: boolean
   canViewLineConversation: boolean
   canOpenLineChat: boolean
@@ -588,6 +590,7 @@ export type SupportSummary = {
     total: number
     open: number
     primaryAction: number
+    waitingPrimary: number
     escalated: number
     secondaryAnswered: number
     myEscalations: number
@@ -1475,6 +1478,11 @@ export const api = {
         fetchApi<ApiResponse<SupportEscalation>>(`/api/support/escalations/${id}/reopen`, {
           method: 'POST',
           body: JSON.stringify({ lineAccountId: accountId }),
+        }),
+      resubmit: (id: string, accountId: string, additionalInfo: string) =>
+        fetchApi<ApiResponse<SupportEscalation>>(`/api/support/escalations/${id}/resubmit`, {
+          method: 'POST',
+          body: JSON.stringify({ lineAccountId: accountId, additionalInfo }),
         }),
     },
     manuals: {

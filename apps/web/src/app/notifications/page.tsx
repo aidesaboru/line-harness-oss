@@ -25,6 +25,8 @@ function notificationTone(kind: AppNotificationItem['kind']): string {
       return 'border-amber-200 bg-amber-50 text-amber-800'
     case 'secondary_answered':
       return 'border-emerald-200 bg-emerald-50 text-emerald-800'
+    case 'secondary_needs_info':
+      return 'border-amber-300 bg-amber-50 text-amber-900'
     case 'secondary_assigned':
       return 'border-indigo-200 bg-indigo-50 text-indigo-800'
     case 'support_mention':
@@ -45,6 +47,8 @@ function notificationKindLabel(kind: AppNotificationItem['kind']): string {
       return '二次対応'
     case 'secondary_answered':
       return '二次回答'
+    case 'secondary_needs_info':
+      return '差し戻し'
     case 'support_mention':
     case 'chat_mention':
       return 'メンション'
@@ -78,6 +82,7 @@ export default function NotificationsPage() {
   const [notificationUnreadCount, setNotificationUnreadCount] = useState(0)
   const [feedItems, setFeedItems] = useState<InternalChatFeedItem[]>([])
   const [secondaryAnsweredCases, setSecondaryAnsweredCases] = useState<SupportCase[]>([])
+  const [waitingPrimaryCases, setWaitingPrimaryCases] = useState<SupportCase[]>([])
   const [urgentCases, setUrgentCases] = useState<SupportCase[]>([])
   const [staffId, setStaffId] = useState('')
   const [staffName, setStaffName] = useState('')
@@ -97,6 +102,7 @@ export default function NotificationsPage() {
     setNotificationUnreadCount(0)
     setFeedItems([])
     setSecondaryAnsweredCases([])
+    setWaitingPrimaryCases([])
     setUrgentCases([])
     setStaffId('')
     setStaffName('')
@@ -106,12 +112,13 @@ export default function NotificationsPage() {
       api.appNotifications.inbox({ accountId: selectedAccountId, limit: 100 }),
       api.appNotifications.internalChatFeed({ accountId: selectedAccountId, limit: 80 }),
       api.support.cases.list({ accountId: selectedAccountId, queue: 'secondary_answered', limit: 20 }),
+      api.support.cases.list({ accountId: selectedAccountId, queue: 'waiting_primary', limit: 20 }),
       api.support.cases.list({ accountId: selectedAccountId, queue: 'unresolved', limit: 100 }),
     ] as const)
     if (requestId !== requestIdRef.current) return
 
     let failures = 0
-    const [meResult, summaryResult, recentResult, feedResult, secondaryResult, unresolvedResult] = results
+    const [meResult, summaryResult, recentResult, feedResult, secondaryResult, waitingPrimaryResult, unresolvedResult] = results
     if (meResult.status === 'fulfilled' && meResult.value.success) {
       setStaffId(meResult.value.data.id || '')
       setStaffName(meResult.value.data.name || '')
@@ -125,6 +132,8 @@ export default function NotificationsPage() {
     if (feedResult.status === 'fulfilled' && feedResult.value.success) setFeedItems(feedResult.value.data.items)
     else failures += 1
     if (secondaryResult.status === 'fulfilled' && secondaryResult.value.success) setSecondaryAnsweredCases(secondaryResult.value.data)
+    else failures += 1
+    if (waitingPrimaryResult.status === 'fulfilled' && waitingPrimaryResult.value.success) setWaitingPrimaryCases(waitingPrimaryResult.value.data)
     else failures += 1
     if (unresolvedResult.status === 'fulfilled' && unresolvedResult.value.success) {
       setUrgentCases(unresolvedResult.value.data.filter((item) => item.priority === 'urgent').slice(0, 10))
@@ -150,6 +159,7 @@ export default function NotificationsPage() {
 
   const cards = [
     { label: '本人確認待ち', value: followUpNotifications.length, tone: 'text-amber-700 bg-amber-50 border-amber-200' },
+    { label: '一次対応待ち', value: summary?.totals.waitingPrimary ?? 0, tone: 'text-amber-800 bg-amber-50 border-amber-300' },
     { label: '二次回答済み', value: summary?.totals.secondaryAnswered ?? 0, tone: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
     { label: '大至急', value: summary?.totals.urgent ?? 0, tone: 'text-red-700 bg-red-50 border-red-200' },
     { label: '自分宛メンション', value: myMentions.length, tone: 'text-sky-700 bg-sky-50 border-sky-200' },
@@ -219,7 +229,7 @@ export default function NotificationsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3 xl:grid-cols-6">
         {cards.map((card) => (
           <div key={card.label} className={`rounded-lg border px-3 py-2.5 sm:rounded-xl sm:px-4 sm:py-3 ${card.tone}`}>
             <p className="text-xs font-medium opacity-80">{card.label}</p>
@@ -233,15 +243,25 @@ export default function NotificationsPage() {
           <section className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 px-4 py-3">
               <h2 className="text-sm font-semibold text-slate-900">今見るもの</h2>
-              <p className="mt-0.5 text-xs text-slate-500">本人確認待ち 二次回答済み 大至急を優先して表示します。</p>
+              <p className="mt-0.5 text-xs text-slate-500">一次対応待ち、本人確認待ち、二次回答済み、大至急を優先して表示します。</p>
             </div>
             <div className="divide-y divide-slate-100">
               {loading ? (
                 <div className="p-4 text-sm text-slate-500">読み込み中...</div>
-              ) : followUpNotifications.length === 0 && secondaryAnsweredCases.length === 0 && urgentCases.length === 0 ? (
+              ) : waitingPrimaryCases.length === 0 && followUpNotifications.length === 0 && secondaryAnsweredCases.length === 0 && urgentCases.length === 0 ? (
                 <div className="p-6 text-sm font-medium text-slate-500">優先して確認するチケットはありません</div>
               ) : (
                 <>
+                  {waitingPrimaryCases.map((item) => (
+                    <Link key={`waiting-primary-${item.id}`} href={caseHref(item)} className="block px-4 py-3 hover:bg-amber-50/60">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-900">一次対応待ち</span>
+                        <span className="text-xs text-slate-400">更新 {formatDateTime(item.updatedAt)}</span>
+                      </div>
+                      <p className="mt-2 text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-amber-800">差し戻し理由や追加の連絡を確認して、次の対応を行ってください。</p>
+                    </Link>
+                  ))}
                   {followUpNotifications.map((item) => (
                     <Link key={`follow-up-${item.id}`} href={item.href} className="block px-4 py-3 hover:bg-slate-50">
                       <div className="flex flex-wrap items-center gap-2">

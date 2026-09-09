@@ -46,6 +46,7 @@ type AppNotificationKind =
   | 'case_followup_reminder'
   | 'secondary_assigned'
   | 'secondary_answered'
+  | 'secondary_needs_info'
   | 'support_mention'
   | 'chat_mention';
 
@@ -82,6 +83,15 @@ type EscalationAssignedRow = {
 };
 
 type EscalationAnsweredRow = {
+  id: string;
+  case_id: string;
+  case_title: string | null;
+  assignee: string;
+  answer: string;
+  updated_at: string;
+};
+
+type EscalationNeedsInfoRow = {
   id: string;
   case_id: string;
   case_title: string | null;
@@ -1057,7 +1067,11 @@ function parseWebPushSubscription(raw: WebPushSubscriptionBody): ValueResult<{
 function notificationMatchesSubscription(item: AppNotificationItem, subscription: WebPushSubscriptionRow): boolean {
   if (item.kind === 'urgent_case') return subscription.notify_urgent === 1;
   if (item.kind === 'case_followup_reminder') return false;
-  if (item.kind === 'secondary_assigned' || item.kind === 'secondary_answered') {
+  if (
+    item.kind === 'secondary_assigned'
+    || item.kind === 'secondary_answered'
+    || item.kind === 'secondary_needs_info'
+  ) {
     return subscription.notify_secondary === 1;
   }
   return subscription.notify_mentions === 1;
@@ -1279,6 +1293,56 @@ async function fetchSecondaryAnswered(
   }));
 }
 
+async function fetchSecondaryNeedsInfo(
+  db: D1Database,
+  staff: SupportAccessStaff,
+  after: string,
+  lineAccountId?: string,
+): Promise<AppNotificationItem[]> {
+  const assignmentName = supportStaffAssignmentName(staff) ?? '';
+  const conditions = [
+    'se.updated_at > ?',
+    'se.status = ?',
+    `(
+      sc.primary_assignee_staff_id = ?
+      OR (sc.primary_assignee_staff_id IS NULL AND sc.primary_assignee = ?)
+      OR sc.created_by = ?
+    )`,
+    '(se.updated_by IS NULL OR se.updated_by != ?)',
+  ];
+  const binds: unknown[] = [after, 'needs_info', staff.id, assignmentName, staff.id, staff.id];
+  if (lineAccountId) {
+    conditions.push('se.line_account_id = ?');
+    binds.push(lineAccountId);
+  }
+  const visibility = supportCaseVisibilitySql(staff, 'sc', 'se_scope_needs_info');
+  if (visibility.sql) {
+    conditions.push(visibility.sql);
+    binds.push(...visibility.binds);
+  }
+
+  const rows = await db
+    .prepare(
+      `SELECT se.id, se.case_id, sc.title AS case_title, se.assignee, se.answer, se.updated_at
+       FROM support_escalations se
+       INNER JOIN support_cases sc ON sc.id = se.case_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY se.updated_at DESC
+       LIMIT ?`,
+    )
+    .bind(...binds, NOTIFICATION_LIMIT)
+    .all<EscalationNeedsInfoRow>();
+
+  return rows.results.map((row) => ({
+    id: `secondary_needs_info:${row.id}:${row.updated_at}`,
+    kind: 'secondary_needs_info',
+    title: '二次対応から差し戻されました',
+    body: `${row.case_title || 'チケット'}: ${compact(row.answer, '差し戻し理由を確認して追加情報を入れてください')}`,
+    href: `/support?case=${encodeURIComponent(row.case_id)}`,
+    createdAt: row.updated_at,
+  }));
+}
+
 async function fetchSupportMentions(
   db: D1Database,
   staff: SupportAccessStaff,
@@ -1451,6 +1515,7 @@ export async function collectAppNotifications(
     fetchCaseFollowUpReminders(db, staff, after, lineAccountId, options.includePersistentDue),
     fetchSecondaryAssigned(db, staff, after, lineAccountId),
     fetchSecondaryAnswered(db, staff, after, lineAccountId),
+    fetchSecondaryNeedsInfo(db, staff, after, lineAccountId),
     fetchSupportMentions(db, staff, after, lineAccountId),
     fetchChatMentions(db, staff, after, lineAccountId),
   ]);

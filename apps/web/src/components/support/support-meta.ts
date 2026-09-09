@@ -130,6 +130,14 @@ export function getSupportCaseListEmptyState(input: {
     }
   }
 
+  if (input.queueFilter === 'waiting_primary') {
+    return {
+      title: '一次対応待ちのチケットはありません',
+      description: '差し戻しや追加の連絡を受けて、一次対応者が次に動くチケットはありません。',
+      actionLabel: '絞り込みをリセット',
+    }
+  }
+
   if (input.queueFilter === 'secondary_answered') {
     return {
       title: '二次対応回答済みのチケットはありません',
@@ -271,7 +279,7 @@ export const priorityOptions: Array<{ value: SupportPriority; label: string }> =
 export const statusLabel: Record<SupportCaseStatus, string> = {
   open: '未対応',
   in_progress: '対応中',
-  waiting_primary: '回答確認',
+  waiting_primary: '一次対応待ち',
   escalated: '二次対応中',
   waiting_secondary: '二次対応中',
   secondary_answered: '二次対応回答済み',
@@ -327,6 +335,7 @@ export const eventTypeLabel: Record<string, string> = {
   escalated: 'エスカレ作成',
   escalation_updated: 'エスカレ更新',
   escalation_reopened: 'エスカレ再開',
+  escalation_resubmitted: 'エスカレ再提出',
   internal_chat: '社内チャット',
   internal_thread_reply: '社内スレッド返信',
   customer_reply_sent: '顧客返信送信',

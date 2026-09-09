@@ -219,6 +219,42 @@ function makeFollowUpReminderDb() {
   return { db: { prepare, batch } as unknown as D1Database, calls };
 }
 
+function makeSecondaryNeedsInfoDb() {
+  const calls: DbCall[] = [];
+  const row = {
+    id: 'escalation-returned',
+    case_id: 'case-returned',
+    case_title: '返金条件の確認',
+    assignee: '二次 花子',
+    answer: '注文番号と入金日を追記してください',
+    updated_by: 'secondary-1',
+    updated_at: '2026-07-22T10:00:00.000+09:00',
+  };
+  const prepare = vi.fn((sql: string) => ({
+    bind: (...binds: unknown[]) => {
+      calls.push({ sql, binds });
+      return {
+        all: vi.fn(async () => {
+          if (sql.includes('FROM support_escalations se') && binds.includes('needs_info')) {
+            const recipientStaffId = binds[2];
+            const excludedUpdaterId = binds[5];
+            return {
+              results: recipientStaffId === 'staff-1' && excludedUpdaterId !== row.updated_by ? [row] : [],
+            };
+          }
+          return { results: [] };
+        }),
+        first: vi.fn(async () => null),
+        run: vi.fn(async () => ({ success: true, meta: { changes: 1 } })),
+      };
+    },
+  }));
+  const batch = vi.fn(async (statements: Array<{ run: () => Promise<unknown> }>) => (
+    Promise.all(statements.map((statement) => statement.run()))
+  ));
+  return { db: { prepare, batch } as unknown as D1Database, calls };
+}
+
 function makeInternalTaskDb(options: {
   groupSource?: boolean
   createdBy?: string
@@ -473,6 +509,43 @@ describe('app notifications', () => {
     expect(urgentCall?.sql).not.toContain('sc.friend_name');
     expect(calls.some((call) => call.sql.includes('INSERT INTO app_notification_inbox'))).toBe(true);
     expect(calls.some((call) => /DELETE\s+FROM/i.test(call.sql))).toBe(false);
+  });
+
+  test('notifies the primary operator of a returned escalation with its reason but not the secondary sender', async () => {
+    const primaryDb = makeSecondaryNeedsInfoDb();
+    const primaryRes = await setupApp(primaryDb.db, {
+      id: 'staff-1',
+      name: '田島',
+      role: 'staff',
+    }).request('/api/app-notifications/recent?after=2026-07-22T09:00:00.000%2B09:00&lineAccountId=acc-1');
+    const primaryBody = await primaryRes.json() as {
+      success: boolean;
+      data: { items: Array<{ kind: string; title: string; body: string; href: string }> };
+    };
+
+    expect(primaryRes.status).toBe(200);
+    expect(primaryBody.data.items).toContainEqual(expect.objectContaining({
+      kind: 'secondary_needs_info',
+      title: '二次対応から差し戻されました',
+      body: '返金条件の確認: 注文番号と入金日を追記してください',
+      href: '/support?case=case-returned',
+    }));
+    const needsInfoCall = primaryDb.calls.find((call) => call.binds.includes('needs_info'));
+    expect(needsInfoCall?.sql).toContain('sc.primary_assignee_staff_id = ?');
+    expect(needsInfoCall?.sql).toContain('(se.updated_by IS NULL OR se.updated_by != ?)');
+    expect(needsInfoCall?.binds).toContain('staff-1');
+
+    const senderDb = makeSecondaryNeedsInfoDb();
+    const senderRes = await setupApp(senderDb.db, {
+      id: 'secondary-1',
+      name: '二次 花子',
+      role: 'secondary',
+      secondaryCanRespond: true,
+    }).request('/api/app-notifications/recent?after=2026-07-22T09:00:00.000%2B09:00&lineAccountId=acc-1');
+    const senderBody = await senderRes.json() as { data: { items: Array<{ kind: string }> } };
+
+    expect(senderRes.status).toBe(200);
+    expect(senderBody.data.items.some((item) => item.kind === 'secondary_needs_info')).toBe(false);
   });
 
   test('internal chat feed searches old messages and returns a stable pagination cursor', async () => {

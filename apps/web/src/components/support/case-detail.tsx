@@ -55,6 +55,7 @@ interface CaseDetailProps {
   onSave: () => void
   onDiscard: () => void
   onQuickStatus: (status: SupportCaseStatus, eventBody: string) => Promise<boolean>
+  onEscalationResubmit: (escalationId: string, additionalInfo: string) => Promise<boolean>
   onInternalMessageCreate: (body: string, parentId: string | null, mentions: string[]) => Promise<boolean>
   onInternalMessageReaction: (messageId: string, emoji: string) => Promise<void>
   onFollowUpReminderConfigure: (intervalDays: number) => Promise<void>
@@ -784,6 +785,7 @@ export default function CaseDetail({
   onSave,
   onDiscard,
   onQuickStatus,
+  onEscalationResubmit,
   onInternalMessageCreate,
   onInternalMessageReaction,
   onFollowUpReminderConfigure,
@@ -798,6 +800,13 @@ export default function CaseDetail({
   onResetFilters,
 }: CaseDetailProps) {
   const [completing, setCompleting] = useState(false)
+  const [resubmitDrafts, setResubmitDrafts] = useState<Record<string, string>>({})
+  const [resubmittingId, setResubmittingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setResubmitDrafts({})
+    setResubmittingId(null)
+  }, [detail?.id])
 
   if (detailLoading && !detail) {
     return (
@@ -848,6 +857,24 @@ export default function CaseDetail({
   const latestAnsweredEscalation = answeredEscalations.length > 0
     ? answeredEscalations[answeredEscalations.length - 1]
     : null
+  const returnedEscalations = detail.escalations.filter((item) => item.status === 'needs_info')
+  const handleResubmit = async (escalationId: string) => {
+    const additionalInfo = resubmitDrafts[escalationId]?.trim() ?? ''
+    if (!additionalInfo || dirty || saving || resubmittingId) return
+    setResubmittingId(escalationId)
+    try {
+      const ok = await onEscalationResubmit(escalationId, additionalInfo)
+      if (ok) {
+        setResubmitDrafts((current) => {
+          const next = { ...current }
+          delete next[escalationId]
+          return next
+        })
+      }
+    } finally {
+      setResubmittingId(null)
+    }
+  }
   const assigneeChoices = Array.from(
     new Set([caseForm.primaryAssignee, ...caseForm.escalationAssignees, ...staffOptions].map((name) => name.trim()).filter(Boolean)),
   ).sort((a, b) => a.localeCompare(b, 'ja'))
@@ -1242,10 +1269,18 @@ export default function CaseDetail({
                   対応開始
                 </button>
               )}
-              {canEditCaseWork && (caseForm.status === 'secondary_answered' || caseForm.status === 'waiting_primary') && (
+              {canEditCaseWork && (
+                caseForm.status === 'secondary_answered'
+                || (caseForm.status === 'waiting_primary' && returnedEscalations.length === 0)
+              ) && (
                 <button
                   type="button"
-                  onClick={() => void onQuickStatus('in_progress', '二次回答を確認し、一次対応を再開しました')}
+                  onClick={() => void onQuickStatus(
+                    'in_progress',
+                    caseForm.status === 'secondary_answered'
+                      ? '二次回答を確認し、一次対応を再開しました'
+                      : '追加の連絡を確認し、一次対応を再開しました',
+                  )}
                   disabled={saving}
                   className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:opacity-50"
                 >
@@ -1315,6 +1350,73 @@ export default function CaseDetail({
             </div>
           )
         )}
+
+        {returnedEscalations.map((escalation) => {
+          const additionalInfo = resubmitDrafts[escalation.id] ?? ''
+          const resubmitting = resubmittingId === escalation.id
+          const canResubmit = detail.canResubmitEscalation && canEditCaseWork
+          return (
+            <section
+              key={`returned-${escalation.id}`}
+              className="rounded-2xl border-2 border-amber-300 bg-amber-50 p-4 text-amber-950 shadow-sm"
+              aria-label="二次対応からの差し戻し"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-amber-600 px-2.5 py-1 text-xs font-semibold text-white">差し戻し</span>
+                <h3 className="text-sm font-semibold">
+                  {escalation.assignee || '二次対応者'}から追加情報を求められています
+                </h3>
+                <span className="text-xs text-amber-700">更新 {formatDateTime(escalation.updatedAt)}</span>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-amber-200 bg-white/80 px-3 py-3">
+                <p className="text-xs font-semibold text-amber-800">差し戻し理由</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-6 text-slate-900">
+                  {escalation.answer || '差し戻し理由が記録されていません。二次対応者に確認してください。'}
+                </p>
+              </div>
+
+              {canResubmit ? (
+                <div className="mt-3">
+                  <label className="block" htmlFor={`resubmit-additional-info-${escalation.id}`}>
+                    <span className="text-xs font-semibold text-amber-900">追加情報・修正内容（必須）</span>
+                    <textarea
+                      id={`resubmit-additional-info-${escalation.id}`}
+                      value={additionalInfo}
+                      onChange={(event) => setResubmitDrafts((current) => ({
+                        ...current,
+                        [escalation.id]: event.target.value,
+                      }))}
+                      rows={4}
+                      disabled={saving || Boolean(resubmittingId)}
+                      className="mt-1 w-full resize-y rounded-xl border border-amber-300 bg-white px-3 py-2 text-sm leading-6 text-slate-900 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 disabled:cursor-not-allowed disabled:bg-amber-100/60"
+                      placeholder="不足していた情報、確認した事実、修正した内容を入力"
+                    />
+                  </label>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className={`text-xs ${dirty ? 'font-semibold text-red-700' : 'text-amber-800'}`}>
+                      {dirty
+                        ? '先にチケットの未保存変更を保存または破棄してください。'
+                        : '差し戻し理由と追加情報を二次対応者へまとめて送ります。'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleResubmit(escalation.id)}
+                      disabled={dirty || saving || Boolean(resubmittingId) || !additionalInfo.trim()}
+                      className="rounded-lg bg-amber-700 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {resubmitting ? '再提出中…' : '二次対応へ再提出'}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-3 rounded-lg border border-amber-200 bg-white/70 px-3 py-2 text-xs font-medium text-amber-900">
+                  再提出は、このチケットの一次対応者・作成者・管理者が行います。
+                </p>
+              )}
+            </section>
+          )
+        })}
 
         {latestAnsweredEscalation && (
           <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-950" role="status">

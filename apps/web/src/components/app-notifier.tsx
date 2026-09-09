@@ -29,6 +29,7 @@ function XIcon({ className = 'h-4 w-4' }: { className?: string }) {
 function notificationTone(item: AppNotificationItem): string {
   if (item.kind === 'urgent_case') return 'border-red-200 bg-white text-red-950'
   if (item.kind === 'secondary_answered') return 'border-emerald-200 bg-white text-emerald-950'
+  if (item.kind === 'secondary_needs_info') return 'border-amber-300 bg-white text-amber-950'
   if (item.kind === 'secondary_assigned') return 'border-indigo-200 bg-white text-indigo-950'
   return 'border-sky-200 bg-white text-sky-950'
 }

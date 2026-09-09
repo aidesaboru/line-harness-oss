@@ -35,10 +35,14 @@ type FilterMode = 'active' | 'answered' | 'all'
 const ESCALATION_REALTIME_POLL_MS = 8 * 1000
 
 function isActiveEscalation(item: SupportEscalation): boolean {
-  return item.status === 'pending' || item.status === 'needs_info' || item.status === 'transferred' || item.status === 'expert_check'
+  return item.status === 'pending' || item.status === 'transferred' || item.status === 'expert_check'
 }
 
 function isCompletedEscalation(item: SupportEscalation): boolean {
+  return item.status === 'answered' || item.status === 'needs_info' || item.status === 'closed'
+}
+
+function isReopenableEscalation(item: SupportEscalation): boolean {
   return item.status === 'answered' || item.status === 'closed'
 }
 
@@ -223,8 +227,10 @@ export default function EscalationsPage() {
   const handleUpdate = useCallback(async (item: SupportEscalation, status: 'answered' | 'needs_info') => {
     if (!selectedAccountId || savingId) return
     const answer = answers[item.id]?.trim() ?? ''
-    if (status === 'answered' && !answer) {
-      notify('error', '回答要点を入力してください')
+    if (!answer) {
+      notify('error', status === 'needs_info'
+        ? '一次対応者が修正できるように、差し戻し理由を入力してください'
+        : '回答要点を入力してください')
       return
     }
     setSavingId(item.id)
@@ -248,7 +254,7 @@ export default function EscalationsPage() {
   }, [answers, loadEscalations, notify, savingId, selectedAccountId])
 
   const handleReopen = useCallback(async (item: SupportEscalation) => {
-    if (!selectedAccountId || savingId || !isCompletedEscalation(item) || reopenedSourceIds.has(item.id)) return
+    if (!selectedAccountId || savingId || !isReopenableEscalation(item) || reopenedSourceIds.has(item.id)) return
     const confirmed = await requestConfirm({
       title: '二次対応を再開します',
       message: '元の回答済み・クローズ済みデータは履歴として残したまま、新しい未回答の二次対応を作成します。再開しますか？',
@@ -379,7 +385,7 @@ export default function EscalationsPage() {
       <div className="flex flex-wrap gap-2">
         {[
           { key: 'active' as const, label: '未回答', count: counts.active },
-          { key: 'answered' as const, label: '完了済み', count: counts.answered },
+          { key: 'answered' as const, label: '対応済み', count: counts.answered },
           { key: 'all' as const, label: 'すべて', count: items.length },
         ].map((tab) => (
           <button
@@ -414,6 +420,7 @@ export default function EscalationsPage() {
           const urgency = dueUrgency(item.dueAt)
           const saving = savingId === item.id
           const completed = isCompletedEscalation(item)
+          const returned = item.status === 'needs_info'
           const alreadyReopened = reopenedSourceIds.has(item.id)
           return (
             <section key={item.id} className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
@@ -468,29 +475,37 @@ export default function EscalationsPage() {
               </div>
 
               {completed ? (
-                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <p className="text-xs font-bold text-slate-600">登録済みの回答</p>
-                  <p className={`mt-1 whitespace-pre-wrap break-words text-sm leading-6 ${item.answer ? 'text-slate-900' : 'text-slate-500'}`}>
-                    {item.answer || '回答内容は登録されていません'}
+                <div className={`mt-3 rounded-lg border p-3 ${returned ? 'border-amber-200 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}>
+                  <p className={`text-xs font-bold ${returned ? 'text-amber-800' : 'text-slate-600'}`}>
+                    {returned ? '一次対応者への差し戻し理由' : '登録済みの回答'}
                   </p>
-                  <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3">
-                    <p className="text-xs text-slate-500">
-                      {alreadyReopened ? 'この履歴から未回答の二次対応を再開済みです' : '完了済みの内容は閲覧専用です'}
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => void handleReopen(item)}
-                      disabled={alreadyReopened || saving || Boolean(savingId)}
-                      className="rounded-md border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {alreadyReopened ? '再開済み' : saving ? '再開中...' : '未回答として再開'}
-                    </button>
-                  </div>
+                  <p className={`mt-1 whitespace-pre-wrap break-words text-sm leading-6 ${item.answer ? 'text-slate-900' : 'text-slate-500'}`}>
+                    {item.answer || (returned ? '差し戻し理由は登録されていません' : '回答内容は登録されていません')}
+                  </p>
+                  {returned ? (
+                    <div className="mt-3 border-t border-amber-200 pt-3">
+                      <p className="text-xs font-bold text-amber-900">一次対応者の追加情報待ちです。この画面での作業は完了しています。</p>
+                    </div>
+                  ) : (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-3">
+                      <p className="text-xs text-slate-500">
+                        {alreadyReopened ? 'この履歴から未回答の二次対応を再開済みです' : '完了済みの内容は閲覧専用です'}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => void handleReopen(item)}
+                        disabled={alreadyReopened || saving || Boolean(savingId)}
+                        className="rounded-md border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {alreadyReopened ? '再開済み' : saving ? '再開中...' : '未回答として再開'}
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <>
                   <label className="mt-3 block">
-                    <span className="mb-1 block text-xs font-bold text-gray-600">回答要点</span>
+                    <span className="mb-1 block text-xs font-bold text-gray-600">回答要点・差し戻し理由</span>
                     <textarea
                       value={answers[item.id] ?? ''}
                       onChange={(e) => setAnswers((prev) => ({ ...prev, [item.id]: e.target.value }))}
@@ -504,8 +519,9 @@ export default function EscalationsPage() {
                     <button
                       type="button"
                       onClick={() => void handleUpdate(item, 'needs_info')}
-                      disabled={saving || Boolean(savingId)}
+                      disabled={saving || Boolean(savingId) || !(answers[item.id] ?? '').trim()}
                       className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      title={(answers[item.id] ?? '').trim() ? undefined : '差し戻し理由を回答要点に入力してください'}
                     >
                       差し戻し
                     </button>

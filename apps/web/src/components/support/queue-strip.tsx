@@ -6,6 +6,7 @@ export type QueueKey =
   | 'all'
   | 'escalated'
   | 'secondary_answered'
+  | 'waiting_primary'
   | 'primary_action'
   | 'waiting_customer'
   | 'resolved'
@@ -24,6 +25,7 @@ const chips: QueueChip[] = [
   { key: 'all', label: '未完了', countCls: 'text-slate-700', activeCls: 'border-slate-300 bg-slate-100 text-slate-900' },
   { key: 'escalated', label: '二次対応中', countCls: 'text-indigo-600', activeCls: 'border-indigo-200 bg-indigo-50 text-indigo-800' },
   { key: 'secondary_answered', label: '二次回答済み', countCls: 'text-emerald-600', activeCls: 'border-emerald-200 bg-emerald-50 text-emerald-800' },
+  { key: 'waiting_primary', label: '一次対応待ち', countCls: 'text-amber-700', activeCls: 'border-amber-300 bg-amber-50 text-amber-900' },
   { key: 'primary_action', label: '対応中', countCls: 'text-amber-600', activeCls: 'border-amber-200 bg-amber-50 text-amber-800' },
   { key: 'waiting_customer', label: '顧客返信待ち', countCls: 'text-blue-600', activeCls: 'border-blue-200 bg-blue-50 text-blue-800' },
   { key: 'resolved', label: '完了済みチケット', countCls: 'text-gray-400', activeCls: 'border-slate-200 bg-slate-50 text-slate-600', muted: true },
@@ -44,6 +46,7 @@ function chipCount(key: QueueKey, summary: SupportSummary | null): number {
     case 'all': return summary.totals.open
     case 'escalated': return summary.totals.escalated
     case 'secondary_answered': return summary.totals.secondaryAnswered
+    case 'waiting_primary': return summary.totals.waitingPrimary
     case 'primary_action': return summary.totals.primaryAction
     case 'waiting_customer': return summary.totals.waitingCustomer
     case 'resolved': return summary.totals.resolved

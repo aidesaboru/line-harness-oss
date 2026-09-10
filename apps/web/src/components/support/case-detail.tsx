@@ -9,6 +9,7 @@ import MentionText from '@/components/shared/mention-text'
 import {
   categoryLabel,
   canOpenChatWithDraft,
+  customerResponseDuePresets,
   escalationStatusMeta,
   eventTypeLabel,
   formatDateTime,
@@ -47,6 +48,7 @@ interface CaseDetailProps {
   slackNotificationDeleting: boolean
   canEditRouting: boolean
   canEditCaseWork: boolean
+  canEditCustomerResponseDeadline: boolean
   canCompleteCase: boolean
   canDeleteSlackNotification: boolean
   staffOptions: string[]
@@ -777,6 +779,7 @@ export default function CaseDetail({
   slackNotificationDeleting,
   canEditRouting: requestedCanEditRouting,
   canEditCaseWork: requestedCanEditCaseWork,
+  canEditCustomerResponseDeadline: requestedCanEditCustomerResponseDeadline,
   canCompleteCase,
   canDeleteSlackNotification,
   staffOptions,
@@ -832,6 +835,7 @@ export default function CaseDetail({
   const secondaryUnassigned = caseForm.escalationAssignees.length === 0
   const secondaryAssigneeLabel = caseForm.escalationAssignees.join('、') || '未設定'
   const primaryAssigneeLabel = caseForm.primaryAssignee.trim() || '未設定'
+  const canEditCustomerResponseDeadline = !isSharedProxy && requestedCanEditCustomerResponseDeadline
   const customerNumberLabel = detail.customerNumber?.trim() || '未登録'
   const companyNameLabel = detail.companyName?.trim() || '未登録'
   const representativeNameLabel = detail.contactName?.trim() || '未登録'
@@ -941,7 +945,11 @@ export default function CaseDetail({
                 </Link>
               )}
               <span className="text-xs text-gray-400">更新 {formatDateTime(detail.updatedAt)}</span>
-              <DueBadge value={caseForm.status === 'resolved' ? null : detail.dueAt} />
+              <DueBadge
+                value={caseForm.status === 'resolved' ? null : detail.customerResponseDueAt}
+                prefix="顧客回答"
+              />
+              <DueBadge value={caseForm.status === 'resolved' ? null : detail.dueAt} prefix="エスカレ" />
               <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
                 secondaryUnassigned
                   ? 'bg-slate-100 text-slate-500'
@@ -997,7 +1005,7 @@ export default function CaseDetail({
           </div>
         ) : !canEditRouting && (
           <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-800">
-            staff権限では対応内容だけ編集できます。担当割り、期限、緊急度、顧客属性はowner/adminが管理します。
+            staff権限では対応内容と、自分が一次対応者である案件の回答約束日を編集できます。担当割り、エスカレーション回答期日、緊急度、顧客属性はowner/adminが管理します。
           </div>
         )}
 
@@ -1041,7 +1049,7 @@ export default function CaseDetail({
                 <p className="mt-0.5 text-xs text-slate-500">件名と相談内容をここで確認します。</p>
               </div>
               {overdue && caseForm.status !== 'resolved' && (
-                <Pill className="border-red-200 bg-red-50 text-red-700">期限超過</Pill>
+                <Pill className="border-red-200 bg-red-50 text-red-700">エスカレーション期限超過</Pill>
               )}
             </div>
             <div className="space-y-3">
@@ -1201,14 +1209,37 @@ export default function CaseDetail({
                 </div>
               </div>
 
+              <label className="block rounded-lg border border-emerald-100 bg-emerald-50/50 px-3 py-3">
+                <span className="text-xs font-semibold text-emerald-800">お客様への回答約束日</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-500">
+                  1営業日前の10:00に、現在の一次対応者本人へSlack通知します。
+                </span>
+                <input
+                  type="datetime-local"
+                  value={caseForm.customerResponseDueAt}
+                  onChange={(e) => onFormChange({ customerResponseDueAt: e.target.value })}
+                  disabled={!canEditCustomerResponseDeadline}
+                  className={`${lockedInputCls} mt-2 px-3 py-2 text-sm`}
+                />
+                <DueTimePresetRow
+                  hasValue={Boolean(caseForm.customerResponseDueAt)}
+                  onApply={(value) => onFormChange({ customerResponseDueAt: value })}
+                  disabled={!canEditCustomerResponseDeadline}
+                  presets={customerResponseDuePresets}
+                />
+              </label>
+
               <label className="block">
-                <span className="text-xs font-medium text-slate-500">期限</span>
+                <span className="text-xs font-medium text-slate-500">エスカレーション回答期日</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-slate-400">
+                  上長・チーム側の回答期限として使います。
+                </span>
                 <input
                   type="datetime-local"
                   value={caseForm.dueAt}
                   onChange={(e) => onFormChange({ dueAt: e.target.value })}
                   disabled={!canEditRouting}
-                  className={`${lockedInputCls} mt-1 px-3 py-2 text-sm`}
+                  className={`${lockedInputCls} mt-2 px-3 py-2 text-sm`}
                 />
                 <DueTimePresetRow
                   hasValue={Boolean(caseForm.dueAt)}

@@ -98,8 +98,9 @@
     "090_sales_customer_overviews.sql",
     "091_sales_customer_semantic_summaries.sql",
     "092_sales_customer_semantic_summaries_v2.sql",
-    "093_sales_customer_situation_timelines.sql"
+    "093_sales_customer_situation_timelines.sql",
+    "094_support_primary_response_deadline.sql"
   ],
-  "migrationCount": 99,
+  "migrationCount": 100,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

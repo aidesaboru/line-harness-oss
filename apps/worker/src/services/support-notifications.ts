@@ -9,6 +9,8 @@ const SUPPORT_TICKET_STATE_CONFLICT_EVENT = 'slack_ticket_created_state_conflict
 const SUPPORT_SECONDARY_ASSIGNED_EVENT = 'slack_secondary_assigned_sent';
 const SUPPORT_SECONDARY_REOPENED_EVENT = 'slack_secondary_reopened_sent';
 const SUPPORT_SECONDARY_STATE_CONFLICT_EVENT = 'slack_secondary_state_conflict';
+const SUPPORT_PRIMARY_RESPONSE_DEADLINE_SENT_EVENT = 'slack_primary_response_deadline_sent';
+const SUPPORT_PRIMARY_RESPONSE_DEADLINE_STATE_CONFLICT_EVENT = 'slack_primary_response_deadline_state_conflict';
 const SUPPORT_SLACK_NOTIFICATION_REISSUED_EVENT = 'slack_notification_reissued';
 export const SUPPORT_TICKET_SLACK_NOTIFICATION_DELETED_EVENT = 'slack_ticket_created_deleted';
 export const SUPPORT_TICKET_SLACK_NOTIFICATION_DELETE_REQUESTED_EVENT = 'slack_ticket_created_delete_requested';
@@ -102,6 +104,19 @@ type SupportSlackOutboxRow = {
   slack_message_ts: string | null;
   sent_at: string | null;
   updated_at: string;
+};
+
+type SupportPrimaryResponseSlackRow = {
+  id: string;
+  case_id: string;
+  line_account_id: string;
+  response_due_at: string;
+  reminder_at: string;
+  recipient_staff_id: string;
+  recipient_name: string;
+  slack_user_id: string | null;
+  title: string;
+  attempts: number;
 };
 
 type SupportSlackQueue = 'ticket_created' | 'secondary_event';
@@ -1446,20 +1461,48 @@ async function getSupportSlackQueueHealth(
   return health;
 }
 
+async function getPrimaryResponseSlackHealth(db: D1Database): Promise<SupportTicketSlackHealth> {
+  const rows = await db.prepare(
+    `SELECT status, COUNT(*) AS count, MAX(updated_at) AS last_updated_at
+     FROM support_primary_response_slack_outbox
+     GROUP BY status`,
+  ).all<{ status: string; count: number; last_updated_at: string | null }>();
+  const health: SupportTicketSlackHealth = {
+    pending: 0,
+    sending: 0,
+    failed: 0,
+    deadLetter: 0,
+    sent: 0,
+    lastUpdatedAt: null,
+  };
+  for (const row of rows.results) {
+    if (row.status === 'pending') health.pending = Number(row.count) || 0;
+    else if (row.status === 'sending') health.sending = Number(row.count) || 0;
+    else if (row.status === 'failed') health.failed = Number(row.count) || 0;
+    else if (row.status === 'dead_letter') health.deadLetter = Number(row.count) || 0;
+    else if (row.status === 'sent') health.sent = Number(row.count) || 0;
+    if (row.last_updated_at && (!health.lastUpdatedAt || row.last_updated_at > health.lastUpdatedAt)) {
+      health.lastUpdatedAt = row.last_updated_at;
+    }
+  }
+  return health;
+}
+
 export async function getSupportTicketSlackNotificationHealth(
   db: D1Database,
 ): Promise<SupportTicketSlackHealth> {
-  const [ticketHealth, secondaryHealth] = await Promise.all([
+  const [ticketHealth, secondaryHealth, primaryResponseHealth] = await Promise.all([
     getSupportSlackQueueHealth(db, 'ticket_created'),
     getSupportSlackQueueHealth(db, 'secondary_event'),
+    getPrimaryResponseSlackHealth(db),
   ]);
   return {
-    pending: ticketHealth.pending + secondaryHealth.pending,
-    sending: ticketHealth.sending + secondaryHealth.sending,
-    failed: ticketHealth.failed + secondaryHealth.failed,
-    deadLetter: ticketHealth.deadLetter + secondaryHealth.deadLetter,
-    sent: ticketHealth.sent + secondaryHealth.sent,
-    lastUpdatedAt: [ticketHealth.lastUpdatedAt, secondaryHealth.lastUpdatedAt]
+    pending: ticketHealth.pending + secondaryHealth.pending + primaryResponseHealth.pending,
+    sending: ticketHealth.sending + secondaryHealth.sending + primaryResponseHealth.sending,
+    failed: ticketHealth.failed + secondaryHealth.failed + primaryResponseHealth.failed,
+    deadLetter: ticketHealth.deadLetter + secondaryHealth.deadLetter + primaryResponseHealth.deadLetter,
+    sent: ticketHealth.sent + secondaryHealth.sent + primaryResponseHealth.sent,
+    lastUpdatedAt: [ticketHealth.lastUpdatedAt, secondaryHealth.lastUpdatedAt, primaryResponseHealth.lastUpdatedAt]
       .filter((value): value is string => Boolean(value))
       .sort()
       .at(-1) ?? null,
@@ -1519,10 +1562,322 @@ export async function processPendingSupportSecondarySlackNotifications(
   return processPendingSupportSlackNotifications(db, runtime, 'secondary_event');
 }
 
+/** Returns 10:00 JST on the previous Monday-Friday business day. */
+export function customerResponseReminderAt(dueAt: string): string | null {
+  const due = parseJstTimestamp(dueAt);
+  if (!due) return null;
+  const dueJst = toJstString(due);
+  const cursor = new Date(`${dueJst.slice(0, 10)}T00:00:00.000+09:00`);
+  const weekday = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Tokyo',
+    weekday: 'short',
+  });
+  do {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  } while (['Sat', 'Sun'].includes(weekday.format(cursor)));
+  return `${toJstString(cursor).slice(0, 10)}T10:00:00.000+09:00`;
+}
+
+function primaryResponseMention(
+  row: Pick<SupportPrimaryResponseSlackRow, 'recipient_staff_id' | 'recipient_name' | 'slack_user_id'>,
+  configuredMap: string | undefined,
+): string | null {
+  if (validSlackUserId(row.slack_user_id)) return row.slack_user_id;
+  const fallback = parseSupportSlackMentionMap(configuredMap);
+  return fallback.get(row.recipient_staff_id)
+    ?? fallback.get(normalizedStaffName(row.recipient_name))
+    ?? null;
+}
+
+export function buildPrimaryResponseDeadlineSlackPayload(
+  row: Pick<SupportPrimaryResponseSlackRow, 'id' | 'case_id' | 'title' | 'response_due_at'>,
+  input: { channelId: string; slackUserId: string; url: string; now: Date },
+): Record<string, unknown> {
+  const overdue = input.now.getTime() >= (parseJstTimestamp(row.response_due_at)?.getTime() ?? Number.POSITIVE_INFINITY);
+  const heading = overdue ? 'お客様への回答約束日を過ぎています' : 'お客様への回答約束日が近づいています';
+  const due = formatJstShort(row.response_due_at, input.now) ?? row.response_due_at;
+  const mention = `<@${input.slackUserId}>`;
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${mention}\n*${slackEscape(heading)}*`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        slackField('チケット', row.title),
+        slackField('回答約束日', due),
+      ],
+    },
+    {
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: '通知先: 現在の一次対応者本人 / 通知条件: 1営業日前' }],
+    },
+  ];
+  if (isHttpUrl(input.url)) {
+    blocks.push({
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'チケットを確認する →', emoji: true },
+        url: input.url,
+        value: row.case_id,
+        action_id: 'open_primary_response_deadline_case',
+        style: overdue ? 'danger' : 'primary',
+      }],
+    });
+  }
+  const clientMessageId = /^[a-f0-9]{32}$/i.test(row.id)
+    ? `${row.id.slice(0, 8)}-${row.id.slice(8, 12)}-${row.id.slice(12, 16)}-${row.id.slice(16, 20)}-${row.id.slice(20)}`
+    : row.id;
+  return {
+    channel: input.channelId,
+    text: truncateText(`${mention} ${heading} ${row.title} / ${due}`, 4000),
+    blocks,
+    unfurl_links: false,
+    unfurl_media: false,
+    client_msg_id: clientMessageId,
+  };
+}
+
+async function markPrimaryResponseSlackFailed(
+  db: D1Database,
+  outboxId: string,
+  claimToken: string,
+  failure: { code: string; retryable: boolean; retryAfterSeconds: number | null },
+  attempt: number,
+  now: Date,
+): Promise<void> {
+  const nowText = toJstString(now);
+  const shouldRetry = failure.retryable && attempt < MAX_TICKET_NOTIFICATION_ATTEMPTS;
+  await db.prepare(
+    `UPDATE support_primary_response_slack_outbox
+     SET status = ?, last_error_code = ?, next_attempt_at = ?,
+         claim_token = NULL, updated_at = ?
+     WHERE id = ? AND status = 'sending' AND claim_token = ?`,
+  ).bind(
+    shouldRetry ? 'failed' : 'dead_letter',
+    failure.code,
+    ticketRetryAt(now, attempt, failure.retryAfterSeconds),
+    nowText,
+    outboxId,
+    claimToken,
+  ).run();
+}
+
+async function deliverPrimaryResponseDeadlineSlackNotification(
+  db: D1Database,
+  outboxId: string,
+  runtime: SupportTicketSlackRuntime,
+  now: Date,
+): Promise<{ sent: boolean; reason: string }> {
+  const token = runtime.slackBotToken?.trim();
+  const channelId = runtime.slackChannelId?.trim();
+  if (!token || !channelId) return { sent: false, reason: token ? 'channel_missing' : 'token_missing' };
+  const nowText = toJstString(now);
+  const staleBefore = toJstString(new Date(now.getTime() - TICKET_NOTIFICATION_STALE_MINUTES * 60_000));
+  const claimToken = crypto.randomUUID();
+  const claim = await db.prepare(
+    `UPDATE support_primary_response_slack_outbox
+     SET status = 'sending', attempts = attempts + 1, claim_token = ?,
+         last_error_code = NULL, updated_at = ?
+     WHERE id = ?
+       AND (
+         (status IN ('pending', 'failed') AND next_attempt_at <= ?)
+         OR (status = 'sending' AND updated_at <= ?)
+       )`,
+  ).bind(claimToken, nowText, outboxId, nowText, staleBefore).run();
+  if (Number(claim.meta.changes ?? 0) === 0) return { sent: false, reason: 'not_due_or_claimed' };
+
+  const row = await db.prepare(
+    `SELECT outbox.id, outbox.case_id, outbox.line_account_id,
+            outbox.response_due_at, outbox.reminder_at,
+            outbox.recipient_staff_id, outbox.attempts,
+            staff.name AS recipient_name, staff.slack_user_id,
+            support_case.title
+     FROM support_primary_response_slack_outbox outbox
+     JOIN support_cases support_case
+       ON support_case.id = outbox.case_id
+      AND support_case.line_account_id = outbox.line_account_id
+     JOIN staff_members staff
+       ON staff.id = outbox.recipient_staff_id
+      AND staff.is_active = 1
+     WHERE outbox.id = ? AND outbox.status = 'sending' AND outbox.claim_token = ?
+       AND support_case.status != 'resolved'
+       AND support_case.customer_response_due_at = outbox.response_due_at
+       AND support_case.customer_response_reminder_at = outbox.reminder_at
+       AND support_case.primary_assignee_staff_id = outbox.recipient_staff_id`,
+  ).bind(outboxId, claimToken).first<SupportPrimaryResponseSlackRow>();
+  if (!row) {
+    await db.prepare(
+      `UPDATE support_primary_response_slack_outbox
+       SET status = 'cancelled', claim_token = NULL, updated_at = ?
+       WHERE id = ? AND status = 'sending' AND claim_token = ?`,
+    ).bind(nowText, outboxId, claimToken).run();
+    return { sent: false, reason: 'stale' };
+  }
+
+  const slackUserId = primaryResponseMention(row, runtime.slackMentionMap);
+  if (!slackUserId) {
+    await markPrimaryResponseSlackFailed(
+      db,
+      outboxId,
+      claimToken,
+      { code: 'mention_mapping_missing', retryable: true, retryAfterSeconds: 60 * 60 },
+      row.attempts,
+      now,
+    );
+    return { sent: false, reason: 'delivery_failed' };
+  }
+
+  const payload = buildPrimaryResponseDeadlineSlackPayload(row, {
+    channelId,
+    slackUserId,
+    url: supportUrl(runtime.adminPublicUrl, row.case_id),
+    now,
+  });
+  try {
+    const delivered = await sendSlackMessage(token, payload, runtime.sendSlackMessage);
+    const marked = await db.prepare(
+      `UPDATE support_primary_response_slack_outbox
+       SET status = 'sent', slack_message_ts = ?, sent_at = ?,
+           claim_token = NULL, updated_at = ?
+       WHERE id = ? AND status = 'sending' AND claim_token = ?`,
+    ).bind(delivered.messageTs, nowText, nowText, outboxId, claimToken).run();
+    const stateConflict = Number(marked.meta.changes ?? 0) === 0;
+    try {
+      await addNotificationEvent(
+        db,
+        row.case_id,
+        stateConflict
+          ? SUPPORT_PRIMARY_RESPONSE_DEADLINE_STATE_CONFLICT_EVENT
+          : SUPPORT_PRIMARY_RESPONSE_DEADLINE_SENT_EVENT,
+        stateConflict
+          ? 'Slack送信後の一次回答期限通知状態が競合しました'
+          : '一次対応者へ回答約束日のSlack通知を送信しました',
+        {
+          channel: 'slack',
+          channelId,
+          recipientStaffId: row.recipient_staff_id,
+          responseDueAt: row.response_due_at,
+          slackMessageTs: delivered.messageTs,
+        },
+      );
+    } catch (error) {
+      console.error(`primary response Slack audit error: ${error instanceof Error ? error.name : typeof error}`);
+    }
+    return { sent: true, reason: stateConflict ? 'sent_state_conflict' : 'sent' };
+  } catch (error) {
+    const failure = slackDeliveryFailure(error);
+    await markPrimaryResponseSlackFailed(db, outboxId, claimToken, failure, row.attempts, now);
+    console.error(`primary response Slack notification error: ${failure.code}`);
+    return { sent: false, reason: 'delivery_failed' };
+  }
+}
+
+export async function processPrimaryResponseDeadlineSlackNotifications(
+  db: D1Database,
+  runtime: SupportTicketSlackRuntime = {},
+): Promise<{ queued: number; cancelled: number; sent: number; skipped: number; failed: number }> {
+  if (!runtime.slackBotToken?.trim() || !runtime.slackChannelId?.trim()) {
+    return { queued: 0, cancelled: 0, sent: 0, skipped: 1, failed: 0 };
+  }
+  const now = runtime.now ?? new Date();
+  const nowText = toJstString(now);
+  const cancelled = await db.prepare(
+    `UPDATE support_primary_response_slack_outbox AS outbox
+     SET status = 'cancelled', claim_token = NULL, updated_at = ?
+     WHERE outbox.status IN ('pending', 'sending', 'failed', 'dead_letter')
+       AND NOT EXISTS (
+         SELECT 1
+         FROM support_cases support_case
+         JOIN staff_members staff
+           ON staff.id = support_case.primary_assignee_staff_id
+          AND staff.is_active = 1
+         WHERE support_case.id = outbox.case_id
+           AND support_case.line_account_id = outbox.line_account_id
+           AND support_case.status != 'resolved'
+           AND support_case.customer_response_due_at = outbox.response_due_at
+           AND support_case.customer_response_reminder_at = outbox.reminder_at
+           AND support_case.primary_assignee_staff_id = outbox.recipient_staff_id
+       )`,
+  ).bind(nowText).run();
+  const reactivated = await db.prepare(
+    `UPDATE support_primary_response_slack_outbox AS outbox
+     SET status = 'pending', attempts = 0, next_attempt_at = ?,
+         claim_token = NULL, last_error_code = NULL, updated_at = ?
+     WHERE outbox.status = 'cancelled'
+       AND EXISTS (
+         SELECT 1
+         FROM support_cases support_case
+         JOIN staff_members staff
+           ON staff.id = support_case.primary_assignee_staff_id
+          AND staff.is_active = 1
+         WHERE support_case.id = outbox.case_id
+           AND support_case.line_account_id = outbox.line_account_id
+           AND support_case.status != 'resolved'
+           AND support_case.customer_response_due_at = outbox.response_due_at
+           AND support_case.customer_response_reminder_at = outbox.reminder_at
+           AND support_case.primary_assignee_staff_id = outbox.recipient_staff_id
+           AND support_case.customer_response_reminder_at <= ?
+       )`,
+  ).bind(nowText, nowText, nowText).run();
+  const queued = await db.prepare(
+    `INSERT OR IGNORE INTO support_primary_response_slack_outbox (
+       id, case_id, line_account_id, response_due_at, reminder_at,
+       recipient_staff_id, status, attempts, next_attempt_at, created_at, updated_at
+     )
+     SELECT lower(hex(randomblob(16))), support_case.id, support_case.line_account_id,
+            support_case.customer_response_due_at, support_case.customer_response_reminder_at,
+            support_case.primary_assignee_staff_id, 'pending', 0, ?, ?, ?
+     FROM support_cases support_case
+     JOIN staff_members staff
+       ON staff.id = support_case.primary_assignee_staff_id
+      AND staff.is_active = 1
+     WHERE support_case.line_account_id IS NOT NULL
+       AND support_case.status != 'resolved'
+       AND support_case.customer_response_due_at IS NOT NULL
+       AND support_case.customer_response_reminder_at IS NOT NULL
+       AND support_case.customer_response_reminder_at <= ?`,
+  ).bind(nowText, nowText, nowText, nowText).run();
+
+  const staleBefore = toJstString(new Date(now.getTime() - TICKET_NOTIFICATION_STALE_MINUTES * 60_000));
+  const rows = await db.prepare(
+    `SELECT id
+     FROM support_primary_response_slack_outbox
+     WHERE (
+       (status IN ('pending', 'failed') AND next_attempt_at <= ?)
+       OR (status = 'sending' AND updated_at <= ?)
+     )
+     ORDER BY created_at ASC
+     LIMIT ?`,
+  ).bind(nowText, staleBefore, MAX_TICKET_NOTIFICATION_BATCH).all<{ id: string }>();
+
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
+  for (const row of rows.results) {
+    const result = await deliverPrimaryResponseDeadlineSlackNotification(db, row.id, runtime, now);
+    if (result.sent) sent += 1;
+    else if (result.reason === 'delivery_failed') failed += 1;
+    else skipped += 1;
+  }
+  return {
+    queued: Number(queued.meta.changes ?? 0) + Number(reactivated.meta.changes ?? 0),
+    cancelled: Number(cancelled.meta.changes ?? 0),
+    sent,
+    skipped,
+    failed,
+  };
+}
+
 export async function requeueDeadLetterSupportSlackNotifications(
   db: D1Database,
   now: Date = new Date(),
-): Promise<{ ticketCreated: number; secondaryEvents: number; total: number }> {
+): Promise<{ ticketCreated: number; secondaryEvents: number; primaryResponse: number; total: number }> {
   const nowText = toJstString(now);
   const results: number[] = [];
   for (const queue of ['ticket_created', 'secondary_event'] as const) {
@@ -1538,10 +1893,18 @@ export async function requeueDeadLetterSupportSlackNotifications(
       .run();
     results.push(Number(result.meta.changes ?? 0));
   }
+  const primaryResponse = await db.prepare(
+    `UPDATE support_primary_response_slack_outbox
+     SET status = 'pending', attempts = 0, next_attempt_at = ?,
+         claim_token = NULL, last_error_code = NULL, updated_at = ?
+     WHERE status = 'dead_letter'`,
+  ).bind(nowText, nowText).run();
+  results.push(Number(primaryResponse.meta.changes ?? 0));
   return {
     ticketCreated: results[0] ?? 0,
     secondaryEvents: results[1] ?? 0,
-    total: (results[0] ?? 0) + (results[1] ?? 0),
+    primaryResponse: results[2] ?? 0,
+    total: (results[0] ?? 0) + (results[1] ?? 0) + (results[2] ?? 0),
   };
 }
 

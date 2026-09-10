@@ -437,6 +437,8 @@ export type SupportCase = {
   escalationAssignees?: string[]
   escalationLevel: 'L1' | 'L2' | 'L3'
   dueAt: string | null
+  customerResponseDueAt: string | null
+  customerResponseReminderAt: string | null
   nextCheckAt: string | null
   customerNumber: string | null
   companyName: string | null
@@ -1508,6 +1510,7 @@ export const api = {
         escalationAssignee?: string | null
         escalationAssignees?: string[]
         dueAt?: string | null
+        customerResponseDueAt?: string | null
         nextCheckAt?: string | null
         customerNumber?: string | null
         companyName?: string | null
@@ -1533,6 +1536,7 @@ export const api = {
         escalationAssignee: string | null
         escalationLevel: 'L1' | 'L2' | 'L3'
         dueAt: string | null
+        customerResponseDueAt: string | null
         nextCheckAt: string | null
         customerNumber: string | null
         companyName: string | null

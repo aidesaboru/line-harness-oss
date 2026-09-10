@@ -72,6 +72,8 @@ function CaseRow({
   onSelect: (id: string) => void
 }) {
   const overdue = isOverdueCase(item)
+  const customerResponseUrgency = dueUrgency(item.customerResponseDueAt)
+  const customerResponseOverdue = item.status !== 'resolved' && customerResponseUrgency === 'overdue'
   const stale = isStaleCase(item)
   const urgency = dueUrgency(item.dueAt)
   const customerName = item.friendName || item.companyName || item.contactName || '顧客未紐付け'
@@ -90,10 +92,18 @@ function CaseRow({
         : urgency === 'soon'
           ? 'font-medium text-amber-700'
           : 'text-gray-500'
+  const customerResponseDueTone =
+    item.status === 'resolved'
+      ? 'text-gray-400'
+      : customerResponseUrgency === 'overdue'
+        ? 'font-medium text-red-700'
+        : customerResponseUrgency === 'soon'
+          ? 'font-medium text-amber-700'
+          : 'text-emerald-700'
   const accentTone =
     followUpNeedsConfirmation
       ? 'bg-amber-500'
-      : item.priority === 'urgent' || overdue
+      : item.priority === 'urgent' || overdue || customerResponseOverdue
       ? 'bg-red-500'
       : item.priority === 'high'
         ? 'bg-orange-500'
@@ -170,10 +180,20 @@ function CaseRow({
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
-          {item.dueAt && (
-            <span className={`rounded-md bg-slate-50 px-2 py-0.5 ${dueTone}`}>期限 {formatRelativeDue(item.dueAt)}</span>
+          {item.customerResponseDueAt && (
+            <span className={`rounded-md bg-emerald-50 px-2 py-0.5 ${customerResponseDueTone}`}>
+              顧客回答 {formatRelativeDue(item.customerResponseDueAt)}
+            </span>
           )}
-          {overdue && <span className="rounded-md bg-red-50 px-2 py-0.5 font-medium text-red-700">期限超過</span>}
+          {item.dueAt && (
+            <span className={`rounded-md bg-slate-50 px-2 py-0.5 ${dueTone}`}>
+              エスカレ {formatRelativeDue(item.dueAt)}
+            </span>
+          )}
+          {overdue && <span className="rounded-md bg-red-50 px-2 py-0.5 font-medium text-red-700">エスカレ期限超過</span>}
+          {customerResponseOverdue && (
+            <span className="rounded-md bg-red-50 px-2 py-0.5 font-medium text-red-700">顧客回答期限超過</span>
+          )}
           {stale && !overdue && <span className="rounded-md bg-amber-50 px-2 py-0.5 font-medium text-amber-700">24h滞留</span>}
           {followUpReminder?.status === 'active' && !followUpNeedsConfirmation && (
             <span className="rounded-md bg-blue-50 px-2 py-0.5 font-medium text-blue-700">

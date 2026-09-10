@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import type { SupportPriority } from '@/lib/api'
-import { categoryOptions, getCreateCaseValidationIssues, priorityOptions } from './support-meta'
+import { categoryOptions, customerResponseDuePresets, getCreateCaseValidationIssues, priorityOptions } from './support-meta'
 import { btnBrandCls, btnSecondaryCls, Field, inputCls, selectCls, textareaCls, DueTimePresetRow, XIcon } from './support-ui'
 
 export interface ChatOption {
@@ -22,6 +22,7 @@ export interface CreateCaseInput {
   primaryAssignee: string
   escalationAssignees: string[]
   dueAt: string
+  customerResponseDueAt: string
   customerSummary: string
 }
 
@@ -47,6 +48,7 @@ function emptyForm(staffName: string): CreateCaseInput {
     primaryAssignee: staffName,
     escalationAssignees: [],
     dueAt: '',
+    customerResponseDueAt: '',
     customerSummary: '',
   }
 }
@@ -55,7 +57,7 @@ function uniqueNames(names: Array<string | null | undefined>): string[] {
   return Array.from(new Set(names.map((name) => name?.trim()).filter(Boolean) as string[])).sort((a, b) => a.localeCompare(b, 'ja'))
 }
 
-const CREATE_CASE_DRAFT_VERSION = 2
+const CREATE_CASE_DRAFT_VERSION = 3
 const CREATE_CASE_DRAFT_STORAGE_PREFIX = 'lh_support_create_case_draft'
 
 type StoredCreateCaseDraft = {
@@ -75,7 +77,7 @@ function readStoredCreateCaseDraft(key: string): StoredCreateCaseDraft | null {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<StoredCreateCaseDraft>
-    if (![1, CREATE_CASE_DRAFT_VERSION].includes(Number(parsed.version)) || !parsed.form || typeof parsed.form !== 'object') return null
+    if (![1, 2, CREATE_CASE_DRAFT_VERSION].includes(Number(parsed.version)) || !parsed.form || typeof parsed.form !== 'object') return null
     const legacyAssignee = typeof (parsed.form as unknown as { escalationAssignee?: unknown }).escalationAssignee === 'string'
       ? (parsed.form as unknown as { escalationAssignee: string }).escalationAssignee.trim()
       : ''
@@ -94,6 +96,9 @@ function readStoredCreateCaseDraft(key: string): StoredCreateCaseDraft | null {
         primaryAssignee: typeof parsed.form.primaryAssignee === 'string' ? parsed.form.primaryAssignee : '',
         escalationAssignees,
         dueAt: typeof parsed.form.dueAt === 'string' ? parsed.form.dueAt : '',
+        customerResponseDueAt: typeof parsed.form.customerResponseDueAt === 'string'
+          ? parsed.form.customerResponseDueAt
+          : '',
         customerSummary: typeof parsed.form.customerSummary === 'string' ? parsed.form.customerSummary : '',
       },
     }
@@ -478,7 +483,27 @@ export default function CreateCasePanel({
               <p className="mt-2 text-[11px] font-medium text-slate-500">PNG JPEG WebP 1枚10MBまで 最大5枚</p>
             </div>
 
-            <Field label="期限">
+            <Field label="お客様への回答約束日" hint="1営業日前に一次担当へSlack通知">
+              <input
+                type="datetime-local"
+                value={form.customerResponseDueAt}
+                onChange={(e) => setForm((prev) => ({ ...prev, customerResponseDueAt: e.target.value }))}
+                className={inputCls}
+              />
+              <DueTimePresetRow
+                hasValue={Boolean(form.customerResponseDueAt)}
+                onApply={(value) => setForm((prev) => ({ ...prev, customerResponseDueAt: value }))}
+                disabled={saving}
+                presets={customerResponseDuePresets}
+              />
+              {!form.customerResponseDueAt && (
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                  未指定なら受付から3営業日後の18:00に自動設定されます。
+                </p>
+              )}
+            </Field>
+
+            <Field label="エスカレーション回答期日" hint="上長・チームへの通知基準">
               <input
                 type="datetime-local"
                 value={form.dueAt}

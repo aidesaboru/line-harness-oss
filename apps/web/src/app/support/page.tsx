@@ -242,6 +242,13 @@ export default function SupportPage() {
   const canEditCaseWork = permissions.canEditCaseWork
   const canDeleteSlackNotification = verifiedStaffRole === 'owner' || verifiedStaffRole === 'admin'
   const canEditSelectedCase = detail?.accessMode !== 'shared_proxy' && detail?.canEditCaseWork !== false
+  const canEditCustomerResponseDeadline = canEditCaseRouting || (
+    verifiedStaffRole === 'staff'
+    && Boolean(
+      detail?.primaryAssignee?.trim()
+      && detail.primaryAssignee.trim().replace(/[\s　]+/g, ' ') === verifiedStaffName.trim().replace(/[\s　]+/g, ' '),
+    )
+  )
 
   useEffect(() => {
     const cached = readStaffIdentityCache()
@@ -562,6 +569,9 @@ export default function SupportPage() {
           storeName: form.storeName || null,
           contractType: form.contractType || null,
         } : {}),
+        ...(canEditCustomerResponseDeadline && form.customerResponseDueAt !== savedForm.customerResponseDueAt ? {
+          customerResponseDueAt: fromInputDateTime(form.customerResponseDueAt),
+        } : {}),
         status: form.status,
         nextCheckAt: fromInputDateTime(form.nextCheckAt),
         customerSummary: form.customerSummary,
@@ -601,12 +611,14 @@ export default function SupportPage() {
     }
   }, [
     canEditCaseRouting,
+    canEditCustomerResponseDeadline,
     captureWorkspace,
     detail,
     isCurrentWorkspace,
     loadCases,
     loadDetail,
     notify,
+    savedForm.customerResponseDueAt,
     savedForm.escalationAssignees,
     saving,
     selectedAccountId,
@@ -868,6 +880,7 @@ export default function SupportPage() {
         escalationAssignee: input.escalationAssignees[0] || null,
         escalationAssignees: input.escalationAssignees,
         dueAt: fromInputDateTime(input.dueAt),
+        customerResponseDueAt: fromInputDateTime(input.customerResponseDueAt),
         customerSummary: input.customerSummary,
       })
       if (!isCurrentWorkspace(workspace)) return false
@@ -1266,6 +1279,7 @@ export default function SupportPage() {
               slackNotificationDeleting={slackNotificationDeleting}
               canEditRouting={canEditCaseRouting && canEditSelectedCase}
               canEditCaseWork={canEditCaseWork && canEditSelectedCase}
+              canEditCustomerResponseDeadline={canEditCustomerResponseDeadline && canEditSelectedCase}
               canCompleteCase={detail?.canCompleteCase ?? canEditCaseWork}
               canDeleteSlackNotification={canDeleteSlackNotification}
               staffOptions={assigneeSuggestions}

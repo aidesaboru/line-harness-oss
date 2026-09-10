@@ -34,6 +34,7 @@
   "support_case_followup_reminder_events",
   "support_slack_notification_outbox",
   "support_secondary_slack_notification_outbox",
+  "support_primary_response_slack_outbox",
   "support_manuals",
   "support_knowledge_imports",
   "support_knowledge_source_snapshots",

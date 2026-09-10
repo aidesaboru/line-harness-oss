@@ -4,6 +4,7 @@ import {
   buildSupportCaseSearch,
   canLoadSupportWorkspaceData,
   canOpenChatWithDraft,
+  customerResponseDuePresets,
   emptyCaseForm,
   formatSupportErrorMessage,
   getBlockingCaseFormValidationIssues,
@@ -40,6 +41,8 @@ function supportCase(overrides: Partial<SupportCase>): SupportCase {
     escalationAssignee: null,
     escalationLevel: 'L1',
     dueAt: null,
+    customerResponseDueAt: null,
+    customerResponseReminderAt: null,
     nextCheckAt: null,
     customerNumber: null,
     companyName: null,
@@ -123,6 +126,15 @@ describe('support case list ordering', () => {
     expect(isOverdueCase(supportCase({ status: 'open', dueAt: '2026-06-13T08:00:00.000Z' }))).toBe(true)
     expect(isOverdueCase(supportCase({ status: 'resolved', dueAt: '2026-06-13T08:00:00.000Z' }))).toBe(false)
     expect(isOverdueCase(supportCase({ status: 'open', dueAt: '2026-06-13T18:00:00.000Z' }))).toBe(false)
+  })
+})
+
+describe('customer response deadline preset', () => {
+  it('sets 18:00 after three Monday-Friday business days', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-11T00:00:00.000Z'))
+    expect(customerResponseDuePresets[0]?.compute()).toBe('2026-09-16T18:00')
+    vi.useRealTimers()
   })
 })
 

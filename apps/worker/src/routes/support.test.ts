@@ -38,6 +38,8 @@ type SupportCaseRow = {
   escalation_assignee_staff_id?: string | null;
   escalation_level: string;
   due_at: string | null;
+  customer_response_due_at?: string | null;
+  customer_response_reminder_at?: string | null;
   next_check_at: string | null;
   customer_number: string | null;
   company_name: string | null;
@@ -231,6 +233,8 @@ function baseCase(overrides: Partial<SupportCaseRow> = {}): SupportCaseRow {
     escalation_assignee: null,
     escalation_level: 'L1',
     due_at: null,
+    customer_response_due_at: null,
+    customer_response_reminder_at: null,
     next_check_at: null,
     customer_number: null,
     company_name: null,
@@ -870,6 +874,8 @@ function makeSupportDb(state: {
               escalationAssigneeStaffId,
               escalationLevel,
               dueAt,
+              customerResponseDueAt,
+              customerResponseReminderAt,
               nextCheckAt,
               customerNumber,
               companyName,
@@ -902,6 +908,8 @@ function makeSupportDb(state: {
               escalation_assignee_staff_id: escalationAssigneeStaffId,
               escalation_level: escalationLevel,
               due_at: dueAt,
+              customer_response_due_at: customerResponseDueAt,
+              customer_response_reminder_at: customerResponseReminderAt,
               next_check_at: nextCheckAt,
               customer_number: customerNumber,
               company_name: companyName,
@@ -2116,6 +2124,94 @@ describe('support CRM routes', () => {
     expect(state.cases[0]).toMatchObject({
       due_at: '2026-06-15T19:00:00.000+09:00',
       next_check_at: '2026-06-15T12:30:00.000+09:00',
+    });
+  });
+
+  test('stores a separate customer response deadline and its previous-business-day reminder', async () => {
+    const { db, state } = makeSupportDb({
+      friends: [{
+        id: 'friend-response-due',
+        line_account_id: 'acc-1',
+        display_name: '回答期日テスト',
+        picture_url: null,
+        line_user_id: 'U-response-due',
+      }],
+      staffMembers: [{ id: 'staff-hayashi', name: '林 静香', role: 'staff', is_active: 1 }],
+    });
+
+    const res = await setupApp(db, { id: 'owner-1', name: 'Owner', role: 'owner' }).request('/api/support/cases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'acc-1',
+        friendId: 'friend-response-due',
+        customerSummary: '回答約束日の確認',
+        primaryAssignee: '林 静香',
+        dueAt: '2026-09-18T18:00:00+09:00',
+        customerResponseDueAt: '2026-09-14T18:00:00+09:00',
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.cases[0]).toMatchObject({
+      due_at: '2026-09-18T18:00:00.000+09:00',
+      customer_response_due_at: '2026-09-14T18:00:00.000+09:00',
+      customer_response_reminder_at: '2026-09-11T10:00:00.000+09:00',
+    });
+  });
+
+  test('allows only the assigned primary staff member or an administrator to change the customer response deadline', async () => {
+    const originalDueAt = '2026-09-14T18:00:00.000+09:00';
+    const { db, state } = makeSupportDb({
+      cases: [baseCase({
+        id: 'case-primary-response',
+        primary_assignee: '田島',
+        primary_assignee_staff_id: 'staff-tajima',
+        escalation_assignee: '田島',
+        escalation_assignee_staff_id: 'staff-tajima',
+        created_by: 'staff-hayashi',
+        customer_response_due_at: originalDueAt,
+        customer_response_reminder_at: '2026-09-11T10:00:00.000+09:00',
+      })],
+    });
+    const appFor = (staff: Staff) => setupApp(db, staff);
+
+    const denied = await appFor({ id: 'staff-hayashi', name: '林 静香', role: 'staff' })
+      .request('/api/support/cases/case-primary-response', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          customerResponseDueAt: '2026-09-15T18:00:00+09:00',
+        }),
+      });
+    expect(denied.status).toBe(403);
+
+    const deniedSecondary = await appFor({ id: 'staff-tajima', name: '田島', role: 'secondary', secondaryCanRespond: true })
+      .request('/api/support/cases/case-primary-response', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          customerResponseDueAt: '2026-09-15T18:00:00+09:00',
+        }),
+      });
+    expect(deniedSecondary.status).toBe(403);
+
+    const allowed = await appFor({ id: 'staff-tajima', name: '田島', role: 'staff' })
+      .request('/api/support/cases/case-primary-response', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lineAccountId: 'acc-1',
+          customerResponseDueAt: '2026-09-15T18:00:00+09:00',
+        }),
+      });
+
+    expect(allowed.status).toBe(200);
+    expect(state.cases[0]).toMatchObject({
+      customer_response_due_at: '2026-09-15T18:00:00.000+09:00',
+      customer_response_reminder_at: '2026-09-14T10:00:00.000+09:00',
     });
   });
 

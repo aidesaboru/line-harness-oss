@@ -1455,7 +1455,7 @@ CREATE TABLE "support_cases" (
   reopened_at           TEXT,
   created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
-, primary_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, escalation_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, routing_mutation_id TEXT);
+, primary_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, escalation_assignee_staff_id TEXT REFERENCES staff_members(id) ON DELETE SET NULL, routing_mutation_id TEXT, customer_response_due_at TEXT, customer_response_reminder_at TEXT);
 
 CREATE TABLE support_escalations (
   id                  TEXT PRIMARY KEY,
@@ -1579,6 +1579,26 @@ CREATE TABLE support_manuals (
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
   updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours'))
 , knowledge_question TEXT NOT NULL DEFAULT '', knowledge_resolution TEXT NOT NULL DEFAULT '', knowledge_procedure TEXT NOT NULL DEFAULT '', knowledge_applicability TEXT NOT NULL DEFAULT '', knowledge_cautions TEXT NOT NULL DEFAULT '', knowledge_source_body TEXT NOT NULL DEFAULT '', knowledge_status TEXT NOT NULL DEFAULT 'needs_review', knowledge_quality_score INTEGER NOT NULL DEFAULT 0, knowledge_review_note TEXT NOT NULL DEFAULT '', knowledge_use_count INTEGER NOT NULL DEFAULT 0, knowledge_last_used_at TEXT, knowledge_helpful_count INTEGER NOT NULL DEFAULT 0, knowledge_needs_improvement_count INTEGER NOT NULL DEFAULT 0);
+
+CREATE TABLE support_primary_response_slack_outbox (
+  id                 TEXT PRIMARY KEY,
+  case_id            TEXT NOT NULL REFERENCES support_cases(id) ON DELETE RESTRICT,
+  line_account_id    TEXT NOT NULL REFERENCES line_accounts(id) ON DELETE RESTRICT,
+  response_due_at    TEXT NOT NULL,
+  reminder_at        TEXT NOT NULL,
+  recipient_staff_id TEXT NOT NULL REFERENCES staff_members(id) ON DELETE RESTRICT,
+  status             TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'sending', 'failed', 'dead_letter', 'cancelled', 'sent')),
+  attempts           INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at    TEXT NOT NULL,
+  claim_token        TEXT,
+  last_error_code    TEXT,
+  slack_message_ts   TEXT,
+  sent_at            TEXT,
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  updated_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now', '+9 hours')),
+  UNIQUE (case_id, response_due_at, recipient_staff_id)
+);
 
 CREATE TABLE support_secondary_slack_notification_outbox (
   id                TEXT PRIMARY KEY,
@@ -2113,6 +2133,9 @@ CREATE INDEX idx_support_cases_account_status
 CREATE INDEX idx_support_cases_assignee
   ON support_cases(primary_assignee, escalation_assignee, status);
 
+CREATE INDEX idx_support_cases_customer_response_due
+ON support_cases(customer_response_due_at, status);
+
 CREATE INDEX idx_support_cases_due
   ON support_cases(due_at, status);
 
@@ -2173,6 +2196,12 @@ CREATE INDEX idx_support_manuals_account_category
 
 CREATE INDEX idx_support_manuals_account_knowledge_status
   ON support_manuals(line_account_id, knowledge_status, is_active, revised_at);
+
+CREATE INDEX idx_support_primary_response_slack_account
+ON support_primary_response_slack_outbox(line_account_id, created_at DESC);
+
+CREATE INDEX idx_support_primary_response_slack_delivery
+ON support_primary_response_slack_outbox(status, next_attempt_at, created_at);
 
 CREATE INDEX idx_support_secondary_slack_outbox_account
   ON support_secondary_slack_notification_outbox(line_account_id, created_at DESC);
@@ -2616,6 +2645,19 @@ BEGIN
   SELECT RAISE(ABORT, 'support_internal_messages history is protected');
 END;
 
+CREATE TRIGGER protect_support_primary_response_slack_outbox_delete
+BEFORE DELETE ON support_primary_response_slack_outbox
+BEGIN
+  SELECT RAISE(ABORT, 'primary response Slack notification outbox cannot be deleted');
+END;
+
+CREATE TRIGGER protect_support_primary_response_slack_outbox_sent_status
+BEFORE UPDATE OF status ON support_primary_response_slack_outbox
+WHEN OLD.status = 'sent' AND NEW.status != 'sent'
+BEGIN
+  SELECT RAISE(ABORT, 'sent primary response Slack notification cannot be reopened');
+END;
+
 CREATE TRIGGER protect_support_secondary_slack_outbox_delete
 BEFORE DELETE ON support_secondary_slack_notification_outbox
 BEGIN
@@ -2691,6 +2733,36 @@ CREATE TRIGGER trg_line_conversation_customer_events_no_update
 BEFORE UPDATE ON line_conversation_customer_events
 BEGIN
   SELECT RAISE(ABORT, 'line conversation customer events are append-only');
+END;
+
+CREATE TRIGGER trg_support_cases_default_customer_response_deadline
+AFTER INSERT ON support_cases
+WHEN NEW.customer_response_due_at IS NULL
+BEGIN
+  UPDATE support_cases
+  SET customer_response_due_at = date(
+        substr(NEW.created_at, 1, 10),
+        CASE strftime('%w', substr(NEW.created_at, 1, 10))
+          WHEN '0' THEN '+3 days'
+          WHEN '1' THEN '+3 days'
+          WHEN '2' THEN '+3 days'
+          WHEN '3' THEN '+5 days'
+          WHEN '4' THEN '+5 days'
+          WHEN '5' THEN '+5 days'
+          WHEN '6' THEN '+4 days'
+        END
+      ) || 'T18:00:00.000+09:00'
+  WHERE id = NEW.id;
+
+  UPDATE support_cases
+  SET customer_response_reminder_at = date(
+        substr(customer_response_due_at, 1, 10),
+        CASE strftime('%w', substr(customer_response_due_at, 1, 10))
+          WHEN '1' THEN '-3 days'
+          ELSE '-1 day'
+        END
+      ) || 'T10:00:00.000+09:00'
+  WHERE id = NEW.id;
 END;
 
 CREATE TRIGGER trg_support_cases_legacy_assignee_insert

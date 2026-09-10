@@ -14,6 +14,7 @@ import {
   type SupportAccessStaff,
 } from '../services/support-access.js';
 import {
+  customerResponseReminderAt,
   deleteSupportTicketSlackNotification,
   deliverSupportSecondarySlackNotification,
   deliverSupportTicketSlackNotification,
@@ -83,6 +84,7 @@ const STAFF_ALLOWED_CASE_UPDATE_KEYS = new Set([
   'lineAccountId',
   'status',
   'nextCheckAt',
+  'customerResponseDueAt',
   'customerSummary',
   'internalNote',
   'customerReplyDraft',
@@ -191,6 +193,8 @@ type SupportCaseRow = {
   last_human_reply_at?: string | null;
   escalation_level: string;
   due_at: string | null;
+  customer_response_due_at?: string | null;
+  customer_response_reminder_at?: string | null;
   next_check_at: string | null;
   customer_number: string | null;
   company_name: string | null;
@@ -1604,6 +1608,8 @@ function serializeCase(row: SupportCaseRow, currentStaffId?: string) {
     lastHumanReplyAt: row.last_human_reply_at ?? null,
     escalationLevel: row.escalation_level,
     dueAt: row.due_at,
+    customerResponseDueAt: row.customer_response_due_at ?? null,
+    customerResponseReminderAt: row.customer_response_reminder_at ?? null,
     nextCheckAt: row.next_check_at,
     customerNumber: row.customer_number,
     companyName: row.company_name,
@@ -2571,6 +2577,16 @@ support.post('/api/support/cases', async (c) => {
     if (!parsedEscalationLevel.ok) return c.json({ success: false, error: parsedEscalationLevel.error }, 400);
     const parsedDueAt = parseOptionalOperationalTimestamp(body.dueAt, 'dueAt');
     if (!parsedDueAt.ok) return c.json({ success: false, error: parsedDueAt.error }, 400);
+    const parsedCustomerResponseDueAt = parseOptionalOperationalTimestamp(
+      body.customerResponseDueAt,
+      'customerResponseDueAt',
+    );
+    if (!parsedCustomerResponseDueAt.ok) {
+      return c.json({ success: false, error: parsedCustomerResponseDueAt.error }, 400);
+    }
+    const customerResponseReminder = parsedCustomerResponseDueAt.value
+      ? customerResponseReminderAt(parsedCustomerResponseDueAt.value)
+      : null;
     const parsedCustomerNumber = parseOptionalTextField(body.customerNumber, 'customerNumber');
     if (!parsedCustomerNumber.ok) return c.json({ success: false, error: parsedCustomerNumber.error }, 400);
     const parsedCompanyName = parseOptionalTextField(body.companyName, 'companyName');
@@ -2637,11 +2653,12 @@ support.post('/api/support/cases', async (c) => {
               id, line_account_id, friend_id, title, category, priority, status,
               primary_assignee, primary_assignee_staff_id,
               escalation_assignee, escalation_assignee_staff_id,
-              escalation_level, due_at, next_check_at,
+              escalation_level, due_at, customer_response_due_at,
+              customer_response_reminder_at, next_check_at,
               customer_number, company_name, contact_name, store_name, contract_type,
               customer_summary, internal_note, customer_reply_draft, resolution_note, manual_ids,
               created_by, updated_by, closed_at, reopened_at, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .bind(
             id,
@@ -2657,6 +2674,8 @@ support.post('/api/support/cases', async (c) => {
             escalationAssignee ? assigneeStaffIds.get(escalationAssignee) ?? null : null,
             escalationLevel,
             parsedDueAt.value,
+            parsedCustomerResponseDueAt.value,
+            customerResponseReminder,
             nextCheckAt,
             customerNumber,
             companyName,
@@ -3610,6 +3629,15 @@ support.patch('/api/support/cases/:id', async (c) => {
                AND ${proxyGuardSql}`,
           )
           .bind(staff.id, now, id.value, lineAccountId.value, ...proxyGuardBinds),
+        c.env.DB
+          .prepare(
+            `UPDATE support_primary_response_slack_outbox
+             SET status = 'cancelled', claim_token = NULL, updated_at = ?
+             WHERE case_id = ? AND line_account_id = ?
+               AND status IN ('pending', 'sending', 'failed', 'dead_letter')
+               AND ${proxyGuardSql}`,
+          )
+          .bind(now, id.value, lineAccountId.value, ...proxyGuardBinds),
         prepareGuardedCaseEvent(
           c.env.DB,
           id.value,
@@ -3660,6 +3688,23 @@ support.patch('/api/support/cases/:id', async (c) => {
       }
     }
 
+    if ('customerResponseDueAt' in body && !canManageSupportCaseRouting(staff)) {
+      if (staff.role !== 'staff') {
+        return c.json({
+          success: false,
+          error: 'お客様への回答約束日を変更できるのは現在の一次対応者本人または管理者です',
+        }, 403);
+      }
+      const legacyPrimaryMatch = existing.primary_assignee_staff_id === null
+        && await legacyAssigneeMatchesStaff(c.env.DB, existing.primary_assignee ?? '', staff.id);
+      if (existing.primary_assignee_staff_id !== staff.id && !legacyPrimaryMatch) {
+        return c.json({
+          success: false,
+          error: 'お客様への回答約束日を変更できるのは現在の一次対応者本人または管理者です',
+        }, 403);
+      }
+    }
+
     const fields: Array<[string, unknown]> = [];
     const next = { ...existing };
 
@@ -3704,6 +3749,18 @@ support.patch('/api/support/cases/:id', async (c) => {
       if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
       next[column] = parsed.value;
       fields.push([column, parsed.value]);
+    }
+
+    if ('customerResponseDueAt' in body) {
+      const parsed = parseOptionalOperationalTimestamp(body.customerResponseDueAt, 'customerResponseDueAt');
+      if (!parsed.ok) return c.json({ success: false, error: parsed.error }, 400);
+      const reminderAt = parsed.value ? customerResponseReminderAt(parsed.value) : null;
+      next.customer_response_due_at = parsed.value;
+      next.customer_response_reminder_at = reminderAt;
+      fields.push(
+        ['customer_response_due_at', parsed.value],
+        ['customer_response_reminder_at', reminderAt],
+      );
     }
 
     if ('primaryAssignee' in body) {
@@ -3848,6 +3905,23 @@ support.patch('/api/support/cases/:id', async (c) => {
                AND ${mutationMarkerSql}`,
           )
           .bind(staff.id, now, id.value, lineAccountId.value, ...mutationMarkerBinds),
+      );
+    }
+    if (
+      next.status === 'resolved'
+      || primaryAssigneeChanged
+      || existing.customer_response_due_at !== next.customer_response_due_at
+    ) {
+      statements.push(
+        c.env.DB
+          .prepare(
+            `UPDATE support_primary_response_slack_outbox
+             SET status = 'cancelled', claim_token = NULL, updated_at = ?
+             WHERE case_id = ? AND line_account_id = ?
+               AND status IN ('pending', 'sending', 'failed', 'dead_letter')
+               AND ${mutationMarkerSql}`,
+          )
+          .bind(now, id.value, lineAccountId.value, ...mutationMarkerBinds),
       );
     }
     if (primaryAssigneeChanged && existingFollowUpReminder?.status === 'active' && nextReminderOwnerStaffId) {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { dueTimePresets, dueUrgency, formatDateTime, formatRelativeDue } from './support-meta'
+import { dueTimePresets, dueUrgency, formatDateTime, formatRelativeDue, type DueTimePreset } from './support-meta'
 
 // ─── 入力スタイル (画面全体で統一) ───
 
@@ -77,14 +77,16 @@ export function DueTimePresetRow({
   onApply,
   hasValue,
   disabled = false,
+  presets = dueTimePresets,
 }: {
   onApply: (value: string) => void
   hasValue: boolean
   disabled?: boolean
+  presets?: DueTimePreset[]
 }) {
   return (
     <div className="mt-1 flex flex-wrap gap-1">
-      {dueTimePresets.map((preset) => (
+      {presets.map((preset) => (
         <button
           key={preset.label}
           type="button"

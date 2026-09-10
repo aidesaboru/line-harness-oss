@@ -479,6 +479,23 @@ export const dueTimePresets: DueTimePreset[] = [
   },
 ]
 
+/** Customer promise date: 18:00 JST after three Monday-Friday business days. */
+export const customerResponseDuePresets: DueTimePreset[] = [
+  {
+    label: '3営業日後18時',
+    compute: () => {
+      const d = new Date()
+      let added = 0
+      while (added < 3) {
+        d.setDate(d.getDate() + 1)
+        if (d.getDay() !== 0 && d.getDay() !== 6) added += 1
+      }
+      d.setHours(18, 0, 0, 0)
+      return toLocalInputValue(d)
+    },
+  },
+]
+
 // ─── チケット編集フォーム ───
 
 export interface CaseFormState {
@@ -490,6 +507,7 @@ export interface CaseFormState {
   escalationAssignee: string
   escalationAssignees: string[]
   dueAt: string
+  customerResponseDueAt: string
   nextCheckAt: string
   customerNumber: string
   companyName: string
@@ -512,6 +530,7 @@ export function emptyCaseForm(): CaseFormState {
     escalationAssignee: '',
     escalationAssignees: [],
     dueAt: '',
+    customerResponseDueAt: '',
     nextCheckAt: '',
     customerNumber: '',
     companyName: '',
@@ -534,6 +553,7 @@ export function caseFormFromDetail(detail: {
   escalationAssignee: string | null
   escalationAssignees?: string[]
   dueAt: string | null
+  customerResponseDueAt: string | null
   nextCheckAt: string | null
   customerNumber: string | null
   companyName: string | null
@@ -556,6 +576,7 @@ export function caseFormFromDetail(detail: {
       ? detail.escalationAssignees
       : detail.escalationAssignee ? [detail.escalationAssignee] : [],
     dueAt: toInputDateTime(detail.dueAt),
+    customerResponseDueAt: toInputDateTime(detail.customerResponseDueAt),
     nextCheckAt: toInputDateTime(detail.nextCheckAt),
     customerNumber: detail.customerNumber ?? '',
     companyName: detail.companyName ?? '',

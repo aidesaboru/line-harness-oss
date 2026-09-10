@@ -64,6 +64,31 @@ describe('Pages artifact integrity', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
+  it('waits for a newly deployed Pages manifest to become available', async () => {
+    const root = fixture();
+    const manifest = writePagesArtifactManifest(root, ADMIN_HASH);
+    let manifestAttempts = 0;
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/.well-known/l-link-build.json') {
+        manifestAttempts += 1;
+        if (manifestAttempts < 3) return new Response('not ready', { status: 404 });
+        return new Response(readFileSync(join(root, '.well-known/l-link-build.json')));
+      }
+      return new Response(readFileSync(join(root, path.slice(1))));
+    }) as unknown as typeof fetch;
+
+    await expect(verifyPagesArtifact({
+      rootDir: root,
+      deploymentUrl: 'https://deployment.example.pages.dev',
+      expectedAdminHash: ADMIN_HASH,
+      fetchImpl,
+      manifestFetchAttempts: 3,
+      manifestRetryDelayMs: 0,
+    })).resolves.toEqual({ fileCount: Object.keys(manifest.files).length });
+    expect(manifestAttempts).toBe(3);
+  });
+
   it('fails closed when a deployed static file differs', async () => {
     const root = fixture();
     writePagesArtifactManifest(root, ADMIN_HASH);

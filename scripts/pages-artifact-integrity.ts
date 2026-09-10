@@ -136,6 +136,7 @@ async function fetchBytes(
   url: URL,
   fetchImpl: typeof fetch,
   attempts = 5,
+  retryDelayMs = 500,
 ): Promise<Uint8Array> {
   let lastStatus = 0;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -151,7 +152,7 @@ async function fetchBytes(
       lastStatus = 0;
     }
     if (attempt < attempts) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, attempt * 500));
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, retryDelayMs));
     }
   }
   throw new Error(`Pages artifact fetch failed${lastStatus ? ` with HTTP ${lastStatus}` : ''}`);
@@ -163,6 +164,8 @@ export async function verifyPagesArtifact(options: {
   expectedAdminHash: string;
   fetchImpl?: typeof fetch;
   concurrency?: number;
+  manifestFetchAttempts?: number;
+  manifestRetryDelayMs?: number;
 }): Promise<{ fileCount: number }> {
   const {
     rootDir,
@@ -170,16 +173,30 @@ export async function verifyPagesArtifact(options: {
     expectedAdminHash,
     fetchImpl = fetch,
     concurrency = 8,
+    manifestFetchAttempts = 12,
+    manifestRetryDelayMs = 5_000,
   } = options;
   assertHash(expectedAdminHash, 'expectedAdminHash');
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) {
     throw new Error('Pages verification concurrency is invalid');
+  }
+  if (
+    !Number.isInteger(manifestFetchAttempts)
+    || manifestFetchAttempts < 1
+    || manifestFetchAttempts > 24
+    || !Number.isInteger(manifestRetryDelayMs)
+    || manifestRetryDelayMs < 0
+    || manifestRetryDelayMs > 10_000
+  ) {
+    throw new Error('Pages manifest retry settings are invalid');
   }
 
   const local = buildPagesArtifactManifest(rootDir, expectedAdminHash);
   const remoteManifestBytes = await fetchBytes(
     artifactUrl(deploymentUrl, MANIFEST_PATH),
     fetchImpl,
+    manifestFetchAttempts,
+    manifestRetryDelayMs,
   );
   let remote: PagesArtifactManifest;
   try {

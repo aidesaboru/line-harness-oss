@@ -7,6 +7,7 @@ export const SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_INPUT_CHARS = 12_000 as const;
 const MAX_MESSAGE_CHARS = 600;
 const MAX_SECTION_CHARS = 500;
 const MAX_GENERATION_ATTEMPTS = 2;
+const QUALITY_GATE_REVISION = 'generic_occurrence_fallback_v1';
 
 const SECTION_KEYS = [
   'consultation',
@@ -85,7 +86,7 @@ const SYSTEM_PROMPT = `あなたは営業担当向けの会話要約を作る記
 「次の対応」は、会話で明示された依頼・約束・未完了事項だけを書き、一般論から新しい提案を作らないでください。
 根拠がない項目は「確認できません」とし、事実を補わないでください。
 各項目は、数字、M番号、コード、日時、伏字だけではなく、何について何が起きたかが分かる自然な日本語の文にしてください。
-単に「会話した」「連絡した」「対応した」だけの汎用文は書かず、具体的な内容が確認できなければ「確認できません」としてください。
+単に「会話した」「連絡した」「対応した」や、日時と会話があった事実だけの汎用文は書かず、具体的な内容が確認できなければ「確認できません」としてください。
 M番号は入力行を区別するためだけの記号です。出力にはM番号や根拠番号を含めないでください。
 氏名、会社名、電話、メール、住所、URL、金額、口座・カード番号、ID、パスワード、トークンなどの識別情報や秘密情報を復元・推測・出力しないでください。
 出力は指定されたJSONだけにしてください。`;
@@ -208,6 +209,7 @@ export function prepareSalesCustomerSemanticSource(
   const fingerprintInput = JSON.stringify({
     method: SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
     promptVersion: SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+    qualityGateRevision: QUALITY_GATE_REVISION,
     model: selected.length > 0 ? SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL : null,
     messages: selected,
   });
@@ -253,7 +255,11 @@ function parseSection(raw: unknown, sensitiveTerms: readonly string[]): string |
     .replace(/[\s\p{P}\p{S}\d_]+/gu, '');
   const japaneseChars = Array.from(informative).filter((character) => /[ぁ-んァ-ヶ一-龯々]/u.test(character));
   if (japaneseChars.length < 4) return null;
-  if (/^(?:(?:顧客|担当(?:者)?)(?:と|が|は)?){1,2}(?:会話|連絡|やり取り|対応)(?:を)?(?:行った|行いました|した|しました|済み|済みです)[。]?$/u.test(text)) return null;
+  const withoutDateOnlyContext = text.replace(
+    /^\d{4}年\d{1,2}月\d{1,2}日(?:の時点で|時点で|に|頃)?[、,\s]*/u,
+    '',
+  );
+  if (/^(?:(?:顧客|担当(?:者)?|双方|両者)(?:と|が|は|から|へ)?){0,2}(?:会話|連絡|やり取り|対応)(?:が|を)?(?:行われていた|行われた|行っていた|行った|行いました|ありました|あった|した|しました|済み|済みです)[。]?$/u.test(withoutDateOnlyContext)) return null;
   if (/\bM[1-9][0-9]*\b/u.test(text)) return null;
   return text;
 }
@@ -302,6 +308,16 @@ export function buildNoEligibleTextSummary(): string {
   ].join('\n\n');
 }
 
+function buildUnclearEligibleTextSummary(): string {
+  return [
+    '【相談内容】\n会話ログから具体的な相談内容を特定できませんでした。',
+    '【これまでの対応】\n具体的な対応内容を確認できません。',
+    '【現在の状況】\n会話ログだけでは現在の状況を確認できません。',
+    '【次の対応】\n元のチャットを人が確認し、必要な対応を判断してください。',
+    '※この要約は営業ステータスを判定・変更しません。',
+  ].join('\n\n');
+}
+
 export async function generateSalesCustomerSemanticSummary(
   ai: Ai | undefined,
   source: PreparedSalesCustomerSemanticSource,
@@ -317,7 +333,6 @@ export async function generateSalesCustomerSemanticSummary(
   if (!ai) throw new SalesCustomerSemanticSummaryError('ai_unavailable');
 
   let usage: SalesCustomerSemanticSummaryUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-  let lastCause: unknown;
   for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt += 1) {
     try {
       const raw = await ai.run(SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL, {
@@ -325,7 +340,7 @@ export async function generateSalesCustomerSemanticSummary(
           { role: 'system', content: SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `${attempt === 1 ? '' : '前回の出力は品質検証を通りませんでした。数字・コード・M番号だけの項目を避け、具体的な自然な日本語か「確認できません」で作り直してください。\n'}要約基準日時: ${generatedAt}\n次の会話ログを要約してください。\n<conversation>\n${source.transcript}\n</conversation>`,
+            content: `${attempt === 1 ? '' : '前回の出力は品質検証を通りませんでした。数字・コード・M番号だけの項目や、日時と会話があった事実だけの汎用文を避け、具体的な自然な日本語か「確認できません」で作り直してください。\n'}要約基準日時: ${generatedAt}\n次の会話ログを要約してください。\n<conversation>\n${source.transcript}\n</conversation>`,
           },
         ],
         response_format: {
@@ -338,24 +353,24 @@ export async function generateSalesCustomerSemanticSummary(
       if (typeof raw === 'string') {
         const summary = parseAiSummary(raw, source.outputSensitiveTerms);
         if (summary) return { text: formatAiSummary(summary), usage, attempts: attempt };
-        lastCause = new Error('invalid_string_response');
         continue;
       }
       if (!raw || typeof raw !== 'object' || raw instanceof ReadableStream) {
-        lastCause = new Error('invalid_response_shape');
         continue;
       }
       const response = raw as AiResponse;
       usage = addUsage(usage, parseUsage(response));
       const summary = parseAiSummary(response.response, source.outputSensitiveTerms);
       if (summary) return { text: formatAiSummary(summary), usage, attempts: attempt };
-      lastCause = new Error('invalid_structured_response');
     } catch (error) {
-      lastCause = error;
       if (attempt === MAX_GENERATION_ATTEMPTS) {
         throw new SalesCustomerSemanticSummaryError('ai_unavailable', { cause: error });
       }
     }
   }
-  throw new SalesCustomerSemanticSummaryError('invalid_ai_response', { cause: lastCause });
+  return {
+    text: buildUnclearEligibleTextSummary(),
+    usage,
+    attempts: MAX_GENERATION_ATTEMPTS,
+  };
 }

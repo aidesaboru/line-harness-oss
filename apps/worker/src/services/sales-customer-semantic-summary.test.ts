@@ -38,6 +38,7 @@ describe('sales customer semantic summary', () => {
     expect(source.messageCount).toBe(2);
     expect(source.outputSensitiveTerms).toEqual(['田中商事']);
     expect(source.fingerprintInput).not.toContain('田中商事');
+    expect(source.fingerprintInput).toContain('generic_occurrence_fallback_v1');
   });
 
   test('normalizes ordering and keeps the latest messages within the input limit', () => {
@@ -148,6 +149,36 @@ describe('sales customer semantic summary', () => {
     expect(JSON.stringify(run.mock.calls[1])).toContain('前回の出力は品質検証を通りませんでした');
   });
 
+  test('rejects a date plus generic conversation occurrence, then retries once', async () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-06-12', content: '返品方法を確認したいです。' },
+    ]);
+    const run = vi.fn()
+      .mockResolvedValueOnce({
+        response: {
+          consultation: '確認できません。',
+          responseHistory: '確認できません。',
+          currentSituation: '2026年06月12日の時点で会話が行われていた',
+          nextAction: '確認できません。',
+        },
+      })
+      .mockResolvedValueOnce({
+        response: {
+          consultation: '返品方法の確認依頼がある。',
+          responseHistory: '確認できません。',
+          currentSituation: '返品方法の案内待ちである。',
+          nextAction: '返品方法を案内する必要がある。',
+        },
+      });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.attempts).toBe(2);
+    expect(result.text).not.toContain('会話が行われていた');
+    expect(JSON.stringify(run.mock.calls[1])).toContain('日時と会話があった事実だけ');
+  });
+
   test('keeps accepting a JSON string response for compatible model responses', async () => {
     const source = prepareSalesCustomerSemanticSource([
       { direction: 'incoming', createdAt: '2026-09-09', content: '契約書を確認してください。' },
@@ -167,7 +198,7 @@ describe('sales customer semantic summary', () => {
     expect(result.attempts).toBe(1);
   });
 
-  test('rejects extra JSON fields and forbidden sales status labels', async () => {
+  test('uses a safe manual-review summary after extra fields or forbidden status labels persist', async () => {
     const source = prepareSalesCustomerSemanticSource([
       { direction: 'incoming', createdAt: '2026-09-09', content: '契約書を確認してください。' },
     ]);
@@ -183,13 +214,15 @@ describe('sales customer semantic summary', () => {
         response: JSON.stringify({ ...valid, currentSituation: '通常運用' }),
       });
 
-    await expect(generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source)).rejects.toEqual(
-      expect.objectContaining<SalesCustomerSemanticSummaryError>({ kind: 'invalid_ai_response' }),
-    );
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
     expect(run).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('元のチャットを人が確認');
+    expect(result.text).not.toContain('通常運用');
+    expect(result.attempts).toBe(2);
   });
 
-  test('rejects an all-unknown summary for a conversation that contains text', async () => {
+  test('uses a truthful manual-review summary when both attempts are all unknown', async () => {
     const source = prepareSalesCustomerSemanticSource([
       { direction: 'incoming', createdAt: '2026-09-09', content: '返品したいです。' },
     ]);
@@ -201,10 +234,12 @@ describe('sales customer semantic summary', () => {
     };
     const run = vi.fn().mockResolvedValue({ response: unknown });
 
-    await expect(generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source)).rejects.toEqual(
-      expect.objectContaining<SalesCustomerSemanticSummaryError>({ kind: 'invalid_ai_response' }),
-    );
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
     expect(run).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('具体的な相談内容を特定できませんでした');
+    expect(result.text).toContain('元のチャットを人が確認');
+    expect(result.attempts).toBe(2);
   });
 
   test('returns a truthful fixed summary when no eligible text exists', () => {

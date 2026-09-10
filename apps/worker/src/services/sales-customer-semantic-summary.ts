@@ -254,12 +254,14 @@ function parseSection(raw: unknown, evidenceIds: ReadonlySet<string>): AiSection
   return { text, evidence: Array.from(new Set(evidence)) };
 }
 
-function parseAiSummary(responseText: string, evidenceIds: readonly string[]): AiSummary | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(responseText);
-  } catch {
-    return null;
+function parseAiSummary(responseValue: unknown, evidenceIds: readonly string[]): AiSummary | null {
+  let parsed = responseValue;
+  if (typeof responseValue === 'string') {
+    try {
+      parsed = JSON.parse(responseValue);
+    } catch {
+      return null;
+    }
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
   const record = parsed as Record<string, unknown>;
@@ -324,11 +326,7 @@ export async function generateSalesCustomerSemanticSummary(
         ],
         response_format: {
           type: 'json_schema',
-          json_schema: {
-            name: 'sales_customer_conversation_summary',
-            strict: true,
-            schema: OUTPUT_SCHEMA,
-          },
+          json_schema: OUTPUT_SCHEMA,
         },
         temperature: 0,
         max_tokens: 900,
@@ -345,9 +343,7 @@ export async function generateSalesCustomerSemanticSummary(
       }
       const response = raw as AiResponse;
       usage = addUsage(usage, parseUsage(response));
-      const summary = typeof response.response === 'string'
-        ? parseAiSummary(response.response, source.evidenceIds)
-        : null;
+      const summary = parseAiSummary(response.response, source.evidenceIds);
       if (summary) return { text: formatAiSummary(summary), usage, attempts: attempt };
       lastCause = new Error('invalid_structured_response');
     } catch (error) {

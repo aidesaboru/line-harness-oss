@@ -66,12 +66,12 @@ describe('sales customer semantic summary', () => {
       { direction: 'outgoing', createdAt: '2026-09-09T11:00:00+09:00', content: '返送先を案内しました。' },
     ]);
     const run = vi.fn().mockResolvedValue({
-      response: JSON.stringify({
+      response: {
         consultation: { text: '返品方法について相談している。', evidence: ['M1'] },
         responseHistory: { text: '担当者が返送先を案内した。', evidence: ['M2'] },
         currentSituation: { text: '返送待ちかどうかは確認できません。', evidence: ['M2'] },
         nextAction: { text: '返送状況を確認する。', evidence: ['M1', 'M2'] },
-      }),
+      },
       usage: { prompt_tokens: 120, completion_tokens: 80, total_tokens: 200 },
     });
 
@@ -83,8 +83,18 @@ describe('sales customer semantic summary', () => {
 
     expect(run).toHaveBeenCalledWith(SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL, expect.objectContaining({
       temperature: 0,
-      response_format: expect.objectContaining({ type: 'json_schema' }),
+      response_format: {
+        type: 'json_schema',
+        json_schema: expect.objectContaining({
+          type: 'object',
+          required: ['consultation', 'responseHistory', 'currentSituation', 'nextAction'],
+        }),
+      },
     }));
+    const request = run.mock.calls[0]?.[1] as { response_format?: { json_schema?: Record<string, unknown> } };
+    expect(request.response_format?.json_schema).not.toHaveProperty('name');
+    expect(request.response_format?.json_schema).not.toHaveProperty('strict');
+    expect(request.response_format?.json_schema).not.toHaveProperty('schema');
     expect(JSON.stringify(run.mock.calls)).toContain('要約基準日時: 2026-09-10T12:00:00+09:00');
     expect(result.text).toContain('【相談内容】');
     expect(result.text).toContain('返品方法について相談');
@@ -118,6 +128,25 @@ describe('sales customer semantic summary', () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(result.attempts).toBe(2);
     expect(result.usage).toEqual({ promptTokens: 21, completionTokens: 11, totalTokens: 32 });
+  });
+
+  test('keeps accepting a JSON string response for compatible model responses', async () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-09-09', content: '契約書を確認してください。' },
+    ]);
+    const run = vi.fn().mockResolvedValue({
+      response: JSON.stringify({
+        consultation: { text: '契約書の確認依頼。', evidence: ['M1'] },
+        responseHistory: { text: '確認できません。', evidence: [] },
+        currentSituation: { text: '契約書の確認依頼が記録されている。', evidence: ['M1'] },
+        nextAction: { text: '契約書を確認する依頼がある。', evidence: ['M1'] },
+      }),
+    });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(result.text).toContain('【相談内容】');
+    expect(result.attempts).toBe(1);
   });
 
   test('rejects extra JSON fields and evidence attached to an unknown section', async () => {

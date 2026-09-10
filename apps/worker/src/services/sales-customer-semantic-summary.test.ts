@@ -38,7 +38,7 @@ describe('sales customer semantic summary', () => {
     expect(source.messageCount).toBe(2);
     expect(source.outputSensitiveTerms).toEqual(['田中商事']);
     expect(source.fingerprintInput).not.toContain('田中商事');
-    expect(source.fingerprintInput).toContain('generic_occurrence_fallback_v1');
+    expect(source.fingerprintInput).toContain('generic_occurrence-fallback-v2');
   });
 
   test('normalizes ordering and keeps the latest messages within the input limit', () => {
@@ -149,7 +149,11 @@ describe('sales customer semantic summary', () => {
     expect(JSON.stringify(run.mock.calls[1])).toContain('前回の出力は品質検証を通りませんでした');
   });
 
-  test('rejects a date plus generic conversation occurrence, then retries once', async () => {
+  test.each([
+    '2026年06月12日の時点で会話が行われていた',
+    '2026年06月12日の時点で会話が行われていました。',
+    '6月12日時点で担当者と顧客がやり取りしていました。',
+  ])('rejects a date plus generic conversation occurrence: %s', async (genericOccurrence) => {
     const source = prepareSalesCustomerSemanticSource([
       { direction: 'incoming', createdAt: '2026-06-12', content: '返品方法を確認したいです。' },
     ]);
@@ -158,7 +162,7 @@ describe('sales customer semantic summary', () => {
         response: {
           consultation: '確認できません。',
           responseHistory: '確認できません。',
-          currentSituation: '2026年06月12日の時点で会話が行われていた',
+          currentSituation: genericOccurrence,
           nextAction: '確認できません。',
         },
       })

@@ -7,7 +7,7 @@ export const SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_INPUT_CHARS = 12_000 as const;
 const MAX_MESSAGE_CHARS = 600;
 const MAX_SECTION_CHARS = 500;
 const MAX_GENERATION_ATTEMPTS = 2;
-const QUALITY_GATE_REVISION = 'generic_occurrence_fallback_v1';
+const QUALITY_GATE_REVISION = 'generic_occurrence-fallback-v2';
 
 const SECTION_KEYS = [
   'consultation',
@@ -256,10 +256,10 @@ function parseSection(raw: unknown, sensitiveTerms: readonly string[]): string |
   const japaneseChars = Array.from(informative).filter((character) => /[ぁ-んァ-ヶ一-龯々]/u.test(character));
   if (japaneseChars.length < 4) return null;
   const withoutDateOnlyContext = text.replace(
-    /^\d{4}年\d{1,2}月\d{1,2}日(?:の時点で|時点で|に|頃)?[、,\s]*/u,
+    /^(?:\d{4}年)?\d{1,2}月\d{1,2}日(?:の時点で|時点で|に|頃)?[、,\s]*/u,
     '',
   );
-  if (/^(?:(?:顧客|担当(?:者)?|双方|両者)(?:と|が|は|から|へ)?){0,2}(?:会話|連絡|やり取り|対応)(?:が|を)?(?:行われていた|行われた|行っていた|行った|行いました|ありました|あった|した|しました|済み|済みです)[。]?$/u.test(withoutDateOnlyContext)) return null;
+  if (/^(?:(?:顧客|担当(?:者)?|双方|両者)(?:と|が|は|から|へ)?){0,2}(?:会話|連絡|やり取り|対応)(?:が|を)?(?:行われていた|行われていました|行われている|行われています|行われた|行われました|行っていた|行っていました|行った|行いました|ありました|あった|していた|していました|しています|した|しました|済み|済みです)[。]?$/u.test(withoutDateOnlyContext)) return null;
   if (/\bM[1-9][0-9]*\b/u.test(text)) return null;
   return text;
 }

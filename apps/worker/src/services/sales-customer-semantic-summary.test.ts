@@ -38,7 +38,7 @@ describe('sales customer semantic summary', () => {
     expect(source.messageCount).toBe(2);
     expect(source.outputSensitiveTerms).toEqual(['田中商事']);
     expect(source.fingerprintInput).not.toContain('田中商事');
-    expect(source.fingerprintInput).toContain('generic_occurrence-fallback-v2');
+    expect(source.fingerprintInput).toContain('low_information-utterance-fallback-v3');
   });
 
   test('normalizes ordering and keeps the latest messages within the input limit', () => {
@@ -181,6 +181,49 @@ describe('sales customer semantic summary', () => {
     expect(result.attempts).toBe(2);
     expect(result.text).not.toContain('会話が行われていた');
     expect(JSON.stringify(run.mock.calls[1])).toContain('日時と会話があった事実だけ');
+  });
+
+  test.each([
+    '2026年09月10日時点で、2026年06月12日に担当がいいいと発言した',
+    '担当者が「あああ」と返信しました。',
+    '顧客からテストと送信されました。',
+  ])('rejects a low-information utterance and uses the manual-review fallback: %s', async (lowInformationUtterance) => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'outgoing', createdAt: '2026-06-12', content: '短いテスト発話' },
+    ]);
+    const response = {
+      consultation: '確認できません。',
+      responseHistory: '確認できません。',
+      currentSituation: lowInformationUtterance,
+      nextAction: '確認できません。',
+    };
+    const run = vi.fn().mockResolvedValue({ response });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('元のチャットを人が確認');
+    expect(result.text).not.toContain(lowInformationUtterance);
+    expect(JSON.stringify(run.mock.calls[1])).toContain('短い反復文字');
+  });
+
+  test('keeps a concrete short request even when expressed as a speech act', async () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-09-09', content: '返品を希望します。' },
+    ]);
+    const run = vi.fn().mockResolvedValue({
+      response: {
+        consultation: '顧客が返品したいと発言した。',
+        responseHistory: '確認できません。',
+        currentSituation: '返品希望が記録されている。',
+        nextAction: '返品方法の案内が必要である。',
+      },
+    });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.text).toContain('返品したいと発言した');
   });
 
   test('keeps accepting a JSON string response for compatible model responses', async () => {

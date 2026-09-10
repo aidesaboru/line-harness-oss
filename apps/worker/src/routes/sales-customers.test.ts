@@ -12,7 +12,7 @@ type TestStaff = {
 }
 type TestEnv = {
   Variables: { staff: TestStaff }
-  Bindings: { DB: D1Database }
+  Bindings: { DB: D1Database; AI?: Ai }
 }
 
 type SubjectRow = {
@@ -32,9 +32,15 @@ type SubjectRow = {
   status_updated_at: string | null
   overview_id: string | null
   overview_text: string | null
-  overview_topic_codes: string | null
   overview_generation_method: string | null
+  overview_ai_generated: number | null
+  overview_model: string | null
+  overview_prompt_version: string | null
   overview_source_fingerprint: string | null
+  overview_source_message_count: number | null
+  overview_source_from_at: string | null
+  overview_source_to_at: string | null
+  overview_input_char_count: number | null
   overview_version: number | null
   overview_updated_by_name: string | null
   overview_updated_at: string | null
@@ -89,10 +95,16 @@ const directRow: SubjectRow = {
   status_updated_by_name: '運営担当',
   status_updated_at: '2026-09-09T10:00:00+09:00',
   overview_id: 'overview-1',
-  overview_text: '直近90日の機械集計概要。ステータスは人が設定します。',
-  overview_topic_codes: JSON.stringify(['payment']),
-  overview_generation_method: 'rules_v1',
+  overview_text: '【相談内容】\n返品方法について相談。\n\n【これまでの対応】\n返送先を案内。\n\n【現在の状況】\n返送待ち。\n\n【次の対応】\n到着確認。',
+  overview_generation_method: 'semantic_v1',
+  overview_ai_generated: 1,
+  overview_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  overview_prompt_version: 'sales_conversation_summary_v1',
   overview_source_fingerprint: 'a'.repeat(64),
+  overview_source_message_count: 2,
+  overview_source_from_at: '2026-09-09T08:00:00+09:00',
+  overview_source_to_at: '2026-09-09T09:00:00+09:00',
+  overview_input_char_count: 100,
   overview_version: 1,
   overview_updated_by_name: '運営担当',
   overview_updated_at: '2026-09-10T10:00:00+09:00',
@@ -140,9 +152,15 @@ const groupRow: SubjectRow = {
   status_updated_at: null,
   overview_id: null,
   overview_text: null,
-  overview_topic_codes: null,
   overview_generation_method: null,
+  overview_ai_generated: null,
+  overview_model: null,
+  overview_prompt_version: null,
   overview_source_fingerprint: null,
+  overview_source_message_count: null,
+  overview_source_from_at: null,
+  overview_source_to_at: null,
+  overview_input_char_count: null,
   overview_version: null,
   overview_updated_by_name: null,
   overview_updated_at: null,
@@ -150,7 +168,7 @@ const groupRow: SubjectRow = {
   chat_status: 'resolved',
 }
 
-function setupApp(db: D1Database, staff: Partial<TestStaff> = {}) {
+function setupApp(db: D1Database, staff: Partial<TestStaff> = {}, ai?: Ai) {
   const app = new Hono<TestEnv>()
   app.use('*', async (c, next) => {
     c.set('staff', {
@@ -161,7 +179,7 @@ function setupApp(db: D1Database, staff: Partial<TestStaff> = {}) {
       salesOnly: false,
       ...staff,
     })
-    c.env = { DB: db }
+    c.env = { DB: db, AI: ai }
     await next()
   })
   app.route('/', salesCustomers)
@@ -212,11 +230,16 @@ function readDb() {
               }],
             } as { results: T[] }
           }
-          if (sql.includes('FROM sales_customer_overview_events')) {
+          if (sql.includes('FROM sales_customer_semantic_summary_events')) {
             return {
               results: [{
                 id: 'overview-event-1',
-                overview: directRow.overview_text,
+                summary: directRow.overview_text,
+                ai_generated: 1,
+                model: directRow.overview_model,
+                source_message_count: 2,
+                source_from_at: directRow.overview_source_from_at,
+                source_to_at: directRow.overview_source_to_at,
                 actor_name: '運営担当',
                 created_at: directRow.overview_updated_at,
               }],
@@ -300,7 +323,9 @@ describe('sales customer read APIs', () => {
         text: directRow.overview_text,
         stored: true,
         version: 1,
-        method: 'rules_v1',
+        method: 'semantic_v1',
+        aiGenerated: true,
+        sourceMessageCount: 2,
       },
     })
     expect(body.data.items[1]).toMatchObject({
@@ -368,6 +393,11 @@ describe('sales customer read APIs', () => {
     expect(body.data.overviewHistory).toEqual([{
       id: 'overview-event-1',
       text: directRow.overview_text,
+      aiGenerated: true,
+      model: directRow.overview_model,
+      sourceMessageCount: 2,
+      sourceFromAt: directRow.overview_source_from_at,
+      sourceToAt: directRow.overview_source_to_at,
       actorName: '運営担当',
       createdAt: directRow.overview_updated_at,
     }])
@@ -398,11 +428,25 @@ function overviewBatchDb() {
           if (sql.includes('FROM customer_subjects cs')) {
             return { results: [directRow, groupRow] } as { results: T[] }
           }
-          if (sql.includes('FROM messages_log')) {
-            return { results: [{ subject_id: 'friend-1', topic_payment: 1 }] } as { results: T[] }
+          if (sql.includes('WITH ranked_messages') && sql.includes('FROM messages_log')) {
+            return { results: [{
+              subject_id: 'friend-1',
+              direction: 'incoming',
+              content: '田中商事の田中様から返品方法について相談。test@example.com',
+              created_at: '2026-09-09T08:00:00+09:00',
+              sender_name: null,
+              sent_by_staff_name: null,
+            }] } as { results: T[] }
           }
-          if (sql.includes('FROM line_conversation_messages')) {
-            return { results: [{ subject_id: 'conversation-1', topic_store_operations: 1 }] } as { results: T[] }
+          if (sql.includes('WITH ranked_messages') && sql.includes('FROM line_conversation_messages')) {
+            return { results: [{
+              subject_id: 'conversation-1',
+              direction: 'incoming',
+              content: '商品の発送時期を確認したい。',
+              created_at: '2026-09-09T09:00:00+09:00',
+              sender_name: '山田太郎',
+              sent_by_staff_name: null,
+            }] } as { results: T[] }
           }
           return { results: [] } as { results: T[] }
         },
@@ -424,11 +468,24 @@ function overviewBatchDb() {
   return { db, batches }
 }
 
+function semanticAi() {
+  const run = vi.fn().mockResolvedValue({
+    response: JSON.stringify({
+      consultation: { text: '手続きについて相談している。', evidence: ['M1'] },
+      responseHistory: { text: '確認できません。', evidence: [] },
+      currentSituation: { text: '担当者の確認待ちである。', evidence: ['M1'] },
+      nextAction: { text: '相談内容を確認して回答する。', evidence: ['M1'] },
+    }),
+    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+  })
+  return { ai: { run } as unknown as Ai, run }
+}
+
 describe('sales customer overview generation', () => {
   const body = (dryRun: boolean, confirm?: string) => JSON.stringify({
     lineAccountId: 'account-1',
     dryRun,
-    limit: 40,
+    limit: 5,
     offset: 0,
     confirm,
   })
@@ -449,6 +506,7 @@ describe('sales customer overview generation', () => {
         total: 2,
         processed: 2,
         changes: { create: 1, update: 1, unchanged: 0 },
+        estimate: { aiRequests: 2, noText: 0 },
         written: 0,
         historyEventsWritten: 0,
         statusRowsTouched: 0,
@@ -459,7 +517,8 @@ describe('sales customer overview generation', () => {
 
   test('requires explicit confirmation, writes overview plus history, and never updates status rows', async () => {
     const harness = overviewBatchDb()
-    const app = setupApp(harness.db)
+    const model = semanticAi()
+    const app = setupApp(harness.db, {}, model.ai)
     const rejected = await app.request('/api/sales-customers/overviews/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(false),
     })
@@ -472,15 +531,30 @@ describe('sales customer overview generation', () => {
     })
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({
-      data: { written: 2, historyEventsWritten: 2, statusRowsTouched: 0 },
+      data: {
+        written: 2,
+        historyEventsWritten: 2,
+        aiGenerated: 2,
+        noTextWritten: 0,
+        aiAttempts: 2,
+        usage: { promptTokens: 200, completionTokens: 100, totalTokens: 300 },
+        failed: 0,
+        statusRowsTouched: 0,
+      },
     })
     expect(harness.batches).toHaveLength(1)
     expect(harness.batches[0]).toHaveLength(4)
     const sql = harness.batches[0].map((statement) => statement.sql).join('\n')
-    expect(sql).toContain('sales_customer_overviews')
-    expect(sql).toContain('sales_customer_overview_events')
+    expect(sql).toContain('sales_customer_semantic_summaries')
+    expect(sql).toContain('sales_customer_semantic_summary_events')
     expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) sales_customer_statuses/)
+    for (const statement of harness.batches[0]) {
+      expect(statement.sql.match(/\?/g) ?? []).toHaveLength(statement.binds.length)
+    }
     expect(JSON.stringify(harness.batches[0])).not.toContain('出力してはいけない会話')
+    expect(model.run).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(model.run.mock.calls)).not.toContain('田中商事')
+    expect(JSON.stringify(model.run.mock.calls)).not.toContain('test@example.com')
   })
 
   test('rejects sales-only and secondary accounts', async () => {

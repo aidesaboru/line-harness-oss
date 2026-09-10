@@ -95,8 +95,9 @@
     "087_line_conversation_customer_events.sql",
     "088_support_case_routing_mutation.sql",
     "089_sales_customer_status.sql",
-    "090_sales_customer_overviews.sql"
+    "090_sales_customer_overviews.sql",
+    "091_sales_customer_semantic_summaries.sql"
   ],
-  "migrationCount": 96,
+  "migrationCount": 97,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

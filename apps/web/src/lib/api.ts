@@ -757,8 +757,14 @@ export type SalesCustomerActivity = {
 
 export type SalesCustomerRecentOverview = {
   text: string
-  periodDays: 90
-  method: 'rules_v1'
+  method: 'semantic_v1'
+  aiGenerated: boolean
+  model: string | null
+  promptVersion: 'sales_conversation_summary_v1'
+  sourceMessageCount: number
+  sourceFromAt: string | null
+  sourceToAt: string | null
+  inputCharCount: number
   stored: boolean
   version: number
   updatedByName: string | null
@@ -802,6 +808,11 @@ export type SalesCustomerDetail = SalesCustomer & {
   overviewHistory: Array<{
     id: string
     text: string
+    aiGenerated: boolean
+    model: string | null
+    sourceMessageCount: number
+    sourceFromAt: string | null
+    sourceToAt: string | null
     actorName: string | null
     createdAt: string
   }>
@@ -822,8 +833,27 @@ export type SalesCustomerOverviewBatchResult = {
     update: number
     unchanged: number
   }
+  estimate: {
+    aiRequests: number
+    noText: number
+    inputChars: number
+    inputTokens: number
+  }
   written: number
   historyEventsWritten: number
+  aiGenerated: number
+  noTextWritten: number
+  aiAttempts: number
+  usage: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+  }
+  failed: number
+  failures: {
+    aiUnavailable: number
+    invalidAiResponse: number
+  }
   statusRowsTouched: 0
 }
 

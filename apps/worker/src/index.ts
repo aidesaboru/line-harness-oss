@@ -102,6 +102,7 @@ function scheduledErrorKind(err: unknown): string {
 export type Env = {
   Bindings: {
     DB: D1Database;
+    AI?: Ai;
     IMAGES: R2Bucket;
     FILES?: KVNamespace;
     ASSETS: Fetcher;

@@ -2,14 +2,18 @@ import { Hono, type Context } from 'hono';
 import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
 import {
-  buildSalesCustomerOverview,
-  SALES_CUSTOMER_OVERVIEW_METHOD,
-  SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
-  SALES_CUSTOMER_OVERVIEW_TOPIC_CODES,
-  salesCustomerOverviewFingerprintInput,
-  type SalesCustomerOverviewSource,
-  type SalesCustomerOverviewTopicCode,
-} from '../services/sales-customer-overview.js';
+  buildNoEligibleTextSummary,
+  generateSalesCustomerSemanticSummary,
+  prepareSalesCustomerSemanticSource,
+  SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_MESSAGES,
+  SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+  SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL,
+  SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+  SalesCustomerSemanticSummaryError,
+  type PreparedSalesCustomerSemanticSource,
+  type SalesCustomerSemanticMessage,
+  type SalesCustomerSemanticSummaryUsage,
+} from '../services/sales-customer-semantic-summary.js';
 
 const salesCustomers = new Hono<Env>();
 
@@ -18,8 +22,8 @@ const SALES_CUSTOMER_SEARCH_MAX_LENGTH = 120;
 const SALES_CUSTOMER_SUMMARY_MAX_LENGTH = 1000;
 const SALES_CUSTOMER_LIST_MAX_LIMIT = 100;
 const SALES_CUSTOMER_DEFAULT_LIMIT = 50;
-const SALES_CUSTOMER_OVERVIEW_BATCH_MAX_LIMIT = 40;
-const SALES_CUSTOMER_OVERVIEW_BATCH_DEFAULT_LIMIT = 40;
+const SALES_CUSTOMER_OVERVIEW_BATCH_MAX_LIMIT = 5;
+const SALES_CUSTOMER_OVERVIEW_BATCH_DEFAULT_LIMIT = 5;
 const SALES_CUSTOMER_OVERVIEW_CONFIRMATION = 'generate_sales_customer_overviews';
 const SALES_CUSTOMER_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
@@ -53,9 +57,15 @@ type SalesCustomerRow = {
   status_updated_at: string | null;
   overview_id: string | null;
   overview_text: string | null;
-  overview_topic_codes: string | null;
   overview_generation_method: string | null;
+  overview_ai_generated: number | null;
+  overview_model: string | null;
+  overview_prompt_version: string | null;
   overview_source_fingerprint: string | null;
+  overview_source_message_count: number | null;
+  overview_source_from_at: string | null;
+  overview_source_to_at: string | null;
+  overview_input_char_count: number | null;
   overview_version: number | null;
   overview_updated_by_name: string | null;
   overview_updated_at: string | null;
@@ -99,21 +109,23 @@ type SalesCustomerStatusEventRow = {
 
 type SalesCustomerOverviewEventRow = {
   id: string;
-  overview: string;
+  summary: string;
+  ai_generated: number;
+  model: string | null;
+  source_message_count: number;
+  source_from_at: string | null;
+  source_to_at: string | null;
   actor_name: string | null;
   created_at: string;
 };
 
-type SalesCustomerTopicSignalRow = {
+type SalesCustomerSemanticMessageRow = {
   subject_id: string;
-  topic_payment: number | null;
-  topic_accounting: number | null;
-  topic_store_operations: number | null;
-  topic_cancellation_handover: number | null;
-  topic_documents_contracts: number | null;
-  topic_orders_customer_support: number | null;
-  topic_calls_contact: number | null;
-  topic_insurance: number | null;
+  direction: 'incoming' | 'outgoing';
+  content: string;
+  created_at: string;
+  sender_name: string | null;
+  sent_by_staff_name: string | null;
 };
 
 const CUSTOMER_SUBJECTS_SQL = `
@@ -133,14 +145,20 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
-      sco.id AS overview_id,
-      sco.overview AS overview_text,
-      sco.topic_codes AS overview_topic_codes,
-      sco.generation_method AS overview_generation_method,
-      sco.source_fingerprint AS overview_source_fingerprint,
-      sco.version AS overview_version,
-      sco.updated_by_name AS overview_updated_by_name,
-      sco.updated_at AS overview_updated_at,
+      scss.id AS overview_id,
+      scss.summary AS overview_text,
+      scss.generation_method AS overview_generation_method,
+      scss.ai_generated AS overview_ai_generated,
+      scss.model AS overview_model,
+      scss.prompt_version AS overview_prompt_version,
+      scss.source_fingerprint AS overview_source_fingerprint,
+      scss.source_message_count AS overview_source_message_count,
+      scss.source_from_at AS overview_source_from_at,
+      scss.source_to_at AS overview_source_to_at,
+      scss.input_char_count AS overview_input_char_count,
+      scss.version AS overview_version,
+      scss.updated_by_name AS overview_updated_by_name,
+      scss.updated_at AS overview_updated_at,
       f.is_following,
       (
         SELECT CASE WHEN c.is_long_term = 1 THEN 'long_term' ELSE c.status END
@@ -152,7 +170,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
-    LEFT JOIN sales_customer_overviews sco ON sco.friend_id = f.id
+    LEFT JOIN sales_customer_semantic_summaries scss ON scss.friend_id = f.id
 
     UNION ALL
 
@@ -171,20 +189,26 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
-      sco.id AS overview_id,
-      sco.overview AS overview_text,
-      sco.topic_codes AS overview_topic_codes,
-      sco.generation_method AS overview_generation_method,
-      sco.source_fingerprint AS overview_source_fingerprint,
-      sco.version AS overview_version,
-      sco.updated_by_name AS overview_updated_by_name,
-      sco.updated_at AS overview_updated_at,
+      scss.id AS overview_id,
+      scss.summary AS overview_text,
+      scss.generation_method AS overview_generation_method,
+      scss.ai_generated AS overview_ai_generated,
+      scss.model AS overview_model,
+      scss.prompt_version AS overview_prompt_version,
+      scss.source_fingerprint AS overview_source_fingerprint,
+      scss.source_message_count AS overview_source_message_count,
+      scss.source_from_at AS overview_source_from_at,
+      scss.source_to_at AS overview_source_to_at,
+      scss.input_char_count AS overview_input_char_count,
+      scss.version AS overview_version,
+      scss.updated_by_name AS overview_updated_by_name,
+      scss.updated_at AS overview_updated_at,
       NULL AS is_following,
       COALESCE(lc.workflow_status, lc.status) AS chat_status
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
-    LEFT JOIN sales_customer_overviews sco ON sco.conversation_id = lc.id
+    LEFT JOIN sales_customer_semantic_summaries scss ON scss.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
 `;
@@ -509,40 +533,20 @@ function operationStoreNames(metadata: Record<string, unknown>): string[] {
   return Array.from(new Set([...(legacyName ? [legacyName] : []), ...names]));
 }
 
-function numberValue(value: number | null | undefined): number {
-  return Number(value ?? 0);
-}
-
-function overviewSourceFromRow(
-  row: SalesCustomerRow,
-  topicCodes: SalesCustomerOverviewTopicCode[] = [],
-): SalesCustomerOverviewSource {
-  return {
-    totalMessages: numberValue(row.activity_90_total),
-    customerMessages: numberValue(row.activity_90_incoming),
-    staffReplies: numberValue(row.activity_90_human_outgoing),
-    automatedMessages: numberValue(row.activity_90_automated_outgoing),
-    activeDays: numberValue(row.activity_90_active_days),
-    mediaMessages: numberValue(row.activity_90_media),
-    lastContactAt: row.activity_last_at ?? null,
-    lastCustomerMessageAt: row.activity_last_incoming_at ?? null,
-    lastStaffReplyAt: row.activity_last_human_outgoing_at ?? null,
-    needsHumanReply: Boolean(row.activity_needs_human_reply),
-    activeSupportCases: numberValue(row.active_support_cases),
-    supportCasesInPeriod: numberValue(row.support_cases_90),
-    lastSupportUpdatedAt: row.last_support_updated_at ?? null,
-    chatStatus: row.chat_status ?? null,
-    isFollowing: row.is_following == null ? null : Boolean(row.is_following),
-    topicCodes,
-  };
-}
-
 function serializeRecentOverview(row: SalesCustomerRow) {
   const stored = Boolean(row.overview_id && row.overview_text);
   return {
-    text: stored ? row.overview_text : buildSalesCustomerOverview(overviewSourceFromRow(row)),
-    periodDays: SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
-    method: stored ? row.overview_generation_method : SALES_CUSTOMER_OVERVIEW_METHOD,
+    text: stored
+      ? row.overview_text
+      : '会話内容の要約はまだ作成されていません。運営担当者が生成すると表示されます。',
+    method: stored ? row.overview_generation_method : SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+    aiGenerated: stored ? Boolean(row.overview_ai_generated) : false,
+    model: stored ? row.overview_model : null,
+    promptVersion: stored ? row.overview_prompt_version : SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+    sourceMessageCount: stored ? Number(row.overview_source_message_count ?? 0) : 0,
+    sourceFromAt: stored ? row.overview_source_from_at : null,
+    sourceToAt: stored ? row.overview_source_to_at : null,
+    inputCharCount: stored ? Number(row.overview_input_char_count ?? 0) : 0,
     stored,
     version: row.overview_version ?? 0,
     updatedByName: row.overview_updated_by_name ?? null,
@@ -650,7 +654,12 @@ function serializeEvent(row: SalesCustomerStatusEventRow) {
 function serializeOverviewEvent(row: SalesCustomerOverviewEventRow) {
   return {
     id: row.id,
-    text: row.overview,
+    text: row.summary,
+    aiGenerated: Boolean(row.ai_generated),
+    model: row.model,
+    sourceMessageCount: Number(row.source_message_count),
+    sourceFromAt: row.source_from_at,
+    sourceToAt: row.source_to_at,
     actorName: row.actor_name,
     createdAt: row.created_at,
   };
@@ -676,42 +685,20 @@ function customerFilterSql(input: {
   return { sql: conditions.join(' AND '), binds };
 }
 
-const SALES_CUSTOMER_OVERVIEW_TOPIC_KEYWORDS: Record<SalesCustomerOverviewTopicCode, readonly string[]> = {
-  payment: ['決済', '支払', '入金', '請求', '振込', 'カード', '領収', '返金'],
-  accounting: ['税務', '確定申告', '会計', '仕訳', '決算', '帳簿', '経費', 'インボイス'],
-  store_operations: ['楽天', 'yahoo', 'amazon', 'モール', '店舗', '商品登録', '在庫', '受注', '発送', '広告', '運用'],
-  cancellation_handover: ['解約', '退会', '契約終了', '引継', '引き継', '停止'],
-  documents_contracts: ['契約', '申込', '書類', '添付', 'pdf', '見積', '注文書'],
-  orders_customer_support: ['注文', '返品', '交換', '不良', 'クレーム', '問い合わせ', 'レビュー', '配送', '遅延'],
-  calls_contact: ['電話', '通話', '面談', '打合', '打ち合わせ', '連絡'],
-  insurance: ['保険', '補償', '事故'],
-};
-
-function sqlLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+function subjectMapKey(kind: SalesCustomerSubjectKind, id: string): string {
+  return `${kind}:${id}`;
 }
 
-const SALES_CUSTOMER_TOPIC_SIGNAL_SELECT_SQL = SALES_CUSTOMER_OVERVIEW_TOPIC_CODES.map((code) => {
-  const matches = SALES_CUSTOMER_OVERVIEW_TOPIC_KEYWORDS[code]
-    .map((keyword) => `instr(lower(content), ${sqlLiteral(keyword)}) > 0`)
-    .join(' OR ');
-  return `MAX(CASE WHEN ${matches} THEN 1 ELSE 0 END) AS topic_${code}`;
-}).join(',\n      ');
-
-function topicCodesFromSignal(row: SalesCustomerTopicSignalRow | undefined): SalesCustomerOverviewTopicCode[] {
-  if (!row) return [];
-  return SALES_CUSTOMER_OVERVIEW_TOPIC_CODES.filter((code) => Boolean(row[`topic_${code}`]));
-}
-
-async function loadOverviewTopicSignals(
+async function loadSemanticMessages(
   db: D1Database,
   rows: SalesCustomerRow[],
-): Promise<Map<string, SalesCustomerTopicSignalRow>> {
-  const bySubject = new Map<string, SalesCustomerTopicSignalRow>();
+): Promise<Map<string, SalesCustomerSemanticMessageRow[]>> {
+  const bySubject = new Map<string, SalesCustomerSemanticMessageRow[]>();
   const friendIds = rows.filter((row) => row.subject_kind === 'friend').map((row) => row.subject_id);
   const conversationIds = rows.filter((row) => row.subject_kind === 'conversation').map((row) => row.subject_id);
 
   const load = async (
+    kind: SalesCustomerSubjectKind,
     table: 'messages_log' | 'line_conversation_messages',
     idColumn: 'friend_id' | 'conversation_id',
     ids: string[],
@@ -721,25 +708,75 @@ async function loadOverviewTopicSignals(
     const deliveryFilter = table === 'messages_log'
       ? "AND (delivery_type IS NULL OR delivery_type != 'test')"
       : '';
+    const senderName = table === 'messages_log' ? 'NULL' : 'sender_name';
     const result = await db.prepare(
-      `SELECT ${idColumn} AS subject_id,
-              ${SALES_CUSTOMER_TOPIC_SIGNAL_SELECT_SQL}
-       FROM ${table}
-       WHERE ${idColumn} IN (${placeholders})
-         AND direction = 'incoming'
-         AND deleted_at IS NULL
-         ${deliveryFilter}
-         AND datetime(created_at) >= datetime('now', '-90 days')
-       GROUP BY ${idColumn}`,
-    ).bind(...ids).all<SalesCustomerTopicSignalRow>();
-    for (const row of result.results) bySubject.set(`${idColumn}:${row.subject_id}`, row);
+      `WITH ranked_messages AS (
+         SELECT
+           ${idColumn} AS subject_id,
+           direction,
+           content,
+           created_at,
+           ${senderName} AS sender_name,
+           sent_by_staff_name,
+           id AS message_id,
+           ROW_NUMBER() OVER (
+             PARTITION BY ${idColumn}
+             ORDER BY created_at DESC, id DESC
+           ) AS message_rank
+         FROM ${table}
+         WHERE ${idColumn} IN (${placeholders})
+           AND message_type = 'text'
+           AND length(trim(content)) > 0
+           AND deleted_at IS NULL
+           ${deliveryFilter}
+           AND (
+             direction = 'incoming'
+             OR (direction = 'outgoing' AND source IN ('manual', 'scheduled_manual', 'line_official'))
+           )
+       )
+       SELECT subject_id, direction, content, created_at, sender_name, sent_by_staff_name
+       FROM ranked_messages
+       WHERE message_rank <= ?
+       ORDER BY subject_id ASC, created_at ASC, message_id ASC`,
+    ).bind(...ids, SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_MESSAGES).all<SalesCustomerSemanticMessageRow>();
+    for (const row of result.results) {
+      const key = subjectMapKey(kind, row.subject_id);
+      const values = bySubject.get(key) ?? [];
+      values.push(row);
+      bySubject.set(key, values);
+    }
   };
 
   await Promise.all([
-    load('messages_log', 'friend_id', friendIds),
-    load('line_conversation_messages', 'conversation_id', conversationIds),
+    load('friend', 'messages_log', 'friend_id', friendIds),
+    load('conversation', 'line_conversation_messages', 'conversation_id', conversationIds),
   ]);
   return bySubject;
+}
+
+function semanticSensitiveTerms(row: SalesCustomerRow, messages: SalesCustomerSemanticMessageRow[]): string[] {
+  const metadata = parseMetadata(row.customer_metadata);
+  return [
+    row.display_name,
+    row.line_account_name,
+    metadataText(metadata, ['companyName', 'company_name', 'company', 'corporationName', 'corporation_name']),
+    metadataText(metadata, ['customerName', 'customer_name', 'contactName', 'contact_name']),
+    metadataText(metadata, ['personInCharge', 'person_in_charge', 'representativeName', 'representative_name']),
+    ...operationStoreNames(metadata),
+    ...messages.flatMap((message) => [message.sender_name, message.sent_by_staff_name]),
+  ].filter((value): value is string => typeof value === 'string' && value.trim().length >= 2);
+}
+
+function prepareSemanticSource(
+  row: SalesCustomerRow,
+  messages: SalesCustomerSemanticMessageRow[],
+): PreparedSalesCustomerSemanticSource {
+  const sourceMessages: SalesCustomerSemanticMessage[] = messages.map((message) => ({
+    direction: message.direction,
+    content: message.content,
+    createdAt: message.created_at,
+  }));
+  return prepareSalesCustomerSemanticSource(sourceMessages, semanticSensitiveTerms(row, messages));
 }
 
 async function sha256Hex(value: string): Promise<string> {
@@ -757,9 +794,9 @@ function salesStatusConflict(err: unknown): boolean {
 
 function salesOverviewConflict(err: unknown): boolean {
   return err instanceof Error && (
-    /sales_customer_overview_events\.overview_id/i.test(err.message)
-    || /UNIQUE constraint failed: sales_customer_overviews/i.test(err.message)
-    || /UNIQUE constraint failed: idx_sales_customer_overview/i.test(err.message)
+    /sales_customer_semantic_summary_events\.summary_id/i.test(err.message)
+    || /UNIQUE constraint failed: sales_customer_semantic_summaries/i.test(err.message)
+    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary/i.test(err.message)
   );
 }
 
@@ -933,16 +970,12 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
       ).bind(lineAccountId.value).first<{ count: number }>(),
     ]);
 
-    const topicSignals = await loadOverviewTopicSignals(c.env.DB, pageResult.results);
+    const messagesBySubject = await loadSemanticMessages(c.env.DB, pageResult.results);
     const prepared = await Promise.all(pageResult.results.map(async (row) => {
-      const signalKey = row.subject_kind === 'friend'
-        ? `friend_id:${row.subject_id}`
-        : `conversation_id:${row.subject_id}`;
-      const topicCodes = topicCodesFromSignal(topicSignals.get(signalKey));
-      const source = overviewSourceFromRow(row, topicCodes);
-      const overview = buildSalesCustomerOverview(source);
-      const sourceFingerprint = await sha256Hex(salesCustomerOverviewFingerprintInput(source));
-      return { row, topicCodes, overview, sourceFingerprint };
+      const messages = messagesBySubject.get(subjectMapKey(row.subject_kind, row.subject_id)) ?? [];
+      const source = prepareSemanticSource(row, messages);
+      const sourceFingerprint = await sha256Hex(source.fingerprintInput);
+      return { row, source, sourceFingerprint };
     }));
 
     const changes = { create: 0, update: 0, unchanged: 0 };
@@ -952,36 +985,114 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
       else changes.update += 1;
     }
 
+    const changedItems = prepared.filter((item) => (
+      item.row.overview_source_fingerprint !== item.sourceFingerprint
+    ));
+    const estimate = changedItems.reduce((result, item) => ({
+      aiRequests: result.aiRequests + (item.source.messageCount > 0 ? 1 : 0),
+      noText: result.noText + (item.source.messageCount === 0 ? 1 : 0),
+      inputChars: result.inputChars + item.source.inputCharCount,
+      inputTokens: result.inputTokens + item.source.estimatedInputTokens,
+    }), { aiRequests: 0, noText: 0, inputChars: 0, inputTokens: 0 });
+
     let written = 0;
     let historyEventsWritten = 0;
-    if (!dryRun.value && changes.create + changes.update > 0) {
+    let aiGenerated = 0;
+    let noTextWritten = 0;
+    let aiAttempts = 0;
+    let usage: SalesCustomerSemanticSummaryUsage = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+    const failures = { aiUnavailable: 0, invalidAiResponse: 0 };
+    if (!dryRun.value && changedItems.length > 0) {
+      type GeneratedItem = (typeof changedItems)[number] & {
+        summary: string;
+        aiGenerated: boolean;
+        attempts: number;
+        usage: SalesCustomerSemanticSummaryUsage;
+      };
+      const generated: GeneratedItem[] = [];
+      const generatedAt = jstNow();
+      let nextIndex = 0;
+      const workers = Array.from(
+        { length: Math.min(2, changedItems.length) },
+        async () => {
+          for (;;) {
+            const itemIndex = nextIndex;
+            nextIndex += 1;
+            const item = changedItems[itemIndex];
+            if (!item) break;
+            if (item.source.messageCount === 0) {
+              generated.push({
+                ...item,
+                summary: buildNoEligibleTextSummary(),
+                aiGenerated: false,
+                attempts: 0,
+                usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+              });
+              continue;
+            }
+            try {
+              const result = await generateSalesCustomerSemanticSummary(c.env.AI, item.source, generatedAt);
+              generated.push({
+                ...item,
+                summary: result.text,
+                aiGenerated: true,
+                attempts: result.attempts,
+                usage: result.usage,
+              });
+            } catch (err) {
+              const kind = err instanceof SalesCustomerSemanticSummaryError
+                ? err.kind
+                : 'ai_unavailable';
+              if (kind === 'invalid_ai_response') failures.invalidAiResponse += 1;
+              else failures.aiUnavailable += 1;
+            }
+          }
+        },
+      );
+      await Promise.all(workers);
+
       const actor = c.get('staff');
       const actorId = actor.id === 'env-owner' ? null : actor.id;
-      const now = jstNow();
+      const now = generatedAt;
       const statements: D1PreparedStatement[] = [];
 
-      for (const item of prepared) {
-        if (item.row.overview_source_fingerprint === item.sourceFingerprint) continue;
+      for (const item of generated) {
         const overviewId = item.row.overview_id ?? crypto.randomUUID();
         const mutationId = crypto.randomUUID();
         const eventId = crypto.randomUUID();
         const friendId = item.row.subject_kind === 'friend' ? item.row.subject_id : null;
         const conversationId = item.row.subject_kind === 'conversation' ? item.row.subject_id : null;
-        const topicCodesJson = JSON.stringify(item.topicCodes);
+        const model = item.aiGenerated ? SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL : null;
 
         if (item.row.overview_id) {
           statements.push(c.env.DB.prepare(
-            `UPDATE sales_customer_overviews
-             SET overview = ?, period_days = ?, topic_codes = ?, generation_method = ?,
-                 source_fingerprint = ?, version = version + 1, mutation_id = ?,
+            `UPDATE sales_customer_semantic_summaries
+             SET summary = ?, generation_method = ?, ai_generated = ?, model = ?,
+                 prompt_version = ?, source_fingerprint = ?, source_message_count = ?,
+                 source_from_at = ?, source_to_at = ?, input_char_count = ?,
+                 prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, attempt_count = ?,
+                 version = version + 1, mutation_id = ?,
                  updated_by = ?, updated_by_name = ?, updated_at = ?
              WHERE id = ? AND version = ?`,
           ).bind(
-            item.overview,
-            SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
-            topicCodesJson,
-            SALES_CUSTOMER_OVERVIEW_METHOD,
+            item.summary,
+            SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+            item.aiGenerated ? 1 : 0,
+            model,
+            SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
             item.sourceFingerprint,
+            item.source.messageCount,
+            item.source.sourceFromAt,
+            item.source.sourceToAt,
+            item.source.inputCharCount,
+            item.usage.promptTokens,
+            item.usage.completionTokens,
+            item.usage.totalTokens,
+            item.attempts,
             mutationId,
             actorId,
             actor.name,
@@ -991,20 +1102,31 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
           ));
         } else {
           statements.push(c.env.DB.prepare(
-            `INSERT INTO sales_customer_overviews (
-               id, friend_id, conversation_id, overview, period_days, topic_codes,
-               generation_method, source_fingerprint, version, mutation_id,
-               updated_by, updated_by_name, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+            `INSERT INTO sales_customer_semantic_summaries (
+               id, friend_id, conversation_id, summary, generation_method,
+               ai_generated, model, prompt_version, source_fingerprint,
+               source_message_count, source_from_at, source_to_at, input_char_count,
+               prompt_tokens, completion_tokens, total_tokens, attempt_count,
+               version, mutation_id, updated_by, updated_by_name, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
           ).bind(
             overviewId,
             friendId,
             conversationId,
-            item.overview,
-            SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
-            topicCodesJson,
-            SALES_CUSTOMER_OVERVIEW_METHOD,
+            item.summary,
+            SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+            item.aiGenerated ? 1 : 0,
+            model,
+            SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
             item.sourceFingerprint,
+            item.source.messageCount,
+            item.source.sourceFromAt,
+            item.source.sourceToAt,
+            item.source.inputCharCount,
+            item.usage.promptTokens,
+            item.usage.completionTokens,
+            item.usage.totalTokens,
+            item.attempts,
             mutationId,
             actorId,
             actor.name,
@@ -1014,37 +1136,59 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         }
 
         statements.push(c.env.DB.prepare(
-          `INSERT INTO sales_customer_overview_events (
-             id, overview_id, overview, period_days, topic_codes, generation_method,
-             source_fingerprint, actor_id, actor_name, created_at
+          `INSERT INTO sales_customer_semantic_summary_events (
+             id, summary_id, summary, generation_method, ai_generated, model,
+             prompt_version, source_fingerprint, source_message_count,
+             source_from_at, source_to_at, input_char_count,
+             prompt_tokens, completion_tokens, total_tokens, attempt_count,
+             actor_id, actor_name, created_at
            ) VALUES (
              ?,
-             (SELECT id FROM sales_customer_overviews WHERE mutation_id = ?),
-             ?, ?, ?, ?, ?, ?, ?, ?
+             (SELECT id FROM sales_customer_semantic_summaries WHERE mutation_id = ?),
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
            )`,
         ).bind(
           eventId,
           mutationId,
-          item.overview,
-          SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
-          topicCodesJson,
-          SALES_CUSTOMER_OVERVIEW_METHOD,
+          item.summary,
+          SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+          item.aiGenerated ? 1 : 0,
+          model,
+          SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
           item.sourceFingerprint,
+          item.source.messageCount,
+          item.source.sourceFromAt,
+          item.source.sourceToAt,
+          item.source.inputCharCount,
+          item.usage.promptTokens,
+          item.usage.completionTokens,
+          item.usage.totalTokens,
+          item.attempts,
           actorId,
           actor.name,
           now,
         ));
+        usage = {
+          promptTokens: usage.promptTokens + item.usage.promptTokens,
+          completionTokens: usage.completionTokens + item.usage.completionTokens,
+          totalTokens: usage.totalTokens + item.usage.totalTokens,
+        };
+        aiAttempts += item.attempts;
+        if (item.aiGenerated) aiGenerated += 1;
+        else noTextWritten += 1;
       }
 
-      try {
-        await c.env.DB.batch(statements);
-      } catch (err) {
-        if (salesOverviewConflict(err)) {
-          return c.json({ success: false, error: 'overview_conflict' }, 409);
+      if (statements.length > 0) {
+        try {
+          await c.env.DB.batch(statements);
+        } catch (err) {
+          if (salesOverviewConflict(err)) {
+            return c.json({ success: false, error: 'overview_conflict' }, 409);
+          }
+          throw err;
         }
-        throw err;
       }
-      written = changes.create + changes.update;
+      written = generated.length;
       historyEventsWritten = written;
     }
 
@@ -1063,8 +1207,20 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         hasNextPage: nextOffset < total,
         nextOffset: nextOffset < total ? nextOffset : null,
         changes,
+        estimate: {
+          aiRequests: estimate.aiRequests,
+          noText: estimate.noText,
+          inputChars: estimate.inputChars,
+          inputTokens: estimate.inputTokens,
+        },
         written,
         historyEventsWritten,
+        aiGenerated,
+        noTextWritten,
+        aiAttempts,
+        usage,
+        failed: failures.aiUnavailable + failures.invalidAiResponse,
+        failures,
         statusRowsTouched: 0,
       },
     });
@@ -1110,10 +1266,12 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
         : Promise.resolve({ results: [] as SalesCustomerStatusEventRow[] }),
       row.overview_id
         ? c.env.DB.prepare(
-            `SELECT e.id, e.overview, e.actor_name, e.created_at
-             FROM sales_customer_overview_events e
-             INNER JOIN sales_customer_overviews o ON o.id = e.overview_id
-             WHERE o.${subjectColumn} = ?
+            `SELECT e.id, e.summary, e.ai_generated, e.model,
+                    e.source_message_count, e.source_from_at, e.source_to_at,
+                    e.actor_name, e.created_at
+             FROM sales_customer_semantic_summary_events e
+             INNER JOIN sales_customer_semantic_summaries s ON s.id = e.summary_id
+             WHERE s.${subjectColumn} = ?
              ORDER BY e.created_at DESC, e.id DESC
              LIMIT 20`,
           ).bind(subjectId.value).all<SalesCustomerOverviewEventRow>()

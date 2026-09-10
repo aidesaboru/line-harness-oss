@@ -32,6 +32,9 @@ database_id = "6df8b286-0414-4e4e-b656-f3ce5257df61"
 binding = "FILES"
 id = "d0ff6d19c2c9470fa1663d7155b78203"
 
+[ai]
+binding = "AI"
+
 [triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]
 
@@ -79,6 +82,9 @@ database_id = "YOUR_D1_DATABASE_ID"
 [[env.production.r2_buckets]]
 binding = "IMAGES"
 bucket_name = "line-harness-images"
+
+[env.production.ai]
+binding = "AI"
 
 [env.production.triggers]
 crons = ["*/5 * * * *", "0 */6 * * *"]

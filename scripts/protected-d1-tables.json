@@ -60,5 +60,9 @@
   "app_notification_inbox",
   "line_conversations",
   "line_conversation_messages",
-  "line_conversation_customer_events"
+  "line_conversation_customer_events",
+  "sales_customer_overviews",
+  "sales_customer_overview_events",
+  "sales_customer_semantic_summaries",
+  "sales_customer_semantic_summary_events"
 ]

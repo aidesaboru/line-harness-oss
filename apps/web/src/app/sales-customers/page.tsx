@@ -25,7 +25,7 @@ import {
 } from '@/lib/sales-customer-status'
 
 const PAGE_SIZE = 50
-const OVERVIEW_BATCH_SIZE = 40
+const OVERVIEW_BATCH_SIZE = 5
 type StatusFilter = SalesCustomerStatus | 'action_required' | 'all'
 
 type OverviewBatchSummary = {
@@ -35,6 +35,19 @@ type OverviewBatchSummary = {
   update: number
   unchanged: number
   written: number
+  aiRequests: number
+  noText: number
+  inputChars: number
+  inputTokens: number
+  aiGenerated: number
+  noTextWritten: number
+  aiAttempts: number
+  promptTokens: number
+  completionTokens: number
+  totalTokens: number
+  failed: number
+  aiUnavailable: number
+  invalidAiResponse: number
   statusRowsTouched: number
 }
 
@@ -214,7 +227,7 @@ function RecentOverviewPanel({ detail }: { detail: SalesCustomerDetail }) {
         <div>
           <h3 className="text-sm font-bold text-gray-900">最近の状況</h3>
           <p className="mt-1 text-[11px] leading-5 text-gray-500">
-            直近90日の件数・日時・話題カテゴリから作成。営業ステータスは判定しません。
+            直近の人同士のやり取りをAIで「相談・対応・現在地・次の対応」に整理。営業ステータスは判定しません。
           </p>
         </div>
         <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-semibold text-gray-600">
@@ -226,8 +239,8 @@ function RecentOverviewPanel({ detail }: { detail: SalesCustomerDetail }) {
       </p>
       <p className="mt-2 text-[10px] text-gray-400">
         {overview.stored && overview.updatedAt
-          ? `${formatSalesCustomerDate(overview.updatedAt)} 更新${overview.updatedByName ? ` · ${overview.updatedByName}` : ''}`
-          : '表示時点の集計。保存済み概要はまだありません。'}
+          ? `${formatSalesCustomerDate(overview.updatedAt)} 更新 · 対象${overview.sourceMessageCount}件${overview.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(overview.sourceToAt)}` : ''}${overview.updatedByName ? ` · ${overview.updatedByName}` : ''}`
+          : '会話要約はまだ生成されていません。'}
       </p>
       {detail.overviewHistory.length > 0 && (
         <details className="group mt-3 rounded-lg border border-gray-200 bg-white">
@@ -262,6 +275,19 @@ function addOverviewBatchPage(
     update: summary.update + page.changes.update,
     unchanged: summary.unchanged + page.changes.unchanged,
     written: summary.written + page.written,
+    aiRequests: summary.aiRequests + page.estimate.aiRequests,
+    noText: summary.noText + page.estimate.noText,
+    inputChars: summary.inputChars + page.estimate.inputChars,
+    inputTokens: summary.inputTokens + page.estimate.inputTokens,
+    aiGenerated: summary.aiGenerated + page.aiGenerated,
+    noTextWritten: summary.noTextWritten + page.noTextWritten,
+    aiAttempts: summary.aiAttempts + page.aiAttempts,
+    promptTokens: summary.promptTokens + page.usage.promptTokens,
+    completionTokens: summary.completionTokens + page.usage.completionTokens,
+    totalTokens: summary.totalTokens + page.usage.totalTokens,
+    failed: summary.failed + page.failed,
+    aiUnavailable: summary.aiUnavailable + page.failures.aiUnavailable,
+    invalidAiResponse: summary.invalidAiResponse + page.failures.invalidAiResponse,
     statusRowsTouched: summary.statusRowsTouched + page.statusRowsTouched,
   }
 }
@@ -618,6 +644,19 @@ export default function SalesCustomersPage() {
       update: 0,
       unchanged: 0,
       written: 0,
+      aiRequests: 0,
+      noText: 0,
+      inputChars: 0,
+      inputTokens: 0,
+      aiGenerated: 0,
+      noTextWritten: 0,
+      aiAttempts: 0,
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      failed: 0,
+      aiUnavailable: 0,
+      invalidAiResponse: 0,
       statusRowsTouched: 0,
     }
     for (;;) {
@@ -650,7 +689,7 @@ export default function SalesCustomersPage() {
       if (requestId !== overviewBatchRequestRef.current) return
       setOverviewBatchPreview({ accountId: targetAccountId, summary })
       setOverviewBatchMessage(
-        `${summary.total.toLocaleString('ja-JP')}件を確認しました。新規${summary.create.toLocaleString('ja-JP')}件、更新${summary.update.toLocaleString('ja-JP')}件、変更なし${summary.unchanged.toLocaleString('ja-JP')}件です。`,
+        `${summary.total.toLocaleString('ja-JP')}件を確認しました。新規${summary.create.toLocaleString('ja-JP')}件、更新${summary.update.toLocaleString('ja-JP')}件、変更なし${summary.unchanged.toLocaleString('ja-JP')}件。AI要約予定${summary.aiRequests.toLocaleString('ja-JP')}件、要約対象テキストなし${summary.noText.toLocaleString('ja-JP')}件、推定入力${summary.inputTokens.toLocaleString('ja-JP')}トークンです。`,
       )
     } catch {
       if (requestId === overviewBatchRequestRef.current) {
@@ -667,7 +706,7 @@ export default function SalesCustomersPage() {
     const changeCount = overviewBatchPreview.summary.create + overviewBatchPreview.summary.update
     if (changeCount === 0) return
     const confirmed = window.confirm(
-      `${accountName}の最近の状況を${changeCount.toLocaleString('ja-JP')}件更新します。営業ステータスは変更しません。続けますか？`,
+      `${accountName}の最近の状況を${changeCount.toLocaleString('ja-JP')}件更新します。うち${overviewBatchPreview.summary.aiRequests.toLocaleString('ja-JP')}件は、識別情報を伏せた会話をCloudflare Workers AIで処理します。推定入力は${overviewBatchPreview.summary.inputTokens.toLocaleString('ja-JP')}トークンです。営業ステータスは変更しません。続けますか？`,
     )
     if (!confirmed) return
 
@@ -680,9 +719,9 @@ export default function SalesCustomersPage() {
       if (requestId !== overviewBatchRequestRef.current) return
       if (summary.statusRowsTouched !== 0) throw new Error('unexpected_status_mutation')
       setOverviewBatchPreview(null)
-      setOverviewBatchMessage(
-        `${summary.written.toLocaleString('ja-JP')}件の最近の状況と更新履歴を保存しました。営業ステータスは変更していません。`,
-      )
+      setOverviewBatchMessage(summary.failed > 0
+        ? `${summary.written.toLocaleString('ja-JP')}件を保存し、${summary.failed.toLocaleString('ja-JP')}件はAI要約に失敗しました。営業ステータスは変更していません。更新対象を再確認してください。`
+        : `${summary.written.toLocaleString('ja-JP')}件の会話要約と更新履歴を保存しました。営業ステータスは変更していません。`)
       await loadCustomers()
       if (detail) await loadDetail(detail)
     } catch {
@@ -722,7 +761,7 @@ export default function SalesCustomersPage() {
                 <div className="min-w-0 flex-1">
                   <h2 className="text-sm font-bold text-gray-900">最近の状況を全件更新</h2>
                   <p className="mt-1 text-xs leading-5 text-gray-500">
-                    会話本文を表示せず、直近90日の件数・日時・話題カテゴリから概要と履歴を作ります。営業ステータスは変更しません。
+                    直近の人同士のテキストから、相談内容・対応経緯・現在地・次の対応をAIで要約します。識別情報は送信前に伏せ、原文は保存しません。営業ステータスは変更しません。
                   </p>
                   {overviewBatchMessage && (
                     <p className={`mt-2 text-xs leading-5 ${overviewBatchMessage.includes('失敗') ? 'text-red-600' : 'text-gray-700'}`} role="status">
@@ -746,7 +785,7 @@ export default function SalesCustomersPage() {
                       disabled={overviewBatchRunning}
                       className="min-h-10 rounded-lg bg-[#06C755] px-3 text-xs font-bold text-white hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200"
                     >
-                      {overviewBatchRunning ? '更新中...' : `${overviewChangeCount.toLocaleString('ja-JP')}件を更新`}
+                      {overviewBatchRunning ? 'AIで要約中...' : `${overviewChangeCount.toLocaleString('ja-JP')}件を要約`}
                     </button>
                   )}
                 </div>

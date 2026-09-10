@@ -137,7 +137,7 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
 
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-[10px] font-semibold text-gray-600">最近の状況</p>
+          <p className="text-[10px] font-semibold text-gray-600">最近の状況（AI要約）</p>
           <span className="text-[9px] text-gray-400">ステータスとは別</span>
         </div>
         <p className="mt-1.5 whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
@@ -145,8 +145,8 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
         </p>
         <p className="mt-1.5 text-[9px] text-gray-400">
           {detail.recentOverview.stored && detail.recentOverview.updatedAt
-            ? `${formatSalesCustomerDate(detail.recentOverview.updatedAt)} 更新`
-            : '表示時点の集計'}
+            ? `${formatSalesCustomerDate(detail.recentOverview.updatedAt)} 更新 · 対象${detail.recentOverview.sourceMessageCount}件${detail.recentOverview.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(detail.recentOverview.sourceToAt)}` : ''}`
+            : '会話要約はまだ生成されていません'}
         </p>
       </div>
 

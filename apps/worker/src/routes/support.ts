@@ -835,6 +835,27 @@ async function activeStaffIdsByName(db: D1Database, names: string[]): Promise<Ma
   );
 }
 
+async function legacyAssigneeMatchesStaff(
+  db: D1Database,
+  assigneeName: string,
+  staffId: string,
+): Promise<boolean> {
+  const name = assigneeName.trim();
+  if (!name) return false;
+  const row = await db
+    .prepare(
+      `SELECT CASE
+         WHEN COUNT(*) = 1 AND MAX(id) = ? THEN 1
+         ELSE 0
+       END AS matches
+       FROM staff_members
+       WHERE name = ?`,
+    )
+    .bind(staffId, name)
+    .first<{ matches: number }>();
+  return row?.matches === 1;
+}
+
 function prepareSecondarySlackOutbox(
   db: D1Database,
   input: {
@@ -5314,8 +5335,11 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
     if (!existing) return c.json({ success: false, error: 'escalation not found' }, 404);
 
     const staff = currentStaff(c);
+    let legacySecondaryAssigneeMatch = false;
     if (staff.role === 'secondary') {
-      if (existing.assignee_staff_id !== staff.id) {
+      legacySecondaryAssigneeMatch = existing.assignee_staff_id === null
+        && await legacyAssigneeMatchesStaff(c.env.DB, existing.assignee, staff.id);
+      if (existing.assignee_staff_id !== staff.id && !legacySecondaryAssigneeMatch) {
         return c.json({ success: false, error: 'escalation not found' }, 404);
       }
       if (staff.secondaryCanRespond !== true) {
@@ -5342,13 +5366,18 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
     const slackOutboxId = crypto.randomUUID();
     const assigneeStaffIds = existing.assignee_staff_id
       ? new Map([[existing.assignee, existing.assignee_staff_id]])
+      : legacySecondaryAssigneeMatch
+        ? new Map([[existing.assignee, staff.id]])
       : await activeStaffIdsByName(c.env.DB, [existing.assignee]);
     const assigneeStaffId = assigneeStaffIds.get(existing.assignee) ?? null;
+    const secondaryAuthorization = staff.role === 'secondary'
+      ? supportEscalationVisibilitySql(staff, 'reopen_source', 'reopen_case')
+      : { sql: '', binds: [] };
     const reopenAuthorizationSql = `EXISTS (
       SELECT 1 FROM support_escalations reopen_source
       WHERE reopen_source.id = ? AND reopen_source.line_account_id = ?
         AND reopen_source.status IN ('answered', 'closed')
-        ${staff.role === 'secondary' ? 'AND reopen_source.assignee_staff_id = ?' : ''}
+        ${secondaryAuthorization.sql ? `AND ${secondaryAuthorization.sql}` : ''}
         AND NOT EXISTS (
           SELECT 1 FROM support_escalations prior_reopen
           WHERE prior_reopen.reopened_from_id = reopen_source.id
@@ -5358,7 +5387,7 @@ support.post('/api/support/escalations/:id/reopen', async (c) => {
     const reopenAuthorizationBinds = [
       existing.id,
       lineAccountId.value,
-      ...(staff.role === 'secondary' ? [staff.id] : []),
+      ...secondaryAuthorization.binds,
     ];
     const reopenedGuardSql = `EXISTS (
       SELECT 1 FROM support_escalations reopened_guard

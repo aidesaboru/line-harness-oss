@@ -31,6 +31,8 @@ WHERE escalation_assignee_staff_id IS NULL
 -- Migration 068 introduced this ID column without a historical backfill.
 -- Resolve only names that are unique across all staff history. Ambiguous names
 -- remain NULL for explicit operator review rather than granting the wrong user.
+-- Answered and closed rows are immutable audit history (migration 066), so keep
+-- those rows untouched and let the Worker use its unique-name legacy fallback.
 UPDATE support_escalations
 SET assignee_staff_id = (
   SELECT sm.id
@@ -38,6 +40,7 @@ SET assignee_staff_id = (
   WHERE sm.name = support_escalations.assignee
 )
 WHERE assignee_staff_id IS NULL
+  AND status NOT IN ('answered', 'closed')
   AND assignee IS NOT NULL
   AND assignee != ''
   AND (SELECT COUNT(*) FROM staff_members sm WHERE sm.name = support_escalations.assignee) = 1;

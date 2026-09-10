@@ -659,6 +659,13 @@ function makeSupportDb(state: {
             );
             return (row ? { id: row.id } : null) as T | null;
           }
+          if (sql.includes('END AS matches') && sql.includes('FROM staff_members')) {
+            const [staffId, name] = bound as [string, string];
+            const sameName = staffMembers.filter((member) => member.name === name);
+            return {
+              matches: sameName.length === 1 && sameName[0]?.id === staffId ? 1 : 0,
+            } as T;
+          }
           if (sql.startsWith('SELECT * FROM support_manuals WHERE id = ? AND line_account_id = ?')) {
             const [id, lineAccountId] = bound as [string, string];
             return findManual(id, lineAccountId) as T | null;
@@ -3283,6 +3290,89 @@ describe('support CRM routes', () => {
       created_by: 'secondary-1',
     });
     expect(state.cases[0]).toMatchObject({ status: 'waiting_secondary', closed_at: null });
+  });
+
+  test('reopens a legacy closed escalation for the uniquely named secondary staff', async () => {
+    const originalEscalation = baseEscalation({
+      id: 'esc-legacy-closed',
+      case_id: 'case-legacy-closed',
+      assignee: '田島',
+      assignee_staff_id: null,
+      status: 'closed',
+      answer: '移行前の回答',
+    });
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({
+        id: 'case-legacy-closed',
+        status: 'resolved',
+        closed_at: '2026-06-12T11:00:00.000',
+      })],
+      escalations: [originalEscalation],
+      staffMembers: [{ id: 'secondary-1', name: '田島', role: 'secondary', is_active: 1 }],
+    });
+
+    const res = await setupApp(db, {
+      id: 'secondary-1',
+      name: '田島',
+      role: 'secondary',
+      secondaryCanRespond: true,
+    }).request('/api/support/escalations/esc-legacy-closed/reopen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.escalations[0]).toEqual(originalEscalation);
+    expect(state.escalations[1]).toMatchObject({
+      status: 'pending',
+      assignee: '田島',
+      assignee_staff_id: 'secondary-1',
+      reopened_from_id: 'esc-legacy-closed',
+      created_by: 'secondary-1',
+    });
+    const insert = calls.find((call) => (
+      call.method === 'run' && call.sql.includes('INSERT INTO support_escalations')
+    ));
+    expect(insert?.sql).toContain('legacy_secondary_staff');
+    expect(insert?.binds).toContain('secondary-1');
+  });
+
+  test('does not reopen a legacy escalation when the assignee name is duplicated in staff history', async () => {
+    const { db, calls, state } = makeSupportDb({
+      cases: [baseCase({ id: 'case-legacy-ambiguous', status: 'secondary_answered' })],
+      escalations: [baseEscalation({
+        id: 'esc-legacy-ambiguous',
+        case_id: 'case-legacy-ambiguous',
+        assignee: '田島',
+        assignee_staff_id: null,
+        status: 'answered',
+        answer: '過去の回答',
+      })],
+      staffMembers: [
+        { id: 'secondary-1', name: '田島', role: 'secondary', is_active: 1 },
+        { id: 'secondary-retired', name: '田島', role: 'secondary', is_active: 0 },
+      ],
+    });
+
+    const res = await setupApp(db, {
+      id: 'secondary-1',
+      name: '田島',
+      role: 'secondary',
+      secondaryCanRespond: true,
+    }).request('/api/support/escalations/esc-legacy-ambiguous/reopen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lineAccountId: 'acc-1' }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(state.escalations).toHaveLength(1);
+    expect(state.cases[0].status).toBe('secondary_answered');
+    expect(state.events).toHaveLength(0);
+    expect(calls.some((call) => (
+      call.method === 'run' && call.sql.includes('INSERT INTO support_escalations')
+    ))).toBe(false);
   });
 
   test('secondary-only staff cannot reopen another assignee escalation', async () => {

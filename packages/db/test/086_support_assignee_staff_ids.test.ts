@@ -47,7 +47,15 @@ describe('086_support_assignee_staff_ids migration', () => {
         ('case-duplicate', '佐藤', '佐藤', 'open', '2026-08-24');
       INSERT INTO support_escalations VALUES
         ('escalation-unique', 'アベ', NULL, 'pending', '2026-08-24'),
-        ('escalation-duplicate', '佐藤', NULL, 'pending', '2026-08-24');
+        ('escalation-duplicate', '佐藤', NULL, 'pending', '2026-08-24'),
+        ('escalation-answered', 'アベ', NULL, 'answered', '2026-08-24'),
+        ('escalation-closed', 'アベ', NULL, 'closed', '2026-08-24');
+      CREATE TRIGGER protect_terminal_support_escalations_update
+      BEFORE UPDATE ON support_escalations
+      WHEN OLD.status IN ('answered', 'closed')
+      BEGIN
+        SELECT RAISE(ABORT, 'completed support escalation is immutable');
+      END;
     `);
     db.exec(migrationSql);
   });
@@ -81,6 +89,18 @@ describe('086_support_assignee_staff_ids migration', () => {
     expect(db.prepare(`
       SELECT assignee_staff_id FROM support_escalations WHERE id = 'escalation-unique'
     `).get()).toEqual({ assignee_staff_id: 'secondary-1' });
+  });
+
+  it('keeps completed escalation history immutable during the backfill', () => {
+    expect(db.prepare(`
+      SELECT id, assignee_staff_id
+      FROM support_escalations
+      WHERE id IN ('escalation-answered', 'escalation-closed')
+      ORDER BY id
+    `).all()).toEqual([
+      { id: 'escalation-answered', assignee_staff_id: null },
+      { id: 'escalation-closed', assignee_staff_id: null },
+    ]);
   });
 
   it('fills unique IDs for legacy inserts and name-only updates', () => {

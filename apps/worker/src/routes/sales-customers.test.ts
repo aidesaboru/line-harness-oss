@@ -96,10 +96,10 @@ const directRow: SubjectRow = {
   status_updated_at: '2026-09-09T10:00:00+09:00',
   overview_id: 'overview-1',
   overview_text: '【相談内容】\n返品方法について相談。\n\n【これまでの対応】\n返送先を案内。\n\n【現在の状況】\n返送待ち。\n\n【次の対応】\n到着確認。',
-  overview_generation_method: 'semantic_v2',
+  overview_generation_method: 'semantic_v3',
   overview_ai_generated: 1,
   overview_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  overview_prompt_version: 'sales_conversation_summary_v2',
+  overview_prompt_version: 'sales_conversation_summary_v3',
   overview_source_fingerprint: 'a'.repeat(64),
   overview_source_message_count: 2,
   overview_source_from_at: '2026-09-09T08:00:00+09:00',
@@ -143,7 +143,7 @@ const groupRow: SubjectRow = {
   subject_id: 'conversation-1',
   source_kind: 'group',
   display_name: '山田店チーム',
-  customer_metadata: JSON.stringify({ customerNumber: 'C-002', companyName: '山田商店' }),
+  customer_metadata: JSON.stringify({ customerNumber: 'C-002', companyName: '株式会社STAR FIELD' }),
   status_id: null,
   sales_status: 'unreviewed',
   status_summary: null,
@@ -230,7 +230,7 @@ function readDb() {
               }],
             } as { results: T[] }
           }
-          if (sql.includes('FROM sales_customer_semantic_summary_events_v2')) {
+          if (sql.includes('FROM sales_customer_semantic_summary_events_v3')) {
             return {
               results: [{
                 id: 'overview-event-1',
@@ -323,7 +323,7 @@ describe('sales customer read APIs', () => {
         text: directRow.overview_text,
         stored: true,
         version: 1,
-        method: 'semantic_v2',
+        method: 'semantic_v3',
         aiGenerated: true,
         sourceMessageCount: 2,
       },
@@ -331,7 +331,7 @@ describe('sales customer read APIs', () => {
     expect(body.data.items[1]).toMatchObject({
       subjectKind: 'conversation',
       sourceKind: 'group',
-      companyName: '山田商店',
+      companyName: '株式会社STAR FIELD',
       status: 'unreviewed',
       version: 0,
       recentOverview: {
@@ -347,8 +347,8 @@ describe('sales customer read APIs', () => {
     expect(serialized).not.toContain('customer_metadata')
     expect(serialized).not.toContain('sender_user_id')
     expect(calls.some((call) => call.sql.includes("source_type IN ('group', 'room')"))).toBe(true)
-    expect(calls.every((call) => !/sales_customer_semantic_summaries(?!_v2)/u.test(call.sql))).toBe(true)
-    expect(calls.every((call) => !/sales_customer_semantic_summary_events(?!_v2)/u.test(call.sql))).toBe(true)
+    expect(calls.every((call) => !/sales_customer_semantic_summaries(?!_v3)/u.test(call.sql))).toBe(true)
+    expect(calls.every((call) => !/sales_customer_semantic_summary_events(?!_v3)/u.test(call.sql))).toBe(true)
     const activityCall = calls.find((call) => call.sql.includes('customer_message_activity'))
     expect(activityCall?.sql).not.toMatch(/\bml\.content\b|\blcm\.content\b/)
     expect(activityCall?.binds.slice(0, 3)).toEqual(['account-1', 'account-1', 'account-1'])
@@ -444,7 +444,7 @@ function overviewBatchDb() {
             return { results: [{
               subject_id: 'conversation-1',
               direction: 'incoming',
-              content: '商品の発送時期を確認したい。',
+              content: 'STAR FIELDの山田から商品の発送時期を確認したい。',
               created_at: '2026-09-09T09:00:00+09:00',
               sender_name: '山田太郎',
               sent_by_staff_name: null,
@@ -471,14 +471,22 @@ function overviewBatchDb() {
 }
 
 function semanticAi() {
-  const run = vi.fn().mockResolvedValue({
-    response: JSON.stringify({
-      consultation: '手続きについて相談している。',
-      responseHistory: '確認できません。',
-      currentSituation: '担当者の確認待ちである。',
-      nextAction: '相談内容を確認して回答する。',
-    }),
-    usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+  const run = vi.fn().mockImplementation((_model: unknown, request: unknown) => {
+    const isShipping = JSON.stringify(request).includes('発送時期');
+    return Promise.resolve({
+      response: JSON.stringify(isShipping ? {
+        consultation: 'STAR FIELDの山田が商品の発送時期について相談している。',
+        responseHistory: '商品の発送予定を案内した。',
+        currentSituation: '商品の発送時期を担当者が確認中である。',
+        nextAction: '商品の発送日を確認して回答する。',
+      } : {
+        consultation: '田中が返品方法について相談している。',
+        responseHistory: '返送先の候補を案内した。',
+        currentSituation: '返品方法を担当者が確認中である。',
+        nextAction: '返品方法を確認して回答する。',
+      }),
+      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+    });
   })
   return { ai: { run } as unknown as Ai, run }
 }
@@ -547,16 +555,21 @@ describe('sales customer overview generation', () => {
     expect(harness.batches).toHaveLength(1)
     expect(harness.batches[0]).toHaveLength(4)
     const sql = harness.batches[0].map((statement) => statement.sql).join('\n')
-    expect(sql).toContain('sales_customer_semantic_summaries_v2')
-    expect(sql).toContain('sales_customer_semantic_summary_events_v2')
+    expect(sql).toContain('sales_customer_semantic_summaries_v3')
+    expect(sql).toContain('sales_customer_semantic_summary_events_v3')
     expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) sales_customer_statuses/)
     for (const statement of harness.batches[0]) {
       expect(statement.sql.match(/\?/g) ?? []).toHaveLength(statement.binds.length)
     }
     expect(JSON.stringify(harness.batches[0])).not.toContain('出力してはいけない会話')
+    expect(JSON.stringify(harness.batches[0])).not.toContain('田中が返品')
+    expect(JSON.stringify(harness.batches[0])).not.toContain('STAR FIELD')
+    expect(JSON.stringify(harness.batches[0])).not.toContain('山田が商品')
     expect(model.run).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(model.run.mock.calls)).not.toContain('田中商事')
     expect(JSON.stringify(model.run.mock.calls)).not.toContain('test@example.com')
+    expect(JSON.stringify(model.run.mock.calls)).not.toContain('STAR FIELD')
+    expect(JSON.stringify(model.run.mock.calls)).not.toContain('山田から')
   })
 
   test('rejects sales-only and secondary accounts', async () => {

@@ -170,7 +170,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
-    LEFT JOIN sales_customer_semantic_summaries_v2 scss ON scss.friend_id = f.id
+    LEFT JOIN sales_customer_semantic_summaries_v3 scss ON scss.friend_id = f.id
 
     UNION ALL
 
@@ -208,7 +208,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
-    LEFT JOIN sales_customer_semantic_summaries_v2 scss ON scss.conversation_id = lc.id
+    LEFT JOIN sales_customer_semantic_summaries_v3 scss ON scss.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
 `;
@@ -754,17 +754,80 @@ async function loadSemanticMessages(
   return bySubject;
 }
 
+function normalizeSensitiveTerm(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.normalize('NFKC').replace(/[\t\f\v ]+/gu, ' ').trim();
+  return normalized.length >= 2 && normalized.length <= 80 ? normalized : null;
+}
+
+function literalSensitiveTerms(value: string | null): string[] {
+  const normalized = normalizeSensitiveTerm(value);
+  return normalized ? [normalized] : [];
+}
+
+function organizationSensitiveTerms(value: string | null): string[] {
+  const normalized = normalizeSensitiveTerm(value);
+  if (!normalized) return [];
+  const withoutLegalName = normalized
+    .replace(/^(?:株式会社|有限会社|合同会社|一般社団法人|一般財団法人|医療法人|社会福祉法人)[\s　]*/u, '')
+    .replace(/[\s　]*(?:株式会社|有限会社|合同会社)$/u, '')
+    .trim();
+  const compact = withoutLegalName.replace(/[\s　]+/gu, '');
+  return Array.from(new Set([
+    normalized,
+    ...(withoutLegalName.length >= 2 ? [withoutLegalName] : []),
+    ...(compact.length >= 3 && compact !== withoutLegalName ? [compact] : []),
+  ]));
+}
+
+function personSensitiveTerms(value: string | null): string[] {
+  const normalized = normalizeSensitiveTerm(value);
+  if (!normalized) return [];
+  if (/(?:株式会社|有限会社|合同会社|一般社団法人|一般財団法人|医療法人|社会福祉法人)/u.test(normalized)) {
+    return organizationSensitiveTerms(normalized);
+  }
+  const withoutHonorific = normalized.replace(/(?:様|さん|氏)$/u, '').trim();
+  const candidates = new Set<string>([normalized, withoutHonorific]);
+  for (const match of withoutHonorific.matchAll(/[ぁ-んァ-ヶー一-龯々]{2,10}/gu)) {
+    const name = match[0];
+    if (/^(?:株式会社|有限会社|合同会社|一般社団法人|一般財団法人|医療法人|社会福祉法人|会社|お客様|顧客|担当者?|未設定)$/u.test(name)) continue;
+    candidates.add(name);
+    if (name.length >= 4) {
+      candidates.add(name.slice(0, 2));
+      candidates.add(name.slice(0, 3));
+      candidates.add(name.slice(-2));
+    }
+  }
+  return Array.from(candidates).filter((term) => term.length >= 2 && term.length <= 80);
+}
+
 function semanticSensitiveTerms(row: SalesCustomerRow, messages: SalesCustomerSemanticMessageRow[]): string[] {
   const metadata = parseMetadata(row.customer_metadata);
-  return [
-    row.display_name,
-    row.line_account_name,
-    metadataText(metadata, ['companyName', 'company_name', 'company', 'corporationName', 'corporation_name']),
-    metadataText(metadata, ['customerName', 'customer_name', 'contactName', 'contact_name']),
-    metadataText(metadata, ['personInCharge', 'person_in_charge', 'representativeName', 'representative_name']),
-    ...operationStoreNames(metadata),
-    ...messages.flatMap((message) => [message.sender_name, message.sent_by_staff_name]),
-  ].filter((value): value is string => typeof value === 'string' && value.trim().length >= 2);
+  const companyName = metadataText(metadata, [
+    'companyName', 'company_name', 'company', 'corporationName', 'corporation_name',
+  ]);
+  const customerName = metadataText(metadata, [
+    'customerName', 'customer_name', 'contactName', 'contact_name',
+  ]);
+  const representativeName = metadataText(metadata, [
+    'personInCharge', 'person_in_charge', 'representativeName', 'representative_name',
+  ]);
+  const customerNumber = metadataText(metadata, [
+    'customerNumber', 'customer_number', 'memberNumber', 'member_number',
+  ]);
+  return Array.from(new Set([
+    ...personSensitiveTerms(row.display_name),
+    ...literalSensitiveTerms(row.line_account_name),
+    ...organizationSensitiveTerms(companyName),
+    ...personSensitiveTerms(customerName),
+    ...personSensitiveTerms(representativeName),
+    ...literalSensitiveTerms(customerNumber),
+    ...operationStoreNames(metadata).flatMap(organizationSensitiveTerms),
+    ...messages.flatMap((message) => [
+      ...personSensitiveTerms(message.sender_name),
+      ...personSensitiveTerms(message.sent_by_staff_name),
+    ]),
+  ]));
 }
 
 function prepareSemanticSource(
@@ -794,9 +857,9 @@ function salesStatusConflict(err: unknown): boolean {
 
 function salesOverviewConflict(err: unknown): boolean {
   return err instanceof Error && (
-    /sales_customer_semantic_summary_events_v2\.summary_id/i.test(err.message)
-    || /UNIQUE constraint failed: sales_customer_semantic_summaries_v2/i.test(err.message)
-    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary_v2/i.test(err.message)
+    /sales_customer_semantic_summary_events_v3\.summary_id/i.test(err.message)
+    || /UNIQUE constraint failed: sales_customer_semantic_summaries_v3/i.test(err.message)
+    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary_v3/i.test(err.message)
   );
 }
 
@@ -1070,7 +1133,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
 
         if (item.row.overview_id) {
           statements.push(c.env.DB.prepare(
-            `UPDATE sales_customer_semantic_summaries_v2
+            `UPDATE sales_customer_semantic_summaries_v3
              SET summary = ?, generation_method = ?, ai_generated = ?, model = ?,
                  prompt_version = ?, source_fingerprint = ?, source_message_count = ?,
                  source_from_at = ?, source_to_at = ?, input_char_count = ?,
@@ -1102,7 +1165,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
           ));
         } else {
           statements.push(c.env.DB.prepare(
-            `INSERT INTO sales_customer_semantic_summaries_v2 (
+            `INSERT INTO sales_customer_semantic_summaries_v3 (
                id, friend_id, conversation_id, summary, generation_method,
                ai_generated, model, prompt_version, source_fingerprint,
                source_message_count, source_from_at, source_to_at, input_char_count,
@@ -1136,7 +1199,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         }
 
         statements.push(c.env.DB.prepare(
-          `INSERT INTO sales_customer_semantic_summary_events_v2 (
+          `INSERT INTO sales_customer_semantic_summary_events_v3 (
              id, summary_id, summary, generation_method, ai_generated, model,
              prompt_version, source_fingerprint, source_message_count,
              source_from_at, source_to_at, input_char_count,
@@ -1144,7 +1207,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
              actor_id, actor_name, created_at
            ) VALUES (
              ?,
-             (SELECT id FROM sales_customer_semantic_summaries_v2 WHERE mutation_id = ?),
+             (SELECT id FROM sales_customer_semantic_summaries_v3 WHERE mutation_id = ?),
              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
            )`,
         ).bind(
@@ -1269,8 +1332,8 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
             `SELECT e.id, e.summary, e.ai_generated, e.model,
                     e.source_message_count, e.source_from_at, e.source_to_at,
                     e.actor_name, e.created_at
-             FROM sales_customer_semantic_summary_events_v2 e
-             INNER JOIN sales_customer_semantic_summaries_v2 s ON s.id = e.summary_id
+             FROM sales_customer_semantic_summary_events_v3 e
+             INNER JOIN sales_customer_semantic_summaries_v3 s ON s.id = e.summary_id
              WHERE s.${subjectColumn} = ?
              ORDER BY e.created_at DESC, e.id DESC
              LIMIT 20`,

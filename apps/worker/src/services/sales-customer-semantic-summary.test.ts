@@ -38,7 +38,7 @@ describe('sales customer semantic summary', () => {
     expect(source.messageCount).toBe(2);
     expect(source.outputSensitiveTerms).toEqual(['田中商事']);
     expect(source.fingerprintInput).not.toContain('田中商事');
-    expect(source.fingerprintInput).toContain('low_information-utterance-fallback-v3');
+    expect(source.fingerprintInput).toContain('identity-bank-generic-fallback-v4');
   });
 
   test('normalizes ordering and keeps the latest messages within the input limit', () => {
@@ -310,6 +310,61 @@ describe('sales customer semantic summary', () => {
       .toBe('お客様へ案内し、同様の事象を確認した。');
     expect(redactSalesCustomerSemanticText('PayPay銀行へ3,400万を送金し、照会コードAB12を確認した。'))
       .toBe('[金融機関非表示]へ[金額非表示]を送金し、照会コード[コード非表示]を確認した。');
+    expect(redactSalesCustomerSemanticText('三菱UFJ口座と20260908の処理を確認した。'))
+      .toBe('[金融機関非表示]口座と2026年09月08日の処理を確認した。');
+    expect(redactSalesCustomerSemanticText('12345678の処理を確認した。'))
+      .toBe('[長い番号非表示]の処理を確認した。');
+  });
+
+  test.each([
+    '確認のための連絡が行われた。',
+    '確認が必要な内容について相談した。',
+    '文書の確認と対応を行った。',
+    '顧客から連絡があり、内容の確認を依頼した。',
+    '9月14日頃に担当から改めて連絡する。',
+    '担当部署で内容を確認中である。',
+    'メールの対応を行った。',
+    '資料の詳細を確認した。',
+    '会話内容からは確認できません。',
+    '顧客はかしこまりましたと伝え、担当は不明点があれば問い合わせてほしいと伝えた。',
+    '確認状況に進展があれば随時案内する。',
+  ])('rejects a generic-only section and uses the manual-review fallback: %s', async (genericOnly) => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-09-09', content: '確認をお願いします。' },
+    ]);
+    const run = vi.fn().mockResolvedValue({
+      response: {
+        consultation: genericOnly,
+        responseHistory: '確認できません。',
+        currentSituation: '確認できません。',
+        nextAction: '確認できません。',
+      },
+    });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.text).toContain('元のチャットを人が確認');
+    expect(result.text).not.toContain(genericOnly);
+  });
+
+  test('keeps a concise section when it contains a concrete subject', async () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-09-09', content: '返金をお願いします。' },
+    ]);
+    const run = vi.fn().mockResolvedValue({
+      response: {
+        consultation: '返金について相談した。',
+        responseHistory: '返金手順を案内した。',
+        currentSituation: '返金先口座の確認待ちである。',
+        nextAction: '返金先口座を確認する。',
+      },
+    });
+
+    const result = await generateSalesCustomerSemanticSummary({ run } as unknown as Ai, source);
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.text).toContain('返金について相談した');
   });
 
   test('re-redacts known names and financial details from the model output', async () => {

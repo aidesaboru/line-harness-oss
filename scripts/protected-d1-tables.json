@@ -66,5 +66,7 @@
   "sales_customer_semantic_summaries",
   "sales_customer_semantic_summary_events",
   "sales_customer_semantic_summaries_v2",
-  "sales_customer_semantic_summary_events_v2"
+  "sales_customer_semantic_summary_events_v2",
+  "sales_customer_semantic_summaries_v3",
+  "sales_customer_semantic_summary_events_v3"
 ]

@@ -1,13 +1,13 @@
 export const SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast' as const;
-export const SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD = 'semantic_v2' as const;
-export const SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION = 'sales_conversation_summary_v2' as const;
+export const SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD = 'semantic_v3' as const;
+export const SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION = 'sales_conversation_summary_v3' as const;
 export const SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_MESSAGES = 80 as const;
 export const SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_INPUT_CHARS = 12_000 as const;
 
 const MAX_MESSAGE_CHARS = 600;
 const MAX_SECTION_CHARS = 500;
 const MAX_GENERATION_ATTEMPTS = 2;
-const QUALITY_GATE_REVISION = 'low_information-utterance-fallback-v3';
+const QUALITY_GATE_REVISION = 'identity-bank-generic-fallback-v4';
 
 const SECTION_KEYS = [
   'consultation',
@@ -87,6 +87,7 @@ const SYSTEM_PROMPT = `あなたは営業担当向けの会話要約を作る記
 根拠がない項目は「確認できません」とし、事実を補わないでください。
 各項目は、数字、M番号、コード、日時、伏字だけではなく、何について何が起きたかが分かる自然な日本語の文にしてください。
 単に「会話した」「連絡した」「対応した」や、日時と会話があった事実だけの汎用文は書かず、具体的な内容が確認できなければ「確認できません」としてください。
+「内容を確認」「文書に対応」「確認のため連絡」など一般語だけの文にせず、返品、契約、入金、保険など会話で確認できる具体的な対象を必ず含めてください。具体的な対象がなければ「確認できません」としてください。
 M番号は入力行を区別するためだけの記号です。出力にはM番号や根拠番号を含めないでください。
 氏名、会社名、電話、メール、住所、URL、金額、口座・カード番号、ID、パスワード、トークンなどの識別情報や秘密情報を復元・推測・出力しないでください。
 出力は指定されたJSONだけにしてください。`;
@@ -115,6 +116,13 @@ function redactKnownTerms(value: string, terms: readonly string[]): string {
   return result;
 }
 
+function normalizeCompactCalendarDate(value: string): string {
+  return value.replace(
+    /\b(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])\b/gu,
+    '$1年$2月$3日',
+  );
+}
+
 /** Redacts direct identifiers and secrets before AI input and once again after AI output. */
 export function redactSalesCustomerSemanticText(
   input: string,
@@ -122,10 +130,12 @@ export function redactSalesCustomerSemanticText(
 ): string {
   let value = compactWhitespace(input).normalize('NFKC');
   value = redactKnownTerms(value, sensitiveTerms);
+  value = normalizeCompactCalendarDate(value);
   value = value
     .replace(/</gu, '＜')
     .replace(/>/gu, '＞')
     .replace(/\b(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/gu, '$1年$2月$3日')
+    .replace(/\b(20\d{2})[/.](0?[1-9]|1[0-2])[/.](0?[1-9]|[12]\d|3[01])\b/gu, '$1年$2月$3日')
     .replace(
       /(?:株式会社|有限会社|合同会社|一般社団法人|一般財団法人|医療法人|社会福祉法人)[\s　]*[^\s、。]{1,30}?(?=の|は|が|を|に|で|と|、|。|\s|$)/gu,
       '[会社名非表示]',
@@ -141,13 +151,15 @@ export function redactSalesCustomerSemanticText(
     .replace(/((?:オークション|取引|注文|照会|受付|申請|案件|商品)?ID\s*[:：#]?\s*)[A-Z0-9_-]{4,}/giu, '$1[ID非表示]')
     .replace(/\b(?=[A-Z0-9_-]{4,}\b)(?=[A-Z0-9_-]*[A-Z])(?=[A-Z0-9_-]*\d)[A-Z0-9_-]+\b/gu, '[コード非表示]')
     .replace(/\b(?:\d[\s-]?){12,18}\d\b/gu, '[カード番号非表示]')
-    .replace(/(?:〒\s*)?\d{3}[\s-]?\d{4}/gu, '[郵便番号非表示]')
+    .replace(/(?<!\d)(?:〒\s*)?\d{3}[\s-]?\d{4}(?!\d)/gu, '[郵便番号非表示]')
     .replace(/((?:口座番号|銀行口座|支店番号|顧客番号|会員番号|注文番号)\s*[:：#]?\s*)[A-Z0-9-]{4,}/giu, '$1[番号非表示]')
     .replace(/\b(?:\d[\s-]?){7,11}\d\b/gu, '[長い番号非表示]')
     .replace(/(?:[￥¥]\s*[\d,.]+|[\d,.]+\s*(?:億円|万円|千円|円|億|万|千|JPY))/giu, '[金額非表示]')
     .replace(/((?:振込先|送金先|口座|金融機関)(?:は|が|を|に|で|と|の|へ))([A-Z0-9ぁ-んァ-ヶー一-龯々]{1,30}(?:銀行|信用金庫|信用組合)(?:[A-Z0-9ぁ-んァ-ヶー一-龯々]{1,20}支店)?)/giu, '$1[金融機関非表示]')
     .replace(/(^|[\s、。「」『』（）()：:はがをにでとのへ])([A-Z0-9ぁ-んァ-ヶー一-龯々]{1,30}(?:銀行|信用金庫|信用組合)(?:[A-Z0-9ぁ-んァ-ヶー一-龯々]{1,20}支店)?)/giu, '$1[金融機関非表示]')
     .replace(/(^|[\s、。「」『』（）()：:はがをにでとのへ])([A-Z0-9ぁ-んァ-ヶー一-龯々]{1,20}支店)/giu, '$1[支店名非表示]')
+    .replace(/(?:三菱UFJ|三井住友|みずほ|ゆうちょ|埼玉りそな|りそな|SBI新生|住信SBIネット|GMOあおぞらネット|auじぶん)(?:銀行)?/giu, '[金融機関非表示]')
+    .replace(/(?:楽天|PayPay|セブン|イオン|ソニー)(?:銀行|口座)(?:[A-Z0-9ぁ-んァ-ヶー一-龯々]{1,20}支店)?/giu, '[金融機関非表示]')
     .replace(/((?:パスワード|暗証番号|API[ _-]?KEY|アクセストークン|TOKEN|SECRET)\s*[:：=]?\s*)[^\s、。]+/giu, '$1[秘密情報非表示]')
     .replace(/((?:住所|所在地)\s*[:：]\s*)[^\n]{2,120}/gu, '$1[住所非表示]')
     .replace(/(?:東京都|北海道|(?:京都|大阪)府|(?:青森|岩手|宮城|秋田|山形|福島|茨城|栃木|群馬|埼玉|千葉|神奈川|新潟|富山|石川|福井|山梨|長野|岐阜|静岡|愛知|三重|滋賀|兵庫|奈良|和歌山|鳥取|島根|岡山|広島|山口|徳島|香川|愛媛|高知|福岡|佐賀|長崎|熊本|大分|宮崎|鹿児島|沖縄)県)[^\n、。]{1,80}/gu, '[住所非表示]')
@@ -248,13 +260,29 @@ function parseSection(raw: unknown, sensitiveTerms: readonly string[]): string |
   if (typeof raw !== 'string') return null;
   const text = redactSalesCustomerSemanticText(raw, sensitiveTerms).slice(0, MAX_SECTION_CHARS).trim();
   if (!text) return null;
-  const unknown = text === '確認できません' || text === '確認できません。';
+  const unknown = text === '確認できません'
+    || text === '確認できません。'
+    || /^(?:特に)?(?:新たな)?(?:対応|次の対応|進展)?(?:は|が)?確認できません[。]?$/u.test(text);
   if (unknown) return '確認できません。';
   const informative = text
     .replace(/\[[^\]\n]{1,40}非表示\]/gu, '')
     .replace(/[\s\p{P}\p{S}\d_]+/gu, '');
   const japaneseChars = Array.from(informative).filter((character) => /[ぁ-んァ-ヶ一-龯々]/u.test(character));
   if (japaneseChars.length < 4) return null;
+  if (/(?:かしこまり|承知|了承|了解).*(?:不明|問い合わせ|問い合せ)/u.test(text)) return null;
+  const specificResidue = text
+    .replace(/\[[^\]\n]{1,40}非表示\]/gu, '')
+    .replace(/(?:\d{4}年)?\d{1,2}月\d{1,2}日(?:頃|時点|の時点)?/gu, '')
+    .replace(/\d{1,2}月(?:末日?|上旬|中旬|下旬|頃)?/gu, '')
+    .replace(/\d+\s*営業日(?:ほど|程度|以内)?/gu, '')
+    .replace(/(?:担当部署|担当者|お客様|顧客|担当|双方|両者|先方|相手)/gu, '')
+    .replace(/(?:やり取り|問い合わせ|問い合せ|不明点|かしこまり|承知|了承|了解|確認できませんでした|確認できなかった|確認できません|確認できない|確認待ち|待っている|確認|内容|詳細|情報|対応|連絡|相談|会話|メッセージ|文書|資料|メール|書類|商品|手続き|申請|問題|結果|必要|依頼|予定|進捗|進展|状況|事項|案内|報告|実施|処理|記録|開始|完了|待ち|回答|返信|発言|送信|入力|伝え|述べ|行われていました|行われていた|行われています|行われている|行われました|行われた|行っていました|行っていた|行いました|行った|されています|されている|されました|された|している|していた|していました|しました|して|した|します|する|あります|ありました|あった|ある|あり|あれば|あったら|場合|です|でした|ます|ました|本日|今日|昨日|明日|今後|後日|改めて|随時|時点|頃|について|に関して|に対して|のため|の件|から|より|の|こと|もの|ご|お)/gu, '')
+    .replace(/[はがをにでとへも]/gu, '')
+    .replace(/[\s\p{P}\p{S}\d_]+/gu, '');
+  const residueJapanese = Array.from(specificResidue)
+    .filter((character) => /[ぁ-んァ-ヶ一-龯々]/u.test(character));
+  const residueLatin = specificResidue.replace(/[^A-Z]/giu, '');
+  if (residueJapanese.length < 2 && residueLatin.length < 3) return null;
   if (/([ぁ-んァ-ヶー])\1{2,}/u.test(text)) return null;
   const withoutDateOnlyContext = text.replace(
     /^(?:\d{4}年)?\d{1,2}月\d{1,2}日(?:の時点で|時点で|に|頃)?[、,\s]*/u,
@@ -349,7 +377,7 @@ export async function generateSalesCustomerSemanticSummary(
           { role: 'system', content: SYSTEM_PROMPT },
           {
             role: 'user',
-            content: `${attempt === 1 ? '' : '前回の出力は品質検証を通りませんでした。数字・コード・M番号だけの項目、日時と会話があった事実だけの汎用文、短い反復文字や意味を特定できない発言の言い換えを避け、具体的な自然な日本語か「確認できません」で作り直してください。\n'}要約基準日時: ${generatedAt}\n次の会話ログを要約してください。\n<conversation>\n${source.transcript}\n</conversation>`,
+            content: `${attempt === 1 ? '' : '前回の出力は品質検証を通りませんでした。数字・コード・M番号だけの項目、日時と会話があった事実だけの汎用文、一般語だけの確認・連絡・対応文、短い反復文字や意味を特定できない発言の言い換えを避け、具体的な対象が分かる自然な日本語か「確認できません」で作り直してください。\n'}要約基準日時: ${generatedAt}\n次の会話ログを要約してください。\n<conversation>\n${source.transcript}\n</conversation>`,
           },
         ],
         response_format: {

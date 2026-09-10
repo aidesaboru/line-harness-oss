@@ -97,8 +97,9 @@
     "089_sales_customer_status.sql",
     "090_sales_customer_overviews.sql",
     "091_sales_customer_semantic_summaries.sql",
-    "092_sales_customer_semantic_summaries_v2.sql"
+    "092_sales_customer_semantic_summaries_v2.sql",
+    "093_sales_customer_semantic_summaries_v3.sql"
   ],
-  "migrationCount": 98,
+  "migrationCount": 99,
   "bootstrapSeed": "bootstrap-seed.sql"
 }

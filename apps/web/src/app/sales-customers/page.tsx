@@ -9,6 +9,7 @@ import {
   type SalesCustomer,
   type SalesCustomerActivity,
   type SalesCustomerDetail,
+  type SalesCustomerOverviewBatchResult,
   type SalesCustomerStatus,
   type SalesCustomerStoredStatus,
 } from '@/lib/api'
@@ -24,7 +25,18 @@ import {
 } from '@/lib/sales-customer-status'
 
 const PAGE_SIZE = 50
+const OVERVIEW_BATCH_SIZE = 40
 type StatusFilter = SalesCustomerStatus | 'action_required' | 'all'
+
+type OverviewBatchSummary = {
+  total: number
+  processed: number
+  create: number
+  update: number
+  unchanged: number
+  written: number
+  statusRowsTouched: number
+}
 
 const EMPTY_COUNTS: Record<SalesCustomerStatus, number> = {
   unreviewed: 0,
@@ -194,6 +206,66 @@ function RecentActivityPanel({
   )
 }
 
+function RecentOverviewPanel({ detail }: { detail: SalesCustomerDetail }) {
+  const overview = detail.recentOverview
+  return (
+    <section className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">最近の状況</h3>
+          <p className="mt-1 text-[11px] leading-5 text-gray-500">
+            直近90日の件数・日時・話題カテゴリから作成。営業ステータスは判定しません。
+          </p>
+        </div>
+        <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-semibold text-gray-600">
+          ステータスとは別管理
+        </span>
+      </div>
+      <p className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-800">
+        {overview.text}
+      </p>
+      <p className="mt-2 text-[10px] text-gray-400">
+        {overview.stored && overview.updatedAt
+          ? `${formatSalesCustomerDate(overview.updatedAt)} 更新${overview.updatedByName ? ` · ${overview.updatedByName}` : ''}`
+          : '表示時点の集計。保存済み概要はまだありません。'}
+      </p>
+      {detail.overviewHistory.length > 0 && (
+        <details className="group mt-3 rounded-lg border border-gray-200 bg-white">
+          <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 text-xs font-semibold text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500">
+            <span>概要の更新履歴 {detail.overviewHistory.length}件</span>
+            <svg className="h-4 w-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" /></svg>
+          </summary>
+          <ol className="max-h-72 space-y-3 overflow-y-auto border-t border-gray-100 p-3">
+            {detail.overviewHistory.map((event) => (
+              <li key={event.id} className="border-l-2 border-gray-200 pl-3">
+                <p className="whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">{event.text}</p>
+                <p className="mt-1 text-[10px] text-gray-400">
+                  {formatSalesCustomerDate(event.createdAt)}{event.actorName ? ` · ${event.actorName}` : ''}
+                </p>
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+    </section>
+  )
+}
+
+function addOverviewBatchPage(
+  summary: OverviewBatchSummary,
+  page: SalesCustomerOverviewBatchResult,
+): OverviewBatchSummary {
+  return {
+    total: page.total,
+    processed: summary.processed + page.processed,
+    create: summary.create + page.changes.create,
+    update: summary.update + page.changes.update,
+    unchanged: summary.unchanged + page.changes.unchanged,
+    written: summary.written + page.written,
+    statusRowsTouched: summary.statusRowsTouched + page.statusRowsTouched,
+  }
+}
+
 function DetailContent({
   detail,
   loading,
@@ -269,6 +341,8 @@ function DetailContent({
         </div>
       </section>
 
+      <RecentOverviewPanel detail={detail} />
+
       <RecentActivityPanel
         activity={detail.activity}
         chatStatus={detail.chatStatus}
@@ -277,10 +351,10 @@ function DetailContent({
       />
 
       <section className="p-5">
-        <h3 className="text-sm font-bold text-gray-900">営業向け概要</h3>
-        <p className="mt-1 text-[11px] leading-5 text-gray-500">運営担当者が会話を確認し、個人情報を除いて共有した要点です。</p>
+        <h3 className="text-sm font-bold text-gray-900">ステータス判断メモ</h3>
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">運営担当者が会話を確認し、ステータスを選んだ理由と引き継ぎ事項を記録します。</p>
         <p className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-800">
-          {detail.summary || '運営側の確認と概要入力はまだ完了していません。'}
+          {detail.summary || 'ステータスは未確認です。人が会話を確認して入力します。'}
         </p>
       </section>
 
@@ -288,7 +362,7 @@ function DetailContent({
         <section className="p-5">
           <h3 className="text-sm font-bold text-gray-900">運営側の状況更新</h3>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            営業に共有してよい要点だけを書き、会話本文や個人情報は転記しないでください。
+            ステータスは人が選び、判断理由だけを書きます。会話本文や個人情報は転記しないでください。
           </p>
           <div className="mt-4 space-y-3">
             <div>
@@ -308,7 +382,7 @@ function DetailContent({
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-2">
-                <label htmlFor="sales-customer-summary" className="text-xs font-semibold text-gray-700">営業向け概要</label>
+                <label htmlFor="sales-customer-summary" className="text-xs font-semibold text-gray-700">ステータス判断メモ</label>
                 <span className="text-[11px] tabular-nums text-gray-400">{editSummary.length}/1000</span>
               </div>
               <textarea
@@ -333,7 +407,7 @@ function DetailContent({
               disabled={!canSave}
               className="min-h-11 w-full rounded-lg bg-[#06C755] px-4 text-sm font-bold text-white transition-colors hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
             >
-              {saving ? '保存中...' : '状況と概要を保存'}
+              {saving ? '保存中...' : '状況と判断メモを保存'}
             </button>
           </div>
         </section>
@@ -346,7 +420,7 @@ function DetailContent({
       )}
 
       <section className="p-5">
-        <h3 className="text-sm font-bold text-gray-900">状況の履歴</h3>
+        <h3 className="text-sm font-bold text-gray-900">ステータス変更履歴</h3>
         {detail.history.length === 0 ? (
           <p className="mt-3 rounded-lg bg-gray-50 px-3 py-4 text-xs text-gray-500">まだ更新履歴はありません。</p>
         ) : (
@@ -393,9 +467,16 @@ export default function SalesCustomersPage() {
   const [editSummary, setEditSummary] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
+  const [overviewBatchRunning, setOverviewBatchRunning] = useState(false)
+  const [overviewBatchPreview, setOverviewBatchPreview] = useState<{
+    accountId: string
+    summary: OverviewBatchSummary
+  } | null>(null)
+  const [overviewBatchMessage, setOverviewBatchMessage] = useState('')
   const listRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
   const saveRequestRef = useRef(0)
+  const overviewBatchRequestRef = useRef(0)
 
   const loadCustomers = useCallback(async () => {
     const requestId = ++listRequestRef.current
@@ -466,6 +547,10 @@ export default function SalesCustomersPage() {
     setEditSummary('')
     setSaving(false)
     setSaveMessage('')
+    overviewBatchRequestRef.current += 1
+    setOverviewBatchRunning(false)
+    setOverviewBatchPreview(null)
+    setOverviewBatchMessage('')
   }, [selectedAccountId])
 
   useEffect(() => {
@@ -524,7 +609,96 @@ export default function SalesCustomersPage() {
     }
   }
 
+  const runOverviewBatch = async (lineAccountId: string, dryRun: boolean): Promise<OverviewBatchSummary> => {
+    let offset = 0
+    let summary: OverviewBatchSummary = {
+      total: 0,
+      processed: 0,
+      create: 0,
+      update: 0,
+      unchanged: 0,
+      written: 0,
+      statusRowsTouched: 0,
+    }
+    for (;;) {
+      const response = await api.salesCustomers.generateOverviews({
+        lineAccountId,
+        dryRun,
+        limit: OVERVIEW_BATCH_SIZE,
+        offset,
+        confirm: dryRun ? undefined : 'generate_sales_customer_overviews',
+      })
+      if (!response.success) throw new Error(response.error)
+      summary = addOverviewBatchPage(summary, response.data)
+      if (response.data.statusRowsTouched !== 0) throw new Error('unexpected_status_mutation')
+      if (!response.data.hasNextPage || response.data.nextOffset == null) break
+      if (response.data.nextOffset <= offset) throw new Error('invalid_next_offset')
+      offset = response.data.nextOffset
+    }
+    return summary
+  }
+
+  const previewOverviewBatch = async () => {
+    if (!selectedAccountId || overviewBatchRunning) return
+    const requestId = ++overviewBatchRequestRef.current
+    const targetAccountId = selectedAccountId
+    setOverviewBatchRunning(true)
+    setOverviewBatchPreview(null)
+    setOverviewBatchMessage('対象件数を確認しています...')
+    try {
+      const summary = await runOverviewBatch(targetAccountId, true)
+      if (requestId !== overviewBatchRequestRef.current) return
+      setOverviewBatchPreview({ accountId: targetAccountId, summary })
+      setOverviewBatchMessage(
+        `${summary.total.toLocaleString('ja-JP')}件を確認しました。新規${summary.create.toLocaleString('ja-JP')}件、更新${summary.update.toLocaleString('ja-JP')}件、変更なし${summary.unchanged.toLocaleString('ja-JP')}件です。`,
+      )
+    } catch {
+      if (requestId === overviewBatchRequestRef.current) {
+        setOverviewBatchMessage('更新対象の確認に失敗しました。もう一度お試しください。')
+      }
+    } finally {
+      if (requestId === overviewBatchRequestRef.current) setOverviewBatchRunning(false)
+    }
+  }
+
+  const generateOverviewBatch = async () => {
+    if (!selectedAccountId || overviewBatchRunning || !overviewBatchPreview) return
+    if (overviewBatchPreview.accountId !== selectedAccountId) return
+    const changeCount = overviewBatchPreview.summary.create + overviewBatchPreview.summary.update
+    if (changeCount === 0) return
+    const confirmed = window.confirm(
+      `${accountName}の最近の状況を${changeCount.toLocaleString('ja-JP')}件更新します。営業ステータスは変更しません。続けますか？`,
+    )
+    if (!confirmed) return
+
+    const requestId = ++overviewBatchRequestRef.current
+    const targetAccountId = selectedAccountId
+    setOverviewBatchRunning(true)
+    setOverviewBatchMessage('最近の状況を更新しています。この画面を閉じずにお待ちください...')
+    try {
+      const summary = await runOverviewBatch(targetAccountId, false)
+      if (requestId !== overviewBatchRequestRef.current) return
+      if (summary.statusRowsTouched !== 0) throw new Error('unexpected_status_mutation')
+      setOverviewBatchPreview(null)
+      setOverviewBatchMessage(
+        `${summary.written.toLocaleString('ja-JP')}件の最近の状況と更新履歴を保存しました。営業ステータスは変更していません。`,
+      )
+      await loadCustomers()
+      if (detail) await loadDetail(detail)
+    } catch {
+      if (requestId === overviewBatchRequestRef.current) {
+        setOverviewBatchMessage('一括更新に失敗しました。再度対象件数を確認してからお試しください。')
+        setOverviewBatchPreview(null)
+      }
+    } finally {
+      if (requestId === overviewBatchRequestRef.current) setOverviewBatchRunning(false)
+    }
+  }
+
   const accountName = selectedAccount?.displayName || selectedAccount?.name || 'LINEアカウント'
+  const overviewChangeCount = overviewBatchPreview
+    ? overviewBatchPreview.summary.create + overviewBatchPreview.summary.update
+    : 0
 
   return (
     <div>
@@ -541,6 +715,44 @@ export default function SalesCustomersPage() {
             <SummaryButton label="退会手続き中" count={counts.exit_pending} tone="exit" active={filter === 'exit_pending'} onClick={() => changeFilter('exit_pending')} />
             <SummaryButton label="通常運用" count={counts.normal} tone="normal" active={filter === 'normal'} onClick={() => changeFilter('normal')} />
           </section>
+
+          {canEditStatus && (
+            <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="最近の状況の一括更新">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-sm font-bold text-gray-900">最近の状況を全件更新</h2>
+                  <p className="mt-1 text-xs leading-5 text-gray-500">
+                    会話本文を表示せず、直近90日の件数・日時・話題カテゴリから概要と履歴を作ります。営業ステータスは変更しません。
+                  </p>
+                  {overviewBatchMessage && (
+                    <p className={`mt-2 text-xs leading-5 ${overviewBatchMessage.includes('失敗') ? 'text-red-600' : 'text-gray-700'}`} role="status">
+                      {overviewBatchMessage}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void previewOverviewBatch()}
+                    disabled={overviewBatchRunning}
+                    className="min-h-10 rounded-lg border border-gray-300 bg-white px-3 text-xs font-semibold text-gray-700 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {overviewBatchRunning && !overviewBatchPreview ? '確認中...' : '更新対象を確認'}
+                  </button>
+                  {overviewBatchPreview && overviewChangeCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void generateOverviewBatch()}
+                      disabled={overviewBatchRunning}
+                      className="min-h-10 rounded-lg bg-[#06C755] px-3 text-xs font-bold text-white hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200"
+                    >
+                      {overviewBatchRunning ? '更新中...' : `${overviewChangeCount.toLocaleString('ja-JP')}件を更新`}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </section>
+          )}
 
           <details className="group rounded-xl border border-gray-200 bg-white shadow-sm">
             <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500">
@@ -640,7 +852,7 @@ export default function SalesCustomersPage() {
                       <div><StatusBadge status={customer.status} /></div>
                       <div className="min-w-0">
                         <p className="line-clamp-2 text-xs leading-5 text-gray-600">
-                          {customer.summary || SALES_CUSTOMER_STATUS_META[customer.status].definition}
+                          {customer.recentOverview.text}
                         </p>
                         <p className="mt-1 truncate text-[10px] text-gray-400">
                           直近3か月: 顧客 {customer.activity.windows.threeMonths.customerMessages}件 · 担当返信 {customer.activity.windows.threeMonths.staffReplies}件

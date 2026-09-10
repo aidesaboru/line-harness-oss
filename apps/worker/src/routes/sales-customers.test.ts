@@ -30,6 +30,14 @@ type SubjectRow = {
   status_version: number | null
   status_updated_by_name: string | null
   status_updated_at: string | null
+  overview_id: string | null
+  overview_text: string | null
+  overview_topic_codes: string | null
+  overview_generation_method: string | null
+  overview_source_fingerprint: string | null
+  overview_version: number | null
+  overview_updated_by_name: string | null
+  overview_updated_at: string | null
   is_following: number | null
   chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
   activity_last_at?: string | null
@@ -80,6 +88,14 @@ const directRow: SubjectRow = {
   status_version: 2,
   status_updated_by_name: '運営担当',
   status_updated_at: '2026-09-09T10:00:00+09:00',
+  overview_id: 'overview-1',
+  overview_text: '直近90日の機械集計概要。ステータスは人が設定します。',
+  overview_topic_codes: JSON.stringify(['payment']),
+  overview_generation_method: 'rules_v1',
+  overview_source_fingerprint: 'a'.repeat(64),
+  overview_version: 1,
+  overview_updated_by_name: '運営担当',
+  overview_updated_at: '2026-09-10T10:00:00+09:00',
   is_following: 1,
   chat_status: 'in_progress',
   activity_last_at: '2026-09-09T09:00:00+09:00',
@@ -122,6 +138,14 @@ const groupRow: SubjectRow = {
   status_version: null,
   status_updated_by_name: null,
   status_updated_at: null,
+  overview_id: null,
+  overview_text: null,
+  overview_topic_codes: null,
+  overview_generation_method: null,
+  overview_source_fingerprint: null,
+  overview_version: null,
+  overview_updated_by_name: null,
+  overview_updated_at: null,
   is_following: null,
   chat_status: 'resolved',
 }
@@ -185,6 +209,16 @@ function readDb() {
                 summary: directRow.status_summary,
                 actor_name: '運営担当',
                 created_at: directRow.status_updated_at,
+              }],
+            } as { results: T[] }
+          }
+          if (sql.includes('FROM sales_customer_overview_events')) {
+            return {
+              results: [{
+                id: 'overview-event-1',
+                overview: directRow.overview_text,
+                actor_name: '運営担当',
+                created_at: directRow.overview_updated_at,
               }],
             } as { results: T[] }
           }
@@ -262,6 +296,12 @@ describe('sales customer read APIs', () => {
         },
         support: { activeCases: 1, casesInThreeMonths: 2 },
       },
+      recentOverview: {
+        text: directRow.overview_text,
+        stored: true,
+        version: 1,
+        method: 'rules_v1',
+      },
     })
     expect(body.data.items[1]).toMatchObject({
       subjectKind: 'conversation',
@@ -269,6 +309,10 @@ describe('sales customer read APIs', () => {
       companyName: '山田商店',
       status: 'unreviewed',
       version: 0,
+      recentOverview: {
+        stored: false,
+        version: 0,
+      },
     })
     expect(body.data.canEditStatus).toBe(false)
     expect(body.data.counts).toMatchObject({ complaint: 1, unreviewed: 1, normal: 0 })
@@ -306,7 +350,11 @@ describe('sales customer read APIs', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json() as {
-      data: { history: Array<Record<string, unknown>>; canEditStatus: boolean }
+      data: {
+        history: Array<Record<string, unknown>>
+        overviewHistory: Array<Record<string, unknown>>
+        canEditStatus: boolean
+      }
     }
     expect(body.data.canEditStatus).toBe(false)
     expect(body.data.history).toEqual([{
@@ -317,6 +365,12 @@ describe('sales customer read APIs', () => {
       actorName: '運営担当',
       createdAt: directRow.status_updated_at,
     }])
+    expect(body.data.overviewHistory).toEqual([{
+      id: 'overview-event-1',
+      text: directRow.overview_text,
+      actorName: '運営担当',
+      createdAt: directRow.overview_updated_at,
+    }])
   })
 
   test('rejects unsafe identifiers and list limits', async () => {
@@ -325,6 +379,116 @@ describe('sales customer read APIs', () => {
     expect((await app.request('/api/sales-customers?lineAccountId=bad%20id')).status).toBe(400)
     expect((await app.request('/api/sales-customers?lineAccountId=account-1&limit=101')).status).toBe(400)
     expect((await app.request('/api/sales-customers/person/friend-1')).status).toBe(400)
+  })
+})
+
+function overviewBatchDb() {
+  const batches: Array<Array<{ sql: string; binds: unknown[] }>> = []
+  type Statement = D1PreparedStatement & { __sql: string; __binds: unknown[] }
+  const db = {
+    prepare(sql: string) {
+      const statement = {
+        __sql: sql,
+        __binds: [] as unknown[],
+        bind(...values: unknown[]) {
+          statement.__binds = values
+          return statement
+        },
+        async all<T>() {
+          if (sql.includes('FROM customer_subjects cs')) {
+            return { results: [directRow, groupRow] } as { results: T[] }
+          }
+          if (sql.includes('FROM messages_log')) {
+            return { results: [{ subject_id: 'friend-1', topic_payment: 1 }] } as { results: T[] }
+          }
+          if (sql.includes('FROM line_conversation_messages')) {
+            return { results: [{ subject_id: 'conversation-1', topic_store_operations: 1 }] } as { results: T[] }
+          }
+          return { results: [] } as { results: T[] }
+        },
+        async first<T>() {
+          if (sql.includes('COUNT(*) AS count')) return { count: 2 } as T
+          return null
+        },
+      }
+      return statement as unknown as Statement
+    },
+    async batch(statements: D1PreparedStatement[]) {
+      batches.push((statements as Statement[]).map((statement) => ({
+        sql: statement.__sql,
+        binds: statement.__binds,
+      })))
+      return []
+    },
+  } as unknown as D1Database
+  return { db, batches }
+}
+
+describe('sales customer overview generation', () => {
+  const body = (dryRun: boolean, confirm?: string) => JSON.stringify({
+    lineAccountId: 'account-1',
+    dryRun,
+    limit: 40,
+    offset: 0,
+    confirm,
+  })
+
+  test('dry-runs an exact page without writing or touching statuses', async () => {
+    const harness = overviewBatchDb()
+    const response = await setupApp(harness.db).request('/api/sales-customers/overviews/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body(true),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      success: true,
+      data: {
+        dryRun: true,
+        total: 2,
+        processed: 2,
+        changes: { create: 1, update: 1, unchanged: 0 },
+        written: 0,
+        historyEventsWritten: 0,
+        statusRowsTouched: 0,
+      },
+    })
+    expect(harness.batches).toHaveLength(0)
+  })
+
+  test('requires explicit confirmation, writes overview plus history, and never updates status rows', async () => {
+    const harness = overviewBatchDb()
+    const app = setupApp(harness.db)
+    const rejected = await app.request('/api/sales-customers/overviews/generate', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(false),
+    })
+    expect(rejected.status).toBe(400)
+
+    const response = await app.request('/api/sales-customers/overviews/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: body(false, 'generate_sales_customer_overviews'),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      data: { written: 2, historyEventsWritten: 2, statusRowsTouched: 0 },
+    })
+    expect(harness.batches).toHaveLength(1)
+    expect(harness.batches[0]).toHaveLength(4)
+    const sql = harness.batches[0].map((statement) => statement.sql).join('\n')
+    expect(sql).toContain('sales_customer_overviews')
+    expect(sql).toContain('sales_customer_overview_events')
+    expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) sales_customer_statuses/)
+    expect(JSON.stringify(harness.batches[0])).not.toContain('出力してはいけない会話')
+  })
+
+  test('rejects sales-only and secondary accounts', async () => {
+    const harness = overviewBatchDb()
+    const request = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(true) }
+    expect((await setupApp(harness.db, { salesOnly: true }).request('/api/sales-customers/overviews/generate', request)).status).toBe(403)
+    expect((await setupApp(harness.db, { role: 'secondary' }).request('/api/sales-customers/overviews/generate', request)).status).toBe(403)
+    expect(harness.batches).toHaveLength(0)
   })
 })
 

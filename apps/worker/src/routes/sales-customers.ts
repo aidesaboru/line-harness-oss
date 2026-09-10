@@ -1,6 +1,15 @@
 import { Hono, type Context } from 'hono';
 import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
+import {
+  buildSalesCustomerOverview,
+  SALES_CUSTOMER_OVERVIEW_METHOD,
+  SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
+  SALES_CUSTOMER_OVERVIEW_TOPIC_CODES,
+  salesCustomerOverviewFingerprintInput,
+  type SalesCustomerOverviewSource,
+  type SalesCustomerOverviewTopicCode,
+} from '../services/sales-customer-overview.js';
 
 const salesCustomers = new Hono<Env>();
 
@@ -9,6 +18,9 @@ const SALES_CUSTOMER_SEARCH_MAX_LENGTH = 120;
 const SALES_CUSTOMER_SUMMARY_MAX_LENGTH = 1000;
 const SALES_CUSTOMER_LIST_MAX_LIMIT = 100;
 const SALES_CUSTOMER_DEFAULT_LIMIT = 50;
+const SALES_CUSTOMER_OVERVIEW_BATCH_MAX_LIMIT = 40;
+const SALES_CUSTOMER_OVERVIEW_BATCH_DEFAULT_LIMIT = 40;
+const SALES_CUSTOMER_OVERVIEW_CONFIRMATION = 'generate_sales_customer_overviews';
 const SALES_CUSTOMER_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 const STORED_STATUSES = [
@@ -39,6 +51,14 @@ type SalesCustomerRow = {
   status_version: number | null;
   status_updated_by_name: string | null;
   status_updated_at: string | null;
+  overview_id: string | null;
+  overview_text: string | null;
+  overview_topic_codes: string | null;
+  overview_generation_method: string | null;
+  overview_source_fingerprint: string | null;
+  overview_version: number | null;
+  overview_updated_by_name: string | null;
+  overview_updated_at: string | null;
   is_following: number | null;
   chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null;
   activity_last_at?: string | null;
@@ -77,6 +97,25 @@ type SalesCustomerStatusEventRow = {
   created_at: string;
 };
 
+type SalesCustomerOverviewEventRow = {
+  id: string;
+  overview: string;
+  actor_name: string | null;
+  created_at: string;
+};
+
+type SalesCustomerTopicSignalRow = {
+  subject_id: string;
+  topic_payment: number | null;
+  topic_accounting: number | null;
+  topic_store_operations: number | null;
+  topic_cancellation_handover: number | null;
+  topic_documents_contracts: number | null;
+  topic_orders_customer_support: number | null;
+  topic_calls_contact: number | null;
+  topic_insurance: number | null;
+};
+
 const CUSTOMER_SUBJECTS_SQL = `
   WITH customer_subjects AS (
     SELECT
@@ -94,6 +133,14 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
+      sco.id AS overview_id,
+      sco.overview AS overview_text,
+      sco.topic_codes AS overview_topic_codes,
+      sco.generation_method AS overview_generation_method,
+      sco.source_fingerprint AS overview_source_fingerprint,
+      sco.version AS overview_version,
+      sco.updated_by_name AS overview_updated_by_name,
+      sco.updated_at AS overview_updated_at,
       f.is_following,
       (
         SELECT CASE WHEN c.is_long_term = 1 THEN 'long_term' ELSE c.status END
@@ -105,6 +152,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
+    LEFT JOIN sales_customer_overviews sco ON sco.friend_id = f.id
 
     UNION ALL
 
@@ -123,11 +171,20 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
+      sco.id AS overview_id,
+      sco.overview AS overview_text,
+      sco.topic_codes AS overview_topic_codes,
+      sco.generation_method AS overview_generation_method,
+      sco.source_fingerprint AS overview_source_fingerprint,
+      sco.version AS overview_version,
+      sco.updated_by_name AS overview_updated_by_name,
+      sco.updated_at AS overview_updated_at,
       NULL AS is_following,
       COALESCE(lc.workflow_status, lc.status) AS chat_status
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
+    LEFT JOIN sales_customer_overviews sco ON sco.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
 `;
@@ -341,6 +398,22 @@ function parseOffset(raw: unknown): ValueResult<number> {
   return { ok: true, value };
 }
 
+function parseOverviewBatchLimit(raw: unknown): ValueResult<number> {
+  if (raw === undefined || raw === null || raw === '') {
+    return { ok: true, value: SALES_CUSTOMER_OVERVIEW_BATCH_DEFAULT_LIMIT };
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1 || value > SALES_CUSTOMER_OVERVIEW_BATCH_MAX_LIMIT) {
+    return { ok: false, error: 'invalid_limit' };
+  }
+  return { ok: true, value };
+}
+
+function parseDryRun(raw: unknown): ValueResult<boolean> {
+  if (typeof raw !== 'boolean') return { ok: false, error: 'dryRun is required' };
+  return { ok: true, value: raw };
+}
+
 function parseStoredStatus(raw: unknown): ValueResult<StoredSalesCustomerStatus> {
   if (typeof raw !== 'string' || !STORED_STATUSES.includes(raw as StoredSalesCustomerStatus)) {
     return { ok: false, error: 'invalid_status' };
@@ -436,6 +509,47 @@ function operationStoreNames(metadata: Record<string, unknown>): string[] {
   return Array.from(new Set([...(legacyName ? [legacyName] : []), ...names]));
 }
 
+function numberValue(value: number | null | undefined): number {
+  return Number(value ?? 0);
+}
+
+function overviewSourceFromRow(
+  row: SalesCustomerRow,
+  topicCodes: SalesCustomerOverviewTopicCode[] = [],
+): SalesCustomerOverviewSource {
+  return {
+    totalMessages: numberValue(row.activity_90_total),
+    customerMessages: numberValue(row.activity_90_incoming),
+    staffReplies: numberValue(row.activity_90_human_outgoing),
+    automatedMessages: numberValue(row.activity_90_automated_outgoing),
+    activeDays: numberValue(row.activity_90_active_days),
+    mediaMessages: numberValue(row.activity_90_media),
+    lastContactAt: row.activity_last_at ?? null,
+    lastCustomerMessageAt: row.activity_last_incoming_at ?? null,
+    lastStaffReplyAt: row.activity_last_human_outgoing_at ?? null,
+    needsHumanReply: Boolean(row.activity_needs_human_reply),
+    activeSupportCases: numberValue(row.active_support_cases),
+    supportCasesInPeriod: numberValue(row.support_cases_90),
+    lastSupportUpdatedAt: row.last_support_updated_at ?? null,
+    chatStatus: row.chat_status ?? null,
+    isFollowing: row.is_following == null ? null : Boolean(row.is_following),
+    topicCodes,
+  };
+}
+
+function serializeRecentOverview(row: SalesCustomerRow) {
+  const stored = Boolean(row.overview_id && row.overview_text);
+  return {
+    text: stored ? row.overview_text : buildSalesCustomerOverview(overviewSourceFromRow(row)),
+    periodDays: SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
+    method: stored ? row.overview_generation_method : SALES_CUSTOMER_OVERVIEW_METHOD,
+    stored,
+    version: row.overview_version ?? 0,
+    updatedByName: row.overview_updated_by_name ?? null,
+    updatedAt: row.overview_updated_at ?? null,
+  };
+}
+
 function serializeCustomer(row: SalesCustomerRow) {
   const metadata = parseMetadata(row.customer_metadata);
   const activityWindow = (days: 30 | 60 | 90) => {
@@ -502,6 +616,7 @@ function serializeCustomer(row: SalesCustomerRow) {
     createdAt: row.subject_created_at,
     isFollowing: row.is_following == null ? null : Boolean(row.is_following),
     chatStatus: row.chat_status ?? null,
+    recentOverview: serializeRecentOverview(row),
     activity: {
       lastContactAt: row.activity_last_at ?? null,
       lastCustomerMessageAt: lastIncomingAt,
@@ -532,6 +647,15 @@ function serializeEvent(row: SalesCustomerStatusEventRow) {
   };
 }
 
+function serializeOverviewEvent(row: SalesCustomerOverviewEventRow) {
+  return {
+    id: row.id,
+    text: row.overview,
+    actorName: row.actor_name,
+    createdAt: row.created_at,
+  };
+}
+
 function customerFilterSql(input: {
   lineAccountId: string;
   search: string | null;
@@ -552,11 +676,90 @@ function customerFilterSql(input: {
   return { sql: conditions.join(' AND '), binds };
 }
 
+const SALES_CUSTOMER_OVERVIEW_TOPIC_KEYWORDS: Record<SalesCustomerOverviewTopicCode, readonly string[]> = {
+  payment: ['決済', '支払', '入金', '請求', '振込', 'カード', '領収', '返金'],
+  accounting: ['税務', '確定申告', '会計', '仕訳', '決算', '帳簿', '経費', 'インボイス'],
+  store_operations: ['楽天', 'yahoo', 'amazon', 'モール', '店舗', '商品登録', '在庫', '受注', '発送', '広告', '運用'],
+  cancellation_handover: ['解約', '退会', '契約終了', '引継', '引き継', '停止'],
+  documents_contracts: ['契約', '申込', '書類', '添付', 'pdf', '見積', '注文書'],
+  orders_customer_support: ['注文', '返品', '交換', '不良', 'クレーム', '問い合わせ', 'レビュー', '配送', '遅延'],
+  calls_contact: ['電話', '通話', '面談', '打合', '打ち合わせ', '連絡'],
+  insurance: ['保険', '補償', '事故'],
+};
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+const SALES_CUSTOMER_TOPIC_SIGNAL_SELECT_SQL = SALES_CUSTOMER_OVERVIEW_TOPIC_CODES.map((code) => {
+  const matches = SALES_CUSTOMER_OVERVIEW_TOPIC_KEYWORDS[code]
+    .map((keyword) => `instr(lower(content), ${sqlLiteral(keyword)}) > 0`)
+    .join(' OR ');
+  return `MAX(CASE WHEN ${matches} THEN 1 ELSE 0 END) AS topic_${code}`;
+}).join(',\n      ');
+
+function topicCodesFromSignal(row: SalesCustomerTopicSignalRow | undefined): SalesCustomerOverviewTopicCode[] {
+  if (!row) return [];
+  return SALES_CUSTOMER_OVERVIEW_TOPIC_CODES.filter((code) => Boolean(row[`topic_${code}`]));
+}
+
+async function loadOverviewTopicSignals(
+  db: D1Database,
+  rows: SalesCustomerRow[],
+): Promise<Map<string, SalesCustomerTopicSignalRow>> {
+  const bySubject = new Map<string, SalesCustomerTopicSignalRow>();
+  const friendIds = rows.filter((row) => row.subject_kind === 'friend').map((row) => row.subject_id);
+  const conversationIds = rows.filter((row) => row.subject_kind === 'conversation').map((row) => row.subject_id);
+
+  const load = async (
+    table: 'messages_log' | 'line_conversation_messages',
+    idColumn: 'friend_id' | 'conversation_id',
+    ids: string[],
+  ) => {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(', ');
+    const deliveryFilter = table === 'messages_log'
+      ? "AND (delivery_type IS NULL OR delivery_type != 'test')"
+      : '';
+    const result = await db.prepare(
+      `SELECT ${idColumn} AS subject_id,
+              ${SALES_CUSTOMER_TOPIC_SIGNAL_SELECT_SQL}
+       FROM ${table}
+       WHERE ${idColumn} IN (${placeholders})
+         AND direction = 'incoming'
+         AND deleted_at IS NULL
+         ${deliveryFilter}
+         AND datetime(created_at) >= datetime('now', '-90 days')
+       GROUP BY ${idColumn}`,
+    ).bind(...ids).all<SalesCustomerTopicSignalRow>();
+    for (const row of result.results) bySubject.set(`${idColumn}:${row.subject_id}`, row);
+  };
+
+  await Promise.all([
+    load('messages_log', 'friend_id', friendIds),
+    load('line_conversation_messages', 'conversation_id', conversationIds),
+  ]);
+  return bySubject;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function salesStatusConflict(err: unknown): boolean {
   return err instanceof Error && (
     /sales_customer_status_events\.status_id/i.test(err.message)
     || /UNIQUE constraint failed: sales_customer_statuses/i.test(err.message)
     || /UNIQUE constraint failed: idx_sales_customer_status/i.test(err.message)
+  );
+}
+
+function salesOverviewConflict(err: unknown): boolean {
+  return err instanceof Error && (
+    /sales_customer_overview_events\.overview_id/i.test(err.message)
+    || /UNIQUE constraint failed: sales_customer_overviews/i.test(err.message)
+    || /UNIQUE constraint failed: idx_sales_customer_overview/i.test(err.message)
   );
 }
 
@@ -686,6 +889,191 @@ salesCustomers.get('/api/sales-customers', async (c) => {
   }
 });
 
+salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
+  if (!canEditSalesCustomerStatus(c)) {
+    return c.json({ success: false, error: 'この操作には運営スタッフ権限が必要です' }, 403);
+  }
+  try {
+    const rawBody = await readJsonObject(c);
+    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
+    const lineAccountId = parseId(rawBody.value.lineAccountId, 'line_account_id');
+    if (!lineAccountId.ok) return c.json({ success: false, error: lineAccountId.error }, 400);
+    const limit = parseOverviewBatchLimit(rawBody.value.limit);
+    if (!limit.ok) return c.json({ success: false, error: limit.error }, 400);
+    const offset = parseOffset(rawBody.value.offset);
+    if (!offset.ok) return c.json({ success: false, error: offset.error }, 400);
+    const dryRun = parseDryRun(rawBody.value.dryRun);
+    if (!dryRun.ok) return c.json({ success: false, error: dryRun.error }, 400);
+    if (!dryRun.value && rawBody.value.confirm !== SALES_CUSTOMER_OVERVIEW_CONFIRMATION) {
+      return c.json({ success: false, error: 'confirmation_required' }, 400);
+    }
+
+    const [pageResult, totalRow] = await Promise.all([
+      c.env.DB.prepare(
+        `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('account')}
+         SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+         FROM customer_subjects cs
+         ${CUSTOMER_ACTIVITY_JOINS_SQL}
+         WHERE cs.line_account_id = ?
+         ORDER BY cs.subject_kind ASC, cs.subject_id ASC
+         LIMIT ? OFFSET ?`,
+      ).bind(
+        lineAccountId.value,
+        lineAccountId.value,
+        lineAccountId.value,
+        lineAccountId.value,
+        limit.value,
+        offset.value,
+      ).all<SalesCustomerRow>(),
+      c.env.DB.prepare(
+        `${CUSTOMER_SUBJECTS_SQL}
+         SELECT COUNT(*) AS count
+         FROM customer_subjects
+         WHERE line_account_id = ?`,
+      ).bind(lineAccountId.value).first<{ count: number }>(),
+    ]);
+
+    const topicSignals = await loadOverviewTopicSignals(c.env.DB, pageResult.results);
+    const prepared = await Promise.all(pageResult.results.map(async (row) => {
+      const signalKey = row.subject_kind === 'friend'
+        ? `friend_id:${row.subject_id}`
+        : `conversation_id:${row.subject_id}`;
+      const topicCodes = topicCodesFromSignal(topicSignals.get(signalKey));
+      const source = overviewSourceFromRow(row, topicCodes);
+      const overview = buildSalesCustomerOverview(source);
+      const sourceFingerprint = await sha256Hex(salesCustomerOverviewFingerprintInput(source));
+      return { row, topicCodes, overview, sourceFingerprint };
+    }));
+
+    const changes = { create: 0, update: 0, unchanged: 0 };
+    for (const item of prepared) {
+      if (!item.row.overview_id) changes.create += 1;
+      else if (item.row.overview_source_fingerprint === item.sourceFingerprint) changes.unchanged += 1;
+      else changes.update += 1;
+    }
+
+    let written = 0;
+    let historyEventsWritten = 0;
+    if (!dryRun.value && changes.create + changes.update > 0) {
+      const actor = c.get('staff');
+      const actorId = actor.id === 'env-owner' ? null : actor.id;
+      const now = jstNow();
+      const statements: D1PreparedStatement[] = [];
+
+      for (const item of prepared) {
+        if (item.row.overview_source_fingerprint === item.sourceFingerprint) continue;
+        const overviewId = item.row.overview_id ?? crypto.randomUUID();
+        const mutationId = crypto.randomUUID();
+        const eventId = crypto.randomUUID();
+        const friendId = item.row.subject_kind === 'friend' ? item.row.subject_id : null;
+        const conversationId = item.row.subject_kind === 'conversation' ? item.row.subject_id : null;
+        const topicCodesJson = JSON.stringify(item.topicCodes);
+
+        if (item.row.overview_id) {
+          statements.push(c.env.DB.prepare(
+            `UPDATE sales_customer_overviews
+             SET overview = ?, period_days = ?, topic_codes = ?, generation_method = ?,
+                 source_fingerprint = ?, version = version + 1, mutation_id = ?,
+                 updated_by = ?, updated_by_name = ?, updated_at = ?
+             WHERE id = ? AND version = ?`,
+          ).bind(
+            item.overview,
+            SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
+            topicCodesJson,
+            SALES_CUSTOMER_OVERVIEW_METHOD,
+            item.sourceFingerprint,
+            mutationId,
+            actorId,
+            actor.name,
+            now,
+            overviewId,
+            item.row.overview_version ?? 0,
+          ));
+        } else {
+          statements.push(c.env.DB.prepare(
+            `INSERT INTO sales_customer_overviews (
+               id, friend_id, conversation_id, overview, period_days, topic_codes,
+               generation_method, source_fingerprint, version, mutation_id,
+               updated_by, updated_by_name, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+          ).bind(
+            overviewId,
+            friendId,
+            conversationId,
+            item.overview,
+            SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
+            topicCodesJson,
+            SALES_CUSTOMER_OVERVIEW_METHOD,
+            item.sourceFingerprint,
+            mutationId,
+            actorId,
+            actor.name,
+            now,
+            now,
+          ));
+        }
+
+        statements.push(c.env.DB.prepare(
+          `INSERT INTO sales_customer_overview_events (
+             id, overview_id, overview, period_days, topic_codes, generation_method,
+             source_fingerprint, actor_id, actor_name, created_at
+           ) VALUES (
+             ?,
+             (SELECT id FROM sales_customer_overviews WHERE mutation_id = ?),
+             ?, ?, ?, ?, ?, ?, ?, ?
+           )`,
+        ).bind(
+          eventId,
+          mutationId,
+          item.overview,
+          SALES_CUSTOMER_OVERVIEW_PERIOD_DAYS,
+          topicCodesJson,
+          SALES_CUSTOMER_OVERVIEW_METHOD,
+          item.sourceFingerprint,
+          actorId,
+          actor.name,
+          now,
+        ));
+      }
+
+      try {
+        await c.env.DB.batch(statements);
+      } catch (err) {
+        if (salesOverviewConflict(err)) {
+          return c.json({ success: false, error: 'overview_conflict' }, 409);
+        }
+        throw err;
+      }
+      written = changes.create + changes.update;
+      historyEventsWritten = written;
+    }
+
+    const total = totalRow?.count ?? 0;
+    const processed = pageResult.results.length;
+    const nextOffset = offset.value + processed;
+    return c.json({
+      success: true,
+      data: {
+        dryRun: dryRun.value,
+        lineAccountId: lineAccountId.value,
+        total,
+        offset: offset.value,
+        limit: limit.value,
+        processed,
+        hasNextPage: nextOffset < total,
+        nextOffset: nextOffset < total ? nextOffset : null,
+        changes,
+        written,
+        historyEventsWritten,
+        statusRowsTouched: 0,
+      },
+    });
+  } catch (err) {
+    console.error(`POST /api/sales-customers/overviews/generate error: ${routeErrorKind(err)}`);
+    return c.json({ success: false, error: 'Internal server error' }, 500);
+  }
+});
+
 salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => {
   try {
     const subjectKind = parseSubjectKind(c.req.param('subjectKind'));
@@ -709,22 +1097,35 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
     ).first<SalesCustomerRow>();
     if (!row) return c.json({ success: false, error: 'Customer not found' }, 404);
 
-    const history = row.status_id
-      ? await c.env.DB.prepare(
-          `SELECT e.id, e.from_status, e.to_status, e.summary, e.actor_name, e.created_at
-           FROM sales_customer_status_events e
-           INNER JOIN sales_customer_statuses s ON s.id = e.status_id
-           WHERE s.${subjectColumn} = ?
-           ORDER BY e.created_at DESC, e.id DESC
-           LIMIT 50`,
-        ).bind(subjectId.value).all<SalesCustomerStatusEventRow>()
-      : { results: [] as SalesCustomerStatusEventRow[] };
+    const [history, overviewHistory] = await Promise.all([
+      row.status_id
+        ? c.env.DB.prepare(
+            `SELECT e.id, e.from_status, e.to_status, e.summary, e.actor_name, e.created_at
+             FROM sales_customer_status_events e
+             INNER JOIN sales_customer_statuses s ON s.id = e.status_id
+             WHERE s.${subjectColumn} = ?
+             ORDER BY e.created_at DESC, e.id DESC
+             LIMIT 50`,
+          ).bind(subjectId.value).all<SalesCustomerStatusEventRow>()
+        : Promise.resolve({ results: [] as SalesCustomerStatusEventRow[] }),
+      row.overview_id
+        ? c.env.DB.prepare(
+            `SELECT e.id, e.overview, e.actor_name, e.created_at
+             FROM sales_customer_overview_events e
+             INNER JOIN sales_customer_overviews o ON o.id = e.overview_id
+             WHERE o.${subjectColumn} = ?
+             ORDER BY e.created_at DESC, e.id DESC
+             LIMIT 20`,
+          ).bind(subjectId.value).all<SalesCustomerOverviewEventRow>()
+        : Promise.resolve({ results: [] as SalesCustomerOverviewEventRow[] }),
+    ]);
 
     return c.json({
       success: true,
       data: {
         ...serializeCustomer(row),
         history: history.results.map(serializeEvent),
+        overviewHistory: overviewHistory.results.map(serializeOverviewEvent),
         canEditStatus: canEditSalesCustomerStatus(c),
       },
     });

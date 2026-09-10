@@ -135,11 +135,26 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
         </span>
       </div>
 
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-semibold text-gray-600">最近の状況</p>
+          <span className="text-[9px] text-gray-400">ステータスとは別</span>
+        </div>
+        <p className="mt-1.5 whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
+          {detail.recentOverview.text}
+        </p>
+        <p className="mt-1.5 text-[9px] text-gray-400">
+          {detail.recentOverview.stored && detail.recentOverview.updatedAt
+            ? `${formatSalesCustomerDate(detail.recentOverview.updatedAt)} 更新`
+            : '表示時点の集計'}
+        </p>
+      </div>
+
       {!editing && (
         <div className={`rounded-lg border p-3 ${meta.panelClass}`}>
           <p className="text-[11px] font-semibold text-gray-800">{meta.actionLabel}</p>
           <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
-            {detail.summary || '営業向け概要はまだありません。'}
+            {detail.summary || 'ステータス判断メモはまだありません。'}
           </p>
           <p className="mt-1.5 text-[10px] text-gray-500">
             {detail.updatedAt ? `${formatSalesCustomerDate(detail.updatedAt)} 更新` : '確認前'}
@@ -174,7 +189,7 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
           </label>
           <label className="block">
             <span className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold text-gray-600">
-              <span>営業向け概要</span>
+              <span>ステータス判断メモ</span>
               <span className="font-normal tabular-nums text-gray-400">{draftSummary.length}/1000</span>
             </span>
             <textarea

@@ -755,6 +755,16 @@ export type SalesCustomerActivity = {
   }
 }
 
+export type SalesCustomerRecentOverview = {
+  text: string
+  periodDays: 90
+  method: 'rules_v1'
+  stored: boolean
+  version: number
+  updatedByName: string | null
+  updatedAt: string | null
+}
+
 export type SalesCustomer = {
   subjectKind: SalesCustomerSubjectKind
   subjectId: string
@@ -774,6 +784,7 @@ export type SalesCustomer = {
   createdAt: string
   isFollowing: boolean | null
   chatStatus: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
+  recentOverview: SalesCustomerRecentOverview
   activity: SalesCustomerActivity
 }
 
@@ -788,7 +799,32 @@ export type SalesCustomerStatusEvent = {
 
 export type SalesCustomerDetail = SalesCustomer & {
   history: SalesCustomerStatusEvent[]
+  overviewHistory: Array<{
+    id: string
+    text: string
+    actorName: string | null
+    createdAt: string
+  }>
   canEditStatus: boolean
+}
+
+export type SalesCustomerOverviewBatchResult = {
+  dryRun: boolean
+  lineAccountId: string
+  total: number
+  offset: number
+  limit: number
+  processed: number
+  hasNextPage: boolean
+  nextOffset: number | null
+  changes: {
+    create: number
+    update: number
+    unchanged: number
+  }
+  written: number
+  historyEventsWritten: number
+  statusRowsTouched: 0
 }
 
 export type SalesCustomerAccount = {
@@ -897,6 +933,17 @@ export const api = {
       fetchApi<ApiResponse<SalesCustomer>>(
         `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}/status`,
         { method: 'PATCH', body: JSON.stringify(data) },
+      ),
+    generateOverviews: (data: {
+      lineAccountId: string
+      dryRun: boolean
+      limit?: number
+      offset?: number
+      confirm?: 'generate_sales_customer_overviews'
+    }) =>
+      fetchApi<ApiResponse<SalesCustomerOverviewBatchResult>>(
+        '/api/sales-customers/overviews/generate',
+        { method: 'POST', body: JSON.stringify(data) },
       ),
   },
   tags: {

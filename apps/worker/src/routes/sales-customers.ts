@@ -170,7 +170,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
-    LEFT JOIN sales_customer_semantic_summaries scss ON scss.friend_id = f.id
+    LEFT JOIN sales_customer_semantic_summaries_v2 scss ON scss.friend_id = f.id
 
     UNION ALL
 
@@ -208,7 +208,7 @@ const CUSTOMER_SUBJECTS_SQL = `
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
-    LEFT JOIN sales_customer_semantic_summaries scss ON scss.conversation_id = lc.id
+    LEFT JOIN sales_customer_semantic_summaries_v2 scss ON scss.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
 `;
@@ -794,9 +794,9 @@ function salesStatusConflict(err: unknown): boolean {
 
 function salesOverviewConflict(err: unknown): boolean {
   return err instanceof Error && (
-    /sales_customer_semantic_summary_events\.summary_id/i.test(err.message)
-    || /UNIQUE constraint failed: sales_customer_semantic_summaries/i.test(err.message)
-    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary/i.test(err.message)
+    /sales_customer_semantic_summary_events_v2\.summary_id/i.test(err.message)
+    || /UNIQUE constraint failed: sales_customer_semantic_summaries_v2/i.test(err.message)
+    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary_v2/i.test(err.message)
   );
 }
 
@@ -1070,7 +1070,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
 
         if (item.row.overview_id) {
           statements.push(c.env.DB.prepare(
-            `UPDATE sales_customer_semantic_summaries
+            `UPDATE sales_customer_semantic_summaries_v2
              SET summary = ?, generation_method = ?, ai_generated = ?, model = ?,
                  prompt_version = ?, source_fingerprint = ?, source_message_count = ?,
                  source_from_at = ?, source_to_at = ?, input_char_count = ?,
@@ -1102,7 +1102,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
           ));
         } else {
           statements.push(c.env.DB.prepare(
-            `INSERT INTO sales_customer_semantic_summaries (
+            `INSERT INTO sales_customer_semantic_summaries_v2 (
                id, friend_id, conversation_id, summary, generation_method,
                ai_generated, model, prompt_version, source_fingerprint,
                source_message_count, source_from_at, source_to_at, input_char_count,
@@ -1136,7 +1136,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         }
 
         statements.push(c.env.DB.prepare(
-          `INSERT INTO sales_customer_semantic_summary_events (
+          `INSERT INTO sales_customer_semantic_summary_events_v2 (
              id, summary_id, summary, generation_method, ai_generated, model,
              prompt_version, source_fingerprint, source_message_count,
              source_from_at, source_to_at, input_char_count,
@@ -1144,7 +1144,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
              actor_id, actor_name, created_at
            ) VALUES (
              ?,
-             (SELECT id FROM sales_customer_semantic_summaries WHERE mutation_id = ?),
+             (SELECT id FROM sales_customer_semantic_summaries_v2 WHERE mutation_id = ?),
              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
            )`,
         ).bind(
@@ -1269,8 +1269,8 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
             `SELECT e.id, e.summary, e.ai_generated, e.model,
                     e.source_message_count, e.source_from_at, e.source_to_at,
                     e.actor_name, e.created_at
-             FROM sales_customer_semantic_summary_events e
-             INNER JOIN sales_customer_semantic_summaries s ON s.id = e.summary_id
+             FROM sales_customer_semantic_summary_events_v2 e
+             INNER JOIN sales_customer_semantic_summaries_v2 s ON s.id = e.summary_id
              WHERE s.${subjectColumn} = ?
              ORDER BY e.created_at DESC, e.id DESC
              LIMIT 20`,

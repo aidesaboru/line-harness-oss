@@ -757,10 +757,10 @@ export type SalesCustomerActivity = {
 
 export type SalesCustomerRecentOverview = {
   text: string
-  method: 'semantic_v1'
+  method: 'semantic_v2'
   aiGenerated: boolean
   model: string | null
-  promptVersion: 'sales_conversation_summary_v1'
+  promptVersion: 'sales_conversation_summary_v2'
   sourceMessageCount: number
   sourceFromAt: string | null
   sourceToAt: string | null

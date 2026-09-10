@@ -96,10 +96,10 @@ const directRow: SubjectRow = {
   status_updated_at: '2026-09-09T10:00:00+09:00',
   overview_id: 'overview-1',
   overview_text: '【相談内容】\n返品方法について相談。\n\n【これまでの対応】\n返送先を案内。\n\n【現在の状況】\n返送待ち。\n\n【次の対応】\n到着確認。',
-  overview_generation_method: 'semantic_v1',
+  overview_generation_method: 'semantic_v2',
   overview_ai_generated: 1,
   overview_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  overview_prompt_version: 'sales_conversation_summary_v1',
+  overview_prompt_version: 'sales_conversation_summary_v2',
   overview_source_fingerprint: 'a'.repeat(64),
   overview_source_message_count: 2,
   overview_source_from_at: '2026-09-09T08:00:00+09:00',
@@ -230,7 +230,7 @@ function readDb() {
               }],
             } as { results: T[] }
           }
-          if (sql.includes('FROM sales_customer_semantic_summary_events')) {
+          if (sql.includes('FROM sales_customer_semantic_summary_events_v2')) {
             return {
               results: [{
                 id: 'overview-event-1',
@@ -323,7 +323,7 @@ describe('sales customer read APIs', () => {
         text: directRow.overview_text,
         stored: true,
         version: 1,
-        method: 'semantic_v1',
+        method: 'semantic_v2',
         aiGenerated: true,
         sourceMessageCount: 2,
       },
@@ -347,6 +347,8 @@ describe('sales customer read APIs', () => {
     expect(serialized).not.toContain('customer_metadata')
     expect(serialized).not.toContain('sender_user_id')
     expect(calls.some((call) => call.sql.includes("source_type IN ('group', 'room')"))).toBe(true)
+    expect(calls.every((call) => !/sales_customer_semantic_summaries(?!_v2)/u.test(call.sql))).toBe(true)
+    expect(calls.every((call) => !/sales_customer_semantic_summary_events(?!_v2)/u.test(call.sql))).toBe(true)
     const activityCall = calls.find((call) => call.sql.includes('customer_message_activity'))
     expect(activityCall?.sql).not.toMatch(/\bml\.content\b|\blcm\.content\b/)
     expect(activityCall?.binds.slice(0, 3)).toEqual(['account-1', 'account-1', 'account-1'])
@@ -471,10 +473,10 @@ function overviewBatchDb() {
 function semanticAi() {
   const run = vi.fn().mockResolvedValue({
     response: JSON.stringify({
-      consultation: { text: '手続きについて相談している。', evidence: ['M1'] },
-      responseHistory: { text: '確認できません。', evidence: [] },
-      currentSituation: { text: '担当者の確認待ちである。', evidence: ['M1'] },
-      nextAction: { text: '相談内容を確認して回答する。', evidence: ['M1'] },
+      consultation: '手続きについて相談している。',
+      responseHistory: '確認できません。',
+      currentSituation: '担当者の確認待ちである。',
+      nextAction: '相談内容を確認して回答する。',
     }),
     usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
   })
@@ -545,8 +547,8 @@ describe('sales customer overview generation', () => {
     expect(harness.batches).toHaveLength(1)
     expect(harness.batches[0]).toHaveLength(4)
     const sql = harness.batches[0].map((statement) => statement.sql).join('\n')
-    expect(sql).toContain('sales_customer_semantic_summaries')
-    expect(sql).toContain('sales_customer_semantic_summary_events')
+    expect(sql).toContain('sales_customer_semantic_summaries_v2')
+    expect(sql).toContain('sales_customer_semantic_summary_events_v2')
     expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) sales_customer_statuses/)
     for (const statement of harness.batches[0]) {
       expect(statement.sql.match(/\?/g) ?? []).toHaveLength(statement.binds.length)

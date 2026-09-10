@@ -39,6 +39,33 @@ type SalesCustomerRow = {
   status_version: number | null;
   status_updated_by_name: string | null;
   status_updated_at: string | null;
+  is_following: number | null;
+  chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null;
+  activity_last_at?: string | null;
+  activity_last_incoming_at?: string | null;
+  activity_last_human_outgoing_at?: string | null;
+  activity_needs_human_reply?: number | null;
+  activity_30_total?: number | null;
+  activity_30_incoming?: number | null;
+  activity_30_human_outgoing?: number | null;
+  activity_30_automated_outgoing?: number | null;
+  activity_30_active_days?: number | null;
+  activity_30_media?: number | null;
+  activity_60_total?: number | null;
+  activity_60_incoming?: number | null;
+  activity_60_human_outgoing?: number | null;
+  activity_60_automated_outgoing?: number | null;
+  activity_60_active_days?: number | null;
+  activity_60_media?: number | null;
+  activity_90_total?: number | null;
+  activity_90_incoming?: number | null;
+  activity_90_human_outgoing?: number | null;
+  activity_90_automated_outgoing?: number | null;
+  activity_90_active_days?: number | null;
+  activity_90_media?: number | null;
+  active_support_cases?: number | null;
+  support_cases_90?: number | null;
+  last_support_updated_at?: string | null;
 };
 
 type SalesCustomerStatusEventRow = {
@@ -66,7 +93,15 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.summary AS status_summary,
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
-      scs.updated_at AS status_updated_at
+      scs.updated_at AS status_updated_at,
+      f.is_following,
+      (
+        SELECT CASE WHEN c.is_long_term = 1 THEN 'long_term' ELSE c.status END
+        FROM chats c
+        WHERE c.friend_id = f.id
+        ORDER BY c.updated_at DESC, c.id DESC
+        LIMIT 1
+      ) AS chat_status
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
@@ -87,12 +122,141 @@ const CUSTOMER_SUBJECTS_SQL = `
       scs.summary AS status_summary,
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
-      scs.updated_at AS status_updated_at
+      scs.updated_at AS status_updated_at,
+      NULL AS is_following,
+      COALESCE(lc.workflow_status, lc.status) AS chat_status
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
+`;
+
+// Sales receives aggregate activity only. Message content, sender identity,
+// internal notes, and message IDs never enter this CTE or the response.
+function customerActivityCtesSql(scope: 'account' | 'subject'): string {
+  const friendFilter = scope === 'account' ? 'af.line_account_id = ?' : 'ml.friend_id = ?';
+  const conversationFilter = scope === 'account' ? 'alc.line_account_id = ?' : 'lcm.conversation_id = ?';
+  const supportFilter = scope === 'account' ? 'sf.line_account_id = ?' : 'sc.friend_id = ?';
+  return `,
+  customer_message_activity AS (
+    SELECT
+      'friend' AS activity_kind,
+      ml.friend_id AS activity_id,
+      ml.direction,
+      ml.message_type,
+      ml.created_at,
+      CASE
+        WHEN ml.direction = 'outgoing'
+          AND ml.source IN ('manual', 'scheduled_manual', 'line_official')
+        THEN 1 ELSE 0
+      END AS human_outgoing
+    FROM messages_log ml
+    INNER JOIN friends af ON af.id = ml.friend_id
+    WHERE (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
+      AND ml.deleted_at IS NULL
+      AND ${friendFilter}
+
+    UNION ALL
+
+    SELECT
+      'conversation' AS activity_kind,
+      lcm.conversation_id AS activity_id,
+      lcm.direction,
+      lcm.message_type,
+      lcm.created_at,
+      CASE WHEN lcm.direction = 'outgoing' THEN 1 ELSE 0 END AS human_outgoing
+    FROM line_conversation_messages lcm
+    INNER JOIN line_conversations alc ON alc.id = lcm.conversation_id
+    WHERE lcm.deleted_at IS NULL
+      AND ${conversationFilter}
+  ),
+  customer_activity AS (
+    SELECT
+      activity_kind,
+      activity_id,
+      MAX(created_at) AS activity_last_at,
+      MAX(CASE WHEN direction = 'incoming' THEN created_at END) AS activity_last_incoming_at,
+      MAX(CASE WHEN human_outgoing = 1 THEN created_at END) AS activity_last_human_outgoing_at,
+      CASE
+        WHEN MAX(CASE WHEN direction = 'incoming' THEN julianday(created_at) END) IS NOT NULL
+          AND (
+            MAX(CASE WHEN human_outgoing = 1 THEN julianday(created_at) END) IS NULL
+            OR MAX(CASE WHEN direction = 'incoming' THEN julianday(created_at) END)
+              > MAX(CASE WHEN human_outgoing = 1 THEN julianday(created_at) END)
+          )
+        THEN 1 ELSE 0
+      END AS activity_needs_human_reply,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS activity_30_total,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_30_incoming,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_30_human_outgoing,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_30_automated_outgoing,
+      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN date(created_at) END) AS activity_30_active_days,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_30_media,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') THEN 1 ELSE 0 END) AS activity_60_total,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_60_incoming,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_60_human_outgoing,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_60_automated_outgoing,
+      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-60 days') THEN date(created_at) END) AS activity_60_active_days,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_60_media,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') THEN 1 ELSE 0 END) AS activity_90_total,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_90_incoming,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_90_human_outgoing,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_90_automated_outgoing,
+      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-90 days') THEN date(created_at) END) AS activity_90_active_days,
+      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_90_media
+    FROM customer_message_activity
+    GROUP BY activity_kind, activity_id
+  ),
+  customer_support_activity AS (
+    SELECT
+      sc.friend_id AS support_friend_id,
+      SUM(CASE WHEN sc.status NOT IN ('resolved') THEN 1 ELSE 0 END) AS active_support_cases,
+      SUM(CASE WHEN datetime(sc.updated_at) >= datetime('now', '-90 days') THEN 1 ELSE 0 END) AS support_cases_90,
+      MAX(sc.updated_at) AS last_support_updated_at
+    FROM support_cases sc
+    INNER JOIN friends sf ON sf.id = sc.friend_id
+    WHERE sc.friend_id IS NOT NULL
+      AND ${supportFilter}
+    GROUP BY sc.friend_id
+  )
+`;
+}
+
+const CUSTOMER_ACTIVITY_SELECT_SQL = `
+  cs.*,
+  ca.activity_last_at,
+  ca.activity_last_incoming_at,
+  ca.activity_last_human_outgoing_at,
+  ca.activity_needs_human_reply,
+  ca.activity_30_total,
+  ca.activity_30_incoming,
+  ca.activity_30_human_outgoing,
+  ca.activity_30_automated_outgoing,
+  ca.activity_30_active_days,
+  ca.activity_30_media,
+  ca.activity_60_total,
+  ca.activity_60_incoming,
+  ca.activity_60_human_outgoing,
+  ca.activity_60_automated_outgoing,
+  ca.activity_60_active_days,
+  ca.activity_60_media,
+  ca.activity_90_total,
+  ca.activity_90_incoming,
+  ca.activity_90_human_outgoing,
+  ca.activity_90_automated_outgoing,
+  ca.activity_90_active_days,
+  ca.activity_90_media,
+  CASE WHEN cs.subject_kind = 'friend' THEN COALESCE(csa.active_support_cases, 0) ELSE 0 END AS active_support_cases,
+  CASE WHEN cs.subject_kind = 'friend' THEN COALESCE(csa.support_cases_90, 0) ELSE 0 END AS support_cases_90,
+  CASE WHEN cs.subject_kind = 'friend' THEN csa.last_support_updated_at ELSE NULL END AS last_support_updated_at
+`;
+
+const CUSTOMER_ACTIVITY_JOINS_SQL = `
+  LEFT JOIN customer_activity ca
+    ON ca.activity_kind = cs.subject_kind AND ca.activity_id = cs.subject_id
+  LEFT JOIN customer_support_activity csa
+    ON cs.subject_kind = 'friend' AND csa.support_friend_id = cs.subject_id
 `;
 
 // Search only the identity fields intentionally exposed to sales. Searching the
@@ -186,10 +350,22 @@ function parseStoredStatus(raw: unknown): ValueResult<StoredSalesCustomerStatus>
 
 function parseSummary(raw: unknown): ValueResult<string> {
   if (typeof raw !== 'string') return { ok: false, error: 'summary is required' };
-  const value = raw.trim();
-  if (!value) return { ok: false, error: 'summary is required' };
+  const input = raw.trim();
+  if (!input) return { ok: false, error: 'summary is required' };
+  if (input.length > SALES_CUSTOMER_SUMMARY_MAX_LENGTH) return { ok: false, error: 'summary is too long' };
+  const value = redactSalesSummary(input);
   if (value.length > SALES_CUSTOMER_SUMMARY_MAX_LENGTH) return { ok: false, error: 'summary is too long' };
   return { ok: true, value };
+}
+
+function redactSalesSummary(value: string): string {
+  return value
+    .replace(/https?:\/\/[^\s<>()]+/gi, '[URL非表示]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[メール非表示]')
+    .replace(
+      /(^|[^\d])((?:0(?:[\s()\-ー－]?\d){9,10}|\+81(?:[\s()\-ー－]?\d){9,10}))(?!\d)/g,
+      '$1[電話番号非表示]',
+    );
 }
 
 function parseExpectedVersion(raw: unknown): ValueResult<number> {
@@ -262,6 +438,45 @@ function operationStoreNames(metadata: Record<string, unknown>): string[] {
 
 function serializeCustomer(row: SalesCustomerRow) {
   const metadata = parseMetadata(row.customer_metadata);
+  const activityWindow = (days: 30 | 60 | 90) => {
+    const values = days === 30
+      ? {
+          total: row.activity_30_total,
+          incoming: row.activity_30_incoming,
+          humanOutgoing: row.activity_30_human_outgoing,
+          automatedOutgoing: row.activity_30_automated_outgoing,
+          activeDays: row.activity_30_active_days,
+          media: row.activity_30_media,
+        }
+      : days === 60
+        ? {
+            total: row.activity_60_total,
+            incoming: row.activity_60_incoming,
+            humanOutgoing: row.activity_60_human_outgoing,
+            automatedOutgoing: row.activity_60_automated_outgoing,
+            activeDays: row.activity_60_active_days,
+            media: row.activity_60_media,
+          }
+        : {
+            total: row.activity_90_total,
+            incoming: row.activity_90_incoming,
+            humanOutgoing: row.activity_90_human_outgoing,
+            automatedOutgoing: row.activity_90_automated_outgoing,
+            activeDays: row.activity_90_active_days,
+            media: row.activity_90_media,
+          };
+    return {
+      months: days / 30,
+      totalMessages: Number(values.total ?? 0),
+      customerMessages: Number(values.incoming ?? 0),
+      staffReplies: Number(values.humanOutgoing ?? 0),
+      automatedMessages: Number(values.automatedOutgoing ?? 0),
+      activeDays: Number(values.activeDays ?? 0),
+      mediaMessages: Number(values.media ?? 0),
+    };
+  };
+  const lastIncomingAt = row.activity_last_incoming_at ?? null;
+  const lastHumanOutgoingAt = row.activity_last_human_outgoing_at ?? null;
   return {
     subjectKind: row.subject_kind,
     subjectId: row.subject_id,
@@ -285,6 +500,24 @@ function serializeCustomer(row: SalesCustomerRow) {
     updatedByName: row.status_updated_by_name,
     updatedAt: row.status_updated_at,
     createdAt: row.subject_created_at,
+    isFollowing: row.is_following == null ? null : Boolean(row.is_following),
+    chatStatus: row.chat_status ?? null,
+    activity: {
+      lastContactAt: row.activity_last_at ?? null,
+      lastCustomerMessageAt: lastIncomingAt,
+      lastStaffReplyAt: lastHumanOutgoingAt,
+      needsHumanReply: Boolean(row.activity_needs_human_reply),
+      windows: {
+        oneMonth: activityWindow(30),
+        twoMonths: activityWindow(60),
+        threeMonths: activityWindow(90),
+      },
+      support: {
+        activeCases: Number(row.active_support_cases ?? 0),
+        casesInThreeMonths: Number(row.support_cases_90 ?? 0),
+        lastUpdatedAt: row.last_support_updated_at ?? null,
+      },
+    },
   };
 }
 
@@ -396,12 +629,21 @@ salesCustomers.get('/api/sales-customers', async (c) => {
 
     const [listResult, totalRow, summaryResult] = await Promise.all([
       c.env.DB.prepare(
-        `${CUSTOMER_SUBJECTS_SQL}
-         SELECT * FROM customer_subjects
+        `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('account')}
+         SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+         FROM customer_subjects cs
+         ${CUSTOMER_ACTIVITY_JOINS_SQL}
          WHERE ${listFilter.sql}
          ORDER BY ${orderSql}
          LIMIT ? OFFSET ?`,
-      ).bind(...listFilter.binds, limit.value, offset.value).all<SalesCustomerRow>(),
+      ).bind(
+        lineAccountId.value,
+        lineAccountId.value,
+        lineAccountId.value,
+        ...listFilter.binds,
+        limit.value,
+        offset.value,
+      ).all<SalesCustomerRow>(),
       c.env.DB.prepare(
         `${CUSTOMER_SUBJECTS_SQL}
          SELECT COUNT(*) AS count FROM customer_subjects
@@ -452,11 +694,19 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
     if (!subjectId.ok) return c.json({ success: false, error: subjectId.error }, 400);
     const subjectColumn = subjectKind.value === 'friend' ? 'friend_id' : 'conversation_id';
     const row = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}
-       SELECT * FROM customer_subjects
-       WHERE subject_kind = ? AND subject_id = ?
+      `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('subject')}
+       SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+       FROM customer_subjects cs
+       ${CUSTOMER_ACTIVITY_JOINS_SQL}
+       WHERE cs.subject_kind = ? AND cs.subject_id = ?
        LIMIT 1`,
-    ).bind(subjectKind.value, subjectId.value).first<SalesCustomerRow>();
+    ).bind(
+      subjectId.value,
+      subjectId.value,
+      subjectId.value,
+      subjectKind.value,
+      subjectId.value,
+    ).first<SalesCustomerRow>();
     if (!row) return c.json({ success: false, error: 'Customer not found' }, 404);
 
     const history = row.status_id
@@ -603,11 +853,19 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
     }
 
     const updated = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}
-       SELECT * FROM customer_subjects
-       WHERE subject_kind = ? AND subject_id = ?
+      `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('subject')}
+       SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+       FROM customer_subjects cs
+       ${CUSTOMER_ACTIVITY_JOINS_SQL}
+       WHERE cs.subject_kind = ? AND cs.subject_id = ?
        LIMIT 1`,
-    ).bind(subjectKind.value, subjectId.value).first<SalesCustomerRow>();
+    ).bind(
+      subjectId.value,
+      subjectId.value,
+      subjectId.value,
+      subjectKind.value,
+      subjectId.value,
+    ).first<SalesCustomerRow>();
     if (!updated) return c.json({ success: false, error: 'Customer not found' }, 404);
     return c.json({ success: true, data: serializeCustomer(updated) });
   } catch (err) {

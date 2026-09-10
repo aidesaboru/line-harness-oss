@@ -30,6 +30,33 @@ type SubjectRow = {
   status_version: number | null
   status_updated_by_name: string | null
   status_updated_at: string | null
+  is_following: number | null
+  chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
+  activity_last_at?: string | null
+  activity_last_incoming_at?: string | null
+  activity_last_human_outgoing_at?: string | null
+  activity_needs_human_reply?: number
+  activity_30_total?: number
+  activity_30_incoming?: number
+  activity_30_human_outgoing?: number
+  activity_30_automated_outgoing?: number
+  activity_30_active_days?: number
+  activity_30_media?: number
+  activity_60_total?: number
+  activity_60_incoming?: number
+  activity_60_human_outgoing?: number
+  activity_60_automated_outgoing?: number
+  activity_60_active_days?: number
+  activity_60_media?: number
+  activity_90_total?: number
+  activity_90_incoming?: number
+  activity_90_human_outgoing?: number
+  activity_90_automated_outgoing?: number
+  activity_90_active_days?: number
+  activity_90_media?: number
+  active_support_cases?: number
+  support_cases_90?: number
+  last_support_updated_at?: string | null
 }
 
 const directRow: SubjectRow = {
@@ -53,6 +80,33 @@ const directRow: SubjectRow = {
   status_version: 2,
   status_updated_by_name: '運営担当',
   status_updated_at: '2026-09-09T10:00:00+09:00',
+  is_following: 1,
+  chat_status: 'in_progress',
+  activity_last_at: '2026-09-09T09:00:00+09:00',
+  activity_last_incoming_at: '2026-09-09T09:00:00+09:00',
+  activity_last_human_outgoing_at: '2026-09-08T18:00:00+09:00',
+  activity_needs_human_reply: 1,
+  activity_30_total: 12,
+  activity_30_incoming: 5,
+  activity_30_human_outgoing: 4,
+  activity_30_automated_outgoing: 3,
+  activity_30_active_days: 4,
+  activity_30_media: 2,
+  activity_60_total: 18,
+  activity_60_incoming: 8,
+  activity_60_human_outgoing: 6,
+  activity_60_automated_outgoing: 4,
+  activity_60_active_days: 7,
+  activity_60_media: 3,
+  activity_90_total: 24,
+  activity_90_incoming: 10,
+  activity_90_human_outgoing: 8,
+  activity_90_automated_outgoing: 6,
+  activity_90_active_days: 9,
+  activity_90_media: 4,
+  active_support_cases: 1,
+  support_cases_90: 2,
+  last_support_updated_at: '2026-09-08T12:00:00+09:00',
 }
 
 const groupRow: SubjectRow = {
@@ -68,6 +122,8 @@ const groupRow: SubjectRow = {
   status_version: null,
   status_updated_by_name: null,
   status_updated_at: null,
+  is_following: null,
+  chat_status: 'resolved',
 }
 
 function setupApp(db: D1Database, staff: Partial<TestStaff> = {}) {
@@ -132,7 +188,7 @@ function readDb() {
               }],
             } as { results: T[] }
           }
-          if (sql.includes('SELECT * FROM customer_subjects')) {
+          if (sql.includes('FROM customer_subjects cs')) {
             return { results: [directRow, groupRow] } as { results: T[] }
           }
           return { results: [] } as { results: T[] }
@@ -140,8 +196,8 @@ function readDb() {
         async first<T>() {
           calls.push({ sql, binds, method: 'first' })
           if (sql.includes('COUNT(*) AS count')) return { count: 2 } as T
-          if (sql.includes('SELECT * FROM customer_subjects')) {
-            return (binds[0] === 'conversation' ? groupRow : directRow) as T
+          if (sql.includes('FROM customer_subjects cs')) {
+            return (binds[binds.length - 2] === 'conversation' ? groupRow : directRow) as T
           }
           return null
         },
@@ -191,6 +247,21 @@ describe('sales customer read APIs', () => {
       customerNumber: 'C-001',
       storeNames: ['楽天店'],
       status: 'complaint',
+      isFollowing: true,
+      chatStatus: 'in_progress',
+      activity: {
+        needsHumanReply: true,
+        windows: {
+          oneMonth: {
+            totalMessages: 12,
+            customerMessages: 5,
+            staffReplies: 4,
+            automatedMessages: 3,
+          },
+          threeMonths: { totalMessages: 24 },
+        },
+        support: { activeCases: 1, casesInThreeMonths: 2 },
+      },
     })
     expect(body.data.items[1]).toMatchObject({
       subjectKind: 'conversation',
@@ -205,7 +276,11 @@ describe('sales customer read APIs', () => {
     expect(serialized).not.toContain('privateConversation')
     expect(serialized).not.toContain('出力してはいけない会話')
     expect(serialized).not.toContain('customer_metadata')
+    expect(serialized).not.toContain('sender_user_id')
     expect(calls.some((call) => call.sql.includes("source_type IN ('group', 'room')"))).toBe(true)
+    const activityCall = calls.find((call) => call.sql.includes('customer_message_activity'))
+    expect(activityCall?.sql).not.toMatch(/\bml\.content\b|\blcm\.content\b/)
+    expect(activityCall?.binds.slice(0, 3)).toEqual(['account-1', 'account-1', 'account-1'])
   })
 
   test('searches only sales-visible identity fields instead of raw metadata', async () => {
@@ -297,7 +372,7 @@ function mutationDb(initial: CurrentStatus | null = null, subjectExists = true) 
               version: current.version,
             } as T : null
           }
-          if (sql.includes('SELECT * FROM customer_subjects')) {
+          if (sql.includes('FROM customer_subjects cs')) {
             return {
               ...directRow,
               status_id: current?.id ?? null,
@@ -440,6 +515,30 @@ describe('sales customer status updates', () => {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
     })
     expect(secondary.status).toBe(403)
+  })
+
+  test('redacts obvious contact details before storing a sales-facing overview', async () => {
+    const harness = mutationDb()
+    const response = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'attention',
+        summary: '連絡先は 090-1234-5678 / 09012345678 / +81 90 1234 5678 / person@example.com / https://example.com/private を参照',
+        expectedVersion: 0,
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as { data: { summary: string } }
+    expect(body.data.summary).toContain('[電話番号非表示]')
+    expect(body.data.summary).toContain('[メール非表示]')
+    expect(body.data.summary).toContain('[URL非表示]')
+    expect(body.data.summary).not.toContain('090-1234-5678')
+    expect(body.data.summary).not.toContain('09012345678')
+    expect(body.data.summary).not.toContain('+81 90 1234 5678')
+    expect(body.data.summary).not.toContain('person@example.com')
+    expect(body.data.summary).not.toContain('example.com/private')
   })
 
   test('does not update inactive or out-of-scope customer subjects', async () => {

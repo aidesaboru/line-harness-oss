@@ -7,6 +7,7 @@ import {
   ApiRequestError,
   api,
   type SalesCustomer,
+  type SalesCustomerActivity,
   type SalesCustomerDetail,
   type SalesCustomerStatus,
   type SalesCustomerStoredStatus,
@@ -16,6 +17,7 @@ import {
   SALES_CUSTOMER_STORED_STATUSES,
   formatSalesCustomerDate,
   salesActionRequiredCount,
+  salesCustomerDraftStatus,
   salesCustomerIdentity,
   salesCustomerName,
   salesCustomerSourceLabel,
@@ -90,6 +92,108 @@ function SummaryButton({
   )
 }
 
+const CHAT_STATUS_LABELS: Record<NonNullable<SalesCustomer['chatStatus']>, string> = {
+  unread: '未対応',
+  in_progress: '対応中',
+  resolved: '解決済み',
+  long_term: '中長期対応',
+}
+
+function RecentActivityPanel({
+  activity,
+  chatStatus,
+  isFollowing,
+  subjectKind,
+}: {
+  activity: SalesCustomerActivity
+  chatStatus: SalesCustomer['chatStatus']
+  isFollowing: SalesCustomer['isFollowing']
+  subjectKind: SalesCustomer['subjectKind']
+}) {
+  const [months, setMonths] = useState<1 | 2 | 3>(3)
+  const window = months === 1
+    ? activity.windows.oneMonth
+    : months === 2
+      ? activity.windows.twoMonths
+      : activity.windows.threeMonths
+
+  const metrics = [
+    { label: 'メッセージ合計', value: window.totalMessages, suffix: '件' },
+    { label: '顧客から', value: window.customerMessages, suffix: '件' },
+    { label: '担当者返信', value: window.staffReplies, suffix: '件' },
+    { label: '自動配信', value: window.automatedMessages, suffix: '件' },
+    { label: 'やり取り日数', value: window.activeDays, suffix: '日' },
+    { label: '画像・添付', value: window.mediaMessages, suffix: '件' },
+  ]
+
+  return (
+    <section className="p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-gray-900">最近の{subjectKind === 'friend' ? '個別' : 'グループ'}チャット概要</h3>
+          <p className="mt-1 text-[11px] leading-5 text-gray-500">会話本文・氏名・連絡先を出さず、活動量だけを集計しています。</p>
+        </div>
+        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" aria-label="集計期間">
+          {([1, 2, 3] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setMonths(value)}
+              aria-pressed={months === value}
+              className={`min-h-8 rounded-md px-2.5 text-[11px] font-semibold ${months === value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+            >
+              {value}か月
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {activity.needsHumanReply && (
+          <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800">顧客からの最終連絡後、担当者返信なし</span>
+        )}
+        {activity.support.activeCases > 0 && (
+          <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-800">対応中チケット {activity.support.activeCases}件</span>
+        )}
+        {chatStatus && (
+          <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-700">チャット: {CHAT_STATUS_LABELS[chatStatus]}</span>
+        )}
+        {isFollowing === false && (
+          <span className="rounded-full border border-gray-300 bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">ブロック済み</span>
+        )}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {metrics.map((metric) => (
+          <div key={metric.label} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5">
+            <p className="text-[10px] font-medium text-gray-500">{metric.label}</p>
+            <p className="mt-0.5 text-base font-bold tabular-nums text-gray-900">{metric.value.toLocaleString('ja-JP')}<span className="ml-0.5 text-[10px] font-medium text-gray-500">{metric.suffix}</span></p>
+          </div>
+        ))}
+      </div>
+
+      <dl className="mt-3 grid gap-2 text-[11px] text-gray-600 sm:grid-cols-2">
+        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
+          <dt>最終接触</dt>
+          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastContactAt)}</dd>
+        </div>
+        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
+          <dt>顧客の最終連絡</dt>
+          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastCustomerMessageAt)}</dd>
+        </div>
+        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
+          <dt>担当者の最終返信</dt>
+          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastStaffReplyAt)}</dd>
+        </div>
+        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
+          <dt>関連チケット（3か月）</dt>
+          <dd className="font-medium text-gray-800">{activity.support.casesInThreeMonths.toLocaleString('ja-JP')}件</dd>
+        </div>
+      </dl>
+    </section>
+  )
+}
+
 function DetailContent({
   detail,
   loading,
@@ -103,11 +207,11 @@ function DetailContent({
 }: {
   detail: SalesCustomerDetail | null
   loading: boolean
-  editStatus: SalesCustomerStoredStatus
+  editStatus: SalesCustomerStoredStatus | ''
   editSummary: string
   saving: boolean
   saveMessage: string
-  onStatusChange: (status: SalesCustomerStoredStatus) => void
+  onStatusChange: (status: SalesCustomerStoredStatus | '') => void
   onSummaryChange: (summary: string) => void
   onSave: () => void
 }) {
@@ -135,7 +239,7 @@ function DetailContent({
   }
 
   const meta = SALES_CUSTOMER_STATUS_META[detail.status]
-  const changed = editStatus !== detail.status || editSummary.trim() !== detail.summary
+  const changed = editStatus !== '' && (editStatus !== detail.status || editSummary.trim() !== detail.summary)
   const canSave = detail.canEditStatus && !saving && changed && editSummary.trim().length > 0
 
   return (
@@ -157,15 +261,27 @@ function DetailContent({
         <div className={`rounded-xl border p-4 ${meta.panelClass}`}>
           <p className="text-xs font-semibold text-gray-600">営業アクション</p>
           <p className="mt-1 text-base font-bold text-gray-950">{meta.actionLabel}</p>
-          <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-gray-800">
-            {detail.summary || '運営側の状況判定がまだ完了していません。'}
-          </p>
           <p className="mt-3 text-[11px] text-gray-500">
             {detail.updatedAt
               ? `${formatSalesCustomerDate(detail.updatedAt)} 更新${detail.updatedByName ? ` · ${detail.updatedByName}` : ''}`
               : '更新履歴なし'}
           </p>
         </div>
+      </section>
+
+      <RecentActivityPanel
+        activity={detail.activity}
+        chatStatus={detail.chatStatus}
+        isFollowing={detail.isFollowing}
+        subjectKind={detail.subjectKind}
+      />
+
+      <section className="p-5">
+        <h3 className="text-sm font-bold text-gray-900">営業向け概要</h3>
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">運営担当者が会話を確認し、個人情報を除いて共有した要点です。</p>
+        <p className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-800">
+          {detail.summary || '運営側の確認と概要入力はまだ完了していません。'}
+        </p>
       </section>
 
       {detail.canEditStatus ? (
@@ -180,10 +296,11 @@ function DetailContent({
               <select
                 id="sales-customer-status"
                 value={editStatus}
-                onChange={(event) => onStatusChange(event.target.value as SalesCustomerStoredStatus)}
+                onChange={(event) => onStatusChange(event.target.value as SalesCustomerStoredStatus | '')}
                 disabled={saving}
                 className="min-h-11 w-full rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-900 outline-none focus:border-green-500 focus:ring-2 focus:ring-green-100 disabled:bg-gray-100"
               >
+                <option value="" disabled>状況を選択</option>
                 {SALES_CUSTOMER_STORED_STATUSES.map((status) => (
                   <option key={status} value={status}>{SALES_CUSTOMER_STATUS_META[status].label}</option>
                 ))}
@@ -191,7 +308,7 @@ function DetailContent({
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-2">
-                <label htmlFor="sales-customer-summary" className="text-xs font-semibold text-gray-700">営業共有メモ</label>
+                <label htmlFor="sales-customer-summary" className="text-xs font-semibold text-gray-700">営業向け概要</label>
                 <span className="text-[11px] tabular-nums text-gray-400">{editSummary.length}/1000</span>
               </div>
               <textarea
@@ -216,7 +333,7 @@ function DetailContent({
               disabled={!canSave}
               className="min-h-11 w-full rounded-lg bg-[#06C755] px-4 text-sm font-bold text-white transition-colors hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
             >
-              {saving ? '保存中...' : '状況とメモを保存'}
+              {saving ? '保存中...' : '状況と概要を保存'}
             </button>
           </div>
         </section>
@@ -272,12 +389,13 @@ export default function SalesCustomersPage() {
   const [detail, setDetail] = useState<SalesCustomerDetail | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
-  const [editStatus, setEditStatus] = useState<SalesCustomerStoredStatus>('normal')
+  const [editStatus, setEditStatus] = useState<SalesCustomerStoredStatus | ''>('')
   const [editSummary, setEditSummary] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
   const listRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
+  const saveRequestRef = useRef(0)
 
   const loadCustomers = useCallback(async () => {
     const requestId = ++listRequestRef.current
@@ -326,7 +444,7 @@ export default function SalesCustomersPage() {
       if (requestId !== detailRequestRef.current) return
       if (!response.success) throw new Error(response.error)
       setDetail(response.data)
-      setEditStatus(response.data.status === 'unreviewed' ? 'normal' : response.data.status)
+      setEditStatus(salesCustomerDraftStatus(response.data.status))
       setEditSummary(response.data.summary)
     } catch {
       if (requestId !== detailRequestRef.current) return
@@ -339,10 +457,14 @@ export default function SalesCustomersPage() {
   useEffect(() => {
     listRequestRef.current += 1
     detailRequestRef.current += 1
+    saveRequestRef.current += 1
     setPage(0)
     setSelectedKey(null)
     setDetail(null)
     setMobileDetailOpen(false)
+    setEditStatus('')
+    setEditSummary('')
+    setSaving(false)
     setSaveMessage('')
   }, [selectedAccountId])
 
@@ -365,32 +487,40 @@ export default function SalesCustomersPage() {
   }
 
   const openDetail = (customer: SalesCustomer) => {
+    saveRequestRef.current += 1
+    setSaving(false)
     setMobileDetailOpen(true)
     void loadDetail(customer)
   }
 
   const saveStatus = async () => {
-    if (!detail || !detail.canEditStatus || saving || !editSummary.trim()) return
+    if (!detail || !detail.canEditStatus || saving || !editStatus || !editSummary.trim()) return
+    const requestId = ++saveRequestRef.current
+    const targetDetail = detail
     setSaving(true)
     setSaveMessage('')
     try {
-      const response = await api.salesCustomers.updateStatus(detail.subjectKind, detail.subjectId, {
+      const response = await api.salesCustomers.updateStatus(targetDetail.subjectKind, targetDetail.subjectId, {
         status: editStatus,
         summary: editSummary.trim(),
-        expectedVersion: detail.version,
+        expectedVersion: targetDetail.version,
       })
+      if (requestId !== saveRequestRef.current) return
       if (!response.success) throw new Error(response.error)
-      await Promise.all([loadCustomers(), loadDetail(detail)])
+      await Promise.all([loadCustomers(), loadDetail(targetDetail)])
+      if (requestId !== saveRequestRef.current) return
       setSaveMessage('状況を更新しました。')
     } catch (caught) {
+      if (requestId !== saveRequestRef.current) return
       if (caught instanceof ApiRequestError && caught.status === 409) {
-        await Promise.all([loadCustomers(), loadDetail(detail)])
+        await Promise.all([loadCustomers(), loadDetail(targetDetail)])
+        if (requestId !== saveRequestRef.current) return
         setSaveMessage('他の担当者が先に更新しました。最新状況を読み直しました。')
       } else {
         setSaveMessage('状況の保存に失敗しました。もう一度お試しください。')
       }
     } finally {
-      setSaving(false)
+      if (requestId === saveRequestRef.current) setSaving(false)
     }
   }
 
@@ -508,11 +638,16 @@ export default function SalesCustomersPage() {
                         <p className="mt-1 truncate text-xs text-gray-500">{salesCustomerIdentity(customer) || salesCustomerSourceLabel(customer)}</p>
                       </div>
                       <div><StatusBadge status={customer.status} /></div>
-                      <p className="line-clamp-2 min-w-0 text-xs leading-5 text-gray-600">
-                        {customer.summary || SALES_CUSTOMER_STATUS_META[customer.status].definition}
-                      </p>
+                      <div className="min-w-0">
+                        <p className="line-clamp-2 text-xs leading-5 text-gray-600">
+                          {customer.summary || SALES_CUSTOMER_STATUS_META[customer.status].definition}
+                        </p>
+                        <p className="mt-1 truncate text-[10px] text-gray-400">
+                          直近3か月: 顧客 {customer.activity.windows.threeMonths.customerMessages}件 · 担当返信 {customer.activity.windows.threeMonths.staffReplies}件
+                        </p>
+                      </div>
                       <div className="flex items-center justify-between gap-2 text-[11px] text-gray-400 sm:justify-end">
-                        <span>{formatSalesCustomerDate(customer.updatedAt)}</span>
+                        <span>{formatSalesCustomerDate(customer.activity.lastContactAt)}</span>
                         <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m9 18 6-6-6-6" /></svg>
                       </div>
                     </button>

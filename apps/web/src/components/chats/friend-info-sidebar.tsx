@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { api } from '@/lib/api'
+import SalesCustomerStatusPanel from './sales-customer-status-panel'
 import {
   customerOperationContractFieldDefinitions,
   customerBroadcastExclusionPatch,
@@ -290,6 +291,8 @@ export default function FriendInfoSidebar({ friendId, chatStatus, operatorName, 
                 )}
               </div>
             )}
+
+            <SalesCustomerStatusPanel friendId={friend.id} />
 
             {/* Customer Profile */}
             {profile && (

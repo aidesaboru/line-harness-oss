@@ -72,6 +72,10 @@ export const SALES_CUSTOMER_STORED_STATUSES: SalesCustomerStoredStatus[] = [
   'exited',
 ]
 
+export function salesCustomerDraftStatus(status: SalesCustomerStatus): SalesCustomerStoredStatus | '' {
+  return status === 'unreviewed' ? '' : status
+}
+
 export function salesCustomerName(customer: SalesCustomer): string {
   return customer.companyName || customer.contactName || customer.lineDisplayName || '名前未設定'
 }

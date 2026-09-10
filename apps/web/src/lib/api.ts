@@ -728,6 +728,33 @@ export type SalesCustomerStatus =
 export type SalesCustomerStoredStatus = Exclude<SalesCustomerStatus, 'unreviewed'>
 export type SalesCustomerSubjectKind = 'friend' | 'conversation'
 
+export type SalesCustomerActivityWindow = {
+  months: number
+  totalMessages: number
+  customerMessages: number
+  staffReplies: number
+  automatedMessages: number
+  activeDays: number
+  mediaMessages: number
+}
+
+export type SalesCustomerActivity = {
+  lastContactAt: string | null
+  lastCustomerMessageAt: string | null
+  lastStaffReplyAt: string | null
+  needsHumanReply: boolean
+  windows: {
+    oneMonth: SalesCustomerActivityWindow
+    twoMonths: SalesCustomerActivityWindow
+    threeMonths: SalesCustomerActivityWindow
+  }
+  support: {
+    activeCases: number
+    casesInThreeMonths: number
+    lastUpdatedAt: string | null
+  }
+}
+
 export type SalesCustomer = {
   subjectKind: SalesCustomerSubjectKind
   subjectId: string
@@ -745,6 +772,9 @@ export type SalesCustomer = {
   updatedByName: string | null
   updatedAt: string | null
   createdAt: string
+  isFollowing: boolean | null
+  chatStatus: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
+  activity: SalesCustomerActivity
 }
 
 export type SalesCustomerStatusEvent = {

@@ -3,6 +3,7 @@ import type { SalesCustomer, SalesCustomerStatus } from './api'
 import {
   SALES_CUSTOMER_STATUS_META,
   salesActionRequiredCount,
+  salesCustomerDraftStatus,
   salesCustomerIdentity,
   salesCustomerName,
   salesCustomerSourceLabel,
@@ -25,6 +26,20 @@ const customer: SalesCustomer = {
   updatedByName: '運営担当',
   updatedAt: '2026-09-09T10:00:00+09:00',
   createdAt: '2026-09-01T10:00:00+09:00',
+  isFollowing: true,
+  chatStatus: 'in_progress',
+  activity: {
+    lastContactAt: '2026-09-09T09:00:00+09:00',
+    lastCustomerMessageAt: '2026-09-09T09:00:00+09:00',
+    lastStaffReplyAt: '2026-09-08T18:00:00+09:00',
+    needsHumanReply: true,
+    windows: {
+      oneMonth: { months: 1, totalMessages: 3, customerMessages: 2, staffReplies: 1, automatedMessages: 0, activeDays: 2, mediaMessages: 0 },
+      twoMonths: { months: 2, totalMessages: 3, customerMessages: 2, staffReplies: 1, automatedMessages: 0, activeDays: 2, mediaMessages: 0 },
+      threeMonths: { months: 3, totalMessages: 3, customerMessages: 2, staffReplies: 1, automatedMessages: 0, activeDays: 2, mediaMessages: 0 },
+    },
+    support: { activeCases: 0, casesInThreeMonths: 0, lastUpdatedAt: null },
+  },
 }
 
 describe('sales customer status metadata', () => {
@@ -56,5 +71,10 @@ describe('sales customer status metadata', () => {
       exit_pending: 4,
       exited: 5,
     })).toBe(10)
+  })
+
+  it('requires a human to choose the first stored status', () => {
+    expect(salesCustomerDraftStatus('unreviewed')).toBe('')
+    expect(salesCustomerDraftStatus('attention')).toBe('attention')
   })
 })

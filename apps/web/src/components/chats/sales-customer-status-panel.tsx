@@ -21,7 +21,6 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [draftStatus, setDraftStatus] = useState<SalesCustomerStoredStatus | ''>('')
-  const [draftSummary, setDraftSummary] = useState('')
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const activeFriendRef = useRef(friendId)
@@ -29,7 +28,6 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
   const applyDetail = useCallback((next: SalesCustomerDetail) => {
     setDetail(next)
     setDraftStatus(salesCustomerDraftStatus(next.status))
-    setDraftSummary(next.summary)
   }, [])
 
   const load = useCallback(async (targetFriendId: string) => {
@@ -55,20 +53,18 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
     setDetail(null)
     setEditing(false)
     setDraftStatus('')
-    setDraftSummary('')
     setSaving(false)
     void load(friendId)
   }, [friendId, load])
 
   const save = async () => {
-    if (!detail || !detail.canEditStatus || !draftStatus || !draftSummary.trim() || saving) return
+    if (!detail || !detail.canEditStatus || !draftStatus || draftStatus === detail.status || saving) return
     const targetFriendId = friendId
     setSaving(true)
     setMessage('')
     try {
       const response = await api.salesCustomers.updateStatus('friend', targetFriendId, {
         status: draftStatus,
-        summary: draftSummary.trim(),
         expectedVersion: detail.version,
       })
       if (activeFriendRef.current !== targetFriendId) return
@@ -118,16 +114,18 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
   }
 
   const meta = SALES_CUSTOMER_STATUS_META[detail.status]
-  const changed = draftStatus !== ''
-    && (draftStatus !== detail.status || draftSummary.trim() !== detail.summary)
-  const canSave = detail.canEditStatus && changed && draftSummary.trim().length > 0 && !saving
+  const changed = draftStatus !== '' && draftStatus !== detail.status
+  const canSave = detail.canEditStatus && changed && !saving
+  const recentEvents = [...detail.situation.events].reverse().slice(0, 3)
 
   return (
     <section className="min-w-0 space-y-3 p-4">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h4 className="text-sm font-bold text-gray-900">営業状況</h4>
-          <p className="mt-0.5 text-[10px] leading-4 text-gray-500">会話を確認し、人が選択します</p>
+          <p className="mt-0.5 text-[10px] leading-4 text-gray-500">
+            {detail.statusSource === 'ai' ? '会話からAIが自動判定' : detail.statusSource === 'manual' ? '運営が手動変更' : 'まだ未判定'}
+          </p>
         </div>
         <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-1 text-[10px] font-semibold ${meta.badgeClass}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${meta.dotClass}`} aria-hidden="true" />
@@ -135,30 +133,38 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
         </span>
       </div>
 
+      <div className={`rounded-lg border p-3 ${meta.panelClass}`}>
+        <p className="text-[9px] font-semibold text-gray-500">営業アクション</p>
+        <p className="mt-0.5 text-[11px] font-bold text-gray-900">{meta.actionLabel}</p>
+      </div>
+
       <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
         <div className="flex items-center justify-between gap-2">
-          <p className="text-[10px] font-semibold text-gray-600">最近の状況（AI要約）</p>
-          <span className="text-[9px] text-gray-400">ステータスとは別</span>
+          <p className="text-[10px] font-semibold text-gray-600">現在の状況</p>
+          <span className="text-[9px] text-violet-600">AI自動整理</span>
         </div>
         <p className="mt-1.5 whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
-          {detail.recentOverview.text}
+          {detail.situation.currentState}
         </p>
         <p className="mt-1.5 text-[9px] text-gray-400">
-          {detail.recentOverview.stored && detail.recentOverview.updatedAt
-            ? `${formatSalesCustomerDate(detail.recentOverview.updatedAt)} 更新 · 対象${detail.recentOverview.sourceMessageCount}件${detail.recentOverview.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(detail.recentOverview.sourceToAt)}` : ''}`
-            : '会話要約はまだ生成されていません'}
+          {detail.situation.stored && detail.situation.updatedAt
+            ? `${formatSalesCustomerDate(detail.situation.updatedAt)} 更新 · 対象${detail.situation.sourceMessageCount}件${detail.situation.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(detail.situation.sourceToAt)}` : ''}`
+            : '状況タイムラインはまだ生成されていません'}
         </p>
       </div>
 
-      {!editing && (
+      {!editing && recentEvents.length > 0 && (
         <div className={`rounded-lg border p-3 ${meta.panelClass}`}>
-          <p className="text-[11px] font-semibold text-gray-800">{meta.actionLabel}</p>
-          <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">
-            {detail.summary || 'ステータス判断メモはまだありません。'}
-          </p>
-          <p className="mt-1.5 text-[10px] text-gray-500">
-            {detail.updatedAt ? `${formatSalesCustomerDate(detail.updatedAt)} 更新` : '確認前'}
-          </p>
+          <p className="text-[11px] font-semibold text-gray-800">直近の履歴</p>
+          <ol className="mt-2 space-y-2">
+            {recentEvents.map((event) => (
+              <li key={`${event.occurredAt}:${event.kind}:${event.title}`} className="border-l-2 border-gray-300 pl-2">
+                <p className="text-[9px] text-gray-500">{formatSalesCustomerDate(event.occurredAt)}</p>
+                <p className="mt-0.5 text-[11px] font-semibold leading-4 text-gray-800">{event.title}</p>
+                <p className="mt-0.5 text-[10px] leading-4 text-gray-600">{event.detail}</p>
+              </li>
+            ))}
+          </ol>
         </div>
       )}
 
@@ -187,26 +193,8 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
               ))}
             </select>
           </label>
-          <label className="block">
-            <span className="mb-1 flex items-center justify-between gap-2 text-[10px] font-semibold text-gray-600">
-              <span>ステータス判断メモ</span>
-              <span className="font-normal tabular-nums text-gray-400">{draftSummary.length}/1000</span>
-            </span>
-            <textarea
-              value={draftSummary}
-              onChange={(event) => {
-                setDraftSummary(event.target.value.slice(0, 1000))
-                setMessage('')
-              }}
-              disabled={saving}
-              rows={4}
-              maxLength={1000}
-              placeholder="例: 契約内容を確認中。解決連絡まで営業提案は停止。"
-              className="w-full resize-y rounded-md border border-gray-300 bg-white px-2 py-2 text-xs leading-5 text-gray-900 outline-none placeholder:text-gray-400 focus:border-green-500 focus:ring-1 focus:ring-green-500"
-            />
-          </label>
           <p className="text-[10px] leading-4 text-gray-500">
-            氏名・電話・メール・URL・会話本文は転記しないでください。明らかな連絡先は保存時にも伏せられます。
+            自動判定が違う場合だけ手動で変更してください。新しい会話が増えたときは再度自動判定されます。
           </p>
           <div className="grid grid-cols-2 gap-2">
             <button
@@ -214,7 +202,6 @@ export default function SalesCustomerStatusPanel({ friendId }: { friendId: strin
               onClick={() => {
                 setEditing(false)
                 setDraftStatus(salesCustomerDraftStatus(detail.status))
-                setDraftSummary(detail.summary)
                 setMessage('')
               }}
               disabled={saving}

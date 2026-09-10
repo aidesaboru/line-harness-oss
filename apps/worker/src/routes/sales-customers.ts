@@ -2,29 +2,31 @@ import { Hono, type Context } from 'hono';
 import { jstNow } from '@line-crm/db';
 import type { Env } from '../index.js';
 import {
-  buildNoEligibleTextSummary,
-  generateSalesCustomerSemanticSummary,
+  buildNoEligibleTextSituation,
+  generateSalesCustomerSituation,
   prepareSalesCustomerSemanticSource,
-  SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_MESSAGES,
-  SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
-  SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL,
-  SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+  resolveAutomatedSalesStatus,
+  SALES_CUSTOMER_SITUATION_MAX_MESSAGES,
+  SALES_CUSTOMER_SITUATION_METHOD,
+  SALES_CUSTOMER_SITUATION_MODEL,
+  SALES_CUSTOMER_SITUATION_PROMPT_VERSION,
   SalesCustomerSemanticSummaryError,
+  type GeneratedSalesCustomerSituation,
   type PreparedSalesCustomerSemanticSource,
   type SalesCustomerSemanticMessage,
   type SalesCustomerSemanticSummaryUsage,
+  type SalesCustomerSituationEvent,
 } from '../services/sales-customer-semantic-summary.js';
 
 const salesCustomers = new Hono<Env>();
 
 const SALES_CUSTOMER_ID_MAX_LENGTH = 128;
 const SALES_CUSTOMER_SEARCH_MAX_LENGTH = 120;
-const SALES_CUSTOMER_SUMMARY_MAX_LENGTH = 1000;
 const SALES_CUSTOMER_LIST_MAX_LIMIT = 100;
 const SALES_CUSTOMER_DEFAULT_LIMIT = 50;
 const SALES_CUSTOMER_OVERVIEW_BATCH_MAX_LIMIT = 5;
 const SALES_CUSTOMER_OVERVIEW_BATCH_DEFAULT_LIMIT = 5;
-const SALES_CUSTOMER_OVERVIEW_CONFIRMATION = 'generate_sales_customer_overviews';
+const SALES_CUSTOMER_SITUATION_CONFIRMATION = 'generate_sales_customer_situations';
 const SALES_CUSTOMER_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 const STORED_STATUSES = [
@@ -51,51 +53,28 @@ type SalesCustomerRow = {
   subject_created_at: string;
   status_id: string | null;
   sales_status: SalesCustomerStatus;
-  status_summary: string | null;
+  status_source: 'manual' | 'ai' | null;
+  status_source_fingerprint: string | null;
   status_version: number | null;
   status_updated_by_name: string | null;
   status_updated_at: string | null;
-  overview_id: string | null;
-  overview_text: string | null;
-  overview_generation_method: string | null;
-  overview_ai_generated: number | null;
-  overview_model: string | null;
-  overview_prompt_version: string | null;
-  overview_source_fingerprint: string | null;
-  overview_source_message_count: number | null;
-  overview_source_from_at: string | null;
-  overview_source_to_at: string | null;
-  overview_input_char_count: number | null;
-  overview_version: number | null;
-  overview_updated_by_name: string | null;
-  overview_updated_at: string | null;
-  is_following: number | null;
-  chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null;
-  activity_last_at?: string | null;
-  activity_last_incoming_at?: string | null;
-  activity_last_human_outgoing_at?: string | null;
-  activity_needs_human_reply?: number | null;
-  activity_30_total?: number | null;
-  activity_30_incoming?: number | null;
-  activity_30_human_outgoing?: number | null;
-  activity_30_automated_outgoing?: number | null;
-  activity_30_active_days?: number | null;
-  activity_30_media?: number | null;
-  activity_60_total?: number | null;
-  activity_60_incoming?: number | null;
-  activity_60_human_outgoing?: number | null;
-  activity_60_automated_outgoing?: number | null;
-  activity_60_active_days?: number | null;
-  activity_60_media?: number | null;
-  activity_90_total?: number | null;
-  activity_90_incoming?: number | null;
-  activity_90_human_outgoing?: number | null;
-  activity_90_automated_outgoing?: number | null;
-  activity_90_active_days?: number | null;
-  activity_90_media?: number | null;
-  active_support_cases?: number | null;
-  support_cases_90?: number | null;
-  last_support_updated_at?: string | null;
+  timeline_id: string | null;
+  timeline_current_state: string | null;
+  timeline_recognized_status: SalesCustomerStatus | null;
+  timeline_resolution_confirmed: number | null;
+  timeline_json: string | null;
+  timeline_generation_method: string | null;
+  timeline_ai_generated: number | null;
+  timeline_model: string | null;
+  timeline_prompt_version: string | null;
+  timeline_source_fingerprint: string | null;
+  timeline_source_message_count: number | null;
+  timeline_source_from_at: string | null;
+  timeline_source_to_at: string | null;
+  timeline_input_char_count: number | null;
+  timeline_version: number | null;
+  timeline_updated_by_name: string | null;
+  timeline_updated_at: string | null;
 };
 
 type SalesCustomerStatusEventRow = {
@@ -103,18 +82,7 @@ type SalesCustomerStatusEventRow = {
   from_status: SalesCustomerStatus;
   to_status: StoredSalesCustomerStatus;
   summary: string;
-  actor_name: string | null;
-  created_at: string;
-};
-
-type SalesCustomerOverviewEventRow = {
-  id: string;
-  summary: string;
-  ai_generated: number;
-  model: string | null;
-  source_message_count: number;
-  source_from_at: string | null;
-  source_to_at: string | null;
+  source: 'manual' | 'ai';
   actor_name: string | null;
   created_at: string;
 };
@@ -141,36 +109,32 @@ const CUSTOMER_SUBJECTS_SQL = `
       f.created_at AS subject_created_at,
       scs.id AS status_id,
       COALESCE(scs.status, 'unreviewed') AS sales_status,
-      scs.summary AS status_summary,
+      scs.source AS status_source,
+      scs.source_fingerprint AS status_source_fingerprint,
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
-      scss.id AS overview_id,
-      scss.summary AS overview_text,
-      scss.generation_method AS overview_generation_method,
-      scss.ai_generated AS overview_ai_generated,
-      scss.model AS overview_model,
-      scss.prompt_version AS overview_prompt_version,
-      scss.source_fingerprint AS overview_source_fingerprint,
-      scss.source_message_count AS overview_source_message_count,
-      scss.source_from_at AS overview_source_from_at,
-      scss.source_to_at AS overview_source_to_at,
-      scss.input_char_count AS overview_input_char_count,
-      scss.version AS overview_version,
-      scss.updated_by_name AS overview_updated_by_name,
-      scss.updated_at AS overview_updated_at,
-      f.is_following,
-      (
-        SELECT CASE WHEN c.is_long_term = 1 THEN 'long_term' ELSE c.status END
-        FROM chats c
-        WHERE c.friend_id = f.id
-        ORDER BY c.updated_at DESC, c.id DESC
-        LIMIT 1
-      ) AS chat_status
+      scst.id AS timeline_id,
+      scst.current_state AS timeline_current_state,
+      scst.recognized_status AS timeline_recognized_status,
+      scst.resolution_confirmed AS timeline_resolution_confirmed,
+      scst.timeline_json,
+      scst.generation_method AS timeline_generation_method,
+      scst.ai_generated AS timeline_ai_generated,
+      scst.model AS timeline_model,
+      scst.prompt_version AS timeline_prompt_version,
+      scst.source_fingerprint AS timeline_source_fingerprint,
+      scst.source_message_count AS timeline_source_message_count,
+      scst.source_from_at AS timeline_source_from_at,
+      scst.source_to_at AS timeline_source_to_at,
+      scst.input_char_count AS timeline_input_char_count,
+      scst.version AS timeline_version,
+      scst.updated_by_name AS timeline_updated_by_name,
+      scst.updated_at AS timeline_updated_at
     FROM friends f
     INNER JOIN line_accounts la ON la.id = f.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.friend_id = f.id
-    LEFT JOIN sales_customer_semantic_summaries_v3 scss ON scss.friend_id = f.id
+    LEFT JOIN sales_customer_situation_timelines scst ON scst.friend_id = f.id
 
     UNION ALL
 
@@ -185,159 +149,34 @@ const CUSTOMER_SUBJECTS_SQL = `
       lc.created_at AS subject_created_at,
       scs.id AS status_id,
       COALESCE(scs.status, 'unreviewed') AS sales_status,
-      scs.summary AS status_summary,
+      scs.source AS status_source,
+      scs.source_fingerprint AS status_source_fingerprint,
       scs.version AS status_version,
       scs.updated_by_name AS status_updated_by_name,
       scs.updated_at AS status_updated_at,
-      scss.id AS overview_id,
-      scss.summary AS overview_text,
-      scss.generation_method AS overview_generation_method,
-      scss.ai_generated AS overview_ai_generated,
-      scss.model AS overview_model,
-      scss.prompt_version AS overview_prompt_version,
-      scss.source_fingerprint AS overview_source_fingerprint,
-      scss.source_message_count AS overview_source_message_count,
-      scss.source_from_at AS overview_source_from_at,
-      scss.source_to_at AS overview_source_to_at,
-      scss.input_char_count AS overview_input_char_count,
-      scss.version AS overview_version,
-      scss.updated_by_name AS overview_updated_by_name,
-      scss.updated_at AS overview_updated_at,
-      NULL AS is_following,
-      COALESCE(lc.workflow_status, lc.status) AS chat_status
+      scst.id AS timeline_id,
+      scst.current_state AS timeline_current_state,
+      scst.recognized_status AS timeline_recognized_status,
+      scst.resolution_confirmed AS timeline_resolution_confirmed,
+      scst.timeline_json,
+      scst.generation_method AS timeline_generation_method,
+      scst.ai_generated AS timeline_ai_generated,
+      scst.model AS timeline_model,
+      scst.prompt_version AS timeline_prompt_version,
+      scst.source_fingerprint AS timeline_source_fingerprint,
+      scst.source_message_count AS timeline_source_message_count,
+      scst.source_from_at AS timeline_source_from_at,
+      scst.source_to_at AS timeline_source_to_at,
+      scst.input_char_count AS timeline_input_char_count,
+      scst.version AS timeline_version,
+      scst.updated_by_name AS timeline_updated_by_name,
+      scst.updated_at AS timeline_updated_at
     FROM line_conversations lc
     INNER JOIN line_accounts la ON la.id = lc.line_account_id AND la.is_active = 1
     LEFT JOIN sales_customer_statuses scs ON scs.conversation_id = lc.id
-    LEFT JOIN sales_customer_semantic_summaries_v3 scss ON scss.conversation_id = lc.id
+    LEFT JOIN sales_customer_situation_timelines scst ON scst.conversation_id = lc.id
     WHERE lc.source_type IN ('group', 'room')
   )
-`;
-
-// Sales receives aggregate activity only. Message content, sender identity,
-// internal notes, and message IDs never enter this CTE or the response.
-function customerActivityCtesSql(scope: 'account' | 'subject'): string {
-  const friendFilter = scope === 'account' ? 'af.line_account_id = ?' : 'ml.friend_id = ?';
-  const conversationFilter = scope === 'account' ? 'alc.line_account_id = ?' : 'lcm.conversation_id = ?';
-  const supportFilter = scope === 'account' ? 'sf.line_account_id = ?' : 'sc.friend_id = ?';
-  return `,
-  customer_message_activity AS (
-    SELECT
-      'friend' AS activity_kind,
-      ml.friend_id AS activity_id,
-      ml.direction,
-      ml.message_type,
-      ml.created_at,
-      CASE
-        WHEN ml.direction = 'outgoing'
-          AND ml.source IN ('manual', 'scheduled_manual', 'line_official')
-        THEN 1 ELSE 0
-      END AS human_outgoing
-    FROM messages_log ml
-    INNER JOIN friends af ON af.id = ml.friend_id
-    WHERE (ml.delivery_type IS NULL OR ml.delivery_type != 'test')
-      AND ml.deleted_at IS NULL
-      AND ${friendFilter}
-
-    UNION ALL
-
-    SELECT
-      'conversation' AS activity_kind,
-      lcm.conversation_id AS activity_id,
-      lcm.direction,
-      lcm.message_type,
-      lcm.created_at,
-      CASE WHEN lcm.direction = 'outgoing' THEN 1 ELSE 0 END AS human_outgoing
-    FROM line_conversation_messages lcm
-    INNER JOIN line_conversations alc ON alc.id = lcm.conversation_id
-    WHERE lcm.deleted_at IS NULL
-      AND ${conversationFilter}
-  ),
-  customer_activity AS (
-    SELECT
-      activity_kind,
-      activity_id,
-      MAX(created_at) AS activity_last_at,
-      MAX(CASE WHEN direction = 'incoming' THEN created_at END) AS activity_last_incoming_at,
-      MAX(CASE WHEN human_outgoing = 1 THEN created_at END) AS activity_last_human_outgoing_at,
-      CASE
-        WHEN MAX(CASE WHEN direction = 'incoming' THEN julianday(created_at) END) IS NOT NULL
-          AND (
-            MAX(CASE WHEN human_outgoing = 1 THEN julianday(created_at) END) IS NULL
-            OR MAX(CASE WHEN direction = 'incoming' THEN julianday(created_at) END)
-              > MAX(CASE WHEN human_outgoing = 1 THEN julianday(created_at) END)
-          )
-        THEN 1 ELSE 0
-      END AS activity_needs_human_reply,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS activity_30_total,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_30_incoming,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_30_human_outgoing,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_30_automated_outgoing,
-      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-30 days') THEN date(created_at) END) AS activity_30_active_days,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-30 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_30_media,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') THEN 1 ELSE 0 END) AS activity_60_total,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_60_incoming,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_60_human_outgoing,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_60_automated_outgoing,
-      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-60 days') THEN date(created_at) END) AS activity_60_active_days,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-60 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_60_media,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') THEN 1 ELSE 0 END) AS activity_90_total,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND direction = 'incoming' THEN 1 ELSE 0 END) AS activity_90_incoming,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND human_outgoing = 1 THEN 1 ELSE 0 END) AS activity_90_human_outgoing,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND direction = 'outgoing' AND human_outgoing = 0 THEN 1 ELSE 0 END) AS activity_90_automated_outgoing,
-      COUNT(DISTINCT CASE WHEN datetime(created_at) >= datetime('now', '-90 days') THEN date(created_at) END) AS activity_90_active_days,
-      SUM(CASE WHEN datetime(created_at) >= datetime('now', '-90 days') AND message_type NOT IN ('text', 'postback') THEN 1 ELSE 0 END) AS activity_90_media
-    FROM customer_message_activity
-    GROUP BY activity_kind, activity_id
-  ),
-  customer_support_activity AS (
-    SELECT
-      sc.friend_id AS support_friend_id,
-      SUM(CASE WHEN sc.status NOT IN ('resolved') THEN 1 ELSE 0 END) AS active_support_cases,
-      SUM(CASE WHEN datetime(sc.updated_at) >= datetime('now', '-90 days') THEN 1 ELSE 0 END) AS support_cases_90,
-      MAX(sc.updated_at) AS last_support_updated_at
-    FROM support_cases sc
-    INNER JOIN friends sf ON sf.id = sc.friend_id
-    WHERE sc.friend_id IS NOT NULL
-      AND ${supportFilter}
-    GROUP BY sc.friend_id
-  )
-`;
-}
-
-const CUSTOMER_ACTIVITY_SELECT_SQL = `
-  cs.*,
-  ca.activity_last_at,
-  ca.activity_last_incoming_at,
-  ca.activity_last_human_outgoing_at,
-  ca.activity_needs_human_reply,
-  ca.activity_30_total,
-  ca.activity_30_incoming,
-  ca.activity_30_human_outgoing,
-  ca.activity_30_automated_outgoing,
-  ca.activity_30_active_days,
-  ca.activity_30_media,
-  ca.activity_60_total,
-  ca.activity_60_incoming,
-  ca.activity_60_human_outgoing,
-  ca.activity_60_automated_outgoing,
-  ca.activity_60_active_days,
-  ca.activity_60_media,
-  ca.activity_90_total,
-  ca.activity_90_incoming,
-  ca.activity_90_human_outgoing,
-  ca.activity_90_automated_outgoing,
-  ca.activity_90_active_days,
-  ca.activity_90_media,
-  CASE WHEN cs.subject_kind = 'friend' THEN COALESCE(csa.active_support_cases, 0) ELSE 0 END AS active_support_cases,
-  CASE WHEN cs.subject_kind = 'friend' THEN COALESCE(csa.support_cases_90, 0) ELSE 0 END AS support_cases_90,
-  CASE WHEN cs.subject_kind = 'friend' THEN csa.last_support_updated_at ELSE NULL END AS last_support_updated_at
-`;
-
-const CUSTOMER_ACTIVITY_JOINS_SQL = `
-  LEFT JOIN customer_activity ca
-    ON ca.activity_kind = cs.subject_kind AND ca.activity_id = cs.subject_id
-  LEFT JOIN customer_support_activity csa
-    ON cs.subject_kind = 'friend' AND csa.support_friend_id = cs.subject_id
 `;
 
 // Search only the identity fields intentionally exposed to sales. Searching the
@@ -445,26 +284,6 @@ function parseStoredStatus(raw: unknown): ValueResult<StoredSalesCustomerStatus>
   return { ok: true, value: raw as StoredSalesCustomerStatus };
 }
 
-function parseSummary(raw: unknown): ValueResult<string> {
-  if (typeof raw !== 'string') return { ok: false, error: 'summary is required' };
-  const input = raw.trim();
-  if (!input) return { ok: false, error: 'summary is required' };
-  if (input.length > SALES_CUSTOMER_SUMMARY_MAX_LENGTH) return { ok: false, error: 'summary is too long' };
-  const value = redactSalesSummary(input);
-  if (value.length > SALES_CUSTOMER_SUMMARY_MAX_LENGTH) return { ok: false, error: 'summary is too long' };
-  return { ok: true, value };
-}
-
-function redactSalesSummary(value: string): string {
-  return value
-    .replace(/https?:\/\/[^\s<>()]+/gi, '[URL非表示]')
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[メール非表示]')
-    .replace(
-      /(^|[^\d])((?:0(?:[\s()\-ー－]?\d){9,10}|\+81(?:[\s()\-ー－]?\d){9,10}))(?!\d)/g,
-      '$1[電話番号非表示]',
-    );
-}
-
 function parseExpectedVersion(raw: unknown): ValueResult<number> {
   if (!Number.isSafeInteger(raw) || (raw as number) < 0) {
     return { ok: false, error: 'invalid_expected_version' };
@@ -533,68 +352,51 @@ function operationStoreNames(metadata: Record<string, unknown>): string[] {
   return Array.from(new Set([...(legacyName ? [legacyName] : []), ...names]));
 }
 
-function serializeRecentOverview(row: SalesCustomerRow) {
-  const stored = Boolean(row.overview_id && row.overview_text);
+function parseTimelineJson(raw: string | null): SalesCustomerSituationEvent[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is SalesCustomerSituationEvent => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+      const event = item as Record<string, unknown>;
+      return typeof event.occurredAt === 'string'
+        && (event.kind === 'customer_contact' || event.kind === 'staff_action' || event.kind === 'state_change')
+        && typeof event.title === 'string'
+        && typeof event.detail === 'string'
+        && (event.state === 'open' || event.state === 'in_progress' || event.state === 'resolved' || event.state === 'information');
+    });
+  } catch {
+    return [];
+  }
+}
+
+function serializeSituation(row: SalesCustomerRow) {
+  const stored = Boolean(row.timeline_id && row.timeline_current_state);
   return {
-    text: stored
-      ? row.overview_text
-      : '会話内容の要約はまだ作成されていません。運営担当者が生成すると表示されます。',
-    method: stored ? row.overview_generation_method : SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
-    aiGenerated: stored ? Boolean(row.overview_ai_generated) : false,
-    model: stored ? row.overview_model : null,
-    promptVersion: stored ? row.overview_prompt_version : SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
-    sourceMessageCount: stored ? Number(row.overview_source_message_count ?? 0) : 0,
-    sourceFromAt: stored ? row.overview_source_from_at : null,
-    sourceToAt: stored ? row.overview_source_to_at : null,
-    inputCharCount: stored ? Number(row.overview_input_char_count ?? 0) : 0,
+    currentState: stored
+      ? row.timeline_current_state
+      : '状況タイムラインはまだ生成されていません。',
+    recognizedStatus: stored ? row.timeline_recognized_status : 'unreviewed',
+    resolutionConfirmed: stored ? Boolean(row.timeline_resolution_confirmed) : false,
+    events: stored ? parseTimelineJson(row.timeline_json) : [],
+    method: stored ? row.timeline_generation_method : SALES_CUSTOMER_SITUATION_METHOD,
+    aiGenerated: stored ? Boolean(row.timeline_ai_generated) : false,
+    model: stored ? row.timeline_model : null,
+    promptVersion: stored ? row.timeline_prompt_version : SALES_CUSTOMER_SITUATION_PROMPT_VERSION,
+    sourceMessageCount: stored ? Number(row.timeline_source_message_count ?? 0) : 0,
+    sourceFromAt: stored ? row.timeline_source_from_at : null,
+    sourceToAt: stored ? row.timeline_source_to_at : null,
+    inputCharCount: stored ? Number(row.timeline_input_char_count ?? 0) : 0,
     stored,
-    version: row.overview_version ?? 0,
-    updatedByName: row.overview_updated_by_name ?? null,
-    updatedAt: row.overview_updated_at ?? null,
+    version: row.timeline_version ?? 0,
+    updatedByName: row.timeline_updated_by_name ?? null,
+    updatedAt: row.timeline_updated_at ?? null,
   };
 }
 
 function serializeCustomer(row: SalesCustomerRow) {
   const metadata = parseMetadata(row.customer_metadata);
-  const activityWindow = (days: 30 | 60 | 90) => {
-    const values = days === 30
-      ? {
-          total: row.activity_30_total,
-          incoming: row.activity_30_incoming,
-          humanOutgoing: row.activity_30_human_outgoing,
-          automatedOutgoing: row.activity_30_automated_outgoing,
-          activeDays: row.activity_30_active_days,
-          media: row.activity_30_media,
-        }
-      : days === 60
-        ? {
-            total: row.activity_60_total,
-            incoming: row.activity_60_incoming,
-            humanOutgoing: row.activity_60_human_outgoing,
-            automatedOutgoing: row.activity_60_automated_outgoing,
-            activeDays: row.activity_60_active_days,
-            media: row.activity_60_media,
-          }
-        : {
-            total: row.activity_90_total,
-            incoming: row.activity_90_incoming,
-            humanOutgoing: row.activity_90_human_outgoing,
-            automatedOutgoing: row.activity_90_automated_outgoing,
-            activeDays: row.activity_90_active_days,
-            media: row.activity_90_media,
-          };
-    return {
-      months: days / 30,
-      totalMessages: Number(values.total ?? 0),
-      customerMessages: Number(values.incoming ?? 0),
-      staffReplies: Number(values.humanOutgoing ?? 0),
-      automatedMessages: Number(values.automatedOutgoing ?? 0),
-      activeDays: Number(values.activeDays ?? 0),
-      mediaMessages: Number(values.media ?? 0),
-    };
-  };
-  const lastIncomingAt = row.activity_last_incoming_at ?? null;
-  const lastHumanOutgoingAt = row.activity_last_human_outgoing_at ?? null;
   return {
     subjectKind: row.subject_kind,
     subjectId: row.subject_id,
@@ -613,30 +415,12 @@ function serializeCustomer(row: SalesCustomerRow) {
     ]),
     storeNames: operationStoreNames(metadata),
     status: row.sales_status,
-    summary: row.status_summary ?? '',
+    statusSource: row.status_source,
     version: row.status_version ?? 0,
     updatedByName: row.status_updated_by_name,
     updatedAt: row.status_updated_at,
     createdAt: row.subject_created_at,
-    isFollowing: row.is_following == null ? null : Boolean(row.is_following),
-    chatStatus: row.chat_status ?? null,
-    recentOverview: serializeRecentOverview(row),
-    activity: {
-      lastContactAt: row.activity_last_at ?? null,
-      lastCustomerMessageAt: lastIncomingAt,
-      lastStaffReplyAt: lastHumanOutgoingAt,
-      needsHumanReply: Boolean(row.activity_needs_human_reply),
-      windows: {
-        oneMonth: activityWindow(30),
-        twoMonths: activityWindow(60),
-        threeMonths: activityWindow(90),
-      },
-      support: {
-        activeCases: Number(row.active_support_cases ?? 0),
-        casesInThreeMonths: Number(row.support_cases_90 ?? 0),
-        lastUpdatedAt: row.last_support_updated_at ?? null,
-      },
-    },
+    situation: serializeSituation(row),
   };
 }
 
@@ -645,21 +429,7 @@ function serializeEvent(row: SalesCustomerStatusEventRow) {
     id: row.id,
     fromStatus: row.from_status,
     toStatus: row.to_status,
-    summary: row.summary,
-    actorName: row.actor_name,
-    createdAt: row.created_at,
-  };
-}
-
-function serializeOverviewEvent(row: SalesCustomerOverviewEventRow) {
-  return {
-    id: row.id,
-    text: row.summary,
-    aiGenerated: Boolean(row.ai_generated),
-    model: row.model,
-    sourceMessageCount: Number(row.source_message_count),
-    sourceFromAt: row.source_from_at,
-    sourceToAt: row.source_to_at,
+    source: row.source,
     actorName: row.actor_name,
     createdAt: row.created_at,
   };
@@ -738,7 +508,7 @@ async function loadSemanticMessages(
        FROM ranked_messages
        WHERE message_rank <= ?
        ORDER BY subject_id ASC, created_at ASC, message_id ASC`,
-    ).bind(...ids, SALES_CUSTOMER_SEMANTIC_SUMMARY_MAX_MESSAGES).all<SalesCustomerSemanticMessageRow>();
+    ).bind(...ids, SALES_CUSTOMER_SITUATION_MAX_MESSAGES).all<SalesCustomerSemanticMessageRow>();
     for (const row of result.results) {
       const key = subjectMapKey(kind, row.subject_id);
       const values = bySubject.get(key) ?? [];
@@ -855,11 +625,11 @@ function salesStatusConflict(err: unknown): boolean {
   );
 }
 
-function salesOverviewConflict(err: unknown): boolean {
+function salesSituationConflict(err: unknown): boolean {
   return err instanceof Error && (
-    /sales_customer_semantic_summary_events_v3\.summary_id/i.test(err.message)
-    || /UNIQUE constraint failed: sales_customer_semantic_summaries_v3/i.test(err.message)
-    || /UNIQUE constraint failed: idx_sales_customer_semantic_summary_v3/i.test(err.message)
+    /sales_customer_situation_timeline_events\.timeline_id/i.test(err.message)
+    || /UNIQUE constraint failed: sales_customer_situation_timelines/i.test(err.message)
+    || /UNIQUE constraint failed: idx_sales_customer_situation_timeline/i.test(err.message)
   );
 }
 
@@ -932,17 +702,13 @@ salesCustomers.get('/api/sales-customers', async (c) => {
 
     const [listResult, totalRow, summaryResult] = await Promise.all([
       c.env.DB.prepare(
-        `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('account')}
-         SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+        `${CUSTOMER_SUBJECTS_SQL}
+         SELECT cs.*
          FROM customer_subjects cs
-         ${CUSTOMER_ACTIVITY_JOINS_SQL}
          WHERE ${listFilter.sql}
          ORDER BY ${orderSql}
          LIMIT ? OFFSET ?`,
       ).bind(
-        lineAccountId.value,
-        lineAccountId.value,
-        lineAccountId.value,
         ...listFilter.binds,
         limit.value,
         offset.value,
@@ -989,7 +755,7 @@ salesCustomers.get('/api/sales-customers', async (c) => {
   }
 });
 
-salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
+salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
   if (!canEditSalesCustomerStatus(c)) {
     return c.json({ success: false, error: 'この操作には運営スタッフ権限が必要です' }, 403);
   }
@@ -1004,33 +770,67 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
     if (!offset.ok) return c.json({ success: false, error: offset.error }, 400);
     const dryRun = parseDryRun(rawBody.value.dryRun);
     if (!dryRun.ok) return c.json({ success: false, error: dryRun.error }, 400);
-    if (!dryRun.value && rawBody.value.confirm !== SALES_CUSTOMER_OVERVIEW_CONFIRMATION) {
+    const hasSubjectKind = rawBody.value.subjectKind !== undefined;
+    const hasSubjectId = rawBody.value.subjectId !== undefined;
+    if (hasSubjectKind !== hasSubjectId) {
+      return c.json({ success: false, error: 'exact_subject_requires_kind_and_id' }, 400);
+    }
+    let exactSubject: { kind: SalesCustomerSubjectKind; id: string } | null = null;
+    if (hasSubjectKind && hasSubjectId) {
+      const subjectKind = parseSubjectKind(rawBody.value.subjectKind);
+      if (!subjectKind.ok) return c.json({ success: false, error: subjectKind.error }, 400);
+      const subjectId = parseId(rawBody.value.subjectId, 'subject_id');
+      if (!subjectId.ok) return c.json({ success: false, error: subjectId.error }, 400);
+      exactSubject = { kind: subjectKind.value, id: subjectId.value };
+    }
+    if (!dryRun.value && rawBody.value.confirm !== SALES_CUSTOMER_SITUATION_CONFIRMATION) {
       return c.json({ success: false, error: 'confirmation_required' }, 400);
     }
 
+    const effectiveLimit = exactSubject ? 1 : limit.value;
+    const effectiveOffset = exactSubject ? 0 : offset.value;
+    const pageStatement = exactSubject
+      ? c.env.DB.prepare(
+          `${CUSTOMER_SUBJECTS_SQL}
+           SELECT cs.*
+           FROM customer_subjects cs
+           WHERE cs.line_account_id = ?
+             AND cs.subject_kind = ?
+             AND cs.subject_id = ?
+           LIMIT 1`,
+        ).bind(
+          lineAccountId.value,
+          exactSubject.kind,
+          exactSubject.id,
+        )
+      : c.env.DB.prepare(
+          `${CUSTOMER_SUBJECTS_SQL}
+           SELECT cs.*
+           FROM customer_subjects cs
+           WHERE cs.line_account_id = ?
+           ORDER BY cs.subject_kind ASC, cs.subject_id ASC
+           LIMIT ? OFFSET ?`,
+        ).bind(
+          lineAccountId.value,
+          limit.value,
+          offset.value,
+        );
+    const totalStatement = exactSubject
+      ? c.env.DB.prepare(
+          `${CUSTOMER_SUBJECTS_SQL}
+           SELECT COUNT(*) AS count
+           FROM customer_subjects
+           WHERE line_account_id = ? AND subject_kind = ? AND subject_id = ?`,
+        ).bind(lineAccountId.value, exactSubject.kind, exactSubject.id)
+      : c.env.DB.prepare(
+          `${CUSTOMER_SUBJECTS_SQL}
+           SELECT COUNT(*) AS count
+           FROM customer_subjects
+           WHERE line_account_id = ?`,
+        ).bind(lineAccountId.value);
     const [pageResult, totalRow] = await Promise.all([
-      c.env.DB.prepare(
-        `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('account')}
-         SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
-         FROM customer_subjects cs
-         ${CUSTOMER_ACTIVITY_JOINS_SQL}
-         WHERE cs.line_account_id = ?
-         ORDER BY cs.subject_kind ASC, cs.subject_id ASC
-         LIMIT ? OFFSET ?`,
-      ).bind(
-        lineAccountId.value,
-        lineAccountId.value,
-        lineAccountId.value,
-        lineAccountId.value,
-        limit.value,
-        offset.value,
-      ).all<SalesCustomerRow>(),
-      c.env.DB.prepare(
-        `${CUSTOMER_SUBJECTS_SQL}
-         SELECT COUNT(*) AS count
-         FROM customer_subjects
-         WHERE line_account_id = ?`,
-      ).bind(lineAccountId.value).first<{ count: number }>(),
+      pageStatement.all<SalesCustomerRow>(),
+      totalStatement.first<{ count: number }>(),
     ]);
 
     const messagesBySubject = await loadSemanticMessages(c.env.DB, pageResult.results);
@@ -1043,13 +843,13 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
 
     const changes = { create: 0, update: 0, unchanged: 0 };
     for (const item of prepared) {
-      if (!item.row.overview_id) changes.create += 1;
-      else if (item.row.overview_source_fingerprint === item.sourceFingerprint) changes.unchanged += 1;
+      if (!item.row.timeline_id) changes.create += 1;
+      else if (item.row.timeline_source_fingerprint === item.sourceFingerprint) changes.unchanged += 1;
       else changes.update += 1;
     }
 
     const changedItems = prepared.filter((item) => (
-      item.row.overview_source_fingerprint !== item.sourceFingerprint
+      item.row.timeline_source_fingerprint !== item.sourceFingerprint
     ));
     const estimate = changedItems.reduce((result, item) => ({
       aiRequests: result.aiRequests + (item.source.messageCount > 0 ? 1 : 0),
@@ -1069,9 +869,11 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
       totalTokens: 0,
     };
     const failures = { aiUnavailable: 0, invalidAiResponse: 0 };
+    const statusChanges = { created: 0, updated: 0, unchanged: 0, protected: 0, unreviewed: 0 };
+    let statusRowsTouched = 0;
     if (!dryRun.value && changedItems.length > 0) {
       type GeneratedItem = (typeof changedItems)[number] & {
-        summary: string;
+        situation: Omit<GeneratedSalesCustomerSituation, 'usage' | 'attempts'>;
         aiGenerated: boolean;
         attempts: number;
         usage: SalesCustomerSemanticSummaryUsage;
@@ -1090,7 +892,7 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
             if (item.source.messageCount === 0) {
               generated.push({
                 ...item,
-                summary: buildNoEligibleTextSummary(),
+                situation: buildNoEligibleTextSituation(),
                 aiGenerated: false,
                 attempts: 0,
                 usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
@@ -1098,10 +900,15 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
               continue;
             }
             try {
-              const result = await generateSalesCustomerSemanticSummary(c.env.AI, item.source, generatedAt);
+              const result = await generateSalesCustomerSituation(c.env.AI, item.source, generatedAt);
               generated.push({
                 ...item,
-                summary: result.text,
+                situation: {
+                  currentState: result.currentState,
+                  recognizedStatus: result.recognizedStatus,
+                  resolutionConfirmed: result.resolutionConfirmed,
+                  events: result.events,
+                },
                 aiGenerated: true,
                 attempts: result.attempts,
                 usage: result.usage,
@@ -1124,17 +931,19 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
       const statements: D1PreparedStatement[] = [];
 
       for (const item of generated) {
-        const overviewId = item.row.overview_id ?? crypto.randomUUID();
+        const timelineId = item.row.timeline_id ?? crypto.randomUUID();
         const mutationId = crypto.randomUUID();
         const eventId = crypto.randomUUID();
         const friendId = item.row.subject_kind === 'friend' ? item.row.subject_id : null;
         const conversationId = item.row.subject_kind === 'conversation' ? item.row.subject_id : null;
-        const model = item.aiGenerated ? SALES_CUSTOMER_SEMANTIC_SUMMARY_MODEL : null;
+        const model = item.aiGenerated ? SALES_CUSTOMER_SITUATION_MODEL : null;
+        const timelineJson = JSON.stringify(item.situation.events);
 
-        if (item.row.overview_id) {
+        if (item.row.timeline_id) {
           statements.push(c.env.DB.prepare(
-            `UPDATE sales_customer_semantic_summaries_v3
-             SET summary = ?, generation_method = ?, ai_generated = ?, model = ?,
+            `UPDATE sales_customer_situation_timelines
+             SET current_state = ?, recognized_status = ?, resolution_confirmed = ?, timeline_json = ?,
+                 generation_method = ?, ai_generated = ?, model = ?,
                  prompt_version = ?, source_fingerprint = ?, source_message_count = ?,
                  source_from_at = ?, source_to_at = ?, input_char_count = ?,
                  prompt_tokens = ?, completion_tokens = ?, total_tokens = ?, attempt_count = ?,
@@ -1142,11 +951,14 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
                  updated_by = ?, updated_by_name = ?, updated_at = ?
              WHERE id = ? AND version = ?`,
           ).bind(
-            item.summary,
-            SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+            item.situation.currentState,
+            item.situation.recognizedStatus,
+            item.situation.resolutionConfirmed ? 1 : 0,
+            timelineJson,
+            SALES_CUSTOMER_SITUATION_METHOD,
             item.aiGenerated ? 1 : 0,
             model,
-            SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+            SALES_CUSTOMER_SITUATION_PROMPT_VERSION,
             item.sourceFingerprint,
             item.source.messageCount,
             item.source.sourceFromAt,
@@ -1160,27 +972,31 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
             actorId,
             actor.name,
             now,
-            overviewId,
-            item.row.overview_version ?? 0,
+            timelineId,
+            item.row.timeline_version ?? 0,
           ));
         } else {
           statements.push(c.env.DB.prepare(
-            `INSERT INTO sales_customer_semantic_summaries_v3 (
-               id, friend_id, conversation_id, summary, generation_method,
+            `INSERT INTO sales_customer_situation_timelines (
+               id, friend_id, conversation_id, current_state, recognized_status,
+               resolution_confirmed, timeline_json, generation_method,
                ai_generated, model, prompt_version, source_fingerprint,
                source_message_count, source_from_at, source_to_at, input_char_count,
                prompt_tokens, completion_tokens, total_tokens, attempt_count,
                version, mutation_id, updated_by, updated_by_name, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
           ).bind(
-            overviewId,
+            timelineId,
             friendId,
             conversationId,
-            item.summary,
-            SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+            item.situation.currentState,
+            item.situation.recognizedStatus,
+            item.situation.resolutionConfirmed ? 1 : 0,
+            timelineJson,
+            SALES_CUSTOMER_SITUATION_METHOD,
             item.aiGenerated ? 1 : 0,
             model,
-            SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+            SALES_CUSTOMER_SITUATION_PROMPT_VERSION,
             item.sourceFingerprint,
             item.source.messageCount,
             item.source.sourceFromAt,
@@ -1199,25 +1015,29 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         }
 
         statements.push(c.env.DB.prepare(
-          `INSERT INTO sales_customer_semantic_summary_events_v3 (
-             id, summary_id, summary, generation_method, ai_generated, model,
+          `INSERT INTO sales_customer_situation_timeline_events (
+             id, timeline_id, current_state, recognized_status,
+             resolution_confirmed, timeline_json, generation_method, ai_generated, model,
              prompt_version, source_fingerprint, source_message_count,
              source_from_at, source_to_at, input_char_count,
              prompt_tokens, completion_tokens, total_tokens, attempt_count,
              actor_id, actor_name, created_at
            ) VALUES (
              ?,
-             (SELECT id FROM sales_customer_semantic_summaries_v3 WHERE mutation_id = ?),
-             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+             (SELECT id FROM sales_customer_situation_timelines WHERE mutation_id = ?),
+             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
            )`,
         ).bind(
           eventId,
           mutationId,
-          item.summary,
-          SALES_CUSTOMER_SEMANTIC_SUMMARY_METHOD,
+          item.situation.currentState,
+          item.situation.recognizedStatus,
+          item.situation.resolutionConfirmed ? 1 : 0,
+          timelineJson,
+          SALES_CUSTOMER_SITUATION_METHOD,
           item.aiGenerated ? 1 : 0,
           model,
-          SALES_CUSTOMER_SEMANTIC_SUMMARY_PROMPT_VERSION,
+          SALES_CUSTOMER_SITUATION_PROMPT_VERSION,
           item.sourceFingerprint,
           item.source.messageCount,
           item.source.sourceFromAt,
@@ -1231,6 +1051,84 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
           actor.name,
           now,
         ));
+
+        const currentStatus = item.row.sales_status === 'unreviewed' ? null : item.row.sales_status;
+        const nextStatus = resolveAutomatedSalesStatus(
+          currentStatus,
+          item.situation.recognizedStatus,
+          item.situation.resolutionConfirmed,
+        );
+        if (item.situation.recognizedStatus === 'unreviewed' || nextStatus === null) {
+          statusChanges.unreviewed += 1;
+        } else if (nextStatus === currentStatus) {
+          if (nextStatus !== item.situation.recognizedStatus) statusChanges.protected += 1;
+          else statusChanges.unchanged += 1;
+        } else {
+          const statusMutationId = crypto.randomUUID();
+          const statusId = item.row.status_id ?? crypto.randomUUID();
+          const statusEventId = crypto.randomUUID();
+          const auditSummary = '会話タイムラインの自動判定';
+          if (item.row.status_id) {
+            statements.push(c.env.DB.prepare(
+              `UPDATE sales_customer_statuses
+               SET status = ?, summary = ?, source = 'ai', source_fingerprint = ?,
+                   version = version + 1, mutation_id = ?, updated_by = ?,
+                   updated_by_name = ?, updated_at = ?
+               WHERE id = ? AND version = ?`,
+            ).bind(
+              nextStatus,
+              auditSummary,
+              item.sourceFingerprint,
+              statusMutationId,
+              actorId,
+              actor.name,
+              now,
+              statusId,
+              item.row.status_version ?? 0,
+            ));
+            statusChanges.updated += 1;
+          } else {
+            statements.push(c.env.DB.prepare(
+              `INSERT INTO sales_customer_statuses (
+                 id, friend_id, conversation_id, status, summary, source,
+                 source_fingerprint, version, mutation_id, updated_by,
+                 updated_by_name, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, 'ai', ?, 1, ?, ?, ?, ?, ?)`,
+            ).bind(
+              statusId,
+              friendId,
+              conversationId,
+              nextStatus,
+              auditSummary,
+              item.sourceFingerprint,
+              statusMutationId,
+              actorId,
+              actor.name,
+              now,
+              now,
+            ));
+            statusChanges.created += 1;
+          }
+          statements.push(c.env.DB.prepare(
+            `INSERT INTO sales_customer_status_events (
+               id, status_id, from_status, to_status, summary, source,
+               actor_id, actor_name, created_at
+             ) VALUES (
+               ?, (SELECT id FROM sales_customer_statuses WHERE mutation_id = ?),
+               ?, ?, ?, 'ai', ?, ?, ?
+             )`,
+          ).bind(
+            statusEventId,
+            statusMutationId,
+            currentStatus ?? 'unreviewed',
+            nextStatus,
+            auditSummary,
+            actorId,
+            actor.name,
+            now,
+          ));
+          statusRowsTouched += 1;
+        }
         usage = {
           promptTokens: usage.promptTokens + item.usage.promptTokens,
           completionTokens: usage.completionTokens + item.usage.completionTokens,
@@ -1245,8 +1143,8 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         try {
           await c.env.DB.batch(statements);
         } catch (err) {
-          if (salesOverviewConflict(err)) {
-            return c.json({ success: false, error: 'overview_conflict' }, 409);
+          if (salesSituationConflict(err) || salesStatusConflict(err)) {
+            return c.json({ success: false, error: 'situation_conflict' }, 409);
           }
           throw err;
         }
@@ -1257,18 +1155,18 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
 
     const total = totalRow?.count ?? 0;
     const processed = pageResult.results.length;
-    const nextOffset = offset.value + processed;
+    const nextOffset = effectiveOffset + processed;
     return c.json({
       success: true,
       data: {
         dryRun: dryRun.value,
         lineAccountId: lineAccountId.value,
         total,
-        offset: offset.value,
-        limit: limit.value,
+        offset: effectiveOffset,
+        limit: effectiveLimit,
         processed,
-        hasNextPage: nextOffset < total,
-        nextOffset: nextOffset < total ? nextOffset : null,
+        hasNextPage: exactSubject ? false : nextOffset < total,
+        nextOffset: !exactSubject && nextOffset < total ? nextOffset : null,
         changes,
         estimate: {
           aiRequests: estimate.aiRequests,
@@ -1284,11 +1182,12 @@ salesCustomers.post('/api/sales-customers/overviews/generate', async (c) => {
         usage,
         failed: failures.aiUnavailable + failures.invalidAiResponse,
         failures,
-        statusRowsTouched: 0,
+        statusChanges,
+        statusRowsTouched,
       },
     });
   } catch (err) {
-    console.error(`POST /api/sales-customers/overviews/generate error: ${routeErrorKind(err)}`);
+    console.error(`POST /api/sales-customers/situations/generate error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });
@@ -1301,52 +1200,36 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
     if (!subjectId.ok) return c.json({ success: false, error: subjectId.error }, 400);
     const subjectColumn = subjectKind.value === 'friend' ? 'friend_id' : 'conversation_id';
     const row = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('subject')}
-       SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+      `${CUSTOMER_SUBJECTS_SQL}
+       SELECT cs.*
        FROM customer_subjects cs
-       ${CUSTOMER_ACTIVITY_JOINS_SQL}
        WHERE cs.subject_kind = ? AND cs.subject_id = ?
        LIMIT 1`,
     ).bind(
-      subjectId.value,
-      subjectId.value,
-      subjectId.value,
       subjectKind.value,
       subjectId.value,
     ).first<SalesCustomerRow>();
     if (!row) return c.json({ success: false, error: 'Customer not found' }, 404);
 
-    const [history, overviewHistory] = await Promise.all([
+    const history = await (
       row.status_id
         ? c.env.DB.prepare(
-            `SELECT e.id, e.from_status, e.to_status, e.summary, e.actor_name, e.created_at
+            `SELECT e.id, e.from_status, e.to_status, e.summary, e.source,
+                    e.actor_name, e.created_at
              FROM sales_customer_status_events e
              INNER JOIN sales_customer_statuses s ON s.id = e.status_id
              WHERE s.${subjectColumn} = ?
              ORDER BY e.created_at DESC, e.id DESC
              LIMIT 50`,
           ).bind(subjectId.value).all<SalesCustomerStatusEventRow>()
-        : Promise.resolve({ results: [] as SalesCustomerStatusEventRow[] }),
-      row.overview_id
-        ? c.env.DB.prepare(
-            `SELECT e.id, e.summary, e.ai_generated, e.model,
-                    e.source_message_count, e.source_from_at, e.source_to_at,
-                    e.actor_name, e.created_at
-             FROM sales_customer_semantic_summary_events_v3 e
-             INNER JOIN sales_customer_semantic_summaries_v3 s ON s.id = e.summary_id
-             WHERE s.${subjectColumn} = ?
-             ORDER BY e.created_at DESC, e.id DESC
-             LIMIT 20`,
-          ).bind(subjectId.value).all<SalesCustomerOverviewEventRow>()
-        : Promise.resolve({ results: [] as SalesCustomerOverviewEventRow[] }),
-    ]);
+        : Promise.resolve({ results: [] as SalesCustomerStatusEventRow[] })
+    );
 
     return c.json({
       success: true,
       data: {
         ...serializeCustomer(row),
         history: history.results.map(serializeEvent),
-        overviewHistory: overviewHistory.results.map(serializeOverviewEvent),
         canEditStatus: canEditSalesCustomerStatus(c),
       },
     });
@@ -1369,8 +1252,6 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
     if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
     const status = parseStoredStatus(rawBody.value.status);
     if (!status.ok) return c.json({ success: false, error: status.error }, 400);
-    const summary = parseSummary(rawBody.value.summary);
-    if (!summary.ok) return c.json({ success: false, error: summary.error }, 400);
     const expectedVersion = parseExpectedVersion(rawBody.value.expectedVersion);
     if (!expectedVersion.ok) return c.json({ success: false, error: expectedVersion.error }, 400);
 
@@ -1384,21 +1265,20 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
 
     const subjectColumn = subjectKind.value === 'friend' ? 'friend_id' : 'conversation_id';
     const current = await c.env.DB.prepare(
-      `SELECT id, status, summary, version
+      `SELECT id, status, version
        FROM sales_customer_statuses
        WHERE ${subjectColumn} = ?
        LIMIT 1`,
     ).bind(subjectId.value).first<{
       id: string;
       status: StoredSalesCustomerStatus;
-      summary: string;
       version: number;
     }>();
     const currentVersion = current?.version ?? 0;
     if (currentVersion !== expectedVersion.value) {
       return c.json({ success: false, error: 'status_conflict' }, 409);
     }
-    if (current?.status === status.value && current.summary === summary.value) {
+    if (current?.status === status.value) {
       return c.json({ success: false, error: 'no_changes' }, 400);
     }
 
@@ -1410,16 +1290,18 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
     const friendId = subjectKind.value === 'friend' ? subjectId.value : null;
     const conversationId = subjectKind.value === 'conversation' ? subjectId.value : null;
     const actorId = actor.id === 'env-owner' ? null : actor.id;
+    const auditSummary = '運営スタッフによる手動更新';
 
     const statusMutation = current
       ? c.env.DB.prepare(
           `UPDATE sales_customer_statuses
-           SET status = ?, summary = ?, version = version + 1, mutation_id = ?,
+           SET status = ?, summary = ?, source = 'manual', source_fingerprint = NULL,
+               version = version + 1, mutation_id = ?,
                updated_by = ?, updated_by_name = ?, updated_at = ?
            WHERE id = ? AND version = ?`,
         ).bind(
           status.value,
-          summary.value,
+          auditSummary,
           mutationId,
           actorId,
           actor.name,
@@ -1429,15 +1311,16 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
         )
       : c.env.DB.prepare(
           `INSERT INTO sales_customer_statuses (
-             id, friend_id, conversation_id, status, summary, version, mutation_id,
+             id, friend_id, conversation_id, status, summary, source,
+             source_fingerprint, version, mutation_id,
              updated_by, updated_by_name, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, 'manual', NULL, 1, ?, ?, ?, ?, ?)`,
         ).bind(
           statusId,
           friendId,
           conversationId,
           status.value,
-          summary.value,
+          auditSummary,
           mutationId,
           actorId,
           actor.name,
@@ -1450,18 +1333,19 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
         statusMutation,
         c.env.DB.prepare(
           `INSERT INTO sales_customer_status_events (
-             id, status_id, from_status, to_status, summary, actor_id, actor_name, created_at
+             id, status_id, from_status, to_status, summary, source,
+             actor_id, actor_name, created_at
            ) VALUES (
              ?,
              (SELECT id FROM sales_customer_statuses WHERE mutation_id = ?),
-             ?, ?, ?, ?, ?, ?
+             ?, ?, ?, 'manual', ?, ?, ?
            )`,
         ).bind(
           eventId,
           mutationId,
           current?.status ?? 'unreviewed',
           status.value,
-          summary.value,
+          auditSummary,
           actorId,
           actor.name,
           now,
@@ -1475,16 +1359,12 @@ salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', asyn
     }
 
     const updated = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}${customerActivityCtesSql('subject')}
-       SELECT ${CUSTOMER_ACTIVITY_SELECT_SQL}
+      `${CUSTOMER_SUBJECTS_SQL}
+       SELECT cs.*
        FROM customer_subjects cs
-       ${CUSTOMER_ACTIVITY_JOINS_SQL}
        WHERE cs.subject_kind = ? AND cs.subject_id = ?
        LIMIT 1`,
     ).bind(
-      subjectId.value,
-      subjectId.value,
-      subjectId.value,
       subjectKind.value,
       subjectId.value,
     ).first<SalesCustomerRow>();

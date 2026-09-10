@@ -7,7 +7,6 @@ import {
   ApiRequestError,
   api,
   type SalesCustomer,
-  type SalesCustomerActivity,
   type SalesCustomerDetail,
   type SalesCustomerOverviewBatchResult,
   type SalesCustomerStatus,
@@ -117,149 +116,71 @@ function SummaryButton({
   )
 }
 
-const CHAT_STATUS_LABELS: Record<NonNullable<SalesCustomer['chatStatus']>, string> = {
-  unread: '未対応',
+const SITUATION_EVENT_META = {
+  customer_contact: { label: '顧客から', dot: 'bg-amber-500' },
+  staff_action: { label: '担当の対応', dot: 'bg-blue-500' },
+  state_change: { label: '状況の変化', dot: 'bg-emerald-500' },
+} as const
+
+const SITUATION_STATE_LABEL = {
+  open: '未対応',
   in_progress: '対応中',
   resolved: '解決済み',
-  long_term: '中長期対応',
-}
+  information: '記録',
+} as const
 
-function RecentActivityPanel({
-  activity,
-  chatStatus,
-  isFollowing,
-  subjectKind,
-}: {
-  activity: SalesCustomerActivity
-  chatStatus: SalesCustomer['chatStatus']
-  isFollowing: SalesCustomer['isFollowing']
-  subjectKind: SalesCustomer['subjectKind']
-}) {
-  const [months, setMonths] = useState<1 | 2 | 3>(3)
-  const window = months === 1
-    ? activity.windows.oneMonth
-    : months === 2
-      ? activity.windows.twoMonths
-      : activity.windows.threeMonths
-
-  const metrics = [
-    { label: 'メッセージ合計', value: window.totalMessages, suffix: '件' },
-    { label: '顧客から', value: window.customerMessages, suffix: '件' },
-    { label: '担当者返信', value: window.staffReplies, suffix: '件' },
-    { label: '自動配信', value: window.automatedMessages, suffix: '件' },
-    { label: 'やり取り日数', value: window.activeDays, suffix: '日' },
-    { label: '画像・添付', value: window.mediaMessages, suffix: '件' },
-  ]
-
+function SituationTimelinePanel({ detail }: { detail: SalesCustomerDetail }) {
+  const situation = detail.situation
+  const events = [...situation.events].reverse()
   return (
     <section className="p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-gray-900">最近の{subjectKind === 'friend' ? '個別' : 'グループ'}チャット概要</h3>
-          <p className="mt-1 text-[11px] leading-5 text-gray-500">会話本文・氏名・連絡先を出さず、活動量だけを集計しています。</p>
-        </div>
-        <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5" aria-label="集計期間">
-          {([1, 2, 3] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setMonths(value)}
-              aria-pressed={months === value}
-              className={`min-h-8 rounded-md px-2.5 text-[11px] font-semibold ${months === value ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
-            >
-              {value}か月
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {activity.needsHumanReply && (
-          <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800">顧客からの最終連絡後、担当者返信なし</span>
-        )}
-        {activity.support.activeCases > 0 && (
-          <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[11px] font-semibold text-blue-800">対応中チケット {activity.support.activeCases}件</span>
-        )}
-        {chatStatus && (
-          <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[11px] font-semibold text-gray-700">チャット: {CHAT_STATUS_LABELS[chatStatus]}</span>
-        )}
-        {isFollowing === false && (
-          <span className="rounded-full border border-gray-300 bg-gray-100 px-2.5 py-1 text-[11px] font-semibold text-gray-700">ブロック済み</span>
-        )}
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {metrics.map((metric) => (
-          <div key={metric.label} className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2.5">
-            <p className="text-[10px] font-medium text-gray-500">{metric.label}</p>
-            <p className="mt-0.5 text-base font-bold tabular-nums text-gray-900">{metric.value.toLocaleString('ja-JP')}<span className="ml-0.5 text-[10px] font-medium text-gray-500">{metric.suffix}</span></p>
-          </div>
-        ))}
-      </div>
-
-      <dl className="mt-3 grid gap-2 text-[11px] text-gray-600 sm:grid-cols-2">
-        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
-          <dt>最終接触</dt>
-          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastContactAt)}</dd>
-        </div>
-        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
-          <dt>顧客の最終連絡</dt>
-          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastCustomerMessageAt)}</dd>
-        </div>
-        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
-          <dt>担当者の最終返信</dt>
-          <dd className="font-medium text-gray-800">{formatSalesCustomerDate(activity.lastStaffReplyAt)}</dd>
-        </div>
-        <div className="flex justify-between gap-3 rounded-lg border border-gray-100 px-3 py-2">
-          <dt>関連チケット（3か月）</dt>
-          <dd className="font-medium text-gray-800">{activity.support.casesInThreeMonths.toLocaleString('ja-JP')}件</dd>
-        </div>
-      </dl>
-    </section>
-  )
-}
-
-function RecentOverviewPanel({ detail }: { detail: SalesCustomerDetail }) {
-  const overview = detail.recentOverview
-  return (
-    <section className="p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-gray-900">最近の状況</h3>
+          <h3 className="text-sm font-bold text-gray-900">状況タイムライン</h3>
           <p className="mt-1 text-[11px] leading-5 text-gray-500">
-            直近の人同士のやり取りをAIで「相談・対応・現在地・次の対応」に整理。営業ステータスは判定しません。
+            いつ連絡が届き、何を対応し、現在どうなっているかを新しい順に表示します。
           </p>
         </div>
-        <span className="rounded-full border border-gray-200 bg-gray-50 px-2.5 py-1 text-[10px] font-semibold text-gray-600">
-          ステータスとは別管理
+        <span className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[10px] font-semibold text-violet-700">
+          AI自動整理
         </span>
       </div>
-      <p className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-800">
-        {overview.text}
-      </p>
-      <p className="mt-2 text-[10px] text-gray-400">
-        {overview.stored && overview.updatedAt
-          ? `${formatSalesCustomerDate(overview.updatedAt)} 更新 · 対象${overview.sourceMessageCount}件${overview.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(overview.sourceToAt)}` : ''}${overview.updatedByName ? ` · ${overview.updatedByName}` : ''}`
-          : '会話要約はまだ生成されていません。'}
-      </p>
-      {detail.overviewHistory.length > 0 && (
-        <details className="group mt-3 rounded-lg border border-gray-200 bg-white">
-          <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 px-3 text-xs font-semibold text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500">
-            <span>概要の更新履歴 {detail.overviewHistory.length}件</span>
-            <svg className="h-4 w-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" /></svg>
-          </summary>
-          <ol className="max-h-72 space-y-3 overflow-y-auto border-t border-gray-100 p-3">
-            {detail.overviewHistory.map((event) => (
-              <li key={event.id} className="border-l-2 border-gray-200 pl-3">
-                <p className="whitespace-pre-wrap break-words text-[11px] leading-5 text-gray-700">{event.text}</p>
-                <p className="mt-1 text-[10px] text-gray-400">
-                  {formatSalesCustomerDate(event.createdAt)}{event.actorName ? ` · ${event.actorName}` : ''}
-                </p>
+
+      <div className="mt-3 rounded-xl border border-gray-200 bg-gray-50 p-4">
+        <p className="text-[10px] font-semibold tracking-wide text-gray-500">現在の状況</p>
+        <p className="mt-1 break-words text-sm font-semibold leading-6 text-gray-900">{situation.currentState}</p>
+      </div>
+
+      {events.length === 0 ? (
+        <p className="mt-3 rounded-lg border border-dashed border-gray-200 px-3 py-4 text-xs leading-5 text-gray-500">
+          表示できる出来事はまだありません。自動更新後も未判定の場合は、元のチャットを運営側で確認してください。
+        </p>
+      ) : (
+        <ol className="mt-4 space-y-4">
+          {events.map((event, index) => {
+            const eventMeta = SITUATION_EVENT_META[event.kind]
+            return (
+              <li key={`${event.occurredAt}:${event.kind}:${event.title}`} className="relative pl-6">
+                {index < events.length - 1 && <span className="absolute left-[5px] top-3 h-[calc(100%+12px)] w-px bg-gray-200" aria-hidden="true" />}
+                <span className={`absolute left-0 top-1.5 h-2.5 w-2.5 rounded-full ${eventMeta.dot}`} aria-hidden="true" />
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-gray-500">
+                  <time dateTime={event.occurredAt}>{formatSalesCustomerDate(event.occurredAt)}</time>
+                  <span>·</span>
+                  <span className="font-semibold text-gray-700">{eventMeta.label}</span>
+                  <span className="rounded-full bg-gray-100 px-1.5 py-0.5 font-semibold text-gray-600">{SITUATION_STATE_LABEL[event.state]}</span>
+                </div>
+                <p className="mt-1 text-xs font-bold leading-5 text-gray-900">{event.title}</p>
+                <p className="mt-0.5 break-words text-xs leading-5 text-gray-600">{event.detail}</p>
               </li>
-            ))}
-          </ol>
-        </details>
+            )
+          })}
+        </ol>
       )}
+      <p className="mt-2 text-[10px] text-gray-400">
+        {situation.stored && situation.updatedAt
+          ? `${formatSalesCustomerDate(situation.updatedAt)} 自動更新 · 対象${situation.sourceMessageCount}件${situation.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(situation.sourceToAt)}` : ''}`
+          : '状況タイムラインはまだ生成されていません。'}
+      </p>
     </section>
   )
 }
@@ -296,21 +217,17 @@ function DetailContent({
   detail,
   loading,
   editStatus,
-  editSummary,
   saving,
   saveMessage,
   onStatusChange,
-  onSummaryChange,
   onSave,
 }: {
   detail: SalesCustomerDetail | null
   loading: boolean
   editStatus: SalesCustomerStoredStatus | ''
-  editSummary: string
   saving: boolean
   saveMessage: string
   onStatusChange: (status: SalesCustomerStoredStatus | '') => void
-  onSummaryChange: (summary: string) => void
   onSave: () => void
 }) {
   if (loading) {
@@ -337,8 +254,13 @@ function DetailContent({
   }
 
   const meta = SALES_CUSTOMER_STATUS_META[detail.status]
-  const changed = editStatus !== '' && (editStatus !== detail.status || editSummary.trim() !== detail.summary)
-  const canSave = detail.canEditStatus && !saving && changed && editSummary.trim().length > 0
+  const changed = editStatus !== '' && editStatus !== detail.status
+  const canSave = detail.canEditStatus && !saving && changed
+  const statusSourceLabel = detail.statusSource === 'ai'
+    ? 'AI自動判定'
+    : detail.statusSource === 'manual'
+      ? '運営が手動変更'
+      : 'まだ未判定'
 
   return (
     <div className="divide-y divide-gray-100">
@@ -361,34 +283,22 @@ function DetailContent({
           <p className="mt-1 text-base font-bold text-gray-950">{meta.actionLabel}</p>
           <p className="mt-3 text-[11px] text-gray-500">
             {detail.updatedAt
-              ? `${formatSalesCustomerDate(detail.updatedAt)} 更新${detail.updatedByName ? ` · ${detail.updatedByName}` : ''}`
+              ? `${formatSalesCustomerDate(detail.updatedAt)} 更新`
               : '更新履歴なし'}
+          </p>
+          <p className="mt-1 text-[11px] font-semibold text-gray-600">
+            {statusSourceLabel}{detail.statusSource === 'manual' && detail.updatedByName ? ` · ${detail.updatedByName}` : ''}
           </p>
         </div>
       </section>
 
-      <RecentOverviewPanel detail={detail} />
-
-      <RecentActivityPanel
-        activity={detail.activity}
-        chatStatus={detail.chatStatus}
-        isFollowing={detail.isFollowing}
-        subjectKind={detail.subjectKind}
-      />
-
-      <section className="p-5">
-        <h3 className="text-sm font-bold text-gray-900">ステータス判断メモ</h3>
-        <p className="mt-1 text-[11px] leading-5 text-gray-500">運営担当者が会話を確認し、ステータスを選んだ理由と引き継ぎ事項を記録します。</p>
-        <p className="mt-3 whitespace-pre-wrap break-words rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm leading-6 text-gray-800">
-          {detail.summary || 'ステータスは未確認です。人が会話を確認して入力します。'}
-        </p>
-      </section>
+      <SituationTimelinePanel detail={detail} />
 
       {detail.canEditStatus ? (
         <section className="p-5">
           <h3 className="text-sm font-bold text-gray-900">運営側の状況更新</h3>
           <p className="mt-1 text-xs leading-5 text-gray-500">
-            ステータスは人が選び、判断理由だけを書きます。会話本文や個人情報は転記しないでください。
+            自動判定が違う場合だけ、運営側で状況を選び直せます。新しい会話が増えたときは再度自動判定されます。
           </p>
           <div className="mt-4 space-y-3">
             <div>
@@ -406,22 +316,6 @@ function DetailContent({
                 ))}
               </select>
             </div>
-            <div>
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <label htmlFor="sales-customer-summary" className="text-xs font-semibold text-gray-700">ステータス判断メモ</label>
-                <span className="text-[11px] tabular-nums text-gray-400">{editSummary.length}/1000</span>
-              </div>
-              <textarea
-                id="sales-customer-summary"
-                value={editSummary}
-                onChange={(event) => onSummaryChange(event.target.value.slice(0, 1000))}
-                disabled={saving}
-                rows={4}
-                maxLength={1000}
-                placeholder="例: 契約内容の認識差を確認中。解決連絡があるまで営業提案は停止。"
-                className="w-full resize-y rounded-lg border border-gray-300 px-3 py-2.5 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400 focus:border-green-500 focus:ring-2 focus:ring-green-100 disabled:bg-gray-100"
-              />
-            </div>
             {saveMessage && (
               <p className={`text-xs ${saveMessage.includes('更新しました') ? 'text-green-700' : 'text-red-600'}`} role="status">
                 {saveMessage}
@@ -433,7 +327,7 @@ function DetailContent({
               disabled={!canSave}
               className="min-h-11 w-full rounded-lg bg-[#06C755] px-4 text-sm font-bold text-white transition-colors hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-500"
             >
-              {saving ? '保存中...' : '状況と判断メモを保存'}
+              {saving ? '保存中...' : '状況を手動で変更'}
             </button>
           </div>
         </section>
@@ -459,9 +353,8 @@ function DetailContent({
                   <span className="font-semibold text-gray-900">{SALES_CUSTOMER_STATUS_META[event.toStatus].label}</span>
                   <span className="text-gray-400">へ更新</span>
                 </div>
-                <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-gray-700">{event.summary}</p>
                 <p className="mt-1 text-[11px] text-gray-400">
-                  {formatSalesCustomerDate(event.createdAt)}{event.actorName ? ` · ${event.actorName}` : ''}
+                  {formatSalesCustomerDate(event.createdAt)} · {event.source === 'ai' ? 'AI自動判定' : '運営が手動変更'}{event.actorName ? ` · ${event.actorName}` : ''}
                 </p>
               </li>
             ))}
@@ -490,7 +383,6 @@ export default function SalesCustomersPage() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false)
   const [editStatus, setEditStatus] = useState<SalesCustomerStoredStatus | ''>('')
-  const [editSummary, setEditSummary] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveMessage, setSaveMessage] = useState('')
   const [overviewBatchRunning, setOverviewBatchRunning] = useState(false)
@@ -552,7 +444,6 @@ export default function SalesCustomersPage() {
       if (!response.success) throw new Error(response.error)
       setDetail(response.data)
       setEditStatus(salesCustomerDraftStatus(response.data.status))
-      setEditSummary(response.data.summary)
     } catch {
       if (requestId !== detailRequestRef.current) return
       setSaveMessage('顧客詳細の読み込みに失敗しました。')
@@ -570,7 +461,6 @@ export default function SalesCustomersPage() {
     setDetail(null)
     setMobileDetailOpen(false)
     setEditStatus('')
-    setEditSummary('')
     setSaving(false)
     setSaveMessage('')
     overviewBatchRequestRef.current += 1
@@ -605,7 +495,7 @@ export default function SalesCustomersPage() {
   }
 
   const saveStatus = async () => {
-    if (!detail || !detail.canEditStatus || saving || !editStatus || !editSummary.trim()) return
+    if (!detail || !detail.canEditStatus || saving || !editStatus || editStatus === detail.status) return
     const requestId = ++saveRequestRef.current
     const targetDetail = detail
     setSaving(true)
@@ -613,7 +503,6 @@ export default function SalesCustomersPage() {
     try {
       const response = await api.salesCustomers.updateStatus(targetDetail.subjectKind, targetDetail.subjectId, {
         status: editStatus,
-        summary: editSummary.trim(),
         expectedVersion: targetDetail.version,
       })
       if (requestId !== saveRequestRef.current) return
@@ -660,16 +549,15 @@ export default function SalesCustomersPage() {
       statusRowsTouched: 0,
     }
     for (;;) {
-      const response = await api.salesCustomers.generateOverviews({
+      const response = await api.salesCustomers.generateSituations({
         lineAccountId,
         dryRun,
         limit: OVERVIEW_BATCH_SIZE,
         offset,
-        confirm: dryRun ? undefined : 'generate_sales_customer_overviews',
+        confirm: dryRun ? undefined : 'generate_sales_customer_situations',
       })
       if (!response.success) throw new Error(response.error)
       summary = addOverviewBatchPage(summary, response.data)
-      if (response.data.statusRowsTouched !== 0) throw new Error('unexpected_status_mutation')
       if (!response.data.hasNextPage || response.data.nextOffset == null) break
       if (response.data.nextOffset <= offset) throw new Error('invalid_next_offset')
       offset = response.data.nextOffset
@@ -689,7 +577,7 @@ export default function SalesCustomersPage() {
       if (requestId !== overviewBatchRequestRef.current) return
       setOverviewBatchPreview({ accountId: targetAccountId, summary })
       setOverviewBatchMessage(
-        `${summary.total.toLocaleString('ja-JP')}件を確認しました。新規${summary.create.toLocaleString('ja-JP')}件、更新${summary.update.toLocaleString('ja-JP')}件、変更なし${summary.unchanged.toLocaleString('ja-JP')}件。AI要約予定${summary.aiRequests.toLocaleString('ja-JP')}件、要約対象テキストなし${summary.noText.toLocaleString('ja-JP')}件、推定入力${summary.inputTokens.toLocaleString('ja-JP')}トークンです。`,
+        `${summary.total.toLocaleString('ja-JP')}件を確認しました。新規${summary.create.toLocaleString('ja-JP')}件、更新${summary.update.toLocaleString('ja-JP')}件、変更なし${summary.unchanged.toLocaleString('ja-JP')}件。AI判定予定${summary.aiRequests.toLocaleString('ja-JP')}件、判定対象テキストなし${summary.noText.toLocaleString('ja-JP')}件、推定入力${summary.inputTokens.toLocaleString('ja-JP')}トークンです。`,
       )
     } catch {
       if (requestId === overviewBatchRequestRef.current) {
@@ -706,22 +594,21 @@ export default function SalesCustomersPage() {
     const changeCount = overviewBatchPreview.summary.create + overviewBatchPreview.summary.update
     if (changeCount === 0) return
     const confirmed = window.confirm(
-      `${accountName}の最近の状況を${changeCount.toLocaleString('ja-JP')}件更新します。うち${overviewBatchPreview.summary.aiRequests.toLocaleString('ja-JP')}件は、識別情報を伏せた会話をCloudflare Workers AIで処理します。推定入力は${overviewBatchPreview.summary.inputTokens.toLocaleString('ja-JP')}トークンです。営業ステータスは変更しません。続けますか？`,
+      `${accountName}の状況タイムラインを${changeCount.toLocaleString('ja-JP')}件更新します。うち${overviewBatchPreview.summary.aiRequests.toLocaleString('ja-JP')}件は、識別情報を伏せた会話をCloudflare Workers AIで処理します。推定入力は${overviewBatchPreview.summary.inputTokens.toLocaleString('ja-JP')}トークンです。会話からクレーム・退会などを認識した場合は営業ステータスも自動更新します。続けますか？`,
     )
     if (!confirmed) return
 
     const requestId = ++overviewBatchRequestRef.current
     const targetAccountId = selectedAccountId
     setOverviewBatchRunning(true)
-    setOverviewBatchMessage('最近の状況を更新しています。この画面を閉じずにお待ちください...')
+    setOverviewBatchMessage('状況タイムラインと営業ステータスを更新しています。この画面を閉じずにお待ちください...')
     try {
       const summary = await runOverviewBatch(targetAccountId, false)
       if (requestId !== overviewBatchRequestRef.current) return
-      if (summary.statusRowsTouched !== 0) throw new Error('unexpected_status_mutation')
       setOverviewBatchPreview(null)
       setOverviewBatchMessage(summary.failed > 0
-        ? `${summary.written.toLocaleString('ja-JP')}件を保存し、${summary.failed.toLocaleString('ja-JP')}件はAI要約に失敗しました。営業ステータスは変更していません。更新対象を再確認してください。`
-        : `${summary.written.toLocaleString('ja-JP')}件の会話要約と更新履歴を保存しました。営業ステータスは変更していません。`)
+        ? `${summary.written.toLocaleString('ja-JP')}件を保存し、${summary.failed.toLocaleString('ja-JP')}件はAI判定に失敗しました。営業ステータスは${summary.statusRowsTouched.toLocaleString('ja-JP')}件更新しました。更新対象を再確認してください。`
+        : `${summary.written.toLocaleString('ja-JP')}件の状況タイムラインを保存し、営業ステータスを${summary.statusRowsTouched.toLocaleString('ja-JP')}件自動更新しました。`)
       await loadCustomers()
       if (detail) await loadDetail(detail)
     } catch {
@@ -756,12 +643,17 @@ export default function SalesCustomersPage() {
           </section>
 
           {canEditStatus && (
-            <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm" aria-label="最近の状況の一括更新">
-              <div className="flex flex-wrap items-start justify-between gap-3">
+            <details className="group rounded-xl border border-gray-200 bg-white shadow-sm">
+              <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-green-500">
+                <span>初回・復旧用の一括更新</span>
+                <svg className="h-4 w-4 text-gray-400 transition-transform group-open:rotate-180" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m6 9 6 6 6-6" />
+                </svg>
+              </summary>
+              <div className="flex flex-wrap items-start justify-between gap-3 border-t border-gray-100 p-4" aria-label="状況タイムラインの一括更新">
                 <div className="min-w-0 flex-1">
-                  <h2 className="text-sm font-bold text-gray-900">最近の状況を全件更新</h2>
                   <p className="mt-1 text-xs leading-5 text-gray-500">
-                    直近の人同士のテキストから、相談内容・対応経緯・現在地・次の対応をAIで要約します。識別情報は送信前に伏せ、原文は保存しません。営業ステータスは変更しません。
+                    新しい会話は通常5分おきに自動判定されます。この操作は、未生成の顧客を最初に処理するときや障害復旧時だけ使用します。識別情報は送信前に伏せ、原文は保存しません。
                   </p>
                   {overviewBatchMessage && (
                     <p className={`mt-2 text-xs leading-5 ${overviewBatchMessage.includes('失敗') ? 'text-red-600' : 'text-gray-700'}`} role="status">
@@ -785,12 +677,12 @@ export default function SalesCustomersPage() {
                       disabled={overviewBatchRunning}
                       className="min-h-10 rounded-lg bg-[#06C755] px-3 text-xs font-bold text-white hover:bg-[#05b94f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-200"
                     >
-                      {overviewBatchRunning ? 'AIで要約中...' : `${overviewChangeCount.toLocaleString('ja-JP')}件を要約`}
+                      {overviewBatchRunning ? 'AIで判定中...' : `${overviewChangeCount.toLocaleString('ja-JP')}件を更新`}
                     </button>
                   )}
                 </div>
               </div>
-            </section>
+            </details>
           )}
 
           <details className="group rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -891,14 +783,15 @@ export default function SalesCustomersPage() {
                       <div><StatusBadge status={customer.status} /></div>
                       <div className="min-w-0">
                         <p className="line-clamp-2 text-xs leading-5 text-gray-600">
-                          {customer.recentOverview.text}
+                          {customer.situation.currentState}
                         </p>
                         <p className="mt-1 truncate text-[10px] text-gray-400">
-                          直近3か月: 顧客 {customer.activity.windows.threeMonths.customerMessages}件 · 担当返信 {customer.activity.windows.threeMonths.staffReplies}件
+                          {customer.statusSource === 'ai' ? 'AI自動判定' : customer.statusSource === 'manual' ? '運営が手動変更' : '未判定'}
+                          {customer.situation.sourceToAt ? ` · 最終記録 ${formatSalesCustomerDate(customer.situation.sourceToAt)}` : ''}
                         </p>
                       </div>
                       <div className="flex items-center justify-between gap-2 text-[11px] text-gray-400 sm:justify-end">
-                        <span>{formatSalesCustomerDate(customer.activity.lastContactAt)}</span>
+                        <span>{formatSalesCustomerDate(customer.situation.sourceToAt)}</span>
                         <svg className="h-4 w-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m9 18 6-6-6-6" /></svg>
                       </div>
                     </button>
@@ -932,11 +825,9 @@ export default function SalesCustomersPage() {
               detail={detail}
               loading={detailLoading}
               editStatus={editStatus}
-              editSummary={editSummary}
               saving={saving}
               saveMessage={saveMessage}
               onStatusChange={setEditStatus}
-              onSummaryChange={setEditSummary}
               onSave={() => void saveStatus()}
             />
           </div>

@@ -728,39 +728,23 @@ export type SalesCustomerStatus =
 export type SalesCustomerStoredStatus = Exclude<SalesCustomerStatus, 'unreviewed'>
 export type SalesCustomerSubjectKind = 'friend' | 'conversation'
 
-export type SalesCustomerActivityWindow = {
-  months: number
-  totalMessages: number
-  customerMessages: number
-  staffReplies: number
-  automatedMessages: number
-  activeDays: number
-  mediaMessages: number
+export type SalesCustomerSituationEvent = {
+  occurredAt: string
+  kind: 'customer_contact' | 'staff_action' | 'state_change'
+  title: string
+  detail: string
+  state: 'open' | 'in_progress' | 'resolved' | 'information'
 }
 
-export type SalesCustomerActivity = {
-  lastContactAt: string | null
-  lastCustomerMessageAt: string | null
-  lastStaffReplyAt: string | null
-  needsHumanReply: boolean
-  windows: {
-    oneMonth: SalesCustomerActivityWindow
-    twoMonths: SalesCustomerActivityWindow
-    threeMonths: SalesCustomerActivityWindow
-  }
-  support: {
-    activeCases: number
-    casesInThreeMonths: number
-    lastUpdatedAt: string | null
-  }
-}
-
-export type SalesCustomerRecentOverview = {
-  text: string
-  method: 'semantic_v3'
+export type SalesCustomerSituation = {
+  currentState: string
+  recognizedStatus: SalesCustomerStatus
+  resolutionConfirmed: boolean
+  events: SalesCustomerSituationEvent[]
+  method: 'situation_timeline_v1'
   aiGenerated: boolean
   model: string | null
-  promptVersion: 'sales_conversation_summary_v3'
+  promptVersion: 'sales_situation_timeline_v1'
   sourceMessageCount: number
   sourceFromAt: string | null
   sourceToAt: string | null
@@ -783,39 +767,25 @@ export type SalesCustomer = {
   contactName: string | null
   storeNames: string[]
   status: SalesCustomerStatus
-  summary: string
+  statusSource: 'manual' | 'ai' | null
   version: number
   updatedByName: string | null
   updatedAt: string | null
   createdAt: string
-  isFollowing: boolean | null
-  chatStatus: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
-  recentOverview: SalesCustomerRecentOverview
-  activity: SalesCustomerActivity
+  situation: SalesCustomerSituation
 }
 
 export type SalesCustomerStatusEvent = {
   id: string
   fromStatus: SalesCustomerStatus
   toStatus: SalesCustomerStoredStatus
-  summary: string
+  source: 'manual' | 'ai'
   actorName: string | null
   createdAt: string
 }
 
 export type SalesCustomerDetail = SalesCustomer & {
   history: SalesCustomerStatusEvent[]
-  overviewHistory: Array<{
-    id: string
-    text: string
-    aiGenerated: boolean
-    model: string | null
-    sourceMessageCount: number
-    sourceFromAt: string | null
-    sourceToAt: string | null
-    actorName: string | null
-    createdAt: string
-  }>
   canEditStatus: boolean
 }
 
@@ -854,7 +824,14 @@ export type SalesCustomerOverviewBatchResult = {
     aiUnavailable: number
     invalidAiResponse: number
   }
-  statusRowsTouched: 0
+  statusChanges: {
+    created: number
+    updated: number
+    unchanged: number
+    protected: number
+    unreviewed: number
+  }
+  statusRowsTouched: number
 }
 
 export type SalesCustomerAccount = {
@@ -956,7 +933,6 @@ export const api = {
       subjectId: string,
       data: {
         status: SalesCustomerStoredStatus
-        summary: string
         expectedVersion: number
       },
     ) =>
@@ -964,15 +940,15 @@ export const api = {
         `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}/status`,
         { method: 'PATCH', body: JSON.stringify(data) },
       ),
-    generateOverviews: (data: {
+    generateSituations: (data: {
       lineAccountId: string
       dryRun: boolean
       limit?: number
       offset?: number
-      confirm?: 'generate_sales_customer_overviews'
+      confirm?: 'generate_sales_customer_situations'
     }) =>
       fetchApi<ApiResponse<SalesCustomerOverviewBatchResult>>(
-        '/api/sales-customers/overviews/generate',
+        '/api/sales-customers/situations/generate',
         { method: 'POST', body: JSON.stringify(data) },
       ),
   },

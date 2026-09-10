@@ -92,6 +92,11 @@ import {
 } from './services/line-capture-only.js';
 import { processDueScheduledChatMessages } from './services/scheduled-chat-messages.js';
 import { monitorInternalChatHealth } from './services/internal-chat-health.js';
+import {
+  processSalesCustomerSituationQueue,
+  SalesCustomerSituationQueueProcessError,
+  type SalesCustomerSituationQueueSubject,
+} from './services/sales-customer-situation-queue.js';
 
 function scheduledErrorKind(err: unknown): string {
   if (err instanceof TypeError) return 'network_error';
@@ -751,11 +756,63 @@ export const notFoundHandler = async (c: Parameters<typeof app.notFound>[0] exte
 
 app.notFound(notFoundHandler);
 
+async function generateQueuedSalesCustomerSituation(
+  subject: SalesCustomerSituationQueueSubject,
+  env: Env['Bindings'],
+  ctx: ExecutionContext,
+): Promise<void> {
+  const response = await app.fetch(new Request(
+    'https://sales-situation.internal/api/sales-customers/situations/generate',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        lineAccountId: subject.lineAccountId,
+        subjectKind: subject.subjectKind,
+        subjectId: subject.subjectId,
+        dryRun: false,
+        confirm: 'generate_sales_customer_situations',
+      }),
+    },
+  ), env, ctx);
+
+  if (!response.ok) {
+    throw new SalesCustomerSituationQueueProcessError(`http_${response.status}`);
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new SalesCustomerSituationQueueProcessError('invalid_response', { cause: error });
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new SalesCustomerSituationQueueProcessError('invalid_response');
+  }
+  const body = payload as Record<string, unknown>;
+  const data = body.data;
+  if (body.success !== true || !data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new SalesCustomerSituationQueueProcessError('invalid_response');
+  }
+  const result = data as Record<string, unknown>;
+  if (typeof result.failed !== 'number' || result.failed > 0) {
+    const failures = result.failures;
+    const aiUnavailable = failures && typeof failures === 'object' && !Array.isArray(failures)
+      ? Number((failures as Record<string, unknown>).aiUnavailable ?? 0)
+      : 0;
+    throw new SalesCustomerSituationQueueProcessError(
+      aiUnavailable > 0 ? 'ai_unavailable' : 'generation_failed',
+    );
+  }
+}
+
 // Scheduled handler for cron triggers — runs for all active LINE accounts
 async function scheduled(
   event: ScheduledEvent,
   env: Env['Bindings'],
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<void> {
   const captureOnly = isLineCaptureOnly(env);
   setLineMutationsDisabled(captureOnly);
@@ -899,6 +956,25 @@ async function scheduled(
     } catch (e) {
       console.error(`scheduled-chat error: ${scheduledErrorKind(e)}`);
     }
+  }
+
+  // Timeline/status updates are database + Workers AI work only, so they stay
+  // active in capture-only mode. Run them after operator notifications and
+  // scheduled manual sends so AI latency cannot delay higher-priority jobs.
+  try {
+    const result = await processSalesCustomerSituationQueue(env.DB, {
+      now: new Date(),
+      limit: 5,
+      processSubject: (subject) => generateQueuedSalesCustomerSituation(subject, env, ctx),
+    });
+    if (result.scanned + result.retried + result.superseded > 0) {
+      console.log(
+        `[sales-situation-queue] scanned=${result.scanned} claimed=${result.claimed} `
+        + `completed=${result.completed} retried=${result.retried} superseded=${result.superseded}`,
+      );
+    }
+  } catch (e) {
+    console.error(`sales-situation-queue error: ${scheduledErrorKind(e)}`);
   }
 
   if (captureOnly) {

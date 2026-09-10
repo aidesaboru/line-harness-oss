@@ -26,24 +26,28 @@ type SubjectRow = {
   subject_created_at: string
   status_id: string | null
   sales_status: 'unreviewed' | 'normal' | 'attention' | 'complaint' | 'exit_pending' | 'exited'
-  status_summary: string | null
+  status_source: 'manual' | 'ai' | null
+  status_source_fingerprint: string | null
   status_version: number | null
   status_updated_by_name: string | null
   status_updated_at: string | null
-  overview_id: string | null
-  overview_text: string | null
-  overview_generation_method: string | null
-  overview_ai_generated: number | null
-  overview_model: string | null
-  overview_prompt_version: string | null
-  overview_source_fingerprint: string | null
-  overview_source_message_count: number | null
-  overview_source_from_at: string | null
-  overview_source_to_at: string | null
-  overview_input_char_count: number | null
-  overview_version: number | null
-  overview_updated_by_name: string | null
-  overview_updated_at: string | null
+  timeline_id: string | null
+  timeline_current_state: string | null
+  timeline_recognized_status: SubjectRow['sales_status'] | null
+  timeline_resolution_confirmed: number | null
+  timeline_json: string | null
+  timeline_generation_method: string | null
+  timeline_ai_generated: number | null
+  timeline_model: string | null
+  timeline_prompt_version: string | null
+  timeline_source_fingerprint: string | null
+  timeline_source_message_count: number | null
+  timeline_source_from_at: string | null
+  timeline_source_to_at: string | null
+  timeline_input_char_count: number | null
+  timeline_version: number | null
+  timeline_updated_by_name: string | null
+  timeline_updated_at: string | null
   is_following: number | null
   chat_status: 'unread' | 'in_progress' | 'resolved' | 'long_term' | null
   activity_last_at?: string | null
@@ -90,24 +94,34 @@ const directRow: SubjectRow = {
   subject_created_at: '2026-09-01T10:00:00+09:00',
   status_id: 'status-1',
   sales_status: 'complaint',
-  status_summary: '契約内容を確認中。営業連絡は停止。',
+  status_source: 'ai',
+  status_source_fingerprint: 'b'.repeat(64),
   status_version: 2,
   status_updated_by_name: '運営担当',
   status_updated_at: '2026-09-09T10:00:00+09:00',
-  overview_id: 'overview-1',
-  overview_text: '【相談内容】\n返品方法について相談。\n\n【これまでの対応】\n返送先を案内。\n\n【現在の状況】\n返送待ち。\n\n【次の対応】\n到着確認。',
-  overview_generation_method: 'semantic_v3',
-  overview_ai_generated: 1,
-  overview_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
-  overview_prompt_version: 'sales_conversation_summary_v3',
-  overview_source_fingerprint: 'a'.repeat(64),
-  overview_source_message_count: 2,
-  overview_source_from_at: '2026-09-09T08:00:00+09:00',
-  overview_source_to_at: '2026-09-09T09:00:00+09:00',
-  overview_input_char_count: 100,
-  overview_version: 1,
-  overview_updated_by_name: '運営担当',
-  overview_updated_at: '2026-09-10T10:00:00+09:00',
+  timeline_id: 'timeline-1',
+  timeline_current_state: '返品に関する苦情を受け、返送方法を確認中である。',
+  timeline_recognized_status: 'complaint',
+  timeline_resolution_confirmed: 0,
+  timeline_json: JSON.stringify([{
+    occurredAt: '2026-09-09T08:00:00+09:00',
+    kind: 'customer_contact',
+    title: '返品の苦情を受信',
+    detail: '顧客から返品方法への苦情が届いた。',
+    state: 'open',
+  }]),
+  timeline_generation_method: 'situation_timeline_v1',
+  timeline_ai_generated: 1,
+  timeline_model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  timeline_prompt_version: 'sales_situation_timeline_v1',
+  timeline_source_fingerprint: 'a'.repeat(64),
+  timeline_source_message_count: 2,
+  timeline_source_from_at: '2026-09-09T08:00:00+09:00',
+  timeline_source_to_at: '2026-09-09T09:00:00+09:00',
+  timeline_input_char_count: 100,
+  timeline_version: 1,
+  timeline_updated_by_name: '運営担当',
+  timeline_updated_at: '2026-09-10T10:00:00+09:00',
   is_following: 1,
   chat_status: 'in_progress',
   activity_last_at: '2026-09-09T09:00:00+09:00',
@@ -146,24 +160,28 @@ const groupRow: SubjectRow = {
   customer_metadata: JSON.stringify({ customerNumber: 'C-002', companyName: '株式会社STAR FIELD' }),
   status_id: null,
   sales_status: 'unreviewed',
-  status_summary: null,
+  status_source: null,
+  status_source_fingerprint: null,
   status_version: null,
   status_updated_by_name: null,
   status_updated_at: null,
-  overview_id: null,
-  overview_text: null,
-  overview_generation_method: null,
-  overview_ai_generated: null,
-  overview_model: null,
-  overview_prompt_version: null,
-  overview_source_fingerprint: null,
-  overview_source_message_count: null,
-  overview_source_from_at: null,
-  overview_source_to_at: null,
-  overview_input_char_count: null,
-  overview_version: null,
-  overview_updated_by_name: null,
-  overview_updated_at: null,
+  timeline_id: null,
+  timeline_current_state: null,
+  timeline_recognized_status: null,
+  timeline_resolution_confirmed: null,
+  timeline_json: null,
+  timeline_generation_method: null,
+  timeline_ai_generated: null,
+  timeline_model: null,
+  timeline_prompt_version: null,
+  timeline_source_fingerprint: null,
+  timeline_source_message_count: null,
+  timeline_source_from_at: null,
+  timeline_source_to_at: null,
+  timeline_input_char_count: null,
+  timeline_version: null,
+  timeline_updated_by_name: null,
+  timeline_updated_at: null,
   is_following: null,
   chat_status: 'resolved',
 }
@@ -224,24 +242,10 @@ function readDb() {
                 id: 'event-1',
                 from_status: 'attention',
                 to_status: 'complaint',
-                summary: directRow.status_summary,
+                summary: '会話タイムラインの自動判定',
+                source: 'ai',
                 actor_name: '運営担当',
                 created_at: directRow.status_updated_at,
-              }],
-            } as { results: T[] }
-          }
-          if (sql.includes('FROM sales_customer_semantic_summary_events_v3')) {
-            return {
-              results: [{
-                id: 'overview-event-1',
-                summary: directRow.overview_text,
-                ai_generated: 1,
-                model: directRow.overview_model,
-                source_message_count: 2,
-                source_from_at: directRow.overview_source_from_at,
-                source_to_at: directRow.overview_source_to_at,
-                actor_name: '運営担当',
-                created_at: directRow.overview_updated_at,
               }],
             } as { results: T[] }
           }
@@ -304,28 +308,17 @@ describe('sales customer read APIs', () => {
       customerNumber: 'C-001',
       storeNames: ['楽天店'],
       status: 'complaint',
-      isFollowing: true,
-      chatStatus: 'in_progress',
-      activity: {
-        needsHumanReply: true,
-        windows: {
-          oneMonth: {
-            totalMessages: 12,
-            customerMessages: 5,
-            staffReplies: 4,
-            automatedMessages: 3,
-          },
-          threeMonths: { totalMessages: 24 },
-        },
-        support: { activeCases: 1, casesInThreeMonths: 2 },
-      },
-      recentOverview: {
-        text: directRow.overview_text,
+      statusSource: 'ai',
+      situation: {
+        currentState: directRow.timeline_current_state,
+        recognizedStatus: 'complaint',
+        resolutionConfirmed: false,
         stored: true,
         version: 1,
-        method: 'semantic_v3',
+        method: 'situation_timeline_v1',
         aiGenerated: true,
         sourceMessageCount: 2,
+        events: [expect.objectContaining({ title: '返品の苦情を受信' })],
       },
     })
     expect(body.data.items[1]).toMatchObject({
@@ -334,9 +327,10 @@ describe('sales customer read APIs', () => {
       companyName: '株式会社STAR FIELD',
       status: 'unreviewed',
       version: 0,
-      recentOverview: {
+      situation: {
         stored: false,
         version: 0,
+        events: [],
       },
     })
     expect(body.data.canEditStatus).toBe(false)
@@ -347,11 +341,10 @@ describe('sales customer read APIs', () => {
     expect(serialized).not.toContain('customer_metadata')
     expect(serialized).not.toContain('sender_user_id')
     expect(calls.some((call) => call.sql.includes("source_type IN ('group', 'room')"))).toBe(true)
-    expect(calls.every((call) => !/sales_customer_semantic_summaries(?!_v3)/u.test(call.sql))).toBe(true)
-    expect(calls.every((call) => !/sales_customer_semantic_summary_events(?!_v3)/u.test(call.sql))).toBe(true)
-    const activityCall = calls.find((call) => call.sql.includes('customer_message_activity'))
-    expect(activityCall?.sql).not.toMatch(/\bml\.content\b|\blcm\.content\b/)
-    expect(activityCall?.binds.slice(0, 3)).toEqual(['account-1', 'account-1', 'account-1'])
+    expect(calls.some((call) => call.sql.includes('sales_customer_situation_timelines'))).toBe(true)
+    expect(calls.every((call) => !call.sql.includes('sales_customer_semantic_summaries_v3'))).toBe(true)
+    expect(calls.every((call) => !call.sql.includes('customer_message_activity'))).toBe(true)
+    expect(calls.every((call) => !call.sql.includes('support_cases'))).toBe(true)
   })
 
   test('searches only sales-visible identity fields instead of raw metadata', async () => {
@@ -379,7 +372,6 @@ describe('sales customer read APIs', () => {
     const body = await response.json() as {
       data: {
         history: Array<Record<string, unknown>>
-        overviewHistory: Array<Record<string, unknown>>
         canEditStatus: boolean
       }
     }
@@ -388,20 +380,9 @@ describe('sales customer read APIs', () => {
       id: 'event-1',
       fromStatus: 'attention',
       toStatus: 'complaint',
-      summary: directRow.status_summary,
+      source: 'ai',
       actorName: '運営担当',
       createdAt: directRow.status_updated_at,
-    }])
-    expect(body.data.overviewHistory).toEqual([{
-      id: 'overview-event-1',
-      text: directRow.overview_text,
-      aiGenerated: true,
-      model: directRow.overview_model,
-      sourceMessageCount: 2,
-      sourceFromAt: directRow.overview_source_from_at,
-      sourceToAt: directRow.overview_source_to_at,
-      actorName: '運営担当',
-      createdAt: directRow.overview_updated_at,
     }])
   })
 
@@ -414,7 +395,7 @@ describe('sales customer read APIs', () => {
   })
 })
 
-function overviewBatchDb() {
+function situationBatchDb() {
   const batches: Array<Array<{ sql: string; binds: unknown[] }>> = []
   type Statement = D1PreparedStatement & { __sql: string; __binds: unknown[] }
   const db = {
@@ -428,6 +409,14 @@ function overviewBatchDb() {
         },
         async all<T>() {
           if (sql.includes('FROM customer_subjects cs')) {
+            if (sql.includes('AND cs.subject_kind = ?')) {
+              const subjectKind = statement.__binds.at(-2)
+              const subjectId = statement.__binds.at(-1)
+              const selected = [directRow, groupRow].filter((row) => (
+                row.subject_kind === subjectKind && row.subject_id === subjectId
+              ))
+              return { results: selected } as { results: T[] }
+            }
             return { results: [directRow, groupRow] } as { results: T[] }
           }
           if (sql.includes('WITH ranked_messages') && sql.includes('FROM messages_log')) {
@@ -453,7 +442,18 @@ function overviewBatchDb() {
           return { results: [] } as { results: T[] }
         },
         async first<T>() {
-          if (sql.includes('COUNT(*) AS count')) return { count: 2 } as T
+          if (sql.includes('COUNT(*) AS count')) {
+            if (sql.includes('subject_kind = ?')) {
+              const subjectKind = statement.__binds.at(-2)
+              const subjectId = statement.__binds.at(-1)
+              return {
+                count: [directRow, groupRow].filter((row) => (
+                  row.subject_kind === subjectKind && row.subject_id === subjectId
+                )).length,
+              } as T
+            }
+            return { count: 2 } as T
+          }
           return null
         },
       }
@@ -470,20 +470,32 @@ function overviewBatchDb() {
   return { db, batches }
 }
 
-function semanticAi() {
+function situationAi() {
   const run = vi.fn().mockImplementation((_model: unknown, request: unknown) => {
     const isShipping = JSON.stringify(request).includes('発送時期');
     return Promise.resolve({
       response: JSON.stringify(isShipping ? {
-        consultation: 'STAR FIELDの山田が商品の発送時期について相談している。',
-        responseHistory: '商品の発送予定を案内した。',
-        currentSituation: '商品の発送時期を担当者が確認中である。',
-        nextAction: '商品の発送日を確認して回答する。',
+        currentState: '商品の発送時期について回答待ちである。',
+        recognizedStatus: 'attention',
+        resolutionConfirmed: false,
+        events: [{
+          occurredAt: '2026-09-09T09:00:00+09:00',
+          kind: 'customer_contact',
+          title: '発送時期の確認依頼',
+          detail: '顧客から商品の発送時期を確認したいとの連絡があった。',
+          state: 'open',
+        }],
       } : {
-        consultation: '田中が返品方法について相談している。',
-        responseHistory: '返送先の候補を案内した。',
-        currentSituation: '返品方法を担当者が確認中である。',
-        nextAction: '返品方法を確認して回答する。',
+        currentState: '返品方法への苦情があり、担当の回答待ちである。',
+        recognizedStatus: 'complaint',
+        resolutionConfirmed: false,
+        events: [{
+          occurredAt: '2026-09-09T08:00:00+09:00',
+          kind: 'customer_contact',
+          title: '返品方法の苦情を受信',
+          detail: '顧客から返品方法について苦情の連絡があった。',
+          state: 'open',
+        }],
       }),
       usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
     });
@@ -491,7 +503,7 @@ function semanticAi() {
   return { ai: { run } as unknown as Ai, run }
 }
 
-describe('sales customer overview generation', () => {
+describe('sales customer situation generation', () => {
   const body = (dryRun: boolean, confirm?: string) => JSON.stringify({
     lineAccountId: 'account-1',
     dryRun,
@@ -501,8 +513,8 @@ describe('sales customer overview generation', () => {
   })
 
   test('dry-runs an exact page without writing or touching statuses', async () => {
-    const harness = overviewBatchDb()
-    const response = await setupApp(harness.db).request('/api/sales-customers/overviews/generate', {
+    const harness = situationBatchDb()
+    const response = await setupApp(harness.db).request('/api/sales-customers/situations/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: body(true),
@@ -525,19 +537,19 @@ describe('sales customer overview generation', () => {
     expect(harness.batches).toHaveLength(0)
   })
 
-  test('requires explicit confirmation, writes overview plus history, and never updates status rows', async () => {
-    const harness = overviewBatchDb()
-    const model = semanticAi()
+  test('requires explicit confirmation, writes timelines, and automatically creates a changed status', async () => {
+    const harness = situationBatchDb()
+    const model = situationAi()
     const app = setupApp(harness.db, {}, model.ai)
-    const rejected = await app.request('/api/sales-customers/overviews/generate', {
+    const rejected = await app.request('/api/sales-customers/situations/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(false),
     })
     expect(rejected.status).toBe(400)
 
-    const response = await app.request('/api/sales-customers/overviews/generate', {
+    const response = await app.request('/api/sales-customers/situations/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: body(false, 'generate_sales_customer_overviews'),
+      body: body(false, 'generate_sales_customer_situations'),
     })
     expect(response.status).toBe(200)
     expect(await response.json()).toMatchObject({
@@ -549,15 +561,17 @@ describe('sales customer overview generation', () => {
         aiAttempts: 2,
         usage: { promptTokens: 200, completionTokens: 100, totalTokens: 300 },
         failed: 0,
-        statusRowsTouched: 0,
+        statusRowsTouched: 1,
+        statusChanges: { created: 1, updated: 0, unchanged: 1, protected: 0, unreviewed: 0 },
       },
     })
     expect(harness.batches).toHaveLength(1)
-    expect(harness.batches[0]).toHaveLength(4)
+    expect(harness.batches[0]).toHaveLength(6)
     const sql = harness.batches[0].map((statement) => statement.sql).join('\n')
-    expect(sql).toContain('sales_customer_semantic_summaries_v3')
-    expect(sql).toContain('sales_customer_semantic_summary_events_v3')
-    expect(sql).not.toMatch(/(?:INSERT INTO|UPDATE) sales_customer_statuses/)
+    expect(sql).toContain('sales_customer_situation_timelines')
+    expect(sql).toContain('sales_customer_situation_timeline_events')
+    expect(sql).toContain('INSERT INTO sales_customer_statuses')
+    expect(sql).toContain('INSERT INTO sales_customer_status_events')
     for (const statement of harness.batches[0]) {
       expect(statement.sql.match(/\?/g) ?? []).toHaveLength(statement.binds.length)
     }
@@ -572,11 +586,58 @@ describe('sales customer overview generation', () => {
     expect(JSON.stringify(model.run.mock.calls)).not.toContain('山田から')
   })
 
+  test('processes only the exact queued subject and validates the subject pair', async () => {
+    const harness = situationBatchDb()
+    const model = situationAi()
+    const app = setupApp(harness.db, {}, model.ai)
+    const response = await app.request('/api/sales-customers/situations/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'account-1',
+        subjectKind: 'conversation',
+        subjectId: 'conversation-1',
+        dryRun: false,
+        confirm: 'generate_sales_customer_situations',
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      data: {
+        total: 1,
+        offset: 0,
+        limit: 1,
+        processed: 1,
+        hasNextPage: false,
+        written: 1,
+        aiGenerated: 1,
+        statusRowsTouched: 1,
+      },
+    })
+    expect(model.run).toHaveBeenCalledTimes(1)
+    expect(harness.batches).toHaveLength(1)
+    expect(harness.batches[0]).toHaveLength(4)
+    expect(JSON.stringify(harness.batches[0])).not.toContain('返品方法')
+
+    const incomplete = await app.request('/api/sales-customers/situations/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lineAccountId: 'account-1',
+        subjectKind: 'friend',
+        dryRun: true,
+      }),
+    })
+    expect(incomplete.status).toBe(400)
+    expect(await incomplete.json()).toMatchObject({ error: 'exact_subject_requires_kind_and_id' })
+  })
+
   test('rejects sales-only and secondary accounts', async () => {
-    const harness = overviewBatchDb()
+    const harness = situationBatchDb()
     const request = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body(true) }
-    expect((await setupApp(harness.db, { salesOnly: true }).request('/api/sales-customers/overviews/generate', request)).status).toBe(403)
-    expect((await setupApp(harness.db, { role: 'secondary' }).request('/api/sales-customers/overviews/generate', request)).status).toBe(403)
+    expect((await setupApp(harness.db, { salesOnly: true }).request('/api/sales-customers/situations/generate', request)).status).toBe(403)
+    expect((await setupApp(harness.db, { role: 'secondary' }).request('/api/sales-customers/situations/generate', request)).status).toBe(403)
     expect(harness.batches).toHaveLength(0)
   })
 })
@@ -599,6 +660,7 @@ function mutationDb(initial: CurrentStatus | null = null, subjectExists = true) 
     from_status: string
     to_status: string
     summary: string
+    source: 'manual' | 'ai'
     actor_name: string
     created_at: string
   }> = []
@@ -630,7 +692,8 @@ function mutationDb(initial: CurrentStatus | null = null, subjectExists = true) 
               ...directRow,
               status_id: current?.id ?? null,
               sales_status: current?.status ?? 'unreviewed',
-              status_summary: current?.summary ?? null,
+              status_source: current ? 'manual' : null,
+              status_source_fingerprint: null,
               status_version: current?.version ?? null,
               status_updated_by_name: current?.updatedByName ?? null,
               status_updated_at: current?.updatedAt ?? null,
@@ -685,6 +748,7 @@ function mutationDb(initial: CurrentStatus | null = null, subjectExists = true) 
         from_status: String(fromStatus),
         to_status: String(toStatus),
         summary: String(summary),
+        source: 'manual',
         actor_name: String(actorName),
         created_at: String(createdAt),
       })
@@ -702,23 +766,23 @@ describe('sales customer status updates', () => {
     const first = await app.request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'complaint', summary: ' 営業連絡を停止 ', expectedVersion: 0 }),
+      body: JSON.stringify({ status: 'complaint', expectedVersion: 0 }),
     })
     expect(first.status).toBe(200)
     expect(await first.json()).toMatchObject({
       success: true,
-      data: { status: 'complaint', summary: '営業連絡を停止', version: 1 },
+      data: { status: 'complaint', statusSource: 'manual', version: 1 },
     })
 
     const second = await app.request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'normal', summary: '解決済み。通常対応可。', expectedVersion: 1 }),
+      body: JSON.stringify({ status: 'normal', expectedVersion: 1 }),
     })
     expect(second.status).toBe(200)
     expect(await second.json()).toMatchObject({
       success: true,
-      data: { status: 'normal', summary: '解決済み。通常対応可。', version: 2 },
+      data: { status: 'normal', statusSource: 'manual', version: 2 },
     })
     expect(harness.state().events.map((event) => [event.from_status, event.to_status])).toEqual([
       ['unreviewed', 'complaint'],
@@ -735,7 +799,7 @@ describe('sales customer status updates', () => {
     expect(detailBody.data.history.map((event) => event.toStatus)).toEqual(['normal', 'complaint'])
   })
 
-  test('requires operator permission, a summary, and the current version', async () => {
+  test('requires operator permission, a status, and the current version', async () => {
     const harness = mutationDb({
       id: 'status-1',
       status: 'attention',
@@ -745,19 +809,19 @@ describe('sales customer status updates', () => {
       updatedByName: '運営担当',
       updatedAt: '2026-09-09T10:00:00+09:00',
     })
-    const payload = JSON.stringify({ status: 'normal', summary: '解決済み', expectedVersion: 2 })
+    const payload = JSON.stringify({ status: 'normal', expectedVersion: 2 })
 
     const conflict = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
     })
     expect(conflict.status).toBe(409)
 
-    const blank = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
+    const missingStatus = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'normal', summary: '   ', expectedVersion: 3 }),
+      body: JSON.stringify({ expectedVersion: 3 }),
     })
-    expect(blank.status).toBe(400)
+    expect(missingStatus.status).toBe(400)
 
     const salesOnly = await setupApp(harness.db, { salesOnly: true }).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
@@ -770,7 +834,7 @@ describe('sales customer status updates', () => {
     expect(secondary.status).toBe(403)
   })
 
-  test('redacts obvious contact details before storing a sales-facing overview', async () => {
+  test('ignores supplied memo text and stores only a fixed manual audit reason', async () => {
     const harness = mutationDb()
     const response = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
@@ -783,15 +847,10 @@ describe('sales customer status updates', () => {
     })
 
     expect(response.status).toBe(200)
-    const body = await response.json() as { data: { summary: string } }
-    expect(body.data.summary).toContain('[電話番号非表示]')
-    expect(body.data.summary).toContain('[メール非表示]')
-    expect(body.data.summary).toContain('[URL非表示]')
-    expect(body.data.summary).not.toContain('090-1234-5678')
-    expect(body.data.summary).not.toContain('09012345678')
-    expect(body.data.summary).not.toContain('+81 90 1234 5678')
-    expect(body.data.summary).not.toContain('person@example.com')
-    expect(body.data.summary).not.toContain('example.com/private')
+    const body = await response.json() as { data: Record<string, unknown> }
+    expect(body.data).not.toHaveProperty('summary')
+    expect(harness.state().current?.summary).toBe('運営スタッフによる手動更新')
+    expect(JSON.stringify(harness.state())).not.toContain('090-1234-5678')
   })
 
   test('does not update inactive or out-of-scope customer subjects', async () => {
@@ -799,7 +858,7 @@ describe('sales customer status updates', () => {
     const response = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'normal', summary: '通常対応可', expectedVersion: 0 }),
+      body: JSON.stringify({ status: 'normal', expectedVersion: 0 }),
     })
 
     expect(response.status).toBe(404)

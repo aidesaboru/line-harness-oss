@@ -888,7 +888,7 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
       const generatedAt = jstNow();
       let nextIndex = 0;
       const workers = Array.from(
-        { length: Math.min(3, changedItems.length) },
+        { length: Math.min(5, changedItems.length) },
         async () => {
           for (;;) {
             const itemIndex = nextIndex;

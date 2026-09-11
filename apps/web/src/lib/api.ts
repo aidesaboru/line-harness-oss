@@ -824,6 +824,7 @@ export type SalesCustomerOverviewBatchResult = {
   failures: {
     aiUnavailable: number
     invalidAiResponse: number
+    writeFailed: number
   }
   statusChanges: {
     created: number

@@ -876,7 +876,7 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
       completionTokens: 0,
       totalTokens: 0,
     };
-    const failures = { aiUnavailable: 0, invalidAiResponse: 0 };
+    const failures = { aiUnavailable: 0, invalidAiResponse: 0, writeFailed: 0 };
     const statusChanges = { created: 0, updated: 0, unchanged: 0, protected: 0, unreviewed: 0 };
     let statusRowsTouched = 0;
     if (!dryRun.value && changedItems.length > 0) {
@@ -1159,13 +1159,14 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
         try {
           await c.env.DB.batch(statements);
         } catch (err) {
-          if (salesSituationConflict(err) || salesStatusConflict(err)) {
-            return c.json({ success: false, error: 'situation_conflict' }, 409);
-          }
-          throw err;
+          failures.writeFailed += generated.length;
+          statusRowsTouched = 0;
+          statusChanges.created = 0;
+          statusChanges.updated = 0;
+          console.error(`sales customer situation write failed: ${salesSituationConflict(err) || salesStatusConflict(err) ? 'conflict' : routeErrorKind(err)}`);
         }
       }
-      written = generated.length;
+      written = generated.length - failures.writeFailed;
       historyEventsWritten = written;
     }
 
@@ -1196,7 +1197,7 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
         noTextWritten,
         aiAttempts,
         usage,
-        failed: failures.aiUnavailable + failures.invalidAiResponse,
+        failed: failures.aiUnavailable + failures.invalidAiResponse + failures.writeFailed,
         failures,
         statusChanges,
         statusRowsTouched,

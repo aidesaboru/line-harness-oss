@@ -43,6 +43,7 @@ type OverviewBatchSummary = {
   failed: number
   aiUnavailable: number
   invalidAiResponse: number
+  writeFailed: number
   statusRowsTouched: number
 }
 
@@ -210,6 +211,7 @@ function addOverviewBatchPage(
     failed: summary.failed + page.failed,
     aiUnavailable: summary.aiUnavailable + page.failures.aiUnavailable,
     invalidAiResponse: summary.invalidAiResponse + page.failures.invalidAiResponse,
+    writeFailed: summary.writeFailed + page.failures.writeFailed,
     statusRowsTouched: summary.statusRowsTouched + page.statusRowsTouched,
   }
 }
@@ -441,6 +443,7 @@ export default function SalesCustomersPage() {
       failed: 0,
       aiUnavailable: 0,
       invalidAiResponse: 0,
+      writeFailed: 0,
       statusRowsTouched: 0,
     }
     for (;;) {

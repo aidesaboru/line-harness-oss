@@ -488,11 +488,6 @@ export default function SalesCustomersPage() {
     if (overviewBatchPreview.accountId !== selectedAccountId) return
     const changeCount = overviewBatchPreview.summary.create + overviewBatchPreview.summary.update
     if (changeCount === 0) return
-    const confirmed = window.confirm(
-      `${accountName}の現在の概要・状況タイムライン・ステータスを${changeCount.toLocaleString('ja-JP')}件更新します。うち${overviewBatchPreview.summary.aiRequests.toLocaleString('ja-JP')}件は、識別情報を伏せた会話をCloudflare Workers AIで処理します。推定入力は${overviewBatchPreview.summary.inputTokens.toLocaleString('ja-JP')}トークンです。続けますか？`,
-    )
-    if (!confirmed) return
-
     const requestId = ++overviewBatchRequestRef.current
     const targetAccountId = selectedAccountId
     setOverviewBatchRunning(true)

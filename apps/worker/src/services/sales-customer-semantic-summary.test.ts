@@ -43,7 +43,7 @@ describe('sales customer situation timeline', () => {
     expect(source.transcript).toContain('＜/conversation＞');
     expect(source.transcript).toContain('返金手順を確認します');
     expect(source.messages).toHaveLength(2);
-    expect(source.fingerprintInput).toContain('timeline-exact-time-privacy-status-v1');
+    expect(source.fingerprintInput).toContain('overview-timeline-full-history-status-v2');
   });
 
   test('normalizes ordering and keeps the latest messages within the input bound', () => {
@@ -57,6 +57,18 @@ describe('sales customer situation timeline', () => {
     expect(source.messages.map((message) => message.createdAt)).toEqual(
       [...source.messages].map((message) => message.createdAt).sort(),
     );
+  });
+
+  test('keeps an old explicit exit signal even when more than 120 newer neutral messages exist', () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2024-01-01T10:00:00+09:00', content: '退会手続きが完了したことを確認しました。' },
+      ...Array.from({ length: 140 }, (_, index) => ({
+        direction: 'incoming' as const,
+        createdAt: `2026-09-${String((index % 28) + 1).padStart(2, '0')}T${String(index % 24).padStart(2, '0')}:00:00+09:00`,
+        content: `定例の確認メッセージ ${index}${'あ'.repeat(590)}`,
+      })),
+    ]);
+    expect(source.transcript).toContain('退会手続きが完了');
   });
 
   test('creates a grounded dated timeline and automatic complaint status', async () => {
@@ -123,6 +135,21 @@ describe('sales customer situation timeline', () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(result.events[0]?.occurredAt).toBe('2026-09-09T10:00:00+09:00');
     expect(JSON.stringify(run.mock.calls[1])).toContain('正確な日時');
+  });
+
+  test('rejects sales-action recommendations from the AI output', async () => {
+    const source = prepareSalesCustomerSemanticSource([
+      { direction: 'incoming', createdAt: '2026-09-09T10:00:00+09:00', content: '返品について確認したいです。' },
+    ]);
+    const run = vi.fn().mockResolvedValue({ response: {
+      currentState: '返品確認中であり、次の営業提案として追加商品を案内する。',
+      recognizedStatus: 'attention',
+      resolutionConfirmed: false,
+      events: [event()],
+    } });
+    const result = await generateSalesCustomerSituation({ run } as unknown as Ai, source);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.recognizedStatus).toBe('unreviewed');
   });
 
   test('rejects a customer-contact event attached to an outgoing source message', async () => {
@@ -219,15 +246,12 @@ describe('resolveAutomatedSalesStatus', () => {
     expect(resolveAutomatedSalesStatus('attention', 'exit_pending', false)).toBe('exit_pending');
   });
 
-  test('does not lower complaint or exit risk without explicit resolution', () => {
-    expect(resolveAutomatedSalesStatus('complaint', 'normal', false)).toBe('complaint');
-    expect(resolveAutomatedSalesStatus('exit_pending', 'attention', false)).toBe('exit_pending');
-  });
-
-  test('allows a resolved issue to return to a safer state but keeps exited terminal', () => {
+  test('uses each fresh full-history classification instead of preserving a stale prior status', () => {
+    expect(resolveAutomatedSalesStatus('complaint', 'normal', false)).toBe('normal');
+    expect(resolveAutomatedSalesStatus('exit_pending', 'attention', false)).toBe('attention');
     expect(resolveAutomatedSalesStatus('complaint', 'normal', true)).toBe('normal');
     expect(resolveAutomatedSalesStatus('exit_pending', 'normal', true)).toBe('normal');
-    expect(resolveAutomatedSalesStatus('exited', 'normal', true)).toBe('exited');
+    expect(resolveAutomatedSalesStatus('exited', 'normal', true)).toBe('normal');
   });
 
   test('does not mutate a current status when the AI cannot recognize one', () => {

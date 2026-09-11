@@ -3,7 +3,6 @@ import type { SalesCustomer, SalesCustomerStatus } from './api'
 import {
   SALES_CUSTOMER_STATUS_META,
   salesActionRequiredCount,
-  salesCustomerDraftStatus,
   salesCustomerIdentity,
   salesCustomerName,
   salesCustomerSourceLabel,
@@ -47,16 +46,13 @@ const customer: SalesCustomer = {
 }
 
 describe('sales customer status metadata', () => {
-  it('gives every state a plain-language sales action and definition', () => {
+  it('gives every state a plain-language definition', () => {
     const statuses = Object.keys(SALES_CUSTOMER_STATUS_META) as SalesCustomerStatus[]
     expect(statuses).toEqual(['unreviewed', 'normal', 'attention', 'complaint', 'exit_pending', 'exited'])
     for (const status of statuses) {
       expect(SALES_CUSTOMER_STATUS_META[status].label).not.toBe('')
-      expect(SALES_CUSTOMER_STATUS_META[status].actionLabel).not.toBe('')
       expect(SALES_CUSTOMER_STATUS_META[status].definition).not.toBe('')
     }
-    expect(SALES_CUSTOMER_STATUS_META.complaint.actionLabel).toContain('止める')
-    expect(SALES_CUSTOMER_STATUS_META.exit_pending.actionLabel).toContain('止める')
   })
 
   it('builds sales-safe identity labels without conversation content', () => {
@@ -77,8 +73,4 @@ describe('sales customer status metadata', () => {
     })).toBe(10)
   })
 
-  it('requires a human to choose the first stored status', () => {
-    expect(salesCustomerDraftStatus('unreviewed')).toBe('')
-    expect(salesCustomerDraftStatus('attention')).toBe('attention')
-  })
 })

@@ -277,20 +277,6 @@ function parseDryRun(raw: unknown): ValueResult<boolean> {
   return { ok: true, value: raw };
 }
 
-function parseStoredStatus(raw: unknown): ValueResult<StoredSalesCustomerStatus> {
-  if (typeof raw !== 'string' || !STORED_STATUSES.includes(raw as StoredSalesCustomerStatus)) {
-    return { ok: false, error: 'invalid_status' };
-  }
-  return { ok: true, value: raw as StoredSalesCustomerStatus };
-}
-
-function parseExpectedVersion(raw: unknown): ValueResult<number> {
-  if (!Number.isSafeInteger(raw) || (raw as number) < 0) {
-    return { ok: false, error: 'invalid_expected_version' };
-  }
-  return { ok: true, value: raw as number };
-}
-
 async function readJsonObject(c: Context<Env>): Promise<ValueResult<Record<string, unknown>>> {
   try {
     const raw = await c.req.json<unknown>();
@@ -507,8 +493,28 @@ async function loadSemanticMessages(
        SELECT subject_id, direction, content, created_at, sender_name, sent_by_staff_name
        FROM ranked_messages
        WHERE message_rank <= ?
+          OR content LIKE '%退会%'
+          OR content LIKE '%解約%'
+          OR content LIKE '%契約終了%'
+          OR content LIKE '%利用停止%'
+          OR content LIKE '%閉店%'
+          OR content LIKE '%廃業%'
+          OR content LIKE '%クレーム%'
+          OR content LIKE '%苦情%'
+          OR content LIKE '%不満%'
+          OR content LIKE '%返金%'
+          OR content LIKE '%誤請求%'
+          OR content LIKE '%トラブル%'
+          OR content LIKE '%解決%'
+          OR content LIKE '%収束%'
+          OR content LIKE '%撤回%'
+          OR content LIKE '%取消%'
+          OR content LIKE '%キャンセル%'
+          OR content LIKE '%再開%'
+          OR content LIKE '%復帰%'
+          OR content LIKE '%再契約%'
        ORDER BY subject_id ASC, created_at ASC, message_id ASC`,
-    ).bind(...ids, SALES_CUSTOMER_SITUATION_MAX_MESSAGES).all<SalesCustomerSemanticMessageRow>();
+    ).bind(...ids, 120).all<SalesCustomerSemanticMessageRow>();
     for (const row of result.results) {
       const key = subjectMapKey(kind, row.subject_id);
       const values = bySubject.get(key) ?? [];
@@ -746,7 +752,7 @@ salesCustomers.get('/api/sales-customers', async (c) => {
         offset: offset.value,
         hasNextPage: offset.value + limit.value < total,
         counts,
-        canEditStatus: canEditSalesCustomerStatus(c),
+        canRunBatch: canEditSalesCustomerStatus(c),
       },
     });
   } catch (err) {
@@ -1230,148 +1236,10 @@ salesCustomers.get('/api/sales-customers/:subjectKind/:subjectId', async (c) => 
       data: {
         ...serializeCustomer(row),
         history: history.results.map(serializeEvent),
-        canEditStatus: canEditSalesCustomerStatus(c),
       },
     });
   } catch (err) {
     console.error(`GET /api/sales-customers/:subjectKind/:subjectId error: ${routeErrorKind(err)}`);
-    return c.json({ success: false, error: 'Internal server error' }, 500);
-  }
-});
-
-salesCustomers.patch('/api/sales-customers/:subjectKind/:subjectId/status', async (c) => {
-  if (!canEditSalesCustomerStatus(c)) {
-    return c.json({ success: false, error: 'この操作には運営スタッフ権限が必要です' }, 403);
-  }
-  try {
-    const subjectKind = parseSubjectKind(c.req.param('subjectKind'));
-    if (!subjectKind.ok) return c.json({ success: false, error: subjectKind.error }, 400);
-    const subjectId = parseId(c.req.param('subjectId'), 'subject_id');
-    if (!subjectId.ok) return c.json({ success: false, error: subjectId.error }, 400);
-    const rawBody = await readJsonObject(c);
-    if (!rawBody.ok) return c.json({ success: false, error: rawBody.error }, 400);
-    const status = parseStoredStatus(rawBody.value.status);
-    if (!status.ok) return c.json({ success: false, error: status.error }, 400);
-    const expectedVersion = parseExpectedVersion(rawBody.value.expectedVersion);
-    if (!expectedVersion.ok) return c.json({ success: false, error: expectedVersion.error }, 400);
-
-    const subject = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}
-       SELECT subject_id FROM customer_subjects
-       WHERE subject_kind = ? AND subject_id = ?
-       LIMIT 1`,
-    ).bind(subjectKind.value, subjectId.value).first<{ subject_id: string }>();
-    if (!subject) return c.json({ success: false, error: 'Customer not found' }, 404);
-
-    const subjectColumn = subjectKind.value === 'friend' ? 'friend_id' : 'conversation_id';
-    const current = await c.env.DB.prepare(
-      `SELECT id, status, version
-       FROM sales_customer_statuses
-       WHERE ${subjectColumn} = ?
-       LIMIT 1`,
-    ).bind(subjectId.value).first<{
-      id: string;
-      status: StoredSalesCustomerStatus;
-      version: number;
-    }>();
-    const currentVersion = current?.version ?? 0;
-    if (currentVersion !== expectedVersion.value) {
-      return c.json({ success: false, error: 'status_conflict' }, 409);
-    }
-    if (current?.status === status.value) {
-      return c.json({ success: false, error: 'no_changes' }, 400);
-    }
-
-    const actor = c.get('staff');
-    const now = jstNow();
-    const mutationId = crypto.randomUUID();
-    const statusId = current?.id ?? crypto.randomUUID();
-    const eventId = crypto.randomUUID();
-    const friendId = subjectKind.value === 'friend' ? subjectId.value : null;
-    const conversationId = subjectKind.value === 'conversation' ? subjectId.value : null;
-    const actorId = actor.id === 'env-owner' ? null : actor.id;
-    const auditSummary = '運営スタッフによる手動更新';
-
-    const statusMutation = current
-      ? c.env.DB.prepare(
-          `UPDATE sales_customer_statuses
-           SET status = ?, summary = ?, source = 'manual', source_fingerprint = NULL,
-               version = version + 1, mutation_id = ?,
-               updated_by = ?, updated_by_name = ?, updated_at = ?
-           WHERE id = ? AND version = ?`,
-        ).bind(
-          status.value,
-          auditSummary,
-          mutationId,
-          actorId,
-          actor.name,
-          now,
-          statusId,
-          expectedVersion.value,
-        )
-      : c.env.DB.prepare(
-          `INSERT INTO sales_customer_statuses (
-             id, friend_id, conversation_id, status, summary, source,
-             source_fingerprint, version, mutation_id,
-             updated_by, updated_by_name, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, 'manual', NULL, 1, ?, ?, ?, ?, ?)`,
-        ).bind(
-          statusId,
-          friendId,
-          conversationId,
-          status.value,
-          auditSummary,
-          mutationId,
-          actorId,
-          actor.name,
-          now,
-          now,
-        );
-
-    try {
-      await c.env.DB.batch([
-        statusMutation,
-        c.env.DB.prepare(
-          `INSERT INTO sales_customer_status_events (
-             id, status_id, from_status, to_status, summary, source,
-             actor_id, actor_name, created_at
-           ) VALUES (
-             ?,
-             (SELECT id FROM sales_customer_statuses WHERE mutation_id = ?),
-             ?, ?, ?, 'manual', ?, ?, ?
-           )`,
-        ).bind(
-          eventId,
-          mutationId,
-          current?.status ?? 'unreviewed',
-          status.value,
-          auditSummary,
-          actorId,
-          actor.name,
-          now,
-        ),
-      ]);
-    } catch (err) {
-      if (salesStatusConflict(err)) {
-        return c.json({ success: false, error: 'status_conflict' }, 409);
-      }
-      throw err;
-    }
-
-    const updated = await c.env.DB.prepare(
-      `${CUSTOMER_SUBJECTS_SQL}
-       SELECT cs.*
-       FROM customer_subjects cs
-       WHERE cs.subject_kind = ? AND cs.subject_id = ?
-       LIMIT 1`,
-    ).bind(
-      subjectKind.value,
-      subjectId.value,
-    ).first<SalesCustomerRow>();
-    if (!updated) return c.json({ success: false, error: 'Customer not found' }, 404);
-    return c.json({ success: true, data: serializeCustomer(updated) });
-  } catch (err) {
-    console.error(`PATCH /api/sales-customers/:subjectKind/:subjectId/status error: ${routeErrorKind(err)}`);
     return c.json({ success: false, error: 'Internal server error' }, 500);
   }
 });

@@ -297,7 +297,7 @@ describe('sales customer read APIs', () => {
 
     expect(response.status).toBe(200)
     const body = await response.json() as {
-      data: { items: Array<Record<string, unknown>>; counts: Record<string, number>; canEditStatus: boolean }
+      data: { items: Array<Record<string, unknown>>; counts: Record<string, number>; canRunBatch: boolean }
     }
     expect(body.data.items).toHaveLength(2)
     expect(body.data.items[0]).toMatchObject({
@@ -333,7 +333,7 @@ describe('sales customer read APIs', () => {
         events: [],
       },
     })
-    expect(body.data.canEditStatus).toBe(false)
+    expect(body.data.canRunBatch).toBe(false)
     expect(body.data.counts).toMatchObject({ complaint: 1, unreviewed: 1, normal: 0 })
     const serialized = JSON.stringify(body)
     expect(serialized).not.toContain('privateConversation')
@@ -372,10 +372,9 @@ describe('sales customer read APIs', () => {
     const body = await response.json() as {
       data: {
         history: Array<Record<string, unknown>>
-        canEditStatus: boolean
       }
     }
-    expect(body.data.canEditStatus).toBe(false)
+    expect(body.data).not.toHaveProperty('canEditStatus')
     expect(body.data.history).toEqual([{
       id: 'event-1',
       fromStatus: 'attention',
@@ -759,102 +758,8 @@ function mutationDb(initial: CurrentStatus | null = null, subjectExists = true) 
 }
 
 describe('sales customer status updates', () => {
-  test('creates and then version-updates current state with immutable history', async () => {
+  test('does not expose a manual status mutation route', async () => {
     const harness = mutationDb()
-    const app = setupApp(harness.db)
-
-    const first = await app.request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'complaint', expectedVersion: 0 }),
-    })
-    expect(first.status).toBe(200)
-    expect(await first.json()).toMatchObject({
-      success: true,
-      data: { status: 'complaint', statusSource: 'manual', version: 1 },
-    })
-
-    const second = await app.request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'normal', expectedVersion: 1 }),
-    })
-    expect(second.status).toBe(200)
-    expect(await second.json()).toMatchObject({
-      success: true,
-      data: { status: 'normal', statusSource: 'manual', version: 2 },
-    })
-    expect(harness.state().events.map((event) => [event.from_status, event.to_status])).toEqual([
-      ['unreviewed', 'complaint'],
-      ['complaint', 'normal'],
-    ])
-    expect(harness.state().preparedSql.some((sql) => (
-      sql.includes('SELECT subject_id FROM customer_subjects')
-      && sql.includes('INNER JOIN line_accounts')
-      && sql.includes("source_type IN ('group', 'room')")
-    ))).toBe(true)
-
-    const detail = await app.request('/api/sales-customers/friend/friend-1')
-    const detailBody = await detail.json() as { data: { history: Array<{ toStatus: string }> } }
-    expect(detailBody.data.history.map((event) => event.toStatus)).toEqual(['normal', 'complaint'])
-  })
-
-  test('requires operator permission, a status, and the current version', async () => {
-    const harness = mutationDb({
-      id: 'status-1',
-      status: 'attention',
-      summary: '要確認',
-      version: 3,
-      mutationId: 'mutation-old',
-      updatedByName: '運営担当',
-      updatedAt: '2026-09-09T10:00:00+09:00',
-    })
-    const payload = JSON.stringify({ status: 'normal', expectedVersion: 2 })
-
-    const conflict = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
-    })
-    expect(conflict.status).toBe(409)
-
-    const missingStatus = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ expectedVersion: 3 }),
-    })
-    expect(missingStatus.status).toBe(400)
-
-    const salesOnly = await setupApp(harness.db, { salesOnly: true }).request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
-    })
-    expect(salesOnly.status).toBe(403)
-
-    const secondary = await setupApp(harness.db, { role: 'secondary' }).request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: payload,
-    })
-    expect(secondary.status).toBe(403)
-  })
-
-  test('ignores supplied memo text and stores only a fixed manual audit reason', async () => {
-    const harness = mutationDb()
-    const response = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        status: 'attention',
-        summary: '連絡先は 090-1234-5678 / 09012345678 / +81 90 1234 5678 / person@example.com / https://example.com/private を参照',
-        expectedVersion: 0,
-      }),
-    })
-
-    expect(response.status).toBe(200)
-    const body = await response.json() as { data: Record<string, unknown> }
-    expect(body.data).not.toHaveProperty('summary')
-    expect(harness.state().current?.summary).toBe('運営スタッフによる手動更新')
-    expect(JSON.stringify(harness.state())).not.toContain('090-1234-5678')
-  })
-
-  test('does not update inactive or out-of-scope customer subjects', async () => {
-    const harness = mutationDb(null, false)
     const response = await setupApp(harness.db).request('/api/sales-customers/friend/friend-1/status', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

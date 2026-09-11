@@ -192,7 +192,6 @@ describe('protected API access', () => {
 
     const deniedPaths: Array<[string, string]> = [
       ['GET', '/api/protected'],
-      ['PATCH', '/api/sales-customers/friend/friend-1/status'],
       ['GET', '/api/sales-customers/friend/friend-1/extra'],
     ];
     for (const [method, path] of deniedPaths) {

@@ -788,7 +788,6 @@ export type SalesCustomerStatusEvent = {
 
 export type SalesCustomerDetail = SalesCustomer & {
   history: SalesCustomerStatusEvent[]
-  canEditStatus: boolean
 }
 
 export type SalesCustomerOverviewBatchResult = {
@@ -853,7 +852,7 @@ export type SalesCustomerListResponse = {
   offset: number
   hasNextPage: boolean
   counts: Record<SalesCustomerStatus, number>
-  canEditStatus: boolean
+  canRunBatch: boolean
 }
 
 export const api = {
@@ -929,18 +928,6 @@ export const api = {
     get: (subjectKind: SalesCustomerSubjectKind, subjectId: string) =>
       fetchApi<ApiResponse<SalesCustomerDetail>>(
         `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}`,
-      ),
-    updateStatus: (
-      subjectKind: SalesCustomerSubjectKind,
-      subjectId: string,
-      data: {
-        status: SalesCustomerStoredStatus
-        expectedVersion: number
-      },
-    ) =>
-      fetchApi<ApiResponse<SalesCustomer>>(
-        `/api/sales-customers/${subjectKind}/${encodeURIComponent(subjectId)}/status`,
-        { method: 'PATCH', body: JSON.stringify(data) },
       ),
     generateSituations: (data: {
       lineAccountId: string

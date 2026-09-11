@@ -20,7 +20,7 @@ import {
 } from '@/lib/sales-customer-status'
 
 const PAGE_SIZE = 50
-const OVERVIEW_BATCH_SIZE = 1
+const OVERVIEW_BATCH_SIZE = 2
 type StatusFilter = SalesCustomerStatus | 'action_required' | 'all'
 
 type OverviewBatchSummary = {

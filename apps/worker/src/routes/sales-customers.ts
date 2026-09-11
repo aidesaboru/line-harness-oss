@@ -96,6 +96,8 @@ type SalesCustomerSemanticMessageRow = {
   sent_by_staff_name: string | null;
 };
 
+const SALES_CUSTOMER_AI_TIMEOUT_MS = 25_000;
+
 const CUSTOMER_SUBJECTS_SQL = `
   WITH customer_subjects AS (
     SELECT
@@ -905,8 +907,14 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
               });
               continue;
             }
+            let timeoutId: ReturnType<typeof setTimeout> | undefined;
             try {
-              const result = await generateSalesCustomerSituation(c.env.AI, item.source, generatedAt);
+              const result = await Promise.race([
+                generateSalesCustomerSituation(c.env.AI, item.source, generatedAt),
+                new Promise<never>((_resolve, reject) => {
+                  timeoutId = setTimeout(() => reject(new Error('sales_customer_ai_timeout')), SALES_CUSTOMER_AI_TIMEOUT_MS);
+                }),
+              ]);
               generated.push({
                 ...item,
                 situation: {
@@ -925,6 +933,8 @@ salesCustomers.post('/api/sales-customers/situations/generate', async (c) => {
                 : 'ai_unavailable';
               if (kind === 'invalid_ai_response') failures.invalidAiResponse += 1;
               else failures.aiUnavailable += 1;
+            } finally {
+              if (timeoutId !== undefined) clearTimeout(timeoutId);
             }
           }
         },

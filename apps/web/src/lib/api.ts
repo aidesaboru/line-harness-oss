@@ -879,6 +879,19 @@ export type InquiryAnalyticsResponse = {
   offset: number
 }
 
+export type HistoricalInquiryImportCase = {
+  sourceRef: string
+  customerNumber: string | null
+  openedAt: string
+  lastActivityAt: string
+  primaryCategory: string
+  labels: string[]
+  inquirySummary: string
+  resolutionSummary: string | null
+  resolutionStatus: 'open' | 'answered' | 'resolved' | 'unknown'
+  confidence: number
+}
+
 export const api = {
   friends: {
     list: (params?: FriendListParams) => {
@@ -976,6 +989,11 @@ export const api = {
       if (params.offset) query.set('offset', String(params.offset))
       return fetchApi<ApiResponse<InquiryAnalyticsResponse>>(`/api/inquiry-analytics?${query.toString()}`)
     },
+    importCases: (input: { lineAccountId: string; cases: HistoricalInquiryImportCase[] }) =>
+      fetchApi<ApiResponse<{ imported: number }>>('/api/inquiry-analytics/import', {
+        method: 'POST',
+        body: JSON.stringify({ ...input, confirm: 'import_inquiry_analytics' }),
+      }),
   },
   tags: {
     list: () =>

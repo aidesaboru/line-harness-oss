@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { api, type InquiryAnalyticsResponse } from '@/lib/api'
+import { readStaffIdentityCache } from '@/lib/auth-session'
+import { parseInquiryImportJsonl, type HistoricalInquiryImportCase } from '@/lib/inquiry-import'
 
 const EMPTY: InquiryAnalyticsResponse = {
   totals: { total: 0, customers: 0, resolved: 0, needs_review: 0 },
@@ -26,6 +28,10 @@ export default function InquiryAnalyticsPage() {
   const [resolution, setResolution] = useState('')
   const [query, setQuery] = useState('')
   const [offset, setOffset] = useState(0)
+  const [preparedImport, setPreparedImport] = useState<{ name: string; cases: HistoricalInquiryImportCase[] } | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importMessage, setImportMessage] = useState('')
+  const canImport = useMemo(() => ['owner', 'admin'].includes(readStaffIdentityCache().role), [])
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
@@ -53,6 +59,39 @@ export default function InquiryAnalyticsPage() {
   }).join(' '), [data.trends, maxTrend])
   const resolutionRate = data.totals.total ? Math.round((data.totals.resolved / data.totals.total) * 100) : 0
 
+  const prepareImport = useCallback(async (file: File | undefined) => {
+    setPreparedImport(null); setImportMessage('')
+    if (!file) return
+    if (file.size > 20 * 1024 * 1024) { setImportMessage('投入ファイルは20MB以下にしてください'); return }
+    try {
+      const cases = parseInquiryImportJsonl(await file.text())
+      setPreparedImport({ name: file.name, cases })
+      setImportMessage(`${cases.length.toLocaleString('ja-JP')}件を確認しました。まだ本番には投入していません。`)
+    } catch (reason) {
+      setImportMessage(reason instanceof Error ? reason.message : '投入ファイルを読み取れませんでした')
+    }
+  }, [])
+
+  const runImport = useCallback(async () => {
+    if (!selectedAccount?.id || !preparedImport || importing) return
+    setImporting(true); setImportMessage('')
+    let imported = 0
+    try {
+      for (let index = 0; index < preparedImport.cases.length; index += 100) {
+        const batch = preparedImport.cases.slice(index, index + 100)
+        const response = await api.inquiryAnalytics.importCases({ lineAccountId: selectedAccount.id, cases: batch })
+        if (!response.success) throw new Error(response.error || '投入に失敗しました')
+        imported += response.data.imported
+        setImportMessage(`${preparedImport.cases.length.toLocaleString('ja-JP')}件中 ${imported.toLocaleString('ja-JP')}件を投入中`)
+      }
+      setImportMessage(`${imported.toLocaleString('ja-JP')}件の本番投入が完了しました`)
+      setPreparedImport(null); setOffset(0)
+      await load()
+    } catch (reason) {
+      setImportMessage(`${imported.toLocaleString('ja-JP')}件まで投入済み。${reason instanceof Error ? reason.message : '投入に失敗しました'}。同じファイルで安全に再開できます。`)
+    } finally { setImporting(false) }
+  }, [importing, load, preparedImport, selectedAccount?.id])
+
   return (
     <>
       <Header title="問い合わせ分析" />
@@ -74,6 +113,17 @@ export default function InquiryAnalyticsPage() {
               ['要レビュー', data.totals.needs_review, '分類の確信度が60%未満'],
             ].map(([label, value, note]) => <article key={String(label)} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-1 text-3xl font-black tabular-nums text-slate-900">{Number(value).toLocaleString('ja-JP')}</p><p className="mt-2 text-[11px] leading-5 text-slate-500">{note}</p></article>)}
           </section>
+
+          {canImport && <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+            <summary className="cursor-pointer text-sm font-bold text-slate-800">初回・復旧用の履歴投入</summary>
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <label className="block text-xs font-bold text-slate-600">分析済みJSONL
+                <input type="file" accept=".jsonl,application/json" aria-label="問い合わせ分析データを選択" disabled={importing} onChange={(event) => void prepareImport(event.target.files?.[0])} className="mt-1 block max-w-full text-sm" />
+              </label>
+              <button type="button" disabled={!preparedImport || importing || !selectedAccount?.id} onClick={() => void runImport()} className="h-10 rounded-lg bg-emerald-700 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-40">{importing ? '本番投入中…' : preparedImport ? `${preparedImport.cases.length.toLocaleString('ja-JP')}件を本番投入` : '本番投入'}</button>
+            </div>
+            <p className="mt-3 text-xs leading-5 text-slate-500">{preparedImport ? `${preparedImport.name} · ` : ''}{importMessage || '同じ参照IDは上書きされるため、再実行しても重複しません。'}</p>
+          </details>}
 
           <section className="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
             <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">

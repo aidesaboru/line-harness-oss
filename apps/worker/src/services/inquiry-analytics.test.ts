@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { classifyInquiryText, inferResolutionStatus, redactInquirySummary } from './inquiry-analytics.js';
+import {
+  classifyInquiryGenre,
+  classifyInquiryText,
+  inferResolutionStatus,
+  inquiryGenreSql,
+  isInquiryGenreForCategory,
+  redactInquirySummary,
+} from './inquiry-analytics.js';
 
 describe('inquiry analytics classification', () => {
   it('prioritizes legal rights issues and keeps multi-label evidence', () => {
@@ -32,5 +39,26 @@ describe('inquiry analytics classification', () => {
   it('does not equate every operator reply with confirmed resolution', () => {
     expect(inferResolutionStatus('outgoing', '確認して折り返します')).toBe('answered');
     expect(inferResolutionStatus('incoming', '無事に解決しました')).toBe('resolved');
+  });
+
+  it('classifies a category-specific genre with deterministic priority', () => {
+    expect(classifyInquiryGenre('事務所への電話', '楽天の購入者から事務所へ着信がありました')).toBe('購入者からの電話');
+    expect(classifyInquiryGenre('モール・アカウント', 'Yahooのログイン認証について')).toBe('Yahoo');
+    expect(classifyInquiryGenre('権利侵害・法務', '内容証明について弁護士へ相談')).toBe('内容証明・警告');
+    expect(classifyInquiryGenre('その他', '判別できない短い連絡')).toBe('内容確認が必要');
+  });
+
+  it('validates genres within their parent category', () => {
+    expect(isInquiryGenreForCategory('事務所への電話', '着信・折り返し')).toBe(true);
+    expect(isInquiryGenreForCategory('事務所への電話', 'その他電話')).toBe(true);
+    expect(isInquiryGenreForCategory('税務・確定申告', '着信・折り返し')).toBe(false);
+  });
+
+  it('builds a constant-only SQL expression for the same genre rules', () => {
+    const sql = inquiryGenreSql('summary_text', 'category_name');
+    expect(sql).toContain('CASE category_name');
+    expect(sql).toContain("instr(lower(COALESCE(summary_text, '')), lower('内容証明')) > 0");
+    expect(sql).toContain("THEN '内容証明・警告'");
+    expect(sql).toContain("ELSE '内容確認が必要' END");
   });
 });

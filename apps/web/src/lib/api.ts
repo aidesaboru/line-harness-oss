@@ -862,6 +862,7 @@ export type InquiryAnalyticsCase = {
   opened_at: string
   last_activity_at: string
   primary_category: string
+  genre: string
   labels: string[]
   inquiry_summary: string
   resolution_summary: string | null
@@ -873,8 +874,11 @@ export type InquiryAnalyticsCase = {
 export type InquiryAnalyticsResponse = {
   totals: { total: number; customers: number; resolved: number; needs_review: number }
   categories: Array<{ category: string; count: number; customers: number }>
-  trends: Array<{ month: string; count: number }>
+  genres: Array<{ genre: string; count: number; customers: number }>
+  trends: Array<{ period: string; count: number }>
   cases: InquiryAnalyticsCase[]
+  filtered_total: number
+  trend_granularity: 'day' | 'week' | 'month'
   limit: number
   offset: number
 }
@@ -979,10 +983,12 @@ export const api = {
       ),
   },
   inquiryAnalytics: {
-    list: (params: { lineAccountId?: string; category?: string; resolution?: string; q?: string; limit?: number; offset?: number } = {}) => {
+    list: (params: { lineAccountId?: string; category?: string; genre?: string; granularity?: 'day' | 'week' | 'month'; resolution?: string; q?: string; limit?: number; offset?: number } = {}) => {
       const query = new URLSearchParams()
       if (params.lineAccountId) query.set('lineAccountId', params.lineAccountId)
       if (params.category) query.set('category', params.category)
+      if (params.genre) query.set('genre', params.genre)
+      if (params.granularity) query.set('granularity', params.granularity)
       if (params.resolution) query.set('resolution', params.resolution)
       if (params.q) query.set('q', params.q)
       if (params.limit) query.set('limit', String(params.limit))

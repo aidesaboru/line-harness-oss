@@ -21,6 +21,123 @@ export const INQUIRY_CATEGORIES = [
 export type InquiryCategory = (typeof INQUIRY_CATEGORIES)[number];
 export type InquiryResolutionStatus = 'open' | 'answered' | 'resolved' | 'unknown';
 
+type InquiryGenreRule = { genre: string; words: readonly string[] };
+
+export const INQUIRY_GENRE_RULES: Record<InquiryCategory, readonly InquiryGenreRule[]> = {
+  '権利侵害・法務': [
+    { genre: '内容証明・警告', words: ['内容証明', '警告書', '警告'] },
+    { genre: '商標・知財', words: ['商標', '著作権', '知的財産', '権利侵害', '知財'] },
+    { genre: '弁護士・法的手続き', words: ['弁護士', '法的措置', '訴訟', '裁判', '法務'] },
+  ],
+  '事務所への電話': [
+    { genre: '購入者からの電話', words: ['購入者', 'お客様', 'お客さま', '買った方', '注文者'] },
+    { genre: 'モール・関係先からの電話', words: ['楽天', 'yahoo', 'amazon', 'モール', '配送会社', '税務署', 'カード会社'] },
+    { genre: '着信・折り返し', words: ['着信', '折り返し', '折返し', '電話があり', '電話あり'] },
+    { genre: '電話番号・連絡先', words: ['電話番号', '代表番号', '連絡先', '番号を'] },
+  ],
+  '税務・確定申告': [
+    { genre: '確定申告・決算', words: ['確定申告', '決算', '申告書'] },
+    { genre: '消費税・インボイス', words: ['消費税', 'インボイス', '適格請求書'] },
+    { genre: '税理士・資料共有', words: ['税理士', '税務署', '税務資料', '資料共有'] },
+    { genre: '会計処理・勘定科目', words: ['会計処理', '勘定科目', '仕訳', '経費', '帳簿'] },
+  ],
+  '破産・債務・廃業': [
+    { genre: '自己破産・債務整理', words: ['自己破産', '債務整理', '債務'] },
+    { genre: '口座凍結・差押え', words: ['口座凍結', '凍結', '差押え', '差し押さえ'] },
+    { genre: '廃業・倒産', words: ['廃業', '倒産', '事業停止'] },
+  ],
+  '契約・退会': [
+    { genre: '退会・解約', words: ['退会', '解約', '契約解除', '契約終了'] },
+    { genre: '契約内容・同意', words: ['契約内容', '契約書', '同意', '規約'] },
+    { genre: '休会・停止', words: ['休会', '一時停止', '利用停止', '停止した'] },
+  ],
+  '請求・支払い': [
+    { genre: '請求書・領収書', words: ['請求書', '領収書', '明細'] },
+    { genre: '入金・振込', words: ['入金', '振込', '振り込み', '口座'] },
+    { genre: '報酬・精算', words: ['報酬', '精算', '売上金'] },
+    { genre: '未払い・不足', words: ['未払い', '不足', '未入金', '滞納'] },
+    { genre: '手数料', words: ['手数料'] },
+  ],
+  '受注・配送・返品': [
+    { genre: '配送・未着', words: ['配送', '発送', '未着', '届か', '追跡'] },
+    { genre: '返品・交換', words: ['返品', '交換'] },
+    { genre: '返金', words: ['返金'] },
+    { genre: '注文・キャンセル', words: ['注文', '受注', 'キャンセル'] },
+  ],
+  'モール・アカウント': [
+    { genre: '楽天', words: ['楽天'] },
+    { genre: 'Yahoo', words: ['yahoo'] },
+    { genre: 'Amazon', words: ['amazon'] },
+    { genre: 'ログイン・認証', words: ['ログイン', 'パスワード', '認証', '二段階'] },
+    { genre: 'アカウント停止・審査', words: ['アカウント停止', '利用停止', '審査', '凍結'] },
+  ],
+  '商品登録・店舗運用': [
+    { genre: '商品登録・出品', words: ['商品登録', '出品', '登録商品'] },
+    { genre: '在庫・価格', words: ['在庫', '価格', '値段'] },
+    { genre: '商品画像・ページ', words: ['商品画像', '商品ページ', '画像', 'ページ編集'] },
+    { genre: '店舗運用', words: ['店舗運用', 'ショップ運営', '店舗設定'] },
+  ],
+  '広告・集客': [
+    { genre: '広告運用', words: ['広告運用', '広告費', '出稿', '広告'] },
+    { genre: '集客・流入', words: ['集客', '流入', 'アクセス'] },
+    { genre: 'クーポン・販促', words: ['クーポン', '販促', 'セール'] },
+  ],
+  'システム・操作': [
+    { genre: 'エラー・不具合', words: ['エラー', '不具合', 'できません', '動かない'] },
+    { genre: '操作方法', words: ['操作方法', 'やり方', '方法を', 'どうすれば'] },
+    { genre: '設定・表示', words: ['設定', '表示され', '画面', '反映され'] },
+  ],
+  'その他': [
+    { genre: '進捗確認・催促', words: ['進捗', '状況確認', 'どうなって', 'まだですか', '催促'] },
+    { genre: '書類・資料', words: ['書類', '資料', '申請書', '証明書'] },
+    { genre: '写真・ファイル共有', words: ['写真', '画像', 'ファイル', '添付'] },
+    { genre: '登録情報変更', words: ['住所変更', '名義変更', '登録情報', '変更したい'] },
+    { genre: '感謝・完了連絡', words: ['ありがとう', '助かりました', '完了しました', '承知しました'] },
+    { genre: '運営相談', words: ['相談', '運営', '売上', '今後'] },
+  ],
+};
+
+const FALLBACK_GENRES: Record<InquiryCategory, string> = {
+  '権利侵害・法務': 'その他法務',
+  '事務所への電話': 'その他電話',
+  '税務・確定申告': 'その他税務',
+  '破産・債務・廃業': 'その他債務・廃業',
+  '契約・退会': 'その他契約',
+  '請求・支払い': 'その他請求・支払い',
+  '受注・配送・返品': 'その他受注・配送',
+  'モール・アカウント': 'その他モール・アカウント',
+  '商品登録・店舗運用': 'その他店舗運用',
+  '広告・集客': 'その他広告・集客',
+  'システム・操作': 'その他システム・操作',
+  'その他': '内容確認が必要',
+};
+
+export function classifyInquiryGenre(category: InquiryCategory, text: string): string {
+  const normalized = text.toLocaleLowerCase('ja-JP');
+  return INQUIRY_GENRE_RULES[category].find((rule) => rule.words.some((word) => normalized.includes(word.toLocaleLowerCase('ja-JP'))))?.genre
+    ?? FALLBACK_GENRES[category];
+}
+
+export function isInquiryGenreForCategory(category: InquiryCategory, genre: string): boolean {
+  return genre === FALLBACK_GENRES[category] || INQUIRY_GENRE_RULES[category].some((rule) => rule.genre === genre);
+}
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function inquiryGenreSql(summaryColumn = 'inquiry_summary', categoryColumn = 'primary_category'): string {
+  const text = `lower(COALESCE(${summaryColumn}, ''))`;
+  const categoryCases = INQUIRY_CATEGORIES.map((category) => {
+    const rules = INQUIRY_GENRE_RULES[category].map((rule) => {
+      const wordChecks = rule.words.map((word) => `instr(${text}, lower(${sqlLiteral(word)})) > 0`).join(' OR ');
+      return `WHEN ${wordChecks} THEN ${sqlLiteral(rule.genre)}`;
+    }).join(' ');
+    return `WHEN ${sqlLiteral(category)} THEN CASE ${rules} ELSE ${sqlLiteral(FALLBACK_GENRES[category])} END`;
+  }).join(' ');
+  return `CASE ${categoryColumn} ${categoryCases} ELSE '内容確認が必要' END`;
+}
+
 const CATEGORY_RULES: ReadonlyArray<{ category: InquiryCategory; words: readonly string[] }> = [
   { category: '権利侵害・法務', words: ['権利侵害', '著作権', '商標', '知的財産', '内容証明', '弁護士', '法的措置', '訴訟', '警告書'] },
   { category: '破産・債務・廃業', words: ['自己破産', '破産', '倒産', '債務整理', '債務', '廃業'] },

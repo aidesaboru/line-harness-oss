@@ -54,11 +54,32 @@ class Episode:
     outgoing: list[str] = field(default_factory=list)
 
 
+def truncate_utf16(text: str, limit: int) -> str:
+    """Match JavaScript/API string-length limits without splitting a character."""
+    used = 0
+    result: list[str] = []
+    for character in text:
+        units = 2 if ord(character) > 0xFFFF else 1
+        if used + units > limit:
+            break
+        result.append(character)
+        used += units
+    return "".join(result)
+
+
 def redact(text: str, limit: int = 500) -> str:
     text = re.sub(r"https?://\S+", "[URL]", text, flags=re.I)
     text = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[メール]", text, flags=re.I)
     text = re.sub(r"(?:\+?81[-\s]?)?0\d{1,4}[-\s]\d{1,4}[-\s]\d{3,4}", "[電話番号]", text)
-    return re.sub(r"\s+", " ", text).strip()[:limit]
+    text = re.sub(r"(口座番号\s*[：:]?\s*)\d{4,12}", r"\1[口座番号]", text)
+    text = re.sub(r"((?:普通|当座)\s*)\d{5,12}", r"\1[口座番号]", text)
+    text = re.sub(r"(?:〒\s*\d{3}[-‐‑–—ー－]?\d{4}|(?<!\d)\d{3}[-‐‑–—ー－]\d{4}(?!\d))(?:\s*[^\s/、。,]{1,48})?", "[住所]", text)
+    text = re.sub(r"(?:北海道|東京都|大阪府|京都府|.{2,3}県)[^\s/、。,]{3,48}", "[住所]", text)
+    text = re.sub(r"((?:●\s*)?お名前\s*[：:]?\s*)[^\n●/]{2,40}", r"\1[氏名]", text)
+    text = re.sub(r"(口座名義(?:（カナ）|\(カナ\))?\s*[：:]\s*)[^\n/]{2,64}", r"\1[口座名義]", text)
+    text = re.sub(r"(?<![一-龥])([一-龥]{2,5})[\s　]+([一-龥]{2,5})様", "[氏名]様", text)
+    text = re.sub(r"((?:ログイン)?ID|パスワード)\s*[：:]\s*[^\s/]{3,64}", r"\1：[認証情報]", text, flags=re.I)
+    return truncate_utf16(re.sub(r"\s+", " ", text).strip(), limit)
 
 
 def customer_number(filename: str) -> str:

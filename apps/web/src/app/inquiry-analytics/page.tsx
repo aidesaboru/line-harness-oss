@@ -5,9 +5,12 @@ import Header from '@/components/layout/header'
 import { useAccount } from '@/contexts/account-context'
 import { api, type InquiryAnalyticsCase, type InquiryAnalyticsResponse } from '@/lib/api'
 import {
+  createInquiryTrendScale,
+  formatInquiryTrendAverage,
   formatInquiryTrendPeriod,
   INQUIRY_TREND_GRANULARITY_LABELS,
-  niceInquiryTrendMaximum,
+  INQUIRY_TREND_RECENT_LABELS,
+  selectRecentInquiryTrends,
   type InquiryTrendGranularity,
 } from '@/lib/inquiry-analytics'
 
@@ -43,81 +46,115 @@ function TrendChart({
   trends: InquiryAnalyticsResponse['trends']
   granularity: InquiryTrendGranularity
 }) {
-  const width = 760
-  const height = 260
-  const left = 48
-  const right = 18
-  const top = 28
-  const bottom = 48
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const width = Math.max(760, 80 + Math.max(0, trends.length - 1) * 58)
+  const height = 300
+  const left = 58
+  const right = 22
+  const top = 52
+  const bottom = 54
   const chartWidth = width - left - right
   const chartHeight = height - top - bottom
   const maxValue = Math.max(0, ...trends.map((item) => Number(item.count)))
-  const axisMax = niceInquiryTrendMaximum(maxValue)
+  const scale = createInquiryTrendScale(maxValue)
   const points = trends.map((item, index) => ({
     ...item,
     x: trends.length <= 1 ? left + chartWidth / 2 : left + (index / (trends.length - 1)) * chartWidth,
-    y: top + chartHeight - (Number(item.count) / axisMax) * chartHeight,
+    y: top + chartHeight - (Number(item.count) / scale.maximum) * chartHeight,
   }))
-  const xLabelStep = Math.max(1, Math.ceil(trends.length / 7))
-  const valueLabelStep = Math.max(1, Math.ceil(trends.length / 10))
+  const baseline = top + chartHeight
+  const areaPoints = points.length
+    ? [`${points[0].x},${baseline}`, ...points.map((point) => `${point.x},${point.y}`), `${points.at(-1)?.x ?? left},${baseline}`].join(' ')
+    : ''
+  const lastPeriod = trends.at(-1)?.period
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollRef.current) scrollRef.current.scrollLeft = scrollRef.current.scrollWidth
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [granularity, lastPeriod, trends.length, width])
 
   if (trends.length === 0) {
     return <div className="flex h-64 items-center justify-center rounded-lg border border-dashed border-slate-200 text-sm text-slate-500">推移を表示するデータがありません</div>
   }
 
   return (
-    <div className="overflow-x-auto" tabIndex={0} aria-label="問い合わせ推移グラフ。横にスクロールできます">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="h-[260px] min-w-[660px] w-full"
-        role="img"
-        aria-label={`${INQUIRY_TREND_GRANULARITY_LABELS[granularity]}の問い合わせ件数`}
-      >
-        {[0, 1, 2, 3, 4].map((tick) => {
-          const value = Math.round((axisMax * (4 - tick)) / 4)
-          const y = top + (chartHeight * tick) / 4
-          return (
-            <g key={tick}>
-              <line x1={left} y1={y} x2={width - right} y2={y} stroke="#e2e8f0" strokeWidth="1" />
-              <text x={left - 10} y={y + 4} textAnchor="end" fill="#64748b" fontSize="11">{value}</text>
-            </g>
-          )
-        })}
-        <line x1={left} y1={top} x2={left} y2={top + chartHeight} stroke="#cbd5e1" strokeWidth="1" />
-        <line x1={left} y1={top + chartHeight} x2={width - right} y2={top + chartHeight} stroke="#cbd5e1" strokeWidth="1" />
-        {points.length > 1 && (
-          <polyline
-            points={points.map((point) => `${point.x},${point.y}`).join(' ')}
-            fill="none"
-            stroke="#059669"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        )}
-        {points.map((point, index) => {
-          const showXLabel = index % xLabelStep === 0 || index === points.length - 1
-          const showValue = index % valueLabelStep === 0 || index === points.length - 1 || point.count === maxValue
-          return (
-            <g key={point.period}>
-              <circle cx={point.x} cy={point.y} r="4" fill="white" stroke="#059669" strokeWidth="2.5">
-                <title>{formatInquiryTrendPeriod(point.period, granularity)}：{point.count}件</title>
-              </circle>
-              {showValue && (
-                <text x={point.x} y={Math.max(14, point.y - 10)} textAnchor="middle" fill="#334155" fontSize="11" fontWeight="600">
-                  {point.count}
+    <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-50/70">
+      <div ref={scrollRef} className="overflow-x-auto" tabIndex={0} aria-label="問い合わせ推移グラフ。全期間表示では横にスクロールできます">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="h-[300px] max-w-none"
+          style={{ width, minWidth: '100%' }}
+          role="img"
+          aria-label={`${INQUIRY_TREND_GRANULARITY_LABELS[granularity]}の問い合わせ件数`}
+        >
+          <rect x={left} y={top} width={chartWidth} height={chartHeight} rx="8" fill="#ffffff" />
+          {scale.ticks.map((value) => {
+            const y = top + chartHeight - (value / scale.maximum) * chartHeight
+            return <line key={value} x1={left} y1={y} x2={width - right} y2={y} stroke="#dfe6e3" strokeWidth="1" />
+          })}
+          {points.map((point) => (
+            <line key={`guide-${point.period}`} x1={point.x} y1={top} x2={point.x} y2={baseline} stroke="#eef2f1" strokeWidth="1" />
+          ))}
+          <line x1={left} y1={baseline} x2={width - right} y2={baseline} stroke="#94a3b8" strokeWidth="1.25" />
+          {points.length > 1 && <polygon points={areaPoints} fill="#06C755" opacity="0.08" />}
+          {points.length > 1 && (
+            <polyline
+              points={points.map((point) => `${point.x},${point.y}`).join(' ')}
+              fill="none"
+              stroke="#049b46"
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          )}
+          {points.map((point, index) => {
+            const latest = index === points.length - 1
+            const labelWidth = Math.max(34, String(point.count).length * 8 + 16)
+            const labelY = Math.max(6, point.y - 31)
+            return (
+              <g key={point.period}>
+                <rect
+                  x={point.x - labelWidth / 2}
+                  y={labelY}
+                  width={labelWidth}
+                  height="22"
+                  rx="6"
+                  fill={latest ? '#ecfdf3' : '#ffffff'}
+                  stroke={latest ? '#06C755' : '#d7dfdc'}
+                />
+                <text x={point.x} y={labelY + 15} textAnchor="middle" fill={latest ? '#04783f' : '#334155'} fontSize="12" fontWeight="600">
+                  {Number(point.count).toLocaleString('ja-JP')}
                 </text>
-              )}
-              {showXLabel && (
-                <text x={point.x} y={height - 19} textAnchor="middle" fill="#64748b" fontSize="11">
+                {latest && <circle cx={point.x} cy={point.y} r="9" fill="#dcfce7" stroke="#06C755" strokeWidth="1" />}
+                <circle cx={point.x} cy={point.y} r={latest ? 5 : 4.5} fill={latest ? '#06C755' : 'white'} stroke="#049b46" strokeWidth="2.5">
+                  <title>{formatInquiryTrendPeriod(point.period, granularity)}：{point.count}件</title>
+                </circle>
+                <text x={point.x} y={height - 20} textAnchor="middle" fill={latest ? '#04783f' : '#475569'} fontSize="12" fontWeight={latest ? '600' : '500'}>
                   {formatInquiryTrendPeriod(point.period, granularity, true)}
                 </text>
-              )}
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+      <svg viewBox={`0 0 ${left} ${height}`} className="pointer-events-none absolute inset-y-0 left-0 h-[300px] w-[58px] border-r border-slate-200 bg-slate-50" aria-hidden="true">
+        {scale.ticks.map((value) => {
+          const y = top + chartHeight - (value / scale.maximum) * chartHeight
+          return (
+            <g key={value}>
+              <line x1={left - 6} y1={y} x2={left} y2={y} stroke="#94a3b8" strokeWidth="1.25" />
+              <text x={left - 10} y={y + 4} textAnchor="end" fill="#475569" fontSize="12" fontWeight="500">{value.toLocaleString('ja-JP')}</text>
             </g>
           )
         })}
-        <text x="13" y="18" fill="#64748b" fontSize="10">件数</text>
+        <line x1={left - 1} y1={top} x2={left - 1} y2={baseline} stroke="#94a3b8" strokeWidth="1.25" />
       </svg>
+      <div className="pointer-events-none absolute left-[70px] top-3 z-10 flex items-center gap-2 rounded-md bg-white px-2 py-1 text-xs font-medium text-slate-600 shadow-sm">
+        <span className="h-0.5 w-6 rounded-full bg-emerald-600" />
+        問い合わせ
+      </div>
     </div>
   )
 }
@@ -197,6 +234,7 @@ export default function InquiryAnalyticsPage() {
   const [category, setCategory] = useState('')
   const [genre, setGenre] = useState('')
   const [granularity, setGranularity] = useState<InquiryTrendGranularity>('month')
+  const [trendRange, setTrendRange] = useState<'recent' | 'all'>('recent')
   const [resolution, setResolution] = useState('')
   const [queryInput, setQueryInput] = useState('')
   const [query, setQuery] = useState('')
@@ -228,18 +266,22 @@ export default function InquiryAnalyticsPage() {
 
   useEffect(() => { void load() }, [load])
   useEffect(() => { setOffset(0) }, [selectedAccount?.id, category, genre, resolution, query])
+  useEffect(() => { setTrendRange('recent') }, [selectedAccount?.id, category, genre, granularity])
 
   const maxCategory = Math.max(1, ...data.categories.map((item) => Number(item.count)))
   const maxGenre = Math.max(1, ...data.genres.map((item) => Number(item.count)))
   const selectedCategoryCount = Number(data.categories.find((item) => item.category === category)?.count ?? 0)
-  const latestTrend = data.trends.at(-1)
-  const maxTrend = data.trends.reduce<InquiryAnalyticsResponse['trends'][number] | null>((current, item) => (
+  const visibleTrends = trendRange === 'all' ? data.trends : selectRecentInquiryTrends(data.trends, granularity)
+  const exactTrends = visibleTrends.slice(-6)
+  const latestTrend = visibleTrends.at(-1)
+  const maxTrend = visibleTrends.reduce<InquiryAnalyticsResponse['trends'][number] | null>((current, item) => (
     !current || Number(item.count) > Number(current.count) ? item : current
   ), null)
-  const averageTrend = data.trends.length
-    ? Math.round(data.trends.reduce((sum, item) => sum + Number(item.count), 0) / data.trends.length)
+  const averageTrend = visibleTrends.length
+    ? visibleTrends.reduce((sum, item) => sum + Number(item.count), 0) / visibleTrends.length
     : 0
   const trendScope = genre ? `${category} › ${genre}` : category || '全カテゴリー'
+  const trendRangeLabel = trendRange === 'recent' ? INQUIRY_TREND_RECENT_LABELS[granularity] : '全期間'
   const firstVisible = data.filtered_total === 0 ? 0 : offset + 1
   const lastVisible = Math.min(offset + data.cases.length, data.filtered_total)
 
@@ -281,47 +323,54 @@ export default function InquiryAnalyticsPage() {
           </section>
 
           <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="trend-heading">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h1 id="trend-heading" className="text-base font-semibold text-slate-900">問い合わせ推移</h1>
-                <p className="mt-1 text-xs text-slate-500">{trendScope}の受付件数を{INQUIRY_TREND_GRANULARITY_LABELS[granularity]}で表示</p>
+                <p className="mt-1 text-xs text-slate-500">{trendScope}の受付件数を{INQUIRY_TREND_GRANULARITY_LABELS[granularity]}・{trendRangeLabel}で表示</p>
               </div>
-              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="集計単位">
-                {(Object.keys(INQUIRY_TREND_GRANULARITY_LABELS) as InquiryTrendGranularity[]).map((value) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setGranularity(value)}
-                    aria-pressed={granularity === value}
-                    className={`min-h-9 rounded-md px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${granularity === value ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-                  >
-                    {INQUIRY_TREND_GRANULARITY_LABELS[value]}
-                  </button>
-                ))}
+              <div className="flex flex-wrap justify-end gap-2">
+                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="集計単位">
+                  {(Object.keys(INQUIRY_TREND_GRANULARITY_LABELS) as InquiryTrendGranularity[]).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setGranularity(value)}
+                      aria-pressed={granularity === value}
+                      className={`min-h-9 rounded-md px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${granularity === value ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+                    >
+                      {INQUIRY_TREND_GRANULARITY_LABELS[value]}
+                    </button>
+                  ))}
+                </div>
+                <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="表示範囲">
+                  <button type="button" onClick={() => setTrendRange('recent')} aria-pressed={trendRange === 'recent'} className={`min-h-9 rounded-md px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${trendRange === 'recent' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>直近</button>
+                  <button type="button" onClick={() => setTrendRange('all')} aria-pressed={trendRange === 'all'} className={`min-h-9 rounded-md px-3 text-xs font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${trendRange === 'all' ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}>全期間</button>
+                </div>
               </div>
             </div>
 
             <div className="mt-4 grid grid-cols-3 gap-2 border-y border-slate-100 py-3 sm:max-w-xl sm:gap-5">
               <div><p className="text-[11px] text-slate-500">最新</p><p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{latestTrend ? `${latestTrend.count}件` : '—'}</p><p className="truncate text-[10px] text-slate-400">{latestTrend ? formatInquiryTrendPeriod(latestTrend.period, granularity) : 'データなし'}</p></div>
               <div><p className="text-[11px] text-slate-500">最多</p><p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{maxTrend ? `${maxTrend.count}件` : '—'}</p><p className="truncate text-[10px] text-slate-400">{maxTrend ? formatInquiryTrendPeriod(maxTrend.period, granularity) : 'データなし'}</p></div>
-              <div><p className="text-[11px] text-slate-500">期間平均</p><p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{data.trends.length ? `${averageTrend}件` : '—'}</p><p className="text-[10px] text-slate-400">表示期間内</p></div>
+              <div><p className="text-[11px] text-slate-500">期間平均</p><p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-900">{visibleTrends.length ? `${formatInquiryTrendAverage(averageTrend)}件` : '—'}</p><p className="text-[10px] text-slate-400">{trendRangeLabel}</p></div>
             </div>
 
             <div className="mt-3">
-              <TrendChart trends={data.trends} granularity={granularity} />
+              <TrendChart trends={visibleTrends} granularity={granularity} />
             </div>
-            {data.trends.length > 0 && (
+            <p className={`mt-2 text-right text-[11px] tracking-[0.01em] text-slate-500 ${trendRange === 'all' ? '' : 'sm:hidden'}`}>
+              最新側から表示しています。左右にスクロールして確認できます。
+            </p>
+            {exactTrends.length > 0 && (
               <div className="mt-3 border-t border-slate-100 pt-3">
-                <p className="text-[11px] font-semibold text-slate-500">期間別の正確な件数</p>
-                <div className="mt-2 overflow-x-auto pb-1">
-                  <div className="flex min-w-max gap-2">
-                    {data.trends.map((item) => (
-                      <div key={item.period} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                        <p className="text-[10px] text-slate-500">{formatInquiryTrendPeriod(item.period, granularity)}</p>
-                        <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900">{item.count.toLocaleString('ja-JP')}件</p>
-                      </div>
-                    ))}
-                  </div>
+                <p className="text-[11px] font-semibold tracking-[0.01em] text-slate-600">直近6期間の件数</p>
+                <div className="mt-2 grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 sm:grid-cols-3 xl:grid-cols-6">
+                  {exactTrends.map((item) => (
+                    <div key={item.period} className="border-b border-r border-slate-200 px-3 py-2.5 last:border-r-0 sm:[&:nth-last-child(-n+3)]:border-b-0 xl:border-b-0">
+                      <p className="text-[11px] tracking-[0.01em] text-slate-500">{formatInquiryTrendPeriod(item.period, granularity)}</p>
+                      <p className="mt-1 text-base font-semibold tabular-nums text-slate-900">{item.count.toLocaleString('ja-JP')}件</p>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

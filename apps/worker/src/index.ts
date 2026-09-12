@@ -86,6 +86,8 @@ import adminVersion from './routes/admin-version.js';
 import adminUpdate from './routes/admin-update.js';
 import { updateHistory } from './routes/update-history.js';
 import { salesCustomers } from './routes/sales-customers.js';
+import { inquiryAnalytics } from './routes/inquiry-analytics.js';
+import { processInquiryAnalysisQueue } from './services/inquiry-analytics.js';
 import {
   canUseManualLineSend,
   isLineCaptureOnly,
@@ -370,6 +372,7 @@ app.route('/', support);
 app.route('/', appNotifications);
 app.route('/', updateHistory);
 app.route('/', salesCustomers);
+app.route('/', inquiryAnalytics);
 
 // Phase 5 (upgrade flow) — public build metadata endpoint. Mounted under
 // /admin/ but intentionally unauthenticated: the dashboard fetches /admin/version
@@ -995,6 +998,15 @@ async function scheduled(
     }
   } catch (e) {
     console.error(`sales-situation-queue error: ${scheduledErrorKind(e)}`);
+  }
+
+  try {
+    const result = await processInquiryAnalysisQueue(env.DB, { now: new Date(), limit: 100 });
+    if (result.scanned > 0) {
+      console.log(`[inquiry-analytics] scanned=${result.scanned} completed=${result.completed} failed=${result.failed}`);
+    }
+  } catch (e) {
+    console.error(`inquiry-analytics error: ${scheduledErrorKind(e)}`);
   }
 
   if (captureOnly) {

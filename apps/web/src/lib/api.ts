@@ -856,6 +856,29 @@ export type SalesCustomerListResponse = {
   canRunBatch: boolean
 }
 
+export type InquiryAnalyticsCase = {
+  id: string
+  customer_number: string | null
+  opened_at: string
+  last_activity_at: string
+  primary_category: string
+  labels: string[]
+  inquiry_summary: string
+  resolution_summary: string | null
+  resolution_status: 'open' | 'answered' | 'resolved' | 'unknown'
+  confidence: number
+  source_kind: 'live' | 'csv'
+}
+
+export type InquiryAnalyticsResponse = {
+  totals: { total: number; customers: number; resolved: number; needs_review: number }
+  categories: Array<{ category: string; count: number; customers: number }>
+  trends: Array<{ month: string; count: number }>
+  cases: InquiryAnalyticsCase[]
+  limit: number
+  offset: number
+}
+
 export const api = {
   friends: {
     list: (params?: FriendListParams) => {
@@ -941,6 +964,18 @@ export const api = {
         '/api/sales-customers/situations/generate',
         { method: 'POST', body: JSON.stringify(data) },
       ),
+  },
+  inquiryAnalytics: {
+    list: (params: { lineAccountId?: string; category?: string; resolution?: string; q?: string; limit?: number; offset?: number } = {}) => {
+      const query = new URLSearchParams()
+      if (params.lineAccountId) query.set('lineAccountId', params.lineAccountId)
+      if (params.category) query.set('category', params.category)
+      if (params.resolution) query.set('resolution', params.resolution)
+      if (params.q) query.set('q', params.q)
+      if (params.limit) query.set('limit', String(params.limit))
+      if (params.offset) query.set('offset', String(params.offset))
+      return fetchApi<ApiResponse<InquiryAnalyticsResponse>>(`/api/inquiry-analytics?${query.toString()}`)
+    },
   },
   tags: {
     list: () =>

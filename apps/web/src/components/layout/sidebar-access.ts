@@ -11,6 +11,7 @@ const TEMPLATE_ENABLED_STAFF_NAMES = new Set([
 
 const SUPPORT_WORK_HREFS = new Set([
   '/sales-customers',
+  '/inquiry-analytics',
   '/chats',
   '/internal-chat',
   '/tasks',
